@@ -169,7 +169,16 @@ ipcMain.handle('vault:write', (e, { wsName, tlName, node }) => {
   try {
     const dir = path.dirname(nodePath(wsName, tlName, node));
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(nodePath(wsName, tlName, node), nodeToMd(node), 'utf8');
+    /* 改名去重：同 id 但 title 不同的旧 .md 残留 → 删除（避免名改后文件成双） */
+    const target = nodePath(wsName, tlName, node);
+    fs.readdirSync(dir).forEach((f) => {
+      if (!f.endsWith('.md') || path.join(dir, f) === target) return;
+      try {
+        const old = mdToNode(fs.readFileSync(path.join(dir, f), 'utf8'));
+        if (old.id === node.id) fs.rmSync(path.join(dir, f), { force: true });
+      } catch (e) { /* 读不了的旧文件忽略 */ }
+    });
+    fs.writeFileSync(target, nodeToMd(node), 'utf8');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: String(err) };
