@@ -3,7 +3,6 @@
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { saveNodeDoc, addEntity } from '../store/actions';
-import { mdRender } from './detail';
 import type { EntityType } from '../store/types';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
@@ -25,8 +24,7 @@ export function renderEditor(store: Store, host: HTMLElement): void {
       <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
         <div id="ed-title" style="padding:8px 14px;border-bottom:1px solid var(--border-soft);font-size:var(--text-sm);color:var(--fg-2);">选择左侧节点/实体开始编辑（自动保存）</div>
         <div style="flex:1;display:flex;min-height:0;">
-          <div id="ed-doc" style="flex:1;width:50%;background:var(--surface);border:none;height:100%;overflow:hidden;"></div>
-          <div id="ed-preview" style="flex:1;width:50%;border-left:1px solid var(--border-soft);padding:12px 14px;font-size:var(--text-sm);color:var(--fg);line-height:1.7;overflow:auto;"></div>
+          <div id="ed-doc" style="flex:1;width:100%;background:var(--surface);border:none;height:100%;overflow:hidden;"></div>
         </div>
         <div id="ed-status" style="padding:4px 14px;border-top:1px solid var(--border-soft);font-size:var(--text-xs);color:var(--fg-2);"></div>
       </div>
@@ -34,13 +32,14 @@ export function renderEditor(store: Store, host: HTMLElement): void {
 
   const sidebar = host.querySelector('#ed-sidebar') as HTMLElement;
   const docBox = host.querySelector('#ed-doc') as HTMLElement;
-  const preview = host.querySelector('#ed-preview') as HTMLElement;
   /* tiptap 富文本编辑器（所见即所得 → markdown 双向转，vault 保持 Obsidian markdown） */
   const editor = new Editor({
     element: docBox, extensions: [StarterKit, Markdown], contentType: 'markdown', content: '',
-    onUpdate: () => { preview.innerHTML = mdRender(getDocMd()); },
   });
-  function getDocMd(): string { return editor.getMarkdown() || ''; }
+  function getDocMd(): string {
+    /* 清理 tiptap 序列化的孤立 &nbsp; 空行（保留真实内容，去掉纯占位空行） */
+    return (editor.getMarkdown() || '').replace(/(^|\n)(\s*&nbsp;\s*)+\n?/g, '\n').replace(/^\n+/, '');
+  }
   function setDoc(md: string): void { editor.commands.setContent(md || '', { contentType: 'markdown' }); }
   /* 点击编辑器空白区 → 聚焦 tiptap，进入输入 */
   docBox.addEventListener('click', () => { editor.commands.focus(); });
