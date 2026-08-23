@@ -295,9 +295,9 @@ export function mountTimeline(
         <option value="">— 世界历史 —</option>${lineOpts}</select>
       <button class="lk-tl-tab is-new" id="lk-line-new" title="新建剧情线">＋线</button>
       ${pendingSegs.length ? `<span class="cnt" style="font-size:10px;color:var(--accent);">已选 ${pendingSegs.length} 段</span>` : ''}`;
-    /* 工具按钮统一放进固定容器 #lk-tools（位置由容器固定，内部顺序 story-ui 先、extras 后，不因重建乱跑） */
+    /* 固定槽位：story-ui 恒在最前（笔刷/线），extras 恒在最后（循环/非线性），不因重建互换 */
     const tools = TL_HEAD.querySelector('#lk-tools');
-    if (tools) tools.appendChild(ui); else TL_HEAD.appendChild(ui);
+    if (tools) tools.insertBefore(ui, tools.firstChild); else TL_HEAD.appendChild(ui);
 
     ui.querySelector('#lk-brush')?.addEventListener('click', () => {
       brushing = !brushing;
