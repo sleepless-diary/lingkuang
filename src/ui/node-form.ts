@@ -78,6 +78,10 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
         <div id="nf-time-hint" style="font-size:10px;color:var(--fg-2);font-family:var(--font-mono);min-height:14px;"></div>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;">
+        <label style="font-size:var(--text-xs);color:var(--fg-2);">描述</label>
+        <textarea id="nf-desc" placeholder="节点描述（可留空）" style="width:100%;height:60px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;resize:vertical;font-family:inherit;line-height:1.5;"></textarea>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;">
         <label style="font-size:var(--text-xs);color:var(--fg-2);">类型</label>
         <select id="nf-type" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;">
           <option value="event">事件</option>
@@ -95,6 +99,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
   const title = host.querySelector('#nf-title') as HTMLInputElement;
   const time = host.querySelector('#nf-time') as HTMLInputElement;
   const type = host.querySelector('#nf-type') as HTMLSelectElement;
+  const desc = host.querySelector('#nf-desc') as HTMLTextAreaElement;
   const err = host.querySelector('#nf-err') as HTMLElement;
   title.focus();
 
@@ -123,6 +128,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
       type: type.value as 'event' | 'plot' | 'place',
       year: parsed?.year ?? 0,
       precision: parsed?.precision ?? 'year',
+      desc: desc.value.trim() || undefined,
     });
     host.innerHTML = '';
   }
