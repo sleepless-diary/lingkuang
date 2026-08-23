@@ -1,4 +1,4 @@
-/** 节点详情面板（TS 版）——文稿本体渲染：字段卡片 + 正文；逻辑照抄 legacy showDetail/parseDoc */
+/** 节点详情面板（TS 版）——分区就地编辑：点哪块编辑哪块，点区域外 blur 自动保存 */
 import type { Store } from '../store/store';
 import type { TimelineNode } from '../store/types';
 import { saveNodeDoc } from '../store/actions';
@@ -35,7 +35,6 @@ export function fmtNodeTime(n: TimelineNode): string {
   const day = Math.floor(rem + 1e-6) + 1;
   let s = `${yr}年${month}月`;
   if (n.precision === 'day' || n.precision === 'hour' || n.precision === 'minute' || n.precision === 'second') s += `${day}日`;
-  /* 时分秒：月→1/12，日→1/360，时→1/8640，分→1/518400，秒→1/31104000 */
   const dayFrac = rem - (day - 1);
   if (n.precision === 'hour' || n.precision === 'minute' || n.precision === 'second') {
     const hour = Math.floor(dayFrac * 24);
@@ -60,92 +59,93 @@ export function renderNodeDetail(
   const timeText = fields.find((f) => f.k === '时间')?.v ?? fmtNodeTime(node);
   const typeLabel = node.type === 'story_event' ? '剧情事件' : node.type === 'world_event' ? '世界事件' : node.type === 'loop-boundary' ? '循环边界' : '节点';
 
-  let editing = false;
-  /* 保存改动的节点属性 → store.subscribe 自动写 vault/JSON */
   function save() {
     if (tlId) saveNodeDoc(store, tlId, node.id, node.doc ?? '');
+    store.update(() => {});
     if (onChanged) onChanged();
   }
 
   function renderView() {
-    if (editing) {
-      host.innerHTML = `
-        <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
-          <div style="display:flex;align-items:center;gap:8px;">
-            <input id="d-title" type="text" value="${node.title}" placeholder="节点标题" style="flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:5px 8px;font-size:15px;font-weight:600;outline:none;"/>
-            <button id="d-save" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:5px 12px;font-size:var(--text-xs);cursor:pointer;">保存</button>
-            <button id="d-cancel" style="background:var(--surface-2);color:var(--fg-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:5px 10px;font-size:var(--text-xs);cursor:pointer;">取消</button>
-          </div>
-          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-            <span style="font-size:var(--text-xs);color:var(--fg-2);">类型</span>
-            <select id="d-type" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 6px;font-size:var(--text-sm);outline:none;">
-              <option value="world_event"${node.type === 'world_event' ? ' selected' : ''}>世界事件</option>
-              <option value="story_event"${node.type === 'story_event' ? ' selected' : ''}>剧情事件</option>
-            </select>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:4px;">
-            <label style="font-size:var(--text-xs);color:var(--fg-2);">描述</label>
-            <textarea id="d-desc" style="width:100%;height:56px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;resize:vertical;font-family:inherit;line-height:1.5;">${node.desc ?? ''}</textarea>
-          </div>
-          <div style="display:flex;gap:6px;align-items:center;">
-            <span style="font-size:var(--text-xs);color:var(--fg-2);">时间</span>
-            <input id="d-time" type="text" value="${timeText}" placeholder="312年7月15日 或 312-7-15" style="flex:1;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-sm);outline:none;"/>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:4px;">
-            <label style="font-size:var(--text-xs);color:var(--fg-2);">正文（Markdown · #字段：值 行 + 正文）</label>
-            <textarea id="d-doc" placeholder="#事件：&#10;节点正文…" style="width:100%;height:150px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;resize:vertical;font-family:var(--font-mono);line-height:1.6;">${node.doc ?? ''}</textarea>
-          </div>
-        </div>`;
-      bindEdit();
-    } else {
-      host.innerHTML = `
-        <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;user-select:none;cursor:pointer;" id="d-view">
-          <div style="display:flex;align-items:baseline;gap:8px;">
-            <span style="font-size:15px;font-weight:600;color:var(--fg);">${node.title}</span>
-            <span style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);">${timeText}</span>
-            <button id="d-edit" style="margin-left:auto;background:transparent;border:1px solid var(--border);color:var(--fg);border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;align-self:baseline;">编辑</button>
-            <button id="d-del" style="background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;align-self:baseline;">删除</button>
-          </div>
-          <div style="display:flex;gap:4px;flex-wrap:wrap;">
-            <span style="font-size:10px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;">${typeLabel}</span>
-          </div>
-          ${node.desc ? `<div style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;">${mdRender(node.desc)}</div>` : ''}
-          <div id="d-fields" style="display:flex;flex-direction:column;gap:6px;"></div>
-          <div style="font-size:var(--text-sm);color:var(--fg);line-height:1.7;">${body ? mdRender(body) : '<span style="color:var(--fg-2);">(空正文)</span>'}</div>
-        </div>`;
-      /* 点击任意区域（非按钮）进入编辑 + 文字不可选中 */
-      host.querySelector('#d-view')?.addEventListener('click', (e) => {
-        if (!(e.target as HTMLElement).closest('button')) { editing = true; renderView(); }
-      });
-      host.querySelector('#d-edit')?.addEventListener('click', () => { editing = true; renderView(); });
-      host.querySelector('#d-del')?.addEventListener('click', () => {
-        if (!tlId) return;
-        store.update((d) => {
-          const tl = d.worldsets[store.activeWorld]?.timelines[tlId];
-          if (tl) tl.nodes = tl.nodes.filter((x) => x.id !== node.id);
+    host.innerHTML = `
+      <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;user-select:none;" id="d-view">
+        <div style="display:flex;align-items:baseline;gap:8px;">
+          <span id="d-t" style="font-size:15px;font-weight:600;color:var(--fg);cursor:text;">${node.title}</span>
+          <span id="d-tm" style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);cursor:text;">${timeText}</span>
+          <button id="d-del" style="margin-left:auto;background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;align-self:baseline;">删除</button>
+        </div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;">
+          <span id="d-ty" style="font-size:10px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;cursor:pointer;">${typeLabel}</span>
+        </div>
+        <div id="d-d" style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;cursor:text;min-height:18px;">${node.desc ? mdRender(node.desc) : '<span style="color:var(--fg-2);">(无描述)</span>'}</div>
+        <div id="d-fields" style="display:flex;flex-direction:column;gap:6px;"></div>
+        <div id="d-b" style="font-size:var(--text-sm);color:var(--fg);line-height:1.7;cursor:text;min-height:18px;">${body ? mdRender(body) : '<span style="color:var(--fg-2);">(空正文)</span>'}</div>
+      </div>`;
+
+    /* 分区就地编辑：点哪块 → 那块变输入框；blur（点击区域外）→ 保存恢复 */
+    inlineEdit(host, '#d-t', { multi: false, get: () => node.title, set: (v) => { node.title = v.trim(); } });
+    inlineEdit(host, '#d-d', { multi: true, get: () => node.desc || '', set: (v) => { node.desc = v.trim() || undefined; } });
+    inlineEdit(host, '#d-b', { multi: true, get: () => node.doc || '', set: (v) => { node.doc = v; } });
+
+    host.querySelector('#d-ty')?.addEventListener('click', () => {
+      const sel = document.createElement('select');
+      sel.innerHTML = `<option value="world_event"${node.type === 'world_event' ? ' selected' : ''}>世界事件</option><option value="story_event"${node.type === 'story_event' ? ' selected' : ''}>剧情事件</option>`;
+      const slot = host.querySelector('#d-ty') as HTMLElement;
+      slot.replaceWith(sel);
+      sel.focus();
+      sel.addEventListener('change', () => { node.type = sel.value as 'world_event' | 'story_event'; renderView(); save(); });
+      sel.addEventListener('blur', () => { node.type = sel.value as 'world_event' | 'story_event'; renderView(); save(); });
+    });
+
+    /* 时间块：点击 → 输入框（parseTimeText），blur 保存 */
+    const tmEl = host.querySelector('#d-tm') as HTMLElement | null;
+    if (tmEl) {
+      tmEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const inp = document.createElement('input');
+        inp.value = timeText;
+        inp.style.cssText = `background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-xs);font-family:var(--font-mono);outline:none;width:120px;`;
+        tmEl.replaceWith(inp);
+        inp.focus(); inp.select();
+        inp.addEventListener('blur', () => {
+          const p = parseTimeText(inp.value);
+          if (p) { node.year = p.year; node.precision = p.precision; save(); }
+          renderView();
         });
-        host.innerHTML = '';
-        if (onChanged) onChanged();
+        inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') inp.blur(); });
       });
-      const fieldsBox = host.querySelector('#d-fields') as HTMLElement;
-      fields.forEach((f) => { fieldsBox.appendChild(makeFieldCard(f.k, f.v)); });
     }
+
+    host.querySelector('#d-del')?.addEventListener('click', () => {
+      if (!tlId) return;
+      store.update((d) => {
+        const tl = d.worldsets[store.activeWorld]?.timelines[tlId];
+        if (tl) tl.nodes = tl.nodes.filter((x) => x.id !== node.id);
+      });
+      host.innerHTML = '';
+      if (onChanged) onChanged();
+    });
+
+    const fieldsBox = host.querySelector('#d-fields') as HTMLElement;
+    fields.forEach((f) => { fieldsBox.appendChild(makeFieldCard(f.k, f.v)); });
   }
 
-  function bindEdit() {
-    host.querySelector('#d-save')?.addEventListener('click', () => {
-      const title = (host.querySelector('#d-title') as HTMLInputElement).value.trim();
-      if (title) node.title = title;
-      node.type = (host.querySelector('#d-type') as HTMLSelectElement).value as 'world_event' | 'story_event';
-      const d = (host.querySelector('#d-desc') as HTMLTextAreaElement).value;
-      node.desc = d.trim() || undefined;
-      node.doc = (host.querySelector('#d-doc') as HTMLTextAreaElement).value;
-      const p = parseTimeText((host.querySelector('#d-time') as HTMLInputElement).value);
-      if (p) { node.year = p.year; node.precision = p.precision; }
-      store.update(() => {}); save();
-      editing = false; renderView();
+  /** 内联编辑：点击元素切换为 input/textarea，blur 保存并恢复只读 */
+  function inlineEdit(host: HTMLElement, sel: string, opts: { multi: boolean; get: () => string; set: (v: string) => void }) {
+    const el = host.querySelector(sel) as HTMLElement | null;
+    if (!el) return;
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const input = document.createElement(opts.multi ? 'textarea' : 'input') as HTMLInputElement;
+      input.value = opts.get();
+      input.style.cssText = `width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 8px;font-size:${opts.multi ? 'var(--text-sm)' : '15px'};font-family:${opts.multi ? 'var(--font-mono)' : 'inherit'};line-height:1.6;outline:none;resize:vertical;`;
+      if (!opts.multi) input.style.fontWeight = '600';
+      el.replaceWith(input);
+      input.focus();
+      input.select();
+      /* 点击区域外（blur）→ 保存 + 恢复只读 */
+      input.addEventListener('blur', () => { opts.set(input.value); renderView(); save(); });
+      input.addEventListener('keydown', (ev) => { if (!opts.multi && ev.key === 'Enter') input.blur(); });
     });
-    host.querySelector('#d-cancel')?.addEventListener('click', () => { editing = false; renderView(); });
   }
 
   renderView();
