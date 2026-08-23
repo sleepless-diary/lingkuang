@@ -373,3 +373,26 @@ body {
 }
 .tl__ghost .cap { position: absolute; left: 8px; top: 8px; width: 10px; height: 10px; border-radius: 50%; background: var(--fg); border: 1px dashed var(--accent); }
 .tl__ghost .tl__name { position: absolute; top: 22px; left: 50%; transform: translateX(-50%); font-size: 9px; color: var(--fg-2); white-space: nowrap; }
+
+/* ── tiptap 富文本编辑器（简洁无框，撑满可点即输）── */
+#ed-doc { padding: 0; }
+#ed-doc .tiptap {
+  height: 100%;
+  min-height: 100%;
+  outline: none;
+  cursor: text;
+  color: var(--fg);
+  font-size: var(--text-sm);
+  line-height: 1.7;
+  padding: 12px 14px;
+  font-family: inherit;
+}
+#ed-doc .tiptap p { margin: 0 0 0.4em; }
+#ed-doc .tiptap h1 { font-size: 18px; margin: 0.6em 0 0.3em; }
+#ed-doc .tiptap h2 { font-size: 16px; margin: 0.6em 0 0.3em; }
+#ed-doc .tiptap h3 { font-size: 14px; margin: 0.6em 0 0.3em; }
+#ed-doc .tiptap ul, #ed-doc .tiptap ol { padding-left: 1.2em; margin: 0.4em 0; }
+#ed-doc .tiptap code { background: var(--surface-2); padding: 0 4px; border-radius: 2px; font-family: var(--font-mono); font-size: 12px; }
+#ed-doc .tiptap pre { background: var(--surface-2); padding: 8px 10px; border-radius: var(--radius-sm); overflow: auto; }
+#ed-doc .tiptap a { color: var(--accent); }
+#ed-doc .tiptap blockquote { border-left: 2px solid var(--accent); margin: 0.4em 0; padding-left: 10px; color: var(--fg-2); }

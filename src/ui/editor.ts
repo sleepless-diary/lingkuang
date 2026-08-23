@@ -25,7 +25,7 @@ export function renderEditor(store: Store, host: HTMLElement): void {
       <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
         <div id="ed-title" style="padding:8px 14px;border-bottom:1px solid var(--border-soft);font-size:var(--text-sm);color:var(--fg-2);">选择左侧节点/实体开始编辑（自动保存）</div>
         <div style="flex:1;display:flex;min-height:0;">
-          <div id="ed-doc" style="flex:1;width:50%;background:var(--surface);border:none;overflow:auto;padding:12px 14px;"></div>
+          <div id="ed-doc" style="flex:1;width:50%;background:var(--surface);border:none;height:100%;overflow:hidden;"></div>
           <div id="ed-preview" style="flex:1;width:50%;border-left:1px solid var(--border-soft);padding:12px 14px;font-size:var(--text-sm);color:var(--fg);line-height:1.7;overflow:auto;"></div>
         </div>
         <div id="ed-status" style="padding:4px 14px;border-top:1px solid var(--border-soft);font-size:var(--text-xs);color:var(--fg-2);"></div>
@@ -42,6 +42,8 @@ export function renderEditor(store: Store, host: HTMLElement): void {
   });
   function getDocMd(): string { return editor.getMarkdown() || ''; }
   function setDoc(md: string): void { editor.commands.setContent(md || '', { contentType: 'markdown' }); }
+  /* 点击编辑器空白区 → 聚焦 tiptap，进入输入 */
+  docBox.addEventListener('click', () => { editor.commands.focus(); });
   const titleEl = host.querySelector('#ed-title') as HTMLElement;
   const status = host.querySelector('#ed-status') as HTMLElement;
   const tabTl = host.querySelector('#ed-tab-tl') as HTMLElement;
