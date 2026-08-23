@@ -13,7 +13,7 @@ export interface SectionedEditor {
   destroy(): void;
 }
 
-/* 源码段读取：pre-wrap 下 innerText 把 <br>/块级换行归一成 \n，去掉编辑器末尾占位空行 */
+/* 源码段读取：用 innerText 归一 <br>/块级换行为 \n 并去掉末尾占位空行（保留 ## 等 markdown 源码本身） */
 function readSegText(el: HTMLElement): string {
   return (el.innerText ?? '').replace(/\n+$/, '');
 }

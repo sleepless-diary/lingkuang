@@ -375,7 +375,8 @@ body {
 .tl__ghost .tl__name { position: absolute; top: 22px; left: 50%; transform: translateX(-50%); font-size: 9px; color: var(--fg-2); white-space: nowrap; }
 
 /* ── 分段 markdown 编辑器（光标段源码 + 其他段 markdown-it 预览）── */
-#ed-doc { padding: 0; }
+#ed-doc { padding: 0; border: none !important; outline: none; box-shadow: none; }
+#ed-doc .md-editor { border: none !important; outline: none; box-shadow: none; }
 #ed-doc .md-editor {
   height: 100%;
   min-height: 100%;
