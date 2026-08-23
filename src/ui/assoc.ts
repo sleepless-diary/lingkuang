@@ -197,7 +197,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
       const temp = frame < 90 ? 1 : 0.22;
       const damp = frame < 90 ? 0.82 : 0.92;
       const vis = visibleIds();
-      if (dragNodeId !== null) vis.delete(dragNodeId);
+      /* 不把被拖节点从 vis 排除——保留它参与边张力，子节点拖动时才能被引力拉扯（拖动中有力学） */
       forceStep(assocGraph.nodes, vis, assocGraph.edges, temp, damp, dragNodeId !== null ? dragGroup : null);
       world.querySelectorAll('.assoc__node, .assoc__root').forEach((el, i) => {
         const n = assocGraph!.nodes[i];
