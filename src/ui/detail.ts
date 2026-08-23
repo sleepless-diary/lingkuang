@@ -73,6 +73,7 @@ export function renderNodeDetail(
     const { fields, body } = parseDoc(cur.doc);
     const timeText = fields.find((f) => f.k === '时间')?.v ?? fmtNodeTime(cur);
     host.innerHTML = `
+      <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;user-select:none;" id="d-view">
         <div style="display:flex;align-items:baseline;gap:8px;">
           <span id="d-t" style="font-size:15px;font-weight:600;color:var(--fg);cursor:text;">${cur.title}</span>
           <span id="d-tm" style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);cursor:text;">${timeText}</span>
