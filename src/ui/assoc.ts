@@ -221,6 +221,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         let extra = '';
         if (n.id === focusedId) extra += ' is-focus';
         if (n.selected) extra += ' is-selected';
+        if ((n as any)._staged) extra += ' is-staged';   /* 已暂存：橙边框标记，与选中绿区分 */
         /* 视觉聚焦：非焦点路径的词淡化（不隐藏，保留多分支） */
         if (focusedId !== null && focusedId !== undefined && n.id !== focusedId && !isOnFocusPath(n.id)) extra += ' is-dim';
         const hidden = vis.has(n.id) ? '' : ' style="display:none"';
@@ -401,16 +402,12 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
       if (scroller) scroller.scrollTop += e.deltaY;
     }, { passive: false });
     stage.addEventListener('click', (e) => {
-      const nodeEl = (e.target as HTMLElement).closest('.assoc__node, .assoc__root');
-      if (nodeEl && assocGraph) {
-        if (suppressClick) return;   // 拖拽后的 click 抑制
-        onNodeClick(parseInt((nodeEl as HTMLElement).dataset.id!, 10));
-        return;
-      }
-      if (suppressClick) return;
+      if (suppressClick) return;   // 拖拽后的 click 抑制
+      /* 先判断存按钮（点在 .store 上）→ 存词，不触发节点展开 */
       const store = (e.target as HTMLElement).closest('.store');
       if (store) {
-        const word = (e.target as HTMLElement).closest('.assoc__node')?.textContent?.replace('存', '') ?? '';
+        const nodeEl = (e.target as HTMLElement).closest('.assoc__node');
+        const word = nodeEl?.textContent?.replace('存', '') ?? '';
         const n = assocGraph?.nodes.find((x) => x.word === word);
         if (n) {
           /* 加入暂存表（localStorage 持久化），导出时经 Ollama 归类写入词库 */
@@ -419,6 +416,13 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
           renderGraph();
           assocStatus(`已暂存「${n.word}」· 点「导出暂存词」写入词库`);
         }
+        return;
+      }
+      /* 再判断节点 → 展开联想 */
+      const nodeEl = (e.target as HTMLElement).closest('.assoc__node, .assoc__root');
+      if (nodeEl && assocGraph) {
+        onNodeClick(parseInt((nodeEl as HTMLElement).dataset.id!, 10));
+        return;
       }
     });
   }
