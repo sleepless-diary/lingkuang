@@ -1,7 +1,6 @@
 /** 节点详情面板（TS 版）——分区就地编辑：点哪块编辑哪块，点区域外 blur 自动保存 */
 import type { Store } from '../store/store';
 import type { TimelineNode } from '../store/types';
-import { saveNodeDoc } from '../store/actions';
 import { parseTimeText } from './node-form';
 
 interface ParsedDoc {
@@ -59,8 +58,11 @@ export function renderNodeDetail(
   const timeText = fields.find((f) => f.k === '时间')?.v ?? fmtNodeTime(node);
 
   function save() {
-    if (tlId) saveNodeDoc(store, tlId, node.id, node.doc ?? '');
-    store.update(() => {});
+    /* 通过 tlId+id 在 store 里找最新节点（node 引用可能因外部重载失效），同步所有字段再保存 */
+    store.update((d) => {
+      const n = d.worldsets[store.activeWorld]?.timelines[tlId ?? '']?.nodes.find((x) => x.id === node.id);
+      if (n) { n.title = node.title; n.type = node.type; n.desc = node.desc; n.doc = node.doc; n.year = node.year; n.precision = node.precision; }
+    });
     if (onChanged) onChanged();
   }
 
