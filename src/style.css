@@ -398,6 +398,14 @@ body {
   outline: none;
   cursor: text;
 }
+/* 禁编辑器内所有浏览器默认 focus ring（避免源码段聚焦时出现橙色 focus 框） */
+#ed-doc .md-editor .md-seg:focus,
+#ed-doc .md-editor .md-seg:focus-visible,
+#ed-doc .md-editor .md-seg *:focus,
+#ed-doc .md-editor .md-seg *:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
 #ed-doc .md-editor .md-seg.is-prev p { margin: 0 0 0.4em; }
 #ed-doc .md-editor .md-seg.is-prev h1 { font-size: 18px; margin: 0.6em 0 0.3em; }
 #ed-doc .md-editor .md-seg.is-prev h2 { font-size: 16px; margin: 0.6em 0 0.3em; }
