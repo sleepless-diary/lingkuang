@@ -3,24 +3,43 @@ import type { Store } from '../store/store';
 import { addNode } from '../store/actions';
 
 /** 时间文本解析（精简版，照抄 legacy parseTimeText）："312" / "312年7月" / "312年7月15日" */
-export function parseTimeText(text: string): { year: number } | null {
+/** 时间文本解析（支持任意分隔符）："312" / "312年7月" / "312-7-15" / "312.7.15.8.30.45" / "312/7/15"
+ * 分隔符可以是 -.、/，年月日时分秒字面量。自动识别精度，全部折算进小数年份。 */
+export function parseTimeText(text: string): { year: number; precision: 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second'; month?: number; day?: number; hour?: number; minute?: number; second?: number } | null {
   const t = String(text || '').trim();
   if (!t) return null;
-  const m = t.match(/^(-?\d+)(?:年)?(?:\s*(\d{1,2})月)?(?:\s*(\d{1,2})日)?$/);
-  if (!m) return null;
-  const year = parseInt(m[1], 10);
-  const month = m[2] ? parseInt(m[2], 10) : undefined;
-  const day = m[3] ? parseInt(m[3], 10) : undefined;
+  /* 把年月日时分秒字面量和任意分隔符统一归一成 "." 便于 split */
+  const norm = t
+    .replace(/[年月日时分秒]/g, '.')
+    .replace(/[\-\/\、,，\s·:：]+/g, '.');
+  const parts = norm.split('.').filter((p) => p !== '');
+  if (!parts.length) return null;
+  if (parts.length > 6) return null;
+  const nums = parts.map((p) => parseInt(p, 10));
+  if (nums.some((n) => Number.isNaN(n))) return null;
+  const year = nums[0];
+  const month = nums.length > 1 ? nums[1] : undefined;
+  const day = nums.length > 2 ? nums[2] : undefined;
+  const hour = nums.length > 3 ? nums[3] : undefined;
+  const minute = nums.length > 4 ? nums[4] : undefined;
+  const second = nums.length > 5 ? nums[5] : undefined;
   if (month !== undefined && (month < 1 || month > 12)) return null;
   if (day !== undefined && (day < 1 || day > 31)) return null;
-  /* 时间 = 小数年份（月/日折算，与旧数据一致） */
+  if (hour !== undefined && (hour < 0 || hour > 23)) return null;
+  if (minute !== undefined && (minute < 0 || minute > 59)) return null;
+  if (second !== undefined && (second < 0 || second > 59)) return null;
+  /* 全折算进小数年份；月→/12，日→/360，时→/8640(24*360)，分→/518400，秒→/31104000 */
   let y = year;
   if (month) y += (month - 1) / 12;
   if (day) y += (day - 1) / 360;
-  return { year: Math.round(y * 1000) / 1000 };
+  if (hour) y += hour / 8640;
+  if (minute) y += minute / 518400;
+  if (second) y += second / 31104000;
+  const precision = second !== undefined ? 'second' : minute !== undefined ? 'minute' : hour !== undefined ? 'hour' : day !== undefined ? 'day' : month !== undefined ? 'month' : 'year';
+  return { year: Math.round(y * 1e6) / 1e6, precision, month, day, hour, minute, second };
 }
 
-/** 小数年份 → 人类可读时间文本（"312" / "312年7月" / "312年7月15日"） */
+/** 小数年份 → 人类可读时间文本（"312" / "312年7月" / "312年7月15日" / "312年7月15日9时30分"） */
 function fmtCursorTime(y: number): string {
   const yr = Math.floor(y + 1e-9);
   const frac = y - yr;
@@ -29,8 +48,17 @@ function fmtCursorTime(y: number): string {
   const rem = (frac * 12 - (month - 1)) * 30;
   const day = Math.floor(rem + 1e-6) + 1;
   if (month > 12) return String(yr);
-  if (day <= 1) return `${yr}年${month}月`;
-  return `${yr}年${month}月${day}日`;
+  let s = day <= 1 ? `${yr}年${month}月` : `${yr}年${month}月${day}日`;
+  /* 时/分：由小数余量推算（整天占比 1/360，时 1/8640，分 1/518400，秒 1/31104000） */
+  const dayFrac = rem - (day - 1);
+  if (dayFrac > 0.0001) {
+    const hour = Math.floor(dayFrac * 24);
+    const hourRem = (dayFrac * 24 - hour) * 60;
+    const minute = Math.floor(hourRem + 1e-6);
+    const second = Math.floor((hourRem - minute) * 60 + 1e-6);
+    if (minute > 0 || second > 0) s += `${hour}时${minute}分`;
+  }
+  return s;
 }
 
 export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tlName: string): void {
@@ -73,12 +101,12 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
     const t = title.value.trim();
     if (!t) { showErr('标题不能为空'); title.focus(); return; }
     const parsed = parseTimeText(time.value);
-    if (time.value.trim() && !parsed) { showErr('时间格式：312 或 312年7月 或 312年7月15日'); return; }
+    if (time.value.trim() && !parsed) { showErr('时间格式：312 | 312年7月 | 312年7月15日 | 312-7-15 或 312.7.15.8.30.45（分隔符任意）'); return; }
     addNode(store, tlId, {
       title: t,
       type: type.value as 'event' | 'plot' | 'place',
       year: parsed?.year ?? 0,
-      precision: 'year',
+      precision: parsed?.precision ?? 'year',
     });
     host.innerHTML = '';
   }

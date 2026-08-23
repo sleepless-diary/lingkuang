@@ -1,7 +1,7 @@
 /** 灵框 · 领域类型（数据层契约） */
 
 /** 时间精度 */
-export type TimePrecision = 'year' | 'month' | 'day' | 'hour' | 'minute';
+export type TimePrecision = 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second';
 
 /** 时间线节点：本体 = 文稿（doc） */
 export interface TimelineNode {
