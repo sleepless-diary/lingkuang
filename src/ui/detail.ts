@@ -57,7 +57,6 @@ export function renderNodeDetail(
 ): void {
   const { fields, body } = parseDoc(node.doc);
   const timeText = fields.find((f) => f.k === '时间')?.v ?? fmtNodeTime(node);
-  const typeLabel = node.type === 'story_event' ? '剧情事件' : node.type === 'world_event' ? '世界事件' : node.type === 'loop-boundary' ? '循环边界' : '节点';
 
   function save() {
     if (tlId) saveNodeDoc(store, tlId, node.id, node.doc ?? '');
@@ -74,7 +73,7 @@ export function renderNodeDetail(
           <button id="d-del" style="margin-left:auto;background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;align-self:baseline;">删除</button>
         </div>
         <div style="display:flex;gap:4px;flex-wrap:wrap;">
-          <span id="d-ty" style="font-size:10px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;cursor:pointer;">${typeLabel}</span>
+          <span id="d-ty" style="font-size:10px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;cursor:pointer;">${node.type === 'story_event' ? '剧情事件' : node.type === 'world_event' ? '世界事件' : node.type === 'loop-boundary' ? '循环边界' : '节点'}</span>
         </div>
         <div id="d-d" style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;cursor:text;min-height:18px;">${node.desc ? mdRender(node.desc) : '<span style="color:var(--fg-2);">(无描述)</span>'}</div>
         <div id="d-fields" style="display:flex;flex-direction:column;gap:6px;"></div>
@@ -93,7 +92,6 @@ export function renderNodeDetail(
       slot.replaceWith(sel);
       sel.focus();
       sel.addEventListener('change', () => { node.type = sel.value as 'world_event' | 'story_event'; save(); });
-      sel.addEventListener('blur', () => { node.type = sel.value as 'world_event' | 'story_event'; save(); });
     });
 
     /* 时间块：点击 → 输入框（parseTimeText），blur 保存 */
