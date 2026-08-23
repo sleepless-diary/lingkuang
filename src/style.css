@@ -238,16 +238,9 @@ body {
 .assoc__node:hover { border-color: var(--accent); }
 .assoc__node.is-focus { border-color: var(--accent); box-shadow: 0 0 8px rgba(158, 194, 98, 0.4); }
 .assoc__node.is-selected { background: var(--accent); color: var(--accent-on); border-color: var(--accent); }
-/* 已暂存词：橙边框 + 底部标记（与选中绿色区分，不叠色） */
+/* 已暂存词：橙边框标记（思维链自动暂存，不加 ✓ ——不干扰视觉） */
 .assoc__node.is-staged { border-color: #c28a3d; }
-.assoc__node.is-staged::after {
-  content: '✓';
-  font-size: 10px;
-  color: #c28a3d;
-  margin-left: 4px;
-}
 .assoc__node.is-staged.is-selected { background: var(--accent); }
-.assoc__node.is-staged.is-selected::after { color: var(--accent-on); }
 .assoc__node.is-new { border-style: dashed; color: var(--fg-2); }
 .assoc__node .store {
   margin-left: 6px;
