@@ -71,7 +71,7 @@ body {
   white-space: nowrap;
 }
 .lk-world-tab:hover { opacity: 1; background: var(--chrome-2); }
-.lk-world-tab.is-active { opacity: 1; color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+.lk-world-tab.is-active { opacity: 1; color: var(--fg); box-shadow: inset 0 -2px 0 var(--accent); }
 .lk-worldbar-tools { display: flex; align-items: center; gap: 2px; padding: 0 8px; border-left: 1px solid var(--chrome-2); }
 .lk-tool-btn {
   display: flex;
@@ -88,7 +88,7 @@ body {
   white-space: nowrap;
 }
 .lk-tool-btn:hover { opacity: 1; background: var(--chrome-2); }
-.lk-tool-btn.is-active { opacity: 1; color: var(--accent); background: var(--chrome-2); }
+.lk-tool-btn.is-active { opacity: 1; color: var(--fg); background: var(--chrome-2); }
 .lk-tool-btn.is-ph { opacity: 0.4; }
 .lk-tool-btn.is-ph:hover { opacity: 0.7; }
 
@@ -125,7 +125,7 @@ body {
   white-space: nowrap;
 }
 .lk-tool-btn:hover { opacity: 1; background: var(--chrome-2); }
-.lk-tool-btn.is-active { opacity: 1; color: var(--accent); background: var(--chrome-2); }
+.lk-tool-btn.is-active { opacity: 1; color: var(--fg); background: var(--chrome-2); }
 .lk-tool-btn.is-ph { opacity: 0.4; }
 .lk-tool-btn.is-ph:hover { opacity: 0.7; }
 .lk-pane { display: flex; flex-direction: column; min-height: 0; }
@@ -158,11 +158,11 @@ body {
   flex-shrink: 0;   /* 选中/切换时不被压缩移位 */
 }
 .lk-tl-tab:hover { background: var(--surface); color: var(--fg); }
-.lk-tl-tab.is-active { background: var(--chrome); color: var(--accent); }
+.lk-tl-tab.is-active { background: var(--chrome); color: var(--fg); }
 .lk-tl-tab .cnt { font-family: var(--font-mono); font-size: 9px; opacity: 0.6; }
 .lk-tl-tab.is-new { font-weight: 600; color: var(--fg-2); }
-.lk-tl-tab.is-new:hover { color: var(--accent); }
-.lk-ph { color: var(--accent); font-size: 10px; }
+.lk-tl-tab.is-new:hover { color: var(--fg); }
+.lk-ph { color: var(--fg); font-size: 10px; }
 .lk-pane-body { flex: 1; min-height: 0; overflow: auto; }
 .lk-placeholder {
   display: flex;
@@ -236,9 +236,9 @@ body {
   color: var(--fg);
   border: 1px solid var(--border-strong);
 }
-.assoc__node:hover { border-color: var(--accent); }
-.assoc__node.is-focus { border-color: var(--accent); box-shadow: 0 0 8px rgba(158, 194, 98, 0.4); }
-.assoc__node.is-selected { background: var(--accent); color: var(--accent-on); border-color: var(--accent); }
+.assoc__node:hover { border-color: var(--fg); }
+.assoc__node.is-focus { border-color: var(--fg); box-shadow: 0 0 8px rgba(158, 194, 98, 0.4); }
+.assoc__node.is-selected { background: var(--accent); color: var(--accent-on); border-color: var(--fg); }
 /* 已暂存词：橙边框标记（思维链自动暂存，不加 ✓ ——不干扰视觉） */
 .assoc__node.is-staged { border-color: #c28a3d; }
 .assoc__node.is-staged.is-selected { background: var(--accent); }
@@ -246,7 +246,7 @@ body {
 .assoc__node .store {
   margin-left: 6px;
   font-size: 10px;
-  color: var(--accent);
+  color: var(--fg);
   border-left: 1px solid var(--border-soft);
   padding: 6px 10px 6px 5px;   /* 扩大点击热区（视觉文字不变，Padding 撑开命中面积便于浮动时点中） */
   margin-top: -6px;
@@ -278,8 +278,8 @@ body {
   box-shadow: inset 0 1px 2px rgba(58, 58, 52, 0.2);
   transition: border-color var(--motion-base) var(--ease-standard), background var(--motion-base) var(--ease-standard), transform var(--motion-fast) ease;
 }
-.tl__n:hover .cap { border-color: var(--accent); transform: scale(1.15); }
-.tl__n.is-sel .cap { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 8px rgba(158, 194, 98, 0.5); }
+.tl__n:hover .cap { border-color: var(--fg); transform: scale(1.15); }
+.tl__n.is-sel .cap { background: var(--accent); border-color: var(--fg); box-shadow: 0 0 8px rgba(158, 194, 98, 0.5); }
 .tl__n.is-event .cap { background: var(--fg); border-color: var(--fg); }
 .tl__n .tl__name {
   position: absolute;
@@ -293,7 +293,7 @@ body {
   text-shadow: 0 1px 0 var(--bg);
 }
 /* 节点类型位置：剧情事件名称在时间线上方，世界事件名称在下方（默认） */
-.tl__n.is-story .tl__name { top: -19px; color: var(--accent); }
+.tl__n.is-story .tl__name { top: -19px; color: var(--fg); }
 .tl__n.is-world .tl__name { top: 22px; }
 /* 时间线（照搬 legacy .tl__axis）：3px 粗结构线，常驻贯穿全宽，垂直居中 */
 .tl-line {
@@ -324,7 +324,7 @@ body {
   right: 0;
   font-size: 9px;
   font-family: var(--font-mono);
-  color: var(--accent);
+  color: var(--fg);
   background: var(--chrome);
   padding: 0 5px;
   border-radius: 0 0 0 2px;
