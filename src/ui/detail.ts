@@ -91,7 +91,7 @@ export function renderNodeDetail(
       const slot = host.querySelector('#d-ty') as HTMLElement;
       slot.replaceWith(sel);
       sel.focus();
-      sel.addEventListener('change', () => { node.type = sel.value as 'world_event' | 'story_event'; save(); });
+      sel.addEventListener('change', () => { node.type = sel.value as 'world_event' | 'story_event'; save(); renderView(); });
     });
 
     /* 时间块：点击 → 输入框（parseTimeText），blur 保存 */
@@ -107,7 +107,7 @@ export function renderNodeDetail(
         inp.addEventListener('blur', () => {
           const p = parseTimeText(inp.value);
           if (p) { node.year = p.year; node.precision = p.precision; save(); }
-          else renderView();   /* 无效则恢复原显示 */
+          renderView();
         });        inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') inp.blur(); });
       });
     }
@@ -140,17 +140,12 @@ export function renderNodeDetail(
       input.focus();
       input.select();
       /* 点击区域外（blur）→ 保存 + 恢复只读 */
-      input.addEventListener('blur', () => { opts.set(input.value); save(); });
+      input.addEventListener('blur', () => { opts.set(input.value); save(); renderView(); });
       input.addEventListener('keydown', (ev) => { if (!opts.multi && ev.key === 'Enter') input.blur(); });
     });
   }
 
   renderView();
-  /* 数据变化（保存后）→ 自动刷新面板为最新值；面板移除后自动停止监听 */
-  const unsub = store.subscribe(() => {
-    if (!host.isConnected) { unsub(); return; }
-    renderView();
-  });
 }
 
 function makeFieldCard(k: string, v: string): HTMLElement {
