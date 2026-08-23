@@ -1,10 +1,13 @@
-/** 编辑器模块——文稿编辑（时间线节点 + 实体，Obsidian 式 #字段：值）：
+﻿/** 编辑器模块——文稿编辑（时间线节点 + 实体，Obsidian 式 #字段：值）：
  * 左侧 sidebar（时间线 tab：时间线→节点；实体 tab：类型→实体），右侧编辑 doc（失焦保存） */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { saveNodeDoc, addEntity } from '../store/actions';
 import { mdRender } from './detail';
 import type { EntityType } from '../store/types';
+import { Editor } from '@tiptap/core';
+import StarterKit from '@tiptap/starter-kit';
+import { Markdown } from '@tiptap/markdown';
 
 export function renderEditor(store: Store, host: HTMLElement): void {
   host.style.overflow = 'hidden';
@@ -22,7 +25,7 @@ export function renderEditor(store: Store, host: HTMLElement): void {
       <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
         <div id="ed-title" style="padding:8px 14px;border-bottom:1px solid var(--border-soft);font-size:var(--text-sm);color:var(--fg-2);">选择左侧节点/实体开始编辑（自动保存）</div>
         <div style="flex:1;display:flex;min-height:0;">
-          <textarea id="ed-doc" placeholder="文稿（#字段：值 每行一个 + 正文）…" style="flex:1;width:50%;background:var(--surface);border:none;color:var(--fg);padding:12px 14px;font-size:var(--text-sm);outline:none;resize:none;font-family:var(--font-mono);line-height:1.7;"></textarea>
+          <div id="ed-doc" style="flex:1;width:50%;background:var(--surface);border:none;overflow:auto;padding:12px 14px;"></div>
           <div id="ed-preview" style="flex:1;width:50%;border-left:1px solid var(--border-soft);padding:12px 14px;font-size:var(--text-sm);color:var(--fg);line-height:1.7;overflow:auto;"></div>
         </div>
         <div id="ed-status" style="padding:4px 14px;border-top:1px solid var(--border-soft);font-size:var(--text-xs);color:var(--fg-2);"></div>
@@ -30,8 +33,15 @@ export function renderEditor(store: Store, host: HTMLElement): void {
     </div>`;
 
   const sidebar = host.querySelector('#ed-sidebar') as HTMLElement;
-  const docBox = host.querySelector('#ed-doc') as HTMLTextAreaElement;
+  const docBox = host.querySelector('#ed-doc') as HTMLElement;
   const preview = host.querySelector('#ed-preview') as HTMLElement;
+  /* tiptap 富文本编辑器（所见即所得 → markdown 双向转，vault 保持 Obsidian markdown） */
+  const editor = new Editor({
+    element: docBox, extensions: [StarterKit, Markdown], contentType: 'markdown', content: '',
+    onUpdate: () => { preview.innerHTML = mdRender(getDocMd()); },
+  });
+  function getDocMd(): string { return editor.getMarkdown() || ''; }
+  function setDoc(md: string): void { editor.commands.setContent(md || '', { contentType: 'markdown' }); }
   const titleEl = host.querySelector('#ed-title') as HTMLElement;
   const status = host.querySelector('#ed-status') as HTMLElement;
   const tabTl = host.querySelector('#ed-tab-tl') as HTMLElement;
@@ -80,7 +90,7 @@ export function renderEditor(store: Store, host: HTMLElement): void {
             currentNodeId = (el as HTMLElement).dataset.id!;
             currentTlId = tlId!;
             const n = tl.nodes.find((x) => x.id === currentNodeId);
-            docBox.value = n?.doc ?? '';
+            setDoc(n?.doc ?? '');
             titleEl.textContent = n?.title ?? '';
             status.textContent = '失焦自动保存';
             renderSidebar();
@@ -103,7 +113,7 @@ export function renderEditor(store: Store, host: HTMLElement): void {
       const id = addEntity(store, { typeId, name: '新实体' });
       currentEntityId = id;
       const e = currentWorld(store).entities?.[id];
-      docBox.value = e?.doc ?? '';
+      setDoc(e?.doc ?? '');
       titleEl.textContent = '新实体';
       renderSidebar();
     });
@@ -136,7 +146,7 @@ export function renderEditor(store: Store, host: HTMLElement): void {
       btn.addEventListener('click', () => {
         currentEntityId = (btn as HTMLElement).dataset.id!;
         const e = currentWorld(store).entities?.[currentEntityId];
-        docBox.value = e?.doc ?? '';
+        setDoc(e?.doc ?? '');
         titleEl.textContent = e?.name ?? '';
         status.textContent = '失焦自动保存';
         renderSidebar();
@@ -145,17 +155,16 @@ export function renderEditor(store: Store, host: HTMLElement): void {
   }
 
   /* 失焦保存 + 实时预览 */
-  docBox.addEventListener('input', () => {
-    preview.innerHTML = mdRender(docBox.value);
-  });
-  docBox.addEventListener('blur', () => {
+  /* 保存：tiptap 失焦时把 markdown 写回 doc（vault 仍存 Obsidian markdown） */
+  editor.on('blur', () => {
+    const md = getDocMd();
     if (tab === 'tl' && currentNodeId && currentTlId) {
-      saveNodeDoc(store, currentTlId, currentNodeId, docBox.value);
+      saveNodeDoc(store, currentTlId, currentNodeId, md);
       status.textContent = '已保存 ✓';
     } else if (tab === 'entity' && currentEntityId) {
       store.update((d) => {
         const e = d.worldsets[store.activeWorld]?.entities?.[currentEntityId];
-        if (e) e.doc = docBox.value;
+        if (e) e.doc = md;
       });
       status.textContent = '已保存 ✓';
     }
