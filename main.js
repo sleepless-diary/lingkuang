@@ -26,6 +26,8 @@ const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json');
 const VAULT_DIR = () => process.env.LINGKUANG_VAULT
   ? process.env.LINGKUANG_VAULT
   : path.join('F:/', 'lingkuang-vault');
+/* 主窗口引用（vault 文件变化推送用） */
+let mainWin = null;
 
 /* ── vault 序列化：TimelineNode <-> .md（YAML frontmatter + #字段：值 正文，无 yaml 依赖）── */
 function nodeToMd(n) {
@@ -84,6 +86,7 @@ function createWindow() {
       nodeIntegration: false
     }
   });
+  mainWin = win;
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
@@ -171,6 +174,32 @@ ipcMain.handle('vault:write', (e, { wsName, tlName, node }) => {
   } catch (err) {
     return { ok: false, error: String(err) };
   }
+});
+
+/* ── IPC: 监听 vault 目录变化（外部 Obsidian 改 .md → 推送 vault-changed，供前端重新读文件为源）── */
+let vaultWatcher = null, watchTimer = null;
+ipcMain.handle('vault:watch', () => {
+  try {
+    const root = VAULT_DIR();
+    if (!fs.existsSync(root)) return { ok: false, error: 'vault not exist' };
+    if (vaultWatcher) return { ok: true };
+    vaultWatcher = fs.watch(root, { recursive: true }, (ev, file) => {
+      if (!file || !file.endsWith('.md')) return;
+      /* 防抖：连续改动合并为一次推送 */
+      clearTimeout(watchTimer);
+      watchTimer = setTimeout(() => {
+        if (mainWin && mainWin.webContents) mainWin.webContents.send('vault-changed', { ev, file });
+      }, 400);
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+ipcMain.handle('vault:unwatch', () => {
+  if (vaultWatcher) { vaultWatcher.close(); vaultWatcher = null; }
+  clearTimeout(watchTimer);
+  return { ok: true };
 });
 
 /* ── IPC: read the character lib (bundled resource, project dir) ─ */

@@ -19,5 +19,8 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
   classifyWords: (words) => ipcRenderer.invoke('ai:classify', words),
   /* vault：每个节点 = 外部 .md 文件（Obsidian 可编辑，文件为源） */
   vaultScan: () => ipcRenderer.invoke('vault:scan'),
-  vaultWrite: (wsName, tlName, node) => ipcRenderer.invoke('vault:write', { wsName, tlName, node })
+  vaultWrite: (wsName, tlName, node) => ipcRenderer.invoke('vault:write', { wsName, tlName, node }),
+  vaultWatch: () => ipcRenderer.invoke('vault:watch'),
+  vaultUnwatch: () => ipcRenderer.invoke('vault:unwatch'),
+  onVaultChanged: (cb) => ipcRenderer.on('vault-changed', () => cb())
 });

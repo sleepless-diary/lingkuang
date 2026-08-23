@@ -45,7 +45,9 @@ async function main() {
   const store = createStore(data);
   /* 自动落盘：任何 store 变化 → 防抖 400ms → 写 vault(.md 为源) + JSON 缓存 */
   let saveTimer: number | undefined;
+  let suppressWrite = false;   /* 外部 vault 改动重载时设为 true，避免写回造成循环 */
   store.subscribe(() => {
+    if (suppressWrite) return;
     window.clearTimeout(saveTimer);
     saveTimer = window.setTimeout(async () => {
       const api = (window as any).lingkuangAPI;
@@ -68,6 +70,22 @@ async function main() {
   });
   const host = document.getElementById('app')!;
   renderShell(store, host);
+
+  /* 同步刷新：监听外部 Obsidian 改 vault .md → 重新 scan → 替换 store（文件为源，不写回） */
+  const api = (window as any).lingkuangAPI;
+  if (api?.vaultWatch) api.vaultWatch().catch(() => {});
+  if (api?.onVaultChanged) {
+    api.onVaultChanged(async () => {
+      try {
+        const vres = await api.vaultScan();
+        if (vres && vres.ok && vres.worlds) {
+          suppressWrite = true;
+          store.update((d) => { d.worldsets = vaultToWorldData(vres.worlds).worldsets; });
+          suppressWrite = false;
+        }
+      } catch (e) { /* ignore */ }
+    });
+  }
 
   /* 撤销/重做快捷键（避开输入框焦点） */
   window.addEventListener('keydown', (e) => {
