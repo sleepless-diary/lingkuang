@@ -74,7 +74,8 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;">
         <label style="font-size:var(--text-xs);color:var(--fg-2);">时间（默认=当前指示器）</label>
-        <input id="nf-time" type="text" value="${defaultTime}" placeholder="312 或 312年7月 或 312年7月15日" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;"/>
+        <input id="nf-time" type="text" value="${defaultTime}" placeholder="312 或 312年7月/7月15日 或 312-7-15 或 312年7月15日9时" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;"/>
+        <div id="nf-time-hint" style="font-size:10px;color:var(--fg-2);font-family:var(--font-mono);min-height:14px;"></div>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;">
         <label style="font-size:var(--text-xs);color:var(--fg-2);">类型</label>
@@ -96,6 +97,21 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
   const type = host.querySelector('#nf-type') as HTMLSelectElement;
   const err = host.querySelector('#nf-err') as HTMLElement;
   title.focus();
+
+  /* 创建节点时实时自动匹配时间精度：输入即显示解析结果（精度/校验），不用等落库 */
+  const timeHint = host.querySelector('#nf-time-hint') as HTMLElement | null;
+  function updateTimeHint() {
+    if (!timeHint) return;
+    const raw = time.value.trim();
+    if (!raw) { timeHint.textContent = ''; return; }
+    const p = parseTimeText(raw);
+    if (!p) { timeHint.textContent = '⚠ 无法识别（支持 年月日时分秒 或任意分隔符）'; timeHint.style.color = 'var(--fg-2)'; return; }
+    const precLabel = { year: '年', month: '月', day: '日', hour: '时', minute: '分', second: '秒' }[p.precision] ?? p.precision;
+    timeHint.textContent = `✅ 精度：${precLabel}（内部年=${p.year}）`;
+    timeHint.style.color = 'var(--accent)';
+  }
+  time?.addEventListener('input', updateTimeHint);
+  updateTimeHint();
 
   function submit() {
     const t = title.value.trim();
