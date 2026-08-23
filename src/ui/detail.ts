@@ -64,6 +64,7 @@ export function renderNodeDetail(
         <span style="font-size:15px;font-weight:600;color:var(--fg);">${node.title}</span>
         <span style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);">${timeText}</span>
       </div>
+      ${node.desc ? `<div style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;">${mdRender(node.desc)}</div>` : ''}
       <div style="display:flex;gap:4px;flex-wrap:wrap;">${chips.map((c) => `<span style="font-size:10px;color:var(--accent);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;">${c}</span>`).join('')}</div>
       <div style="display:flex;gap:6px;align-items:center;">
         <span style="font-size:var(--text-xs);color:var(--fg-2);">时间</span>
