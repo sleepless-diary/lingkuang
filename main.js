@@ -53,17 +53,24 @@ function mdToNode(text) {
   const node = {};
   ['id', 'title', 'precision', 'type'].forEach((k) => { if (fm[k] !== undefined) node[k] = fm[k]; });
   if (fm.year !== undefined) node.year = parseFloat(fm.year);
-  /* 正文：#字段：值 行 —— 拆分；#描述： 归 desc，其余拼 doc */
-  const fields = {};
+  /* 解析：#字段：值 行（desc 单独，值到第一个空行为止）；空行后的自由正文收集为 doc */
+  const allLines = rest.split('\n');
+  let desc = '', docParts = [];
   let cur = null, buf = [];
-  rest.split('\n').forEach((line) => {
+  const flush = () => { if (cur) { if (cur === '描述') desc = buf.join('\n').trim(); else docParts.push(`#${cur}：\n${buf.join('\n')}`); } };
+  allLines.forEach((line, i) => {
     const m = line.match(/^#([^：:]+)[：:]\s*(.*)$/);
-    if (m) { if (cur) fields[cur] = buf.join('\n').trim(); cur = m[1].trim(); buf = [m[2]]; }
-    else if (cur !== null) buf.push(line);
+    if (m) { flush(); cur = m[1].trim(); buf = [m[2]]; return; }
+    if (cur !== null) {
+      if (line.trim() === '') { flush(); cur = null; buf = []; }   /* 空行结束当前字段值 */
+      else buf.push(line);
+    } else if (line.trim()) {
+      docParts.push(line);   /* 字段外的自由正文行 → 正文 */
+    }
   });
-  if (cur) fields[cur] = buf.join('\n').trim();
-  if (fields['描述'] !== undefined) { node.desc = fields['描述']; delete fields['描述']; }
-  node.doc = Object.entries(fields).map(([k, v]) => `#${k}：\n${v}`).join('\n\n');
+  flush();
+  if (desc) node.desc = desc;
+  if (docParts.length) node.doc = docParts.join('\n');
   return node;
 }
 function nodePath(wsName, tlName, n) {
