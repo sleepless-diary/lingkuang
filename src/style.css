@@ -254,7 +254,9 @@ body {
   font-size: 10px;
   color: var(--accent);
   border-left: 1px solid var(--border-soft);
-  padding-left: 4px;
+  padding: 6px 10px 6px 5px;   /* 扩大点击热区（视觉文字不变，Padding 撑开命中面积便于浮动时点中） */
+  margin-top: -6px;
+  margin-bottom: -6px;
   cursor: pointer;
 }
 /* 视觉聚焦：非焦点路径的词淡化（不隐藏，保留多分支数据） */
