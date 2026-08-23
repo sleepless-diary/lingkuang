@@ -64,9 +64,6 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
   function assocStatus(m: string) { status.textContent = m; }
 
   /* 词库命中检测 */
-  /* 词库命中检测 */
-  function inLib(_w: string): boolean { return wordLib.has(_w); }
-
   /* 清洗联想词：去掉首尾符号/空白，只留 1-8 字真词（不靠 \\W，中文会被误判） */
   function cleanWords(raw: string): string[] {
     const strip = /^[\s\d\-—.*•·、，。！？、:：;；()（）\[\]【】"'“”‘’]+|[\s\d\-—.*•·、，。！？、:：;；()（）\[\]【】"'“”‘’]+$/g;
@@ -112,6 +109,9 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
       /* 点子词：选中（保留思维链）+ 收起父的其他兄弟（focusChildId）+ 独立展开该词（无论是否展开过都联想） */
       node.selected = true;
       parent.focusChildId = id;
+      /* 思维链上的词自动存进暂存表（不用手动点「存」） */
+      if (staged.indexOf(node.word) === -1) { staged.push(node.word); persistStaged(); updateStagedCnt(); }
+      (node as any)._staged = true;
       expandNode(id);
       return;
     }
@@ -225,9 +225,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         /* 视觉聚焦：非焦点路径的词淡化（不隐藏，保留多分支） */
         if (focusedId !== null && focusedId !== undefined && n.id !== focusedId && !isOnFocusPath(n.id)) extra += ' is-dim';
         const hidden = vis.has(n.id) ? '' : ' style="display:none"';
-        const staged = (n as any)._staged;
-        const store = (!n.isRoot && !inLib(n.word) && !staged) ? '<span class="store" title="暂存到词库">存</span>' : '';
-        return `<span class="${cls}${extra}" data-id="${n.id}" title="${n.word}"${hidden}>${n.word}${store}</span>`;
+        return `<span class="${cls}${extra}" data-id="${n.id}" title="${n.word}"${hidden}>${n.word}</span>`;
       })
       .join('');
     world.querySelectorAll('.assoc__node, .assoc__root').forEach((el, i) => {
@@ -403,22 +401,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
     }, { passive: false });
     stage.addEventListener('click', (e) => {
       if (suppressClick) return;   // 拖拽后的 click 抑制
-      /* 先判断存按钮（点在 .store 上）→ 存词，不触发节点展开 */
-      const store = (e.target as HTMLElement).closest('.store');
-      if (store) {
-        const nodeEl = (e.target as HTMLElement).closest('.assoc__node');
-        const word = nodeEl?.textContent?.replace('存', '') ?? '';
-        const n = assocGraph?.nodes.find((x) => x.word === word);
-        if (n) {
-          /* 加入暂存表（localStorage 持久化），导出时经 Ollama 归类写入词库 */
-          if (staged.indexOf(n.word) === -1) { staged.push(n.word); persistStaged(); updateStagedCnt(); }
-          (n as any)._staged = true;
-          renderGraph();
-          assocStatus(`已暂存「${n.word}」· 点「导出暂存词」写入词库`);
-        }
-        return;
-      }
-      /* 再判断节点 → 展开联想 */
+      /* 点击节点 → 展开联想（思维链词自动暂存，无需「存」按钮） */
       const nodeEl = (e.target as HTMLElement).closest('.assoc__node, .assoc__root');
       if (nodeEl && assocGraph) {
         onNodeClick(parseInt((nodeEl as HTMLElement).dataset.id!, 10));
