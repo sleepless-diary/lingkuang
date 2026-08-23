@@ -22,6 +22,52 @@ const DATA_FILE = () => process.env.LINGKUANG_TEST_DATA
   ? process.env.LINGKUANG_TEST_DATA
   : path.join(app.getPath('userData'), 'worldbuilding.json');
 const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json');
+/* vault 根目录（节点 .md 文件存储，Obsidian 可打开编辑）。测试后门 LINGKUANG_VAULT。 */
+const VAULT_DIR = () => process.env.LINGKUANG_VAULT
+  ? process.env.LINGKUANG_VAULT
+  : path.join('F:/', 'lingkuang-vault');
+
+/* ── vault 序列化：TimelineNode <-> .md（YAML frontmatter + #字段：值 正文，无 yaml 依赖）── */
+function nodeToMd(n) {
+  const meta = ['id', 'title', 'year', 'precision', 'type'].filter((k) => n[k] !== undefined && n[k] !== null)
+    .map((k) => `${k}: ${n[k]}`).join('\n');
+  let body = '';
+  if (n.desc) body += `#描述：\n${n.desc}\n\n`;
+  if (n.doc) body += n.doc;
+  return `---\n${meta}\n---\n${body}`.replace(/\r\n/g, '\n');
+}
+function mdToNode(text) {
+  let fm = {}, rest = String(text || '');
+  if (rest.startsWith('---')) {
+    const end = rest.indexOf('\n---', 3);
+    if (end !== -1) {
+      rest.slice(3, end).split('\n').forEach((line) => {
+        const m = line.match(/^(\w+):\s*(.*)$/);
+        if (m) fm[m[1].trim()] = m[2].trim();
+      });
+      rest = rest.slice(end + 4);
+    }
+  }
+  const node = {};
+  ['id', 'title', 'precision', 'type'].forEach((k) => { if (fm[k] !== undefined) node[k] = fm[k]; });
+  if (fm.year !== undefined) node.year = parseFloat(fm.year);
+  /* 正文：#字段：值 行 —— 拆分；#描述： 归 desc，其余拼 doc */
+  const fields = {};
+  let cur = null, buf = [];
+  rest.split('\n').forEach((line) => {
+    const m = line.match(/^#([^：:]+)[：:]\s*(.*)$/);
+    if (m) { if (cur) fields[cur] = buf.join('\n').trim(); cur = m[1].trim(); buf = [m[2]]; }
+    else if (cur !== null) buf.push(line);
+  });
+  if (cur) fields[cur] = buf.join('\n').trim();
+  if (fields['描述'] !== undefined) { node.desc = fields['描述']; delete fields['描述']; }
+  node.doc = Object.entries(fields).map(([k, v]) => `#${k}：\n${v}`).join('\n\n');
+  return node;
+}
+function nodePath(wsName, tlName, n) {
+  const safe = (s) => String(s || '').replace(/[\\/:*?"<>|]/g, '_');
+  return path.join(VAULT_DIR(), safe(wsName), safe(tlName), safe(n.title) + '.md');
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -79,6 +125,48 @@ ipcMain.handle('data:save', (e, payload) => {
       fs.copyFileSync(DATA_FILE(), backup(0));
     }
     fs.writeFileSync(DATA_FILE(), JSON.stringify(payload, null, 2), 'utf8');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/* ── IPC: 扫描 vault 全部节点 .md（frontmatter + 正文）→ 按世界观/时间线分组 ── */
+ipcMain.handle('vault:scan', () => {
+  try {
+    const root = VAULT_DIR();
+    if (!fs.existsSync(root)) return { ok: true, worlds: [] };
+    const worlds = {};
+    for (const ws of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!ws.isDirectory()) continue;
+      const wsDir = path.join(root, ws.name);
+      const tls = {};
+      for (const tl of fs.readdirSync(wsDir, { withFileTypes: true })) {
+        if (!tl.isDirectory()) continue;
+        const tlDir = path.join(wsDir, tl.name);
+        const nodes = [];
+        for (const f of fs.readdirSync(tlDir)) {
+          if (!f.endsWith('.md')) continue;
+          const text = fs.readFileSync(path.join(tlDir, f), 'utf8');
+          const n = mdToNode(text);
+          if (n && n.id) { if (!n.title) n.title = f.replace(/\.md$/, ''); nodes.push(n); }
+        }
+        if (nodes.length) tls[tl.name] = nodes;
+      }
+      if (Object.keys(tls).length) worlds[ws.name] = tls;
+    }
+    return { ok: true, worlds };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/* ── IPC: 写入单个节点 .md（frontmatter + 正文）── */
+ipcMain.handle('vault:write', (e, { wsName, tlName, node }) => {
+  try {
+    const dir = path.dirname(nodePath(wsName, tlName, node));
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(nodePath(wsName, tlName, node), nodeToMd(node), 'utf8');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: String(err) };

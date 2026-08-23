@@ -16,5 +16,8 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
   /* write character lib (staged words export) */
   saveCharLib: (data) => ipcRenderer.invoke('lib:save', data),
   /* batch classify words via Ollama */
-  classifyWords: (words) => ipcRenderer.invoke('ai:classify', words)
+  classifyWords: (words) => ipcRenderer.invoke('ai:classify', words),
+  /* vault：每个节点 = 外部 .md 文件（Obsidian 可编辑，文件为源） */
+  vaultScan: () => ipcRenderer.invoke('vault:scan'),
+  vaultWrite: (wsName, tlName, node) => ipcRenderer.invoke('vault:write', { wsName, tlName, node })
 });
