@@ -362,16 +362,8 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         if (dragMoved) {
           const newX = (dn as any)._dragOx + (e.clientX - dragSX) / assocZoom;
           const newY = (dn as any)._dragOy + (e.clientY - dragSY) / assocZoom;
-          const dx = newX - dn.x, dy = newY - dn.y;   /* 本次位移 delta */
           dn.x = newX; dn.y = newY;
           dn.vx = 0; dn.vy = 0;
-          /* Obsidian 式：子节点（后代）明显跟随父平移（级联带动，不散开） */
-          assocGraph!.nodes.forEach((cn) => {
-            if (!dragGroup || cn.id === dragNodeId || !dragGroup.has(cn.id)) return;
-            cn.x += dx; cn.y += dy;
-            cn.x = Math.max(20, Math.min(WORLD_W - 20 - (cn.w || 70), cn.x));
-            cn.y = Math.max(20, Math.min(WORLD_H - 20 - (cn.h || 30), cn.y));
-          });
           world.querySelectorAll('.assoc__node, .assoc__root').forEach((el, i) => {
             const n = assocGraph!.nodes[i];
             if (n) (el as HTMLElement).style.transform = `translate(${n.x}px,${n.y}px)`;
