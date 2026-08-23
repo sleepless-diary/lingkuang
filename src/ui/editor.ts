@@ -4,9 +4,7 @@ import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { saveNodeDoc, addEntity } from '../store/actions';
 import type { EntityType } from '../store/types';
-import { Editor } from '@tiptap/core';
-import StarterKit from '@tiptap/starter-kit';
-import { Markdown } from '@tiptap/markdown';
+import { createSectionedEditor } from './sectioned-editor';
 
 export function renderEditor(store: Store, host: HTMLElement): void {
   host.style.overflow = 'hidden';
@@ -32,17 +30,9 @@ export function renderEditor(store: Store, host: HTMLElement): void {
 
   const sidebar = host.querySelector('#ed-sidebar') as HTMLElement;
   const docBox = host.querySelector('#ed-doc') as HTMLElement;
-  /* tiptap 富文本编辑器（所见即所得 → markdown 双向转，vault 保持 Obsidian markdown） */
-  const editor = new Editor({
-    element: docBox, extensions: [StarterKit, Markdown], contentType: 'markdown', content: '',
-  });
-  function getDocMd(): string {
-    /* 清理 tiptap 序列化的孤立 &nbsp; 空行（保留真实内容，去掉纯占位空行） */
-    return (editor.getMarkdown() || '').replace(/(^|\n)(\s*&nbsp;\s*)+\n?/g, '\n').replace(/^\n+/, '');
-  }
-  function setDoc(md: string): void { editor.commands.setContent(md || '', { contentType: 'markdown' }); }
-  /* 点击编辑器空白区 → 聚焦 tiptap，进入输入 */
-  docBox.addEventListener('click', () => { editor.commands.focus(); });
+  /* 分段 markdown 编辑器（notegen 式：光标段源码、其他段预览；失焦保存） */
+  const ed = createSectionedEditor(docBox, '', { onBlur: save });
+  function setDoc(md: string): void { ed.setMarkdown(md || ''); }
   const titleEl = host.querySelector('#ed-title') as HTMLElement;
   const status = host.querySelector('#ed-status') as HTMLElement;
   const tabTl = host.querySelector('#ed-tab-tl') as HTMLElement;
@@ -155,10 +145,8 @@ export function renderEditor(store: Store, host: HTMLElement): void {
     });
   }
 
-  /* 失焦保存 + 实时预览 */
-  /* 保存：tiptap 失焦时把 markdown 写回 doc（vault 仍存 Obsidian markdown） */
-  editor.on('blur', () => {
-    const md = getDocMd();
+  /* 失焦保存：分段编辑器 blur 时写回 markdown（vault 仍存 Obsidian markdown） */
+  function save(md: string) {
     if (tab === 'tl' && currentNodeId && currentTlId) {
       saveNodeDoc(store, currentTlId, currentNodeId, md);
       status.textContent = '已保存 ✓';
@@ -169,7 +157,7 @@ export function renderEditor(store: Store, host: HTMLElement): void {
       });
       status.textContent = '已保存 ✓';
     }
-  });
+  }
 
   tabTl.addEventListener('click', () => setTab('tl'));
   tabEntity.addEventListener('click', () => setTab('entity'));

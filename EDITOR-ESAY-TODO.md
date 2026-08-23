@@ -49,5 +49,9 @@
 5. `npm uninstall @tiptap/* @tiptap/markdown @tiptap/pm` 清理
 6. tsc/build 验证 + 提交，用户实测迭代
 
+## 本轮进度（2026-08-23，方案2 编辑器骨架已完成，待用户实测）
+- **已完成**：新增 `src/ui/sectioned-editor.ts` —— contenteditable 分段编辑器（光标段源码、其他段 markdown-it 预览；点击预览段/方向键跨段切源码；离开段 `flushActive` 原位替换回拼 markdown；失焦 `onBlur` 保存）；`editor.ts` 已移除 tiptap（含 `MarkdownMarkers`）改用新编辑器；`style.css` 用 `.md-editor` 样式替换 tiptap 样式；`tsc` + `vite build` 通过，editor chunk 已无 tiptap/ProseMirror 引用。
+- **骨架已知局限（下一轮优化，非本轮）**：① 点击预览段 → 源码段光标落**段首**（未精确映射落点偏移）；② 编辑中段内加空行导致段落分裂时，切段索引可能定位偏差（沿用 note-gen 思路后续优化）；③ `@tiptap/*`/`@tiptap/pm` 未 `npm uninstall`；④ 长文档性能（分段节流）未做。等用户实测反馈后处理。
+
 ## 一句话给新会话
 "继续灵框编辑器方案2（notegen 式 markdown 分段：光标段显示源码、其他段预览），`section-markdown.ts` 分段核心已做好验证过，下一步写 contenteditable 分段编辑器骨架，参考 note-gen 的 `sectioned-markdown-editor.tsx` 交互，但不引 React。先问用户或用 AGENTS.md 确认，然后从编辑器骨架开始。"

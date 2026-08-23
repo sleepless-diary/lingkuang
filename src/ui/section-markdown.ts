@@ -15,10 +15,8 @@ export function splitMarkdown(src: string): MdSection[] {
   let cur: { type: MdSection['type']; level?: number; start: number; lines: string[] } | null = null;
   const flush = () => {
     if (cur) {
-      const body = cur.lines.slice(0, -1).join('\n');      // 去掉末尾记入的 blank 分隔
-      const hadBlank = cur.lines.length > body.split('\n').length;
-      const len = body.length + (hadBlank ? 1 : 0);
-      sections.push({ start: cur.start, end: cur.start + len, source: body, type: cur.type, level: cur.level });
+      const body = cur.lines.join('\n');
+      sections.push({ start: cur.start, end: cur.start + body.length, source: body, type: cur.type, level: cur.level });
       cur = null;
     }
   };
