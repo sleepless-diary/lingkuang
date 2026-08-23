@@ -84,9 +84,8 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
       <div style="display:flex;flex-direction:column;gap:4px;">
         <label style="font-size:var(--text-xs);color:var(--fg-2);">类型</label>
         <select id="nf-type" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;">
-          <option value="event">事件</option>
-          <option value="plot">角色</option>
-          <option value="place">地点</option>
+          <option value="world_event">世界事件</option>
+          <option value="story_event">剧情事件</option>
         </select>
       </div>
       <div style="display:flex;gap:8px;">
@@ -125,7 +124,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
     if (time.value.trim() && !parsed) { showErr('时间格式：312 | 312年7月 | 312年7月15日 | 312-7-15 或 312.7.15.8.30.45（分隔符任意）'); return; }
     addNode(store, tlId, {
       title: t,
-      type: type.value as 'event' | 'plot' | 'place',
+      type: type.value as 'world_event' | 'story_event',
       year: parsed?.year ?? 0,
       precision: parsed?.precision ?? 'year',
       desc: desc.value.trim() || undefined,

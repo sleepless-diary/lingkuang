@@ -292,6 +292,9 @@ body {
   pointer-events: none;
   text-shadow: 0 1px 0 var(--bg);
 }
+/* 节点类型位置：剧情事件名称在时间线上方，世界事件名称在下方（默认） */
+.tl__n.is-story .tl__name { top: -19px; color: var(--accent); }
+.tl__n.is-world .tl__name { top: 22px; }
 /* 时间线（照搬 legacy .tl__axis）：3px 粗结构线，常驻贯穿全宽，垂直居中 */
 .tl-line {
   position: absolute;

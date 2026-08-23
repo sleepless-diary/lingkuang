@@ -100,7 +100,8 @@ export function mountTimeline(
 
   /* 节点 HTML（legacy 结构：.tl__n + .cap + .tl__name） */
   function nodeHtml(n: TimelineNode, x: number, sel: boolean): string {
-    return `<div class="tl__n${sel ? ' is-sel' : ''}${n.type === 'event' ? ' is-event' : ''}" data-id="${n.id}" style="left:${x}px;">
+    const typeCls = n.type === 'story_event' ? ' is-story' : n.type === 'world_event' ? ' is-world' : '';
+    return `<div class="tl__n${sel ? ' is-sel' : ''}${typeCls}" data-id="${n.id}" style="left:${x}px;">
       <div class="cap"></div><div class="tl__name">${n.title}</div>
     </div>`;
   }
@@ -651,8 +652,8 @@ export function mountTimeline(
     if (!tl || !nonlinearMode) return;
     const nodes = tl.nodes;
     if (!nodes.length) return;
-    const lanes = ['event', 'plot', 'place'];
-    const inLane = (n: TimelineNode, l: string) => (l === 'event' ? n.type === 'event' : l === 'plot' ? n.type === 'plot' : n.type === 'place' || n.type === 'year');
+    const lanes = ['world_event', 'story_event'];
+    const inLane = (n: TimelineNode, l: string) => (l === 'world_event' ? n.type === 'world_event' : n.type === 'story_event');
     let laneCounts: Record<string, number> = {};
     lanes.forEach((l) => { laneCounts[l] = nodes.filter((n) => inLane(n, l)).length; });
     const maxCount = Math.max(1, ...Object.values(laneCounts));
@@ -660,13 +661,13 @@ export function mountTimeline(
     const laneY: Record<string, number> = {};
     let y = 40;
     lanes.forEach((l) => { laneY[l] = y; y += 90; });
-    const laneEls = lanes.map((l) => `<div style="position:absolute;left:0;right:0;top:${laneY[l] - 14}px;height:1px;background:var(--border-soft);"></div><div style="position:absolute;left:4px;top:${laneY[l] - 20}px;font-size:9px;color:var(--fg-2);">${l === 'event' ? '事件' : l === 'plot' ? '角色' : '地点'}</div>`).join('');
-    const counters: Record<string, number> = { event: 0, plot: 0, place: 0 };
+    const laneEls = lanes.map((l) => `<div style="position:absolute;left:0;right:0;top:${laneY[l] - 14}px;height:1px;background:var(--border-soft);"></div><div style="position:absolute;left:4px;top:${laneY[l] - 20}px;font-size:9px;color:var(--fg-2);">${l === 'world_event' ? '世界事件' : '剧情事件'}</div>`).join('');
+    const counters: Record<string, number> = { world_event: 0, story_event: 0 };
     track.innerHTML =
       `<div class="tl-line" style="left:0;right:0;"></div>` + laneEls +
       nodes
         .map((node) => {
-          const lane = lanes.find((l) => inLane(node, l)) ?? 'event';
+          const lane = lanes.find((l) => inLane(node, l)) ?? 'world_event';
           const x = 50 + counters[lane]++ * pitch;
           return nodeHtml(node, x, node.id === selectedId) + `<div style="font-size:8px;color:var(--fg-2);position:absolute;top:${laneY[lane] + 12}px;left:${x}px;transform:translateX(-50%);">${node.year}</div>`;
         })
