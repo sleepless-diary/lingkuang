@@ -2,6 +2,7 @@
 import type { Store } from '../store/store';
 import type { TimelineNode } from '../store/types';
 import { saveNodeDoc } from '../store/actions';
+import { parseTimeText } from './node-form';
 
 interface ParsedDoc {
   fields: { k: string; v: string }[];
@@ -26,21 +27,26 @@ export function parseDoc(doc: string | undefined): ParsedDoc {
 }
 
 export function fmtNodeTime(n: TimelineNode): string {
-  const y = Math.round(n.year * 100) / 100;
-  const { month, day } = partsFromYear(n.year);
-  const m = month ? `${month}月` : '';
-  const d = day && month ? `${day}日` : '';
-  return `${y}年${m}${d}`;
-}
-
-/** 从小数年份拆出月/日（旧数据时间 = year 小数，非独立字段） */
-function partsFromYear(y: number): { month?: number; day?: number } {
-  const frac = y - Math.floor(y);
-  if (frac <= 0.001) return {};
+  const yr = Math.floor(n.year + 1e-9);
+  const frac = n.year - yr;
+  if (n.precision === 'year' || frac <= 0.001) return `${yr}年`;
   const month = Math.floor(frac * 12) + 1;
   const rem = (frac * 12 - (month - 1)) * 30;
   const day = Math.floor(rem + 1e-6) + 1;
-  return { month: month > 12 ? undefined : month, day };
+  let s = `${yr}年${month}月`;
+  if (n.precision === 'day' || n.precision === 'hour' || n.precision === 'minute' || n.precision === 'second') s += `${day}日`;
+  /* 时分秒：月→1/12，日→1/360，时→1/8640，分→1/518400，秒→1/31104000 */
+  const dayFrac = rem - (day - 1);
+  if (n.precision === 'hour' || n.precision === 'minute' || n.precision === 'second') {
+    const hour = Math.floor(dayFrac * 24);
+    const hourRem = (dayFrac * 24 - hour) * 60;
+    const minute = Math.floor(hourRem + 1e-6);
+    const second = Math.floor((hourRem - minute) * 60 + 1e-6);
+    s += `${hour}时`;
+    if (n.precision === 'minute' || n.precision === 'second') s += `${minute}分`;
+    if (n.precision === 'second') s += `${second}秒`;
+  }
+  return s;
 }
 
 export function renderNodeDetail(
@@ -52,7 +58,9 @@ export function renderNodeDetail(
 ): void {
   const { fields, body } = parseDoc(node.doc);
   const timeText = fields.find((f) => f.k === '时间')?.v ?? fmtNodeTime(node);
+  const typeLabel = node.type === 'story_event' ? '剧情事件' : node.type === 'world_event' ? '世界事件' : node.type === 'loop-boundary' ? '循环边界' : '节点';
   const chips = [
+    `类型：${typeLabel}`,
     ...(node.tag ? [node.tag] : []),
     ...(node.people ?? []).map((p) => `人：${p}`),
     ...(node.places ?? []).map((p) => `地：${p}`),
@@ -65,11 +73,10 @@ export function renderNodeDetail(
         <span style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);">${timeText}</span>
       </div>
       ${node.desc ? `<div style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;">${mdRender(node.desc)}</div>` : ''}
-      <div style="display:flex;gap:4px;flex-wrap:wrap;">${chips.map((c) => `<span style="font-size:10px;color:var(--accent);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;">${c}</span>`).join('')}</div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;">${chips.map((c) => `<span style="font-size:10px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;">${c}</span>`).join('')}</div>
       <div style="display:flex;gap:6px;align-items:center;">
         <span style="font-size:var(--text-xs);color:var(--fg-2);">时间</span>
-        <input id="d-year" type="number" step="any" value="${node.year}" style="width:90px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-sm);outline:none;"/>
-        <span style="font-size:var(--text-xs);color:var(--fg-2);">（小数=月日，如 312.5 = 6月）</span>
+        <input id="d-time" type="text" value="${timeText}" placeholder="312年7月15日 或 312-7-15" style="flex:1;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-sm);outline:none;"/>
         <button id="d-del" style="margin-left:auto;background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;">删除</button>
       </div>
       <div id="d-fields" style="display:flex;flex-direction:column;gap:6px;"></div>
@@ -79,13 +86,16 @@ export function renderNodeDetail(
   const bodyEl = host.querySelector('#d-body') as HTMLElement;
   bodyEl.innerHTML = body ? mdRender(body) : '<span style="color:var(--fg-2);">(空正文)</span>';
 
-  const yearInput = host.querySelector('#d-year') as HTMLInputElement;
-  yearInput.addEventListener('change', () => {
-    const v = parseFloat(yearInput.value);
-    if (Number.isFinite(v)) {
-      node.year = v;
+  const timeInput = host.querySelector('#d-time') as HTMLInputElement;
+  timeInput.addEventListener('change', () => {
+    const p = parseTimeText(timeInput.value);
+    if (p) {
+      node.year = p.year;
+      node.precision = p.precision;
       if (tlId) saveNodeDoc(store, tlId, node.id, node.doc ?? '');
       if (onChanged) onChanged();
+    } else if (timeInput.value.trim()) {
+      timeInput.value = fmtNodeTime(node);  /* 无法识别则回退原显示 */
     }
   });
   host.querySelector('#d-del')?.addEventListener('click', () => {
