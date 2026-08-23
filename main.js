@@ -34,8 +34,8 @@ function nodeToMd(n) {
   const meta = ['id', 'title', 'year', 'precision', 'type'].filter((k) => n[k] !== undefined && n[k] !== null)
     .map((k) => `${k}: ${n[k]}`).join('\n');
   let body = '';
-  body += `#描述：\n${n.desc || ''}\n\n`;   /* 总是带描述字段，Obsidian 可见可填 */
-  if (n.doc) body += n.doc;
+  body += `#描述：\n${n.desc || ''}\n`;   /* 描述独立 tag */
+  if (n.doc) body += `\n#正文：\n${n.doc}\n`;   /* 正文独立 tag */
   return `---\n${meta}\n---\n${body}`.replace(/\r\n/g, '\n');
 }
 function mdToNode(text) {
@@ -57,7 +57,7 @@ function mdToNode(text) {
   const allLines = rest.split('\n');
   let desc = '', docParts = [];
   let cur = null, buf = [];
-  const flush = () => { if (cur) { if (cur === '描述') desc = buf.join('\n').trim(); else docParts.push(`#${cur}：\n${buf.join('\n')}`); } };
+  const flush = () => { if (cur) { const v = buf.join('\n').trim(); if (cur === '描述') desc = v; else if (cur === '正文') docParts.push(v); else docParts.push(`#${cur}：\n${v}`); } };
   allLines.forEach((line, i) => {
     const m = line.match(/^#([^：:]+)[：:]\s*(.*)$/);
     if (m) { flush(); cur = m[1].trim(); buf = [m[2]]; return; }
