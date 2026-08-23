@@ -295,7 +295,9 @@ export function mountTimeline(
         <option value="">— 世界历史 —</option>${lineOpts}</select>
       <button class="lk-tl-tab is-new" id="lk-line-new" title="新建剧情线">＋线</button>
       ${pendingSegs.length ? `<span class="cnt" style="font-size:10px;color:var(--accent);">已选 ${pendingSegs.length} 段</span>` : ''}`;
-    TL_HEAD.appendChild(ui);
+    /* 工具按钮固定锚定在「＋节点」前，避免重建时 append 到末尾导致位置跳 */
+    const anchor = TL_HEAD.querySelector('#lk-node-new');
+    if (anchor) TL_HEAD.insertBefore(ui, anchor); else TL_HEAD.appendChild(ui);
 
     ui.querySelector('#lk-brush')?.addEventListener('click', () => {
       brushing = !brushing;
@@ -592,7 +594,7 @@ export function mountTimeline(
     ext.style.cssText = 'display:flex;gap:4px;align-items:center;flex-shrink:0;';    ext.innerHTML = `
       <button class="lk-tl-tab is-new" id="lk-loop-new" title="新建循环（选起终节点）">＋循环</button>
       <button class="lk-tl-tab${nonlinearMode ? ' is-active' : ''}" id="lk-nonlinear" title="非线性：按序列顺序均匀排列">非线性</button>`;
-    TL_HEAD.appendChild(ext);
+    TL_HEAD.insertBefore(ext, TL_HEAD.querySelector('#lk-node-new') ?? TL_HEAD.lastChild);  /* 锚定在节点按钮前，保持固定位置 */
     ext.querySelector('#lk-loop-new')?.addEventListener('click', () => {
       const tl = timeline();
       if (!tl) return;
