@@ -71,13 +71,13 @@ export function renderNodeDetail(
       <div style="display:flex;align-items:baseline;gap:8px;">
         <span style="font-size:15px;font-weight:600;color:var(--fg);">${node.title}</span>
         <span style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);">${timeText}</span>
+        <button id="d-del" style="margin-left:auto;background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;align-self:baseline;">删除</button>
       </div>
       ${node.desc ? `<div style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;">${mdRender(node.desc)}</div>` : ''}
       <div style="display:flex;gap:4px;flex-wrap:wrap;">${chips.map((c) => `<span style="font-size:10px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;">${c}</span>`).join('')}</div>
       <div style="display:flex;gap:6px;align-items:center;">
         <span style="font-size:var(--text-xs);color:var(--fg-2);">时间</span>
         <input id="d-time" type="text" value="${timeText}" placeholder="312年7月15日 或 312-7-15" style="flex:1;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-sm);outline:none;"/>
-        <button id="d-del" style="margin-left:auto;background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;">删除</button>
       </div>
       <div id="d-fields" style="display:flex;flex-direction:column;gap:6px;"></div>
       <div id="d-body" style="font-size:var(--text-sm);color:var(--fg);line-height:1.7;"></div>
