@@ -405,5 +405,5 @@ body {
 #ed-doc .md-editor .md-seg.is-prev ul, #ed-doc .md-editor .md-seg.is-prev ol { padding-left: 1.2em; margin: 0.4em 0; }
 #ed-doc .md-editor .md-seg.is-prev code { background: var(--surface-2); padding: 0 4px; border-radius: 2px; font-family: var(--font-mono); font-size: 12px; }
 #ed-doc .md-editor .md-seg.is-prev pre { background: var(--surface-2); padding: 8px 10px; border-radius: var(--radius-sm); overflow: auto; }
-#ed-doc .md-editor .md-seg.is-prev a { color: var(--accent); }
-#ed-doc .md-editor .md-seg.is-prev blockquote { border-left: 2px solid var(--accent); margin: 0.4em 0; padding-left: 10px; color: var(--fg-2); }
+#ed-doc .md-editor .md-seg.is-prev a { color: var(--fg-2); }
+#ed-doc .md-editor .md-seg.is-prev blockquote { border-left: 2px solid var(--border-strong); margin: 0.4em 0; padding-left: 10px; color: var(--fg-2); }
