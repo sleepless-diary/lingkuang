@@ -56,48 +56,58 @@ export function renderNodeDetail(
   tlId?: string,
   onChanged?: () => void
 ): void {
-  const { fields, body } = parseDoc(node.doc);
+  const { fields } = parseDoc(node.doc);
   const timeText = fields.find((f) => f.k === '时间')?.v ?? fmtNodeTime(node);
-  const typeLabel = node.type === 'story_event' ? '剧情事件' : node.type === 'world_event' ? '世界事件' : node.type === 'loop-boundary' ? '循环边界' : '节点';
-  const chips = [
-    `类型：${typeLabel}`,
-    ...(node.tag ? [node.tag] : []),
-    ...(node.people ?? []).map((p) => `人：${p}`),
-    ...(node.places ?? []).map((p) => `地：${p}`),
-  ];
 
   host.innerHTML = `
     <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
-      <div style="display:flex;align-items:baseline;gap:8px;">
-        <span style="font-size:15px;font-weight:600;color:var(--fg);">${node.title}</span>
-        <span style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);">${timeText}</span>
-        <button id="d-del" style="margin-left:auto;background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;align-self:baseline;">删除</button>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input id="d-title" type="text" value="${node.title}" placeholder="节点标题" style="flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:5px 8px;font-size:15px;font-weight:600;outline:none;"/>
+        <span style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);white-space:nowrap;">${timeText}</span>
+        <button id="d-del" style="margin-left:auto;background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;white-space:nowrap;">删除</button>
       </div>
-      ${node.desc ? `<div style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;">${mdRender(node.desc)}</div>` : ''}
-      <div style="display:flex;gap:4px;flex-wrap:wrap;">${chips.map((c) => `<span style="font-size:10px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;">${c}</span>`).join('')}</div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <span style="font-size:var(--text-xs);color:var(--fg-2);">类型</span>
+        <select id="d-type" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 6px;font-size:var(--text-sm);outline:none;">
+          <option value="world_event"${node.type === 'world_event' ? ' selected' : ''}>世界事件</option>
+          <option value="story_event"${node.type === 'story_event' ? ' selected' : ''}>剧情事件</option>
+        </select>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <label style="font-size:var(--text-xs);color:var(--fg-2);">描述</label>
+        <textarea id="d-desc" placeholder="描述（可留空）" style="width:100%;height:56px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;resize:vertical;font-family:inherit;line-height:1.5;">${node.desc ?? ''}</textarea>
+      </div>
       <div style="display:flex;gap:6px;align-items:center;">
         <span style="font-size:var(--text-xs);color:var(--fg-2);">时间</span>
         <input id="d-time" type="text" value="${timeText}" placeholder="312年7月15日 或 312-7-15" style="flex:1;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-sm);outline:none;"/>
       </div>
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <label style="font-size:var(--text-xs);color:var(--fg-2);">正文（Markdown · #字段：值 行 + 正文）</label>
+        <textarea id="d-doc" placeholder="#事件：&#10;节点正文…" style="width:100%;height:150px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;resize:vertical;font-family:var(--font-mono);line-height:1.6;">${node.doc ?? ''}</textarea>
+      </div>
       <div id="d-fields" style="display:flex;flex-direction:column;gap:6px;"></div>
-      <div id="d-body" style="font-size:var(--text-sm);color:var(--fg);line-height:1.7;"></div>
     </div>`;
 
-  const bodyEl = host.querySelector('#d-body') as HTMLElement;
-  bodyEl.innerHTML = body ? mdRender(body) : '<span style="color:var(--fg-2);">(空正文)</span>';
-
+  /* 保存改动的节点属性：写回 node 字段 + store.subscribe 自动写 vault/JSON */
+  function save() {
+    if (tlId) saveNodeDoc(store, tlId, node.id, node.doc ?? '');
+    if (onChanged) onChanged();
+  }
+  const titleInput = host.querySelector('#d-title') as HTMLInputElement;
+  titleInput.addEventListener('change', () => { node.title = titleInput.value.trim(); store.update(() => {}); save(); });
+  const typeSelect = host.querySelector('#d-type') as HTMLSelectElement;
+  typeSelect.addEventListener('change', () => { node.type = typeSelect.value as 'world_event' | 'story_event'; store.update(() => {}); save(); });
+  const descInput = host.querySelector('#d-desc') as HTMLTextAreaElement;
+  descInput.addEventListener('change', () => { node.desc = descInput.value.trim() || undefined; store.update(() => {}); save(); });
   const timeInput = host.querySelector('#d-time') as HTMLInputElement;
   timeInput.addEventListener('change', () => {
     const p = parseTimeText(timeInput.value);
-    if (p) {
-      node.year = p.year;
-      node.precision = p.precision;
-      if (tlId) saveNodeDoc(store, tlId, node.id, node.doc ?? '');
-      if (onChanged) onChanged();
-    } else if (timeInput.value.trim()) {
-      timeInput.value = fmtNodeTime(node);  /* 无法识别则回退原显示 */
-    }
+    if (p) { node.year = p.year; node.precision = p.precision; save(); }
+    else if (timeInput.value.trim()) timeInput.value = fmtNodeTime(node);
   });
+  const docBox = host.querySelector('#d-doc') as HTMLTextAreaElement;
+  docBox.addEventListener('input', () => { node.doc = docBox.value; });
+  docBox.addEventListener('blur', () => { if (tlId) saveNodeDoc(store, tlId, node.id, node.doc ?? ''); if (onChanged) onChanged(); });
   host.querySelector('#d-del')?.addEventListener('click', () => {
     if (!tlId) return;
     store.update((d) => {

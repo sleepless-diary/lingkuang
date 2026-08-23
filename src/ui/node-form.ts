@@ -82,6 +82,10 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
         <textarea id="nf-desc" placeholder="节点描述（可留空）" style="width:100%;height:60px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;resize:vertical;font-family:inherit;line-height:1.5;"></textarea>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;">
+        <label style="font-size:var(--text-xs);color:var(--fg-2);">正文（Markdown · #字段：值 行 + 正文）</label>
+        <textarea id="nf-doc" placeholder="#事件：&#10;节点正文…" style="width:100%;height:120px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;resize:vertical;font-family:var(--font-mono);line-height:1.6;"></textarea>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;">
         <label style="font-size:var(--text-xs);color:var(--fg-2);">类型</label>
         <select id="nf-type" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;">
           <option value="world_event">世界事件</option>
@@ -99,6 +103,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
   const time = host.querySelector('#nf-time') as HTMLInputElement;
   const type = host.querySelector('#nf-type') as HTMLSelectElement;
   const desc = host.querySelector('#nf-desc') as HTMLTextAreaElement;
+  const docBox = host.querySelector('#nf-doc') as HTMLTextAreaElement;
   const err = host.querySelector('#nf-err') as HTMLElement;
   title.focus();
 
@@ -128,6 +133,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
       year: parsed?.year ?? 0,
       precision: parsed?.precision ?? 'year',
       desc: desc.value.trim() || undefined,
+      doc: docBox.value,   /* 正文（Markdown） */
     });
     host.innerHTML = '';
   }
