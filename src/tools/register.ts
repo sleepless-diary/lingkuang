@@ -27,7 +27,13 @@ export function registerAllTools(): void {
       if (store) import('../ui/editor').then((m) => m.renderEditor(store, host));
     },
   });
-  registerTool({ id: 'ai', name: 'AI', icon: IC.brain, placeholder: true });
+  registerTool({
+    id: 'ai', name: 'AI', icon: IC.brain,
+    open(host, store) {
+      if (!store) return;
+      import('../ui/ai-workbench').then((m) => m.renderAiWorkbench(store, host));
+    },
+  });
   registerTool({
     id: 'settings', name: '设置', icon: IC.settings,
     open(host, store) {
