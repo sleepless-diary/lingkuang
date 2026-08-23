@@ -54,8 +54,10 @@ export function renderNodeDetail(
   tlId?: string,
   onChanged?: () => void
 ): void {
-  const { fields, body } = parseDoc(node.doc);
-  const timeText = fields.find((f) => f.k === '时间')?.v ?? fmtNodeTime(node);
+  /* 重新从 store 取最新节点（外部 vault 重载后传入引用会失效） */
+  function freshNode(): TimelineNode | undefined {
+    return store.data.worldsets[store.activeWorld]?.timelines[tlId ?? '']?.nodes.find((x) => x.id === node.id);
+  }
 
   function save() {
     /* 通过 tlId+id 在 store 里找最新节点（node 引用可能因外部重载失效），同步所有字段再保存 */
@@ -67,17 +69,19 @@ export function renderNodeDetail(
   }
 
   function renderView() {
+    const cur = freshNode() ?? node;   /* 用最新节点渲染（Obsidian 改动后显示最新值） */
+    const { fields, body } = parseDoc(cur.doc);
+    const timeText = fields.find((f) => f.k === '时间')?.v ?? fmtNodeTime(cur);
     host.innerHTML = `
-      <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;user-select:none;" id="d-view">
         <div style="display:flex;align-items:baseline;gap:8px;">
-          <span id="d-t" style="font-size:15px;font-weight:600;color:var(--fg);cursor:text;">${node.title}</span>
+          <span id="d-t" style="font-size:15px;font-weight:600;color:var(--fg);cursor:text;">${cur.title}</span>
           <span id="d-tm" style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);cursor:text;">${timeText}</span>
           <button id="d-del" style="margin-left:auto;background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;align-self:baseline;">删除</button>
         </div>
         <div style="display:flex;gap:4px;flex-wrap:wrap;">
-          <span id="d-ty" style="font-size:10px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;cursor:pointer;">${node.type === 'story_event' ? '剧情事件' : node.type === 'world_event' ? '世界事件' : node.type === 'loop-boundary' ? '循环边界' : '节点'}</span>
+          <span id="d-ty" style="font-size:10px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;cursor:pointer;">${cur.type === 'story_event' ? '剧情事件' : cur.type === 'world_event' ? '世界事件' : cur.type === 'loop-boundary' ? '循环边界' : '节点'}</span>
         </div>
-        <div id="d-d" style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;cursor:text;min-height:18px;">${node.desc ? mdRender(node.desc) : '<span style="color:var(--fg-2);">(无描述)</span>'}</div>
+        <div id="d-d" style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;cursor:text;min-height:18px;">${cur.desc ? mdRender(cur.desc) : '<span style="color:var(--fg-2);">(无描述)</span>'}</div>
         <div id="d-fields" style="display:flex;flex-direction:column;gap:6px;"></div>
         <div id="d-b" style="font-size:var(--text-sm);color:var(--fg);line-height:1.7;cursor:text;min-height:18px;">${body ? mdRender(body) : '<span style="color:var(--fg-2);">(空正文)</span>'}</div>
       </div>`;
@@ -148,6 +152,12 @@ export function renderNodeDetail(
   }
 
   renderView();
+  /* 外部 vault 改动 → store 更新 → 面板自动重绘最新值（编辑中不干扰） */
+  const unsub = store.subscribe(() => {
+    if (!host.isConnected) { unsub(); return; }
+    if (host.querySelector('input, textarea, select')) return;   /* 编辑中不重绘 */
+    renderView();
+  });
 }
 
 function makeFieldCard(k: string, v: string): HTMLElement {
