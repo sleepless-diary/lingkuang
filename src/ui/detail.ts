@@ -99,7 +99,7 @@ export function renderNodeDetail(
       bindEdit();
     } else {
       host.innerHTML = `
-        <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
+        <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;user-select:none;cursor:pointer;" id="d-view">
           <div style="display:flex;align-items:baseline;gap:8px;">
             <span style="font-size:15px;font-weight:600;color:var(--fg);">${node.title}</span>
             <span style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);">${timeText}</span>
@@ -113,6 +113,10 @@ export function renderNodeDetail(
           <div id="d-fields" style="display:flex;flex-direction:column;gap:6px;"></div>
           <div style="font-size:var(--text-sm);color:var(--fg);line-height:1.7;">${body ? mdRender(body) : '<span style="color:var(--fg-2);">(空正文)</span>'}</div>
         </div>`;
+      /* 点击任意区域（非按钮）进入编辑 + 文字不可选中 */
+      host.querySelector('#d-view')?.addEventListener('click', (e) => {
+        if (!(e.target as HTMLElement).closest('button')) { editing = true; renderView(); }
+      });
       host.querySelector('#d-edit')?.addEventListener('click', () => { editing = true; renderView(); });
       host.querySelector('#d-del')?.addEventListener('click', () => {
         if (!tlId) return;
