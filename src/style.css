@@ -220,7 +220,7 @@ body {
   border-radius: 4px;
   font-size: 12px;
   white-space: nowrap;
-  cursor: grab;
+  cursor: pointer;   /* 节点上=点击样式 */
   user-select: none;
   will-change: transform;
 }

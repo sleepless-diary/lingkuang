@@ -27,7 +27,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         <button id="assoc-export" title="把暂存词经 Ollama 归类写入词库" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:3px 10px;font-size:11px;cursor:pointer;">导出暂存词（<span id="assoc-staged-cnt">0</span>）</button>
         <span style="font-size:10px;color:var(--fg-2);">拖动节点 · 空白平移 · Alt+滚轮缩放 · 点词条展开</span>
       </div>
-      <div id="assoc-stage" style="flex:1;position:relative;overflow:hidden;cursor:grab;background:var(--surface);">
+      <div id="assoc-stage" style="flex:1;position:relative;overflow:hidden;cursor:default;background:var(--surface);">
         <div id="assoc-world" style="position:absolute;top:0;left:0;width:${WORLD_W}px;height:${WORLD_H}px;transform-origin:0 0;">
           <svg class="assoc__lines" style="position:absolute;top:0;left:0;width:${WORLD_W}px;height:${WORLD_H}px;pointer-events:none;"></svg>
         </div>
@@ -348,6 +348,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         dragSX = e.clientX; dragSY = e.clientY; dragMoved = false; suppressClick = false;
         const dn = assocGraph.nodes[dragNodeId];
         if (dn) { (dn as any)._dragOx = dn.x; (dn as any)._dragOy = dn.y; }
+        stage.style.cursor = 'grabbing';   /* 拖节点：抓手 */
         return;
       }
       isPanning = true; panSX = e.clientX; panSY = e.clientY; panOX = assocPanX; panOY = assocPanY;
@@ -378,7 +379,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
     window.addEventListener('pointerup', () => {
       const wasDrag = dragMoved;
       dragNodeId = null; dragGroup = null; isPanning = false;
-      stage.style.cursor = 'grab';
+      stage.style.cursor = 'default';   /* 空白恢复=正常 */
       if (wasDrag) suppressClick = true;   /* 拖拽节点 → 抑制紧随的 click */
       dragMoved = false;
       setTimeout(() => (suppressClick = false), 0);   /* 无论如何都清，防止卡住 */
