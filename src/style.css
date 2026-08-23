@@ -71,7 +71,7 @@ body {
   white-space: nowrap;
 }
 .lk-world-tab:hover { opacity: 1; background: var(--chrome-2); }
-.lk-world-tab.is-active { opacity: 1; color: var(--fg); box-shadow: inset 0 -2px 0 var(--accent); }
+.lk-world-tab.is-active { opacity: 1; color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
 .lk-worldbar-tools { display: flex; align-items: center; gap: 2px; padding: 0 8px; border-left: 1px solid var(--chrome-2); }
 .lk-tool-btn {
   display: flex;
@@ -88,7 +88,7 @@ body {
   white-space: nowrap;
 }
 .lk-tool-btn:hover { opacity: 1; background: var(--chrome-2); }
-.lk-tool-btn.is-active { opacity: 1; color: var(--fg); background: var(--chrome-2); }
+.lk-tool-btn.is-active { opacity: 1; color: var(--accent); background: var(--chrome-2); }
 .lk-tool-btn.is-ph { opacity: 0.4; }
 .lk-tool-btn.is-ph:hover { opacity: 0.7; }
 
@@ -125,7 +125,7 @@ body {
   white-space: nowrap;
 }
 .lk-tool-btn:hover { opacity: 1; background: var(--chrome-2); }
-.lk-tool-btn.is-active { opacity: 1; color: var(--fg); background: var(--chrome-2); }
+.lk-tool-btn.is-active { opacity: 1; color: var(--accent); background: var(--chrome-2); }
 .lk-tool-btn.is-ph { opacity: 0.4; }
 .lk-tool-btn.is-ph:hover { opacity: 0.7; }
 .lk-pane { display: flex; flex-direction: column; min-height: 0; }
@@ -158,7 +158,7 @@ body {
   flex-shrink: 0;   /* 选中/切换时不被压缩移位 */
 }
 .lk-tl-tab:hover { background: var(--surface); color: var(--fg); }
-.lk-tl-tab.is-active { background: var(--chrome); color: var(--fg); }
+.lk-tl-tab.is-active { background: var(--chrome); color: var(--accent); }
 .lk-tl-tab .cnt { font-family: var(--font-mono); font-size: 9px; opacity: 0.6; }
 .lk-tl-tab.is-new { font-weight: 600; color: var(--fg-2); }
 .lk-tl-tab.is-new:hover { color: var(--fg); }
