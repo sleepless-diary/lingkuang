@@ -290,7 +290,6 @@ export function mountTimeline(
     ui.id = 'lk-story-ui';
     ui.style.cssText = 'display:flex;gap:4px;align-items:center;flex-shrink:0;';
     ui.innerHTML = `
-      <button class="lk-tl-tab${brushing ? ' is-active' : ''}" id="lk-brush" title="笔刷：拖拽空白框选时间段加入剧情线">笔刷</button>
       <select class="lk-tl-tab" id="lk-line-sel" style="font-size:11px;background:none;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--fg);padding:2px 4px;" ${lines.length ? '' : 'disabled'}>
         <option value="">— 世界历史 —</option>${lineOpts}</select>
       <button class="lk-tl-tab is-new" id="lk-line-new" title="新建剧情线">＋线</button>
