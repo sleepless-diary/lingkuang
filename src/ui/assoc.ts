@@ -24,6 +24,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         <span style="font-size:var(--text-xs);font-weight:600;color:var(--fg);">词义联想</span>
         <span id="assoc-status" style="font-size:11px;color:var(--fg-2);font-family:var(--font-mono);">点词条展开联想</span>
         <span style="flex:1;"></span>
+        <button id="assoc-export" title="把暂存词经 Ollama 归类写入词库" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:3px 10px;font-size:11px;cursor:pointer;">导出暂存词（<span id="assoc-staged-cnt">0</span>）</button>
         <span style="font-size:10px;color:var(--fg-2);">拖动节点 · 空白平移 · Alt+滚轮缩放 · 点词条展开</span>
       </div>
       <div id="assoc-stage" style="flex:1;position:relative;overflow:hidden;cursor:grab;background:var(--surface);">
@@ -41,6 +42,16 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
   let assocGraph: AssocGraph | null = null;
   let focusedId = 0;
   const wordLib = new Set<string>();
+
+  /* ── 暂存词表（点「存」→ localStorage，导出时经 Ollama 归类写入词库）── */
+  const STAGED_KEY = 'lingkuang-char-staged';
+  let staged: string[] = [];
+  try {
+    staged = (JSON.parse(localStorage.getItem(STAGED_KEY) || '[]') || []).filter((w: string) => typeof w === 'string' && w.length > 0);
+  } catch { staged = []; }
+  function persistStaged() {
+    try { localStorage.setItem(STAGED_KEY, JSON.stringify(staged)); } catch { /* ignore */ }
+  }
 
   /* ── 平移 + 缩放 ── */
   let assocPanX = 0, assocPanY = 0, assocZoom = 1;
@@ -401,7 +412,59 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
       if (store) {
         const word = (e.target as HTMLElement).closest('.assoc__node')?.textContent?.replace('存', '') ?? '';
         const n = assocGraph?.nodes.find((x) => x.word === word);
-        if (n) { (n as any)._staged = true; renderGraph(); assocStatus(`已暂存「${n.word}」`); }
+        if (n) {
+          /* 加入暂存表（localStorage 持久化），导出时经 Ollama 归类写入词库 */
+          if (staged.indexOf(n.word) === -1) { staged.push(n.word); persistStaged(); updateStagedCnt(); }
+          (n as any)._staged = true;
+          renderGraph();
+          assocStatus(`已暂存「${n.word}」· 点「导出暂存词」写入词库`);
+        }
+      }
+    });
+  }
+
+  /* 更新导出按钮计数 + 绑定导出（Ollama 归类 → saveCharLib） */
+  function updateStagedCnt() {
+    const cnt = host.querySelector('#assoc-staged-cnt') as HTMLElement | null;
+    if (cnt) cnt.textContent = String(staged.length);
+  }
+  const exportBtn = host.querySelector('#assoc-export') as HTMLButtonElement | null;
+  if (exportBtn) {
+    updateStagedCnt();
+    exportBtn.addEventListener('click', async () => {
+      if (!staged.length) { assocStatus('没有暂存词'); return; }
+      assocStatus('正在分类 ' + staged.length + ' 个暂存词…');
+      exportBtn.disabled = true;
+      exportBtn.textContent = '分类中…';
+      try {
+        const api = (window as any).lingkuangAPI;
+        if (!api?.classifyWords || !api?.saveCharLib || !api?.loadCharLib) { assocStatus('导出不可用（需 Electron 环境）'); throw new Error('no api'); }
+        const res = await api.classifyWords(staged);
+        const libRes = await api.loadCharLib();
+        if (!res?.ok || !libRes?.ok || !libRes.data) { assocStatus('分类/词库加载失败'); throw new Error('fail'); }
+        const lib = libRes.data;
+        const map = res.map || {};
+        let added = 0, fallback = 0;
+        staged.forEach((w) => {
+          if (wordLib.has(w)) return;
+          const cat = map[w] && lib[map[w]] ? map[w] : '主题意象';
+          if (!lib[cat]) lib[cat] = [];
+          if (lib[cat].indexOf(w) === -1) { lib[cat].push(w); added++; }
+          else if (!map[w]) fallback++;
+        });
+        if (!added) { assocStatus('暂存词都已在词库中'); }
+        else {
+          await api.saveCharLib(lib);
+          assocStatus(`已写入词库 ${added} 词（回退到「主题意象」${fallback}）`);
+        }
+        staged = [];
+        persistStaged();
+        updateStagedCnt();
+      } catch (err) {
+        assocStatus('导出失败：' + (err instanceof Error ? err.message : String(err)));
+      } finally {
+        exportBtn.disabled = false;
+        exportBtn.textContent = '导出暂存词（' + staged.length + '）';
       }
     });
   }
