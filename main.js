@@ -34,7 +34,7 @@ function nodeToMd(n) {
   const meta = ['id', 'title', 'year', 'precision', 'type'].filter((k) => n[k] !== undefined && n[k] !== null)
     .map((k) => `${k}: ${n[k]}`).join('\n');
   let body = '';
-  if (n.desc) body += `#描述：\n${n.desc}\n\n`;
+  body += `#描述：\n${n.desc || ''}\n\n`;   /* 总是带描述字段，Obsidian 可见可填 */
   if (n.doc) body += n.doc;
   return `---\n${meta}\n---\n${body}`.replace(/\r\n/g, '\n');
 }
