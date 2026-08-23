@@ -288,7 +288,7 @@ export function mountTimeline(
     if (existing) existing.remove();
     const ui = document.createElement('span');
     ui.id = 'lk-story-ui';
-    ui.style.cssText = 'display:flex;gap:4px;align-items:center;';
+    ui.style.cssText = 'display:flex;gap:4px;align-items:center;flex-shrink:0;';
     ui.innerHTML = `
       <button class="lk-tl-tab${brushing ? ' is-active' : ''}" id="lk-brush" title="笔刷：拖拽空白框选时间段加入剧情线">笔刷</button>
       <select class="lk-tl-tab" id="lk-line-sel" style="font-size:11px;background:none;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--fg);padding:2px 4px;" ${lines.length ? '' : 'disabled'}>
@@ -589,7 +589,7 @@ export function mountTimeline(
     if (ext) ext.remove();
     ext = document.createElement('span');
     ext.id = 'lk-extras';
-    ext.style.cssText = 'display:flex;gap:4px;align-items:center;';    ext.innerHTML = `
+    ext.style.cssText = 'display:flex;gap:4px;align-items:center;flex-shrink:0;';    ext.innerHTML = `
       <button class="lk-tl-tab is-new" id="lk-loop-new" title="新建循环（选起终节点）">＋循环</button>
       <button class="lk-tl-tab${nonlinearMode ? ' is-active' : ''}" id="lk-nonlinear" title="非线性：按序列顺序均匀排列">非线性</button>`;
     TL_HEAD.appendChild(ext);
