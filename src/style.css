@@ -395,9 +395,6 @@ body {
   font-size: var(--text-sm);
   white-space: pre-wrap;
   word-break: break-word;
-  background: var(--surface-2);
-  border-left: 2px solid var(--accent);
-  padding: 4px 8px;
   outline: none;
   cursor: text;
 }

@@ -107,14 +107,17 @@ export function createSectionedEditor(host: HTMLElement, initialMd: string, opts
   /* 预览段点击 → 切源码模式并聚焦；点容器空白 → 聚焦当前/首个段 */
   function onDocClick(e: MouseEvent) {
     if (destroyed) return;
-    const idx = segIndexOfNode(e.target as Node);
+    const targetNode = e.target as Node;
+    /* 点预览段（或段内）→ 切该段为源码 */
+    const idx = segIndexOfNode(targetNode);
     if (idx >= 0 && idx !== activeIdx) {
       setActive(idx, 0);
       return;
     }
-    if (e.target === host) {
-      const target = activeIdx >= 0 ? activeIdx : 0;
-      setActive(target, 0);
+    /* 点源码段内空白 → 聚焦即可；点容器空白（非段、非按钮）→ 聚焦当前/首段源码 */
+    if (idx < 0 && !(targetNode as HTMLElement).closest?.('.md-seg')) {
+      const t = activeIdx >= 0 ? activeIdx : 0;
+      setActive(t, 0);
     }
   }
 
