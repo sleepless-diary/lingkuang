@@ -5,46 +5,52 @@
 
 ## 项目
 
-灵框 LingKuang：阈限梦核世界观工作台（Electron）。时间线 / 随机角色生成 / 词义联想图 / Markdown 编辑器。
+灵框 LingKuang：世界观创作工作台（Electron + Vite + TypeScript 模块化）。世界沙盘时间线 / 随机角色生成 / 词义联想图 / Markdown 编辑器 / AI 工作台。
 
-- 运行：`npm start`
-- 打包：`npm run dist`（输出 dist/）
-- 数据：`%APPDATA%\lingkuang\`（不写项目目录；词库 `lib:save` 例外）
-- 语法检查：`ELECTRON_RUN_AS_NODE=1 && electron --check <file>`
+- 运行：`npm start`（= `vite build` + `electron .`）；开发 `npm run dev`（Vite）
+- 打包：`npm run dist`（electron-builder，NSIS 安装版 + portable，输出 dist/）
+- 数据：`%APPDATA%\lingkuang\`（不写项目目录；测试用 `LINGKUANG_TEST_DATA` 覆盖）
+- 语法/类型：TS 走 `tsc --noEmit`（strict + noUnusedLocals）；JS 走 `node --check`
 
 ## 文件职责
 
-- `main.js`：Electron 主进程（IPC：数据/设置/词库/AI 联想与分类）
-- `lingkuang.js`：渲染进程核心（~5000 行 IIFE，`var` + 事件委托）
-- `js/`：**插件文件目录**——新工具写在 `js/tool-<id>.js`，用 `window.LINGKUANG.registerTool({id, name, icon, desc, meta, el, onOpen})` 注册（见 `js/README.md`）。**新工具不要往 lingkuang.js 加**（它只含核心 + 4 个内建工具注册）
-- `index.html`：单文件 UI + 全部 CSS（设计令牌内联）；大厅卡片由插件注册表自动渲染（`#grid` 空容器）
+- `main.js`：Electron 主进程（IPC：数据/设置/词库/AI 联想与分类/vault）
+- `preload.js`：contextBridge 安全桥
+- `src/main.ts`：渲染进程入口（Vite）
+- `src/calendar.ts`：**历法系统**（`Calendar`/`toEpoch`/`fromEpoch`/`buildYearTable`，默认公历）
+- `src/store/`：数据层（`store.ts` 单一数据源 + 订阅、`actions.ts` 修改入口、`types.ts` 领域类型）
+- `src/tools/`：工具栏工具注册（`registry.ts` + `register.ts`）
+- `src/ui/shell.ts`：壳 UI（世界栏 + 工具栏 + 沙盘 + 工具宿主）
+- `src/ui/timeline.ts`：**世界沙盘时间线**（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针）
+- `src/ui/inspire.ts` / `assoc.ts` / `editor.ts` / `map.ts` / `ai-workbench.ts` / `roleplay.ts` / `tavern.ts` / `settings.ts` / `detail.ts` / `node-form.ts`
+- `src/ui/eyedrop.ts` / `image-ext.ts` / `tag-ext.ts`：吸管 / 编辑器图片 / 标签扩展
 - `data/worldbuilding.js`：种子世界观；`data/character_lib.json`：角色词库（萌百来源 CC BY-NC-SA，勿商用）
 
 ## 测试后门
 
-- 环境变量 `LINGKUANG_TEST_DATA=<文件路径>` → 数据读写走该文件，不碰 `%APPDATA%\lingkuang\worldbuilding.json`（测试/调试损坏数据用）
+- 环境变量 `LINGKUANG_TEST_DATA=<文件路径>` → 数据读写走该文件，不碰 `%APPDATA%\lingkuang\worldbuilding.json`
 
 ## 风格约定
 
-- 与现有代码保持一致：单文件 IIFE、`var`、事件委托；复用已有 helper（`escapeHtml`/`shuffle`/`visibleIds`…）
 - **界面不用 emoji**；**文字/强调避免黄色系**（对比度低，文字用 `--fg`、强调用 `--accent`）
-- 颜色只用 `index.html` 里 tokens 变量（暖灰底/荧光绿/深 chrome）
-- **⭐ 需求协作规范（2026-08-22 用户明确）**：用户会讲「目的与实现」。**先抓住目的**（这个功能为什么存在、解决什么痛点），再谈实现细节。用户只讲实现/没讲清楚目的时，**主动提醒用户补充目的**，不猜着改。参考教训：联想图"聚焦"我从 visibleIds/focusChildId/expanded 反复改 N 版都错，因为没先理解目的是"多分支探索 + 视觉降噪（淡化非焦点，不折叠数据）"——一旦按目的设计立刻对了。
+- 颜色只用 `design-system/tokens.css` 变量（暖灰底/荧光绿/深 chrome）
+- 新功能尽量加在 `src/ui/` 对应模块或 `src/tools/` 注册，不堆进单一文件
+- **⭐ 需求协作规范（2026-08-22 用户明确）**：用户会讲「目的与实现」。**先抓住目的**（这个功能为什么存在、解决什么痛点），再谈实现细节。用户只讲实现/没讲清目的时，**主动提醒用户补充目的**，不猜着改。参考教训：联想图"聚焦"反复改 N 版都错，因为没先理解目的是"多分支探索 + 视觉降噪"——按目的设计立刻对。
 
-## ⚠️ 关键坑（改这些逻辑前必读 ARCHITECTURE §4）
+## ⚠️ 关键坑（改这些逻辑前必读 ARCHITECTURE）
 
-1. **节点 id = 数组下标**：`removeSubtree` 删除后全量重映射 id（children/parent/edges/wordIndex/focusChildId/focusedId 同步重建）。别用 splice 后依赖旧 id。
-2. **联想图 world 必须设尺寸**（renderGraph 里 2000×1200），否则节点堆原点、SVG 不可见。
-3. **suppressClick**：拖动后 mouseup 置 suppressClick + setTimeout 清理；click 委托开头检查（防拖动误触）。
-4. **startEyedrop 要关所有 modal**（loopModal + storyModal），否则面板遮舞台。
-5. **updatePositions 新增元素要同步**（storybar 等需跟随缩放/平移，同 loop frame）。
-6. **词义联想图状态机**：selected（选中支线永远保留）+ 父节点 focusChildId（子层收起）；`visibleIds` 三阶段规则。
-7. **剧情范围**（storyRanges）：focus 模式裁剪范围外节点；范围损坏（节点缺失）→ 不裁剪。
+1. **历法换算用 `toEpoch/fromEpoch`**，不要硬编码年宽；标尺日/月档**按公历真实日期推进**（尊重大小月/闰年），不用固定步长累加（否则跨月漂移）。
+2. **`timeCursor` 存 epoch 秒**，节点 `year` 存历法下的原始年份（`month/day/hour` 可选）——两者别混。
+3. **坐标轴统一公历 epoch 秒**（`timeToX/xToTime` 出入 epoch 秒）；`buildYearTable` 降到 O(1)，换算记得传 `getYearTable()`，否则 O(年数) 卡顿。
+4. **store 单一数据源**：视图不直接改 `data`，走 `store.update` / `actions`。
+5. **编辑器是 tiptap**；Obsidian 式 `#字段：值` 行 + frontmatter，方法见 `docs/EDITOR-SANDBOX-BRIDGE.md`。
 
 ## 文档
 
 - `docs/ARCHITECTURE.md` — 代码地图（改代码前必读）
+- `docs/CALENDAR.md` — 历法系统设计
+- `docs/EDITOR-SANDBOX-BRIDGE.md` — 编辑器 ↔ 世界沙盘对接
 - `docs/BUGS.md` — 已知 bug（修完打勾 + commit 注明）
-- `docs/ROADMAP.md` — 功能路线图（P1/P2）
+- `docs/ROADMAP.md` — 功能路线图
 - `docs/USER_GUIDE.md` — 用户操作手册
 - `LICENSE` GPL-3.0；词库 CC BY-NC-SA（与代码分离）

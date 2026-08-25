@@ -2,6 +2,8 @@
 
 > **状态：demo/原型阶段。** 视觉未打磨（UI 总设计后置）。本文档记录每个功能的设计意图、数据模型、交互与关键决策——**为全量重构提供规格依据**（重构时按此实现，不再靠记忆）。
 > 数据当前存 `%APPDATA%\lingkuang\worldbuilding.json`；测试后门 `LINGKUANG_TEST_DATA` 环境变量。
+>
+> ⚠️ **架构已迁移（2026-08）**：原「单 HTML + 大 IIFE（lingkuang.js）」已重构为 **Vite + TypeScript 模块化**（`src/`）。本文件记录的**当下 demo 架构与环境已过时**，仅作为各功能的设计意图/决策记录保留。当前真实架构、文件职责、数据模型与关键机制见 **[ARCHITECTURE.md](ARCHITECTURE.md)**。
 
 ---
 

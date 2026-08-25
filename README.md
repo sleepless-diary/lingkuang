@@ -1,116 +1,95 @@
-# 灵框 LingKuang v3
+# 灵框 LingKuang
 
 [![GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/sleepless-diary/lingkuang)](https://github.com/sleepless-diary/lingkuang/releases)
 [![Electron](https://img.shields.io/badge/Electron-43-47848F)](package.json)
 
-**阈限梦核（Liminal Dreamcore）世界观工作台** —— 一个自带氛围的创作工具：时间线、灵感触发器、词义联想图，都住在一条褪色的走廊里。
+世界观创作工作台（Electron + Vite + TypeScript）。面向创作者的时间线、随机角色生成、词义联想、Markdown 编辑器与 AI 辅助。
 
-**创作哲学：AI 出素材，你出决定。** 灵框的 AI（联想、生成、将来的检查/模拟）永远只做"诱导"——给你组合、方向、草稿和问题，最终选择与创作永远是你的。所有 AI 输出都需人审，工具不代笔。
-
-> 视觉语言：暖灰米底、冷荧光绿点缀、内凹壁龛、VHS 颗粒。它不是"工具"，是一间废弃大厅。
-
-![灵框主界面](docs/screenshot.png)
+> 界面：暖灰米底 + 冷荧光绿点缀，AE 风工具栏。截图见 `docs/screenshot.png`。
 
 ---
 
-## ✨ 特性
+## ✨ 功能
 
 | 模块 | 说明 |
 |---|---|
-| 🕰️ **世界沙盘** | 时间线 + 地图：横向节点图、拖拽平移、Alt+滚轮缩放、多条循环（轮回）、剧情线、时间指针、地图显示（进行中） |
-| 🎲 **灵感触发器（随机角色生成）** | 58 分类 / 4600+ 词条随机组合，触发角色灵感；每组词条数可选；词条可锁定（下次随机保留）；组合可保存/加载 |
-| 🔗 **词义联想图** | 点词展开一级联想（本地 Ollama）；节点力导向布局（引斥力）、可拖动、子树跟随；选中支线收起同级；未入库词一键暂存导出 |
-| 📝 **Markdown 编辑器** | 双栏实时预览，文稿列表管理 |
-| 🌀 **AI 面板（The Hum）** | 常驻的呼吸灯，等你想起 |
+| 🕰️ **世界沙盘 · 时间线** | 横向节点图、拖拽平移、Alt+滚轮缩放、多条循环（轮回）、剧情线、时间指针 |
+| 🗺️ **地图** | Leaflet 重构（开发中，占位） |
+| 🎲 **灵感触发器** | 58 分类 / 4600+ 词条随机组合触发角色灵感；词条数可选、可锁定、组合可保存 |
+| 🔗 **词义联想图** | 点词展开一级联想（本地 Ollama 或 OpenAI 兼容 API）；力导向布局、可拖动、取消入库词一键暂存导出 |
+| 📝 **编辑器** | tiptap Markdown 所见即所得，文稿列表管理 |
+| 🌀 **AI 工作台** | 常驻 AI 面板（接入本地/云端模型） |
+| ⚙️ **设置** | 联想引擎（Ollama / OpenAI 兼容）、其他配置 |
+
+**历法（可编辑日历）**：时间线采用可编辑历法模型（`src/calendar.ts`），默认公历（闰年/大小月精确）。节点时间带年月日时分，坐标轴统一为公历 epoch 秒换算，标尺按缩放分档（年→月→日→时→分，含千年/万年档）。
 
 ## 🚀 安装运行
 
-### 普通用户：直接下载，不用装任何环境
+### 普通用户：直接下载
 
 从 [Releases](https://github.com/sleepless-diary/lingkuang/releases) 下载：
 
 - `LingKuang-x.x.x-x64.exe` — 安装版（双击安装）
-- `LingKuang-x.x.x-portable-x64.exe` — 便携版（双击即用，免安装）
+- `LingKuang-x.x.x-portable-x64.exe` — 便携版（双击即用）
 
-不需要 Node.js / npm / 任何命令行。
+不需要 Node.js / npm。
 
 ### 开发者：源码运行
 
-需要 **Node.js 18+**（含 npm）：
+需要 **Node.js 18+**：
 
 ```bash
 npm install
-npm start
+npm start      # 构建 + 启动 Electron
 ```
 
-### 依赖说明
+其他脚本：`npm run dev`（Vite 开发）、`npm run build`（仅构建）、`npm run dist`（打包安装/便携版）。
 
-- **Electron**：`npm install` 自动安装
-- **Ollama**（可选，仅联想图需要）：`qwen2.5:7b` 模型
+### 词义联想（可选）
 
-### 启用词义联想（可选）
+词义联想引擎支持双模式（设置 → 联想引擎）：
 
-词义联想引擎支持**双模式**（设置 → 联想引擎）：
+| 模式 | 说明 |
+|---|---|
+| **本地 Ollama** | 安装 [Ollama](https://ollama.com) + `ollama pull qwen2.5:7b` |
+| **OpenAI 兼容 API** | 设置里填 Base URL / API Key / 模型名 |
 
-| 模式 | 说明 | 成本 |
-|---|---|---|
-| **本地 Ollama** | 安装 [Ollama](https://ollama.com) + `ollama pull qwen2.5:7b` | 免费（自付电费） |
-| **OpenAI 兼容 API** | 设置里填 Base URL / API Key / 模型名（支持任意 OpenAI 兼容端点） | 按量付费（费用由提供商收取） |
-
-也可用环境变量配置：`LINGKUANG_AI_MODE` / `LINGKUANG_AI_BASE_URL` / `LINGKUANG_AI_MODEL` / `LINGKUANG_AI_API_KEY`
-
-> ⚠️ **免责声明**：灵框本体免费开源。AI 联想功能是**可选**能力——本地部署或第三方 API 的费用均由使用者自行承担，与灵框项目无关。未配置 AI 时，时间线 / 灵感触发器 / 编辑器等核心功能完全可用。
-
-## 🎮 操作速览
-
-**灵感触发器页**
-- 随机生成 → 每组卡片右上角可选词条数（随机/1..4）
-- 点词条右侧 `⚿` 锁定 → 下次随机保留
-- 组合命名保存 → 点存档胶囊加载
-- 联想图：**点词**展开一级联想 / **再点焦点**刷新（保留已选支线）/ **拖动节点**子树跟随 / **拖拽空白**平移 / **Alt+滚轮**缩放
-- 虚线词 = 未入库 → 点「存」暂存 → 点「导出暂存词」写入词库（Ollama 自动分类）
-
-**时间线页**
-- 拖拽平移 / Alt+滚轮缩放 / 右键菜单增删节点
-- 循环：创建循环框，绑定起止边界节点，支持多条循环
+也可用环境变量 `LINGKUANG_AI_MODE` 等配置。未配置 AI 时，时间线 / 灵感触发器 / 编辑器等核心功能完全可用。
 
 ## 📂 目录结构
 
 ```
-lingkuang-v3-ui/
+lingkuang/
 ├── main.js              # Electron 主进程（IPC：数据读写 / Ollama 联想 / 词库分类）
 ├── preload.js           # contextBridge 安全桥
-├── lingkuang.js         # 渲染进程全部逻辑
-├── index.html           # 单文件界面 + 样式（设计令牌内联）
+├── index.html           # Vite 入口（#app 挂载点）
 ├── mcp-server.js        # MCP 服务器（query_timeline / search_world 等）
+├── src/
+│   ├── main.ts          # 渲染进程入口
+│   ├── calendar.ts      # 历法系统（可编辑历法，默认公历）
+│   ├── store/           # 数据层（types / actions / store）
+│   ├── tools/           # 工具注册
+│   └── ui/              # 各视图：shell / timeline / inspire / assoc / editor / map / ai / settings ...
 ├── data/
-│   ├── worldbuilding.js # 世界观种子数据（示例）
+│   ├── worldbuilding.js # 世界观种子数据
 │   └── character_lib.json  # 角色生成词库
-└── design-system/       # 设计令牌与规范文档
+├── design-system/       # 设计令牌与规范
+└── docs/                # 架构、历法、编辑器对接、用户手册等文档
 ```
-
-## ⚠️ 词库声明
-
-`data/character_lib.json` 角色生成词库基于**萌娘百科**（[CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/)）词条整理，并混有 AI 生成扩充词条。该词库**仅限非商业用途**，与代码的 MIT 协议相互独立。如需商用或自行分发，请替换为自建词库（编辑 JSON 即可，58 个分类 key 的结构见 `lingkuang.js` 的 `CHAR_GROUPS`）。
 
 用户数据（时间线/设置/暂存词）保存在系统 `%APPDATA%\lingkuang\`，不随仓库分发。
 
 ## 📄 License
 
 - 代码：**GPL-3.0**（见 [LICENSE](LICENSE)）
-- 词库：**CC BY-NC-SA 3.0**（见上）
+- 词库 `data/character_lib.json`：基于**萌娘百科**（[CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/)）词条整理并混有 AI 扩充词条，**仅限非商业用途**，与代码协议相互独立。需商用请替换为自建词库（58 个分类 key 见 `src/ui/inspire.ts`）。
 
-## 🧑‍💻 参与开发
+## 📖 文档
 
-- 📖 [代码地图](docs/ARCHITECTURE.md) — 先读这个（架构 / 数据模型 / 关键机制 / 设计约定）
-- 🐛 [已知 Bug](docs/BUGS.md) — 未修复问题清单
-- 🗺️ [功能路线图](docs/ROADMAP.md) — 愿景与待办，含拆分建议
-
-## 📖 用户手册
-
-- 🎮 [操作手册](docs/USER_GUIDE.md) — 时间线 / 灵感触发器 / 联想图 / 剧情范围 / 编辑器 完整操作说明
-
----
-
-*"The Seam → The Lobby" — 走廊尽头的灯还亮着。*
+- [代码地图](docs/ARCHITECTURE.md) — 架构 / 数据模型 / 关键机制
+- [历法系统](docs/CALENDAR.md) — 可编辑历法模型设计
+- [编辑器对接](docs/EDITOR-SANDBOX-BRIDGE.md) — 编辑器与世界沙盘的数据对接
+- [已知 Bug](docs/BUGS.md)
+- [功能路线图](docs/ROADMAP.md)
+- [用户手册](docs/USER_GUIDE.md)
