@@ -6,7 +6,7 @@
 
 世界观创作工作台（Electron + Vite + TypeScript）。面向创作者的时间线、随机角色生成、词义联想、Markdown 编辑器与 AI 辅助。
 
-> 界面：暖灰米底 + 冷荧光绿点缀，AE 风工具栏。截图见 `docs/screenshot.png`。
+![灵框界面截图](docs/screenshot.png)
 
 ---
 
