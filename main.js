@@ -3,7 +3,7 @@
  * 渲染进程通过 preload 暴露的 window.lingkuangAPI 调用，数据落盘到
  * user-data/worldbuilding.json —— 世界观数据真正物理存储。
  */
-const { app, BrowserWindow, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -22,6 +22,8 @@ const DATA_FILE = () => process.env.LINGKUANG_TEST_DATA
   ? process.env.LINGKUANG_TEST_DATA
   : path.join(app.getPath('userData'), 'worldbuilding.json');
 const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json');
+/* 格式/结构体定义文件：kind → 应填字段集合（权威参考，autoFix 对照它补缺失字段） */
+const FORMATS_FILE = () => path.join(app.getPath('userData'), 'formats.json');
 /* vault 根目录（节点 .md 文件存储，Obsidian 可打开编辑）。测试后门 LINGKUANG_VAULT。 */
 const VAULT_DIR = () => process.env.LINGKUANG_VAULT
   ? process.env.LINGKUANG_VAULT
@@ -30,13 +32,62 @@ const VAULT_DIR = () => process.env.LINGKUANG_VAULT
 let mainWin = null;
 
 /* ── vault 序列化：TimelineNode <-> .md（YAML frontmatter + #字段：值 正文，无 yaml 依赖）── */
+/* 小数年份 ↔ YYYY-MM-DD（存储层互转；内部计算仍用小数值）。年可负/超大（Obsidian 日期待受限于标准公元年，否则退化为字符串但仍可读） */
+function yearToDateStr(n) {
+  const year = n.year;
+  if (year === undefined || year === null || Number.isNaN(+year)) return '';
+  const yr = Math.floor(+year + 1e-9);
+  const month = n.month || 1;
+  const day = n.day || 1;
+  const pad = (x) => String(Math.abs(x)).padStart(2, '0');
+  const sign = yr < 0 ? '-' : '';
+  return `${sign}${Math.abs(yr)}-${pad(month)}-${pad(day)}`;
+}
+/* 解析 frontmatter year 字符串（"312" / "312-07-15"）→ {year, month, day}，未拆出时 month/day 缺省 */
+function dateStrToYear(str) {
+  const m = /^(-?\d+)-(\d{1,2})-(\d{1,2})$/.exec(String(str).trim());
+  if (!m) return { year: parseFloat(str) || 0 };
+  const yr = +m[1], month = +m[2], day = +m[3];
+  return { year: yr, month, day };
+}
+
+/* frontmatter 属性值 → YAML 字符串（Obsidian 兼容：数值/布尔/列表/日期格式） */
+function fmtProp(v) {  if (typeof v === 'number') return String(v);
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  if (Array.isArray(v)) return '[' + v.map((x) => fmtProp(typeof x === 'string' ? x : String(x))).join(', ') + ']';
+  /* 字符串：含特殊字符（冒号/井号/引号/方括号）或需要定义时加双引号；日期 YYYY-MM-DD 原样（Obsidian 当 date） */
+  const s = String(v);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s) || /^[\w\u4e00-\u9fa5.\-/ ]*$/.test(s) && s !== '' && !s.includes(':')) return s;
+  return '"' + s.replace(/"/g, '\\"') + '"';
+}
+/* frontmatter 属性字符串 → JS 值（按 Obsidian 格式推断类型） */
+function parseProp(s) {
+  const str = String(s).trim();
+  if (str === 'true' || str === 'false') return str === 'true';
+  if (/^-?\d+(\.\d+)?$/.test(str)) return Number(str);
+  if (str.startsWith('[') && str.endsWith(']')) {
+    const inner = str.slice(1, -1).trim();
+    if (!inner) return [];
+    return inner.split(/[，,]\s*/).map((x) => parseProp(x));
+  }
+  if (str.startsWith('"') && str.endsWith('"')) return str.slice(1, -1).replace(/\\"/g, '"');
+  return str;
+}
+
 function nodeToMd(n) {
   const meta = ['id', 'title', 'year', 'precision', 'type'].filter((k) => n[k] !== undefined && n[k] !== null)
-    .map((k) => `${k}: ${n[k]}`).join('\n');
+    .map((k) => k === 'year' ? `year: ${yearToDateStr(n)}` : `${k}: ${n[k]}`).join('\n');
+  /* 因果线：本节点由哪些节点导致（目标节点 id 列表，Obsidian 行内数组，双向可读） */
+  const causesLine = Array.isArray(n.causes) && n.causes.length ? `causes: [${n.causes.join(', ')}]` : '';
+  /* 自定义笔记属性：frontmatter 里的任意 key/value（Obsidian 双向可读） */
+  const props = n.properties || {};
+  const propsMeta = Object.entries(props)
+    .filter(([k, v]) => v !== undefined && v !== null && !['id', 'title', 'year', 'precision', 'type', 'kind', 'causes'].includes(k))
+    .map(([k, v]) => `${k}: ${fmtProp(v)}`).join('\n');
   let body = '';
   body += `#描述：\n${n.desc || ''}\n`;   /* 描述独立 tag */
   if (n.doc) body += `\n#正文：\n${n.doc}\n`;   /* 正文独立 tag */
-  return `---\n${meta}\n---\n${body}`.replace(/\r\n/g, '\n');
+  return `---\n${meta}${causesLine ? '\n' + causesLine : ''}${propsMeta ? '\n' + propsMeta : ''}\n---\n${body}`.replace(/\r\n/g, '\n');
 }
 function mdToNode(text) {
   let fm = {}, rest = String(text || '');
@@ -44,7 +95,7 @@ function mdToNode(text) {
     const end = rest.indexOf('\n---', 3);
     if (end !== -1) {
       rest.slice(3, end).split('\n').forEach((line) => {
-        const m = line.match(/^(\w+):\s*(.*)$/);
+        const m = line.match(/^([\w\u4e00-\u9fa5]+):\s*(.*)$/);  /* 键支持中文（如 性别/身高） */
         if (m) fm[m[1].trim()] = m[2].trim();
       });
       rest = rest.slice(end + 4);
@@ -52,15 +103,23 @@ function mdToNode(text) {
   }
   const node = {};
   ['id', 'title', 'precision', 'type'].forEach((k) => { if (fm[k] !== undefined) node[k] = fm[k]; });
-  if (fm.year !== undefined) node.year = parseFloat(fm.year);
+  if (fm.year !== undefined) { const dt = dateStrToYear(fm.year); node.year = dt.year; if (dt.month !== undefined) node.month = dt.month; if (dt.day !== undefined) node.day = dt.day; }
+  /* 因果线：causes 存目标节点 id 数组（Obsidian 行内数组格式 [id1, id2]） */
+  if (fm.causes !== undefined) { const c = parseProp(fm.causes); node.causes = Array.isArray(c) ? c.map(String) : []; }
+  /* 自定义笔记属性：frontmatter 里非固定 key 的任意键值 → properties（Obsidian 加的能读回） */
+  const FIXED = ['id', 'title', 'year', 'precision', 'type', 'kind', 'causes'];
+  const props = {};
+  Object.entries(fm).forEach(([k, v]) => { if (!FIXED.includes(k) && v !== undefined && v !== null) props[k] = parseProp(v); });
+  if (Object.keys(props).length) node.properties = props;
   /* 解析：#字段：值 行（desc 单独，值到第一个空行为止）；空行后的自由正文收集为 doc */
   const allLines = rest.split('\n');
   let desc = '', docParts = [];
   let cur = null, buf = [];
+  let hadBodyTag = false;
   const flush = () => { if (cur) { const v = buf.join('\n').trim(); if (cur === '描述') desc = v; else if (cur === '正文') docParts.push(v); else docParts.push(`#${cur}：\n${v}`); } };
   allLines.forEach((line, i) => {
     const m = line.match(/^#([^：:]+)[：:]\s*(.*)$/);
-    if (m) { flush(); cur = m[1].trim(); buf = [m[2]]; return; }
+    if (m) { if (m[1].trim() === '正文') hadBodyTag = true; flush(); cur = m[1].trim(); buf = [m[2]]; return; }
     if (cur !== null) {
       if (line.trim() === '') { flush(); cur = null; buf = []; }   /* 空行结束当前字段值 */
       else buf.push(line);
@@ -71,11 +130,67 @@ function mdToNode(text) {
   flush();
   if (desc) node.desc = desc;
   if (docParts.length) node.doc = docParts.join('\n');
+  node._hasBodyTag = hadBodyTag;   /* 标记原始 .md 是否含 #正文： 标签（nodeToMd 不会把它写入 frontmatter） */
   return node;
 }
 function nodePath(wsName, tlName, n) {
   const safe = (s) => String(s || '').replace(/[\\/:*?"<>|]/g, '_');
-  return path.join(VAULT_DIR(), safe(wsName), safe(tlName), safe(n.title) + '.md');
+  /* kind 文件夹层：世界观/时间线/kind文件夹/节点.md（kind 缺省归「事件」） */
+  const kindDir = n && n.kind ? safe(n.kind) : '事件';
+  return path.join(VAULT_DIR(), safe(wsName), safe(tlName), kindDir, safe(n.title) + '.md');
+}
+
+/* 清理旧的两层残留：删除「时间线直接层」中、同 id 已在类型文件夹（事件/角色/...）有副本的旧 .md，保留类型文件夹版。
+   这是迁移到「文件夹=格式」结构后的历史遗留清理，只在确有重复副本时删除，绝不误删唯一文件。 */
+function cleanupStaleVaultFiles() {
+  try {
+    const root = VAULT_DIR();
+    if (!fs.existsSync(root)) return;
+    for (const ws of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!ws.isDirectory()) continue;
+      const wsDir = path.join(root, ws.name);
+      for (const tl of fs.readdirSync(wsDir, { withFileTypes: true })) {
+        if (!tl.isDirectory()) continue;
+        const tlDir = path.join(wsDir, tl.name);
+        /* 收集类型文件夹内所有节点 id，及其所在文件 */
+        const idsInKinds = new Set();
+        const fileById = new Map();
+        for (const sub of fs.readdirSync(tlDir, { withFileTypes: true })) {
+          if (!sub.isDirectory()) continue;
+          for (const f of fs.readdirSync(path.join(tlDir, sub.name))) {
+            if (!f.endsWith('.md')) continue;
+            const p = path.join(tlDir, sub.name, f);
+            const n = mdToNode(fs.readFileSync(p, 'utf8'));
+            if (n && n.id) { idsInKinds.add(n.id); fileById.set(n.id, p); }
+          }
+        }
+        /* 时间线直接层的旧 .md：若 id 已在类型文件夹有副本 → 删除（保留文件夹版） */
+        for (const f of fs.readdirSync(tlDir)) {
+          if (!f.endsWith('.md')) continue;
+          const stalePath = path.join(tlDir, f);
+          const n = mdToNode(fs.readFileSync(stalePath, 'utf8'));
+          if (n && n.id && idsInKinds.has(n.id) && fileById.get(n.id) !== stalePath) {
+            fs.rmSync(stalePath, { force: true });
+          }
+        }
+        /* 清除旧的 kind 行：kind 由所在文件夹名决定，frontmatter 不再存 kind（Obsidian 重写也会保留旧 kind，灵框主动清一次） */
+        const stripKind = (dir) => {
+          for (const f of fs.readdirSync(dir)) {
+            if (!f.endsWith('.md')) continue;
+            const p = path.join(dir, f);
+            const raw = fs.readFileSync(p, 'utf8');
+            if (!/^kind:(\s|$)/m.test(raw)) continue;
+            const node = mdToNode(raw);
+            if (node) fs.writeFileSync(p, nodeToMd(node), 'utf8');
+          }
+        };
+        for (const sub of fs.readdirSync(tlDir, { withFileTypes: true })) {
+          if (sub.isDirectory()) stripKind(path.join(tlDir, sub.name));
+          else if (sub.name.endsWith('.md')) stripKind(tlDir);
+        }
+      }
+    }
+  } catch (e) { /* 清理失败不影响启动 */ }
 }
 
 function createWindow() {
@@ -154,18 +269,62 @@ ipcMain.handle('vault:scan', () => {
       for (const tl of fs.readdirSync(wsDir, { withFileTypes: true })) {
         if (!tl.isDirectory()) continue;
         const tlDir = path.join(wsDir, tl.name);
-        const nodes = [];
+        /* 按 id 去重：先收直连 .md（旧两层，默认事件），再收类型文件夹内（优先覆盖，即优先文件夹版） */
+        const nodesById = new Map();
         for (const f of fs.readdirSync(tlDir)) {
           if (!f.endsWith('.md')) continue;
           const text = fs.readFileSync(path.join(tlDir, f), 'utf8');
           const n = mdToNode(text);
-          if (n && n.id) { if (!n.title) n.title = f.replace(/\.md$/, ''); nodes.push(n); }
+          if (n && n.id) { if (!n.title) n.title = f.replace(/\.md$/, ''); if (!n.kind) n.kind = '事件'; nodesById.set(n.id, n); }
         }
+        /* 类型文件夹层：每个 sub（如 事件/角色/地点）是一个格式文件夹，kind = 文件夹名；同 id 覆盖直连版 */
+        for (const sub of fs.readdirSync(tlDir, { withFileTypes: true })) {
+          if (!sub.isDirectory()) continue;
+          const subDir = path.join(tlDir, sub.name);
+          for (const f of fs.readdirSync(subDir)) {
+            if (!f.endsWith('.md')) continue;
+            const text = fs.readFileSync(path.join(subDir, f), 'utf8');
+            const n = mdToNode(text);
+            if (n && n.id) { if (!n.title) n.title = f.replace(/\.md$/, ''); n.kind = sub.name; nodesById.set(n.id, n); }
+          }
+        }
+        const nodes = [...nodesById.values()];
         if (nodes.length) tls[tl.name] = nodes;
       }
       if (Object.keys(tls).length) worlds[ws.name] = tls;
     }
     return { ok: true, worlds };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/* ── IPC: 读取单个节点原始 .md 文本（检测 #正文： 标签是否缺失用）── */
+ipcMain.handle('vault:readNode', (e, { wsName, tlName, nodeId }) => {
+  try {
+    const root = VAULT_DIR();
+    const wsDir = path.join(root, String(wsName || '').replace(/[\\/:*?"<>|]/g, '_'));
+    if (!fs.existsSync(wsDir)) return { ok: false, error: '世界不存在' };
+    for (const tl of fs.readdirSync(wsDir, { withFileTypes: true })) {
+      if (!tl.isDirectory()) continue;
+      const tlDir = path.join(wsDir, tl.name);
+      const scanDir = (dir) => {
+        for (const f of fs.readdirSync(dir)) {
+          if (!f.endsWith('.md')) continue;
+          const text = fs.readFileSync(path.join(dir, f), 'utf8');
+          const n = mdToNode(text);
+          if (n && n.id === nodeId) return text;
+        }
+        return null;
+      };
+      /* 类型文件夹层 + 时间线直接 .md 都找 */
+      for (const sub of fs.readdirSync(tlDir, { withFileTypes: true })) {
+        const p = path.join(tlDir, sub.name);
+        if (sub.isDirectory()) { const found = scanDir(p); if (found) return { ok: true, text: found }; }
+        else if (sub.name.endsWith('.md')) { const found = scanDir(tlDir); if (found) return { ok: true, text: found }; }
+      }
+    }
+    return { ok: false, error: '节点未找到' };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
@@ -187,6 +346,31 @@ ipcMain.handle('vault:write', (e, { wsName, tlName, node }) => {
     });
     fs.writeFileSync(target, nodeToMd(node), 'utf8');
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/* ── IPC: 导入图片到 vault assets（弹文件框 → 复制到 VAULT_DIR/assets → 返回相对路径，供 markdown `![alt](path)`）── */
+ipcMain.handle('vault:importImage', async () => {
+  try {
+    const res = await dialog.showOpenDialog(mainWin, {
+      title: '选择要插入的图片',
+      properties: ['openFile'],
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'] }],
+    });
+    if (res.canceled || !res.filePaths.length) return { ok: false, canceled: true };
+    const src = res.filePaths[0];
+    const ext = path.extname(src).toLowerCase();
+    const assetsDir = path.join(VAULT_DIR(), 'assets');
+    if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true });
+    /* 唯一文件名：时间戳+原文件名，避免跨节点同名覆盖 */
+    const base = path.basename(src, ext).replace(/[\\/:*?"<>|]/g, '_');
+    const name = `${Date.now()}_${base}${ext}`;
+    const dst = path.join(assetsDir, name);
+    fs.copyFileSync(src, dst);
+    /* 返回 vault 相对路径（assets/name），markdown 用相对路径存，外部 Obsidian 可读 */
+    return { ok: true, path: `assets/${name}` };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
@@ -236,6 +420,61 @@ ipcMain.handle('settings:load', () => {
     return { ok: true, data: JSON.parse(raw) };
   } catch (e) {
     return { ok: false, error: e.code || String(e) };
+  }
+});
+
+/* ── 内建默认格式定义（kind 直接对应格式；用户可在 formats.json 增改）── */
+const DEFAULT_FORMATS = {
+  角色: { id: '角色', name: '角色', fields: [
+    { name: '性别', type: 'text' }, { name: '种族', type: 'text' }, { name: '发色', type: 'text' },
+    { name: '瞳色', type: 'text' }, { name: '身高', type: 'number' }, { name: '性格', type: 'longtext' },
+  ] },
+  地点: { id: '地点', name: '地点', fields: [
+    { name: '所属区域', type: 'text' }, { name: '规模', type: 'text' }, { name: '描述', type: 'longtext' },
+  ] },
+  物品: { id: '物品', name: '物品', fields: [
+    { name: '种类', type: 'text' }, { name: '持有者', type: 'text' }, { name: '说明', type: 'longtext' },
+  ] },
+  组织: { id: '组织', name: '组织', fields: [
+    { name: '性质', type: 'text' }, { name: '首领', type: 'text' }, { name: '简介', type: 'longtext' },
+  ] },
+  事件: { id: '事件', name: '事件', fields: [
+    { name: '起因', type: 'longtext' }, { name: '影响', type: 'longtext' },
+  ] },
+};
+
+/* 读取格式定义：优先用户自定义 FORMATS_FILE，缺失则用内建默认 */
+function loadFormatsRaw() {
+  try {
+    const raw = fs.readFileSync(FORMATS_FILE(), 'utf8');
+    const parsed = JSON.parse(raw);
+    /* 用户部分覆盖：缺失的 kind 用内建兜底，全部为空则全用内建 */
+    const merged = {};
+    for (const [k, v] of Object.entries(DEFAULT_FORMATS)) merged[k] = { ...v, ...(parsed && parsed[k]) };
+    if (parsed) for (const [k, v] of Object.entries(parsed)) if (!(k in DEFAULT_FORMATS)) merged[k] = v;
+    return merged;
+  } catch (e) {
+    return { ...DEFAULT_FORMATS };
+  }
+}
+
+ipcMain.handle('formats:load', () => {
+  try {
+    return { ok: true, data: loadFormatsRaw() };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/* ── IPC: write the formats definition file ────────────────── */
+ipcMain.handle('formats:save', (e, payload) => {
+  try {
+    const dir = path.dirname(FORMATS_FILE());
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(FORMATS_FILE(), JSON.stringify(payload, null, 2), 'utf8');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
   }
 });
 
@@ -379,6 +618,7 @@ if (!gotLock) {
 }
 
 app.whenReady().then(() => {
+  cleanupStaleVaultFiles();   /* 迁移到「文件夹=格式」后，清理旧的两层重复残留 */
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

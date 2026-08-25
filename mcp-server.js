@@ -30,9 +30,13 @@ function collectNodes(tl) {
   return (tl.nodes || []).map((n) => ({ ...n, __source: 'plain' }));
 }
 
-function fmtYear(y) {
-  if (y < 0) return '公元前 ' + (-y) + ' 年';
-  return '公元 ' + y + ' 年';
+function fmtYear(n) {
+  const y = n.year;
+  let out = y < 0 ? '公元前 ' + (-y) + ' 年' : '公元 ' + y + ' 年';
+  if (n.month) out += n.month + ' 月';
+  if (n.day) out += n.day + ' 日';
+  if (n.hour !== undefined) out += n.hour + ' 时';
+  return out;
 }
 
 const server = new McpServer({
@@ -53,7 +57,7 @@ server.tool(
       if (!tl) return `⚠️ 世界线「${id}」不存在`;
       const nodes = collectNodes(tl);
       return `【${tl.name}】(id=${id}, absOffset=${tl.absOffset || 0}, 节点 ${nodes.length} 个)\n` +
-        nodes.map((n) => `  - ${fmtYear(n.year)} ${n.title}${n.desc ? '：' + n.desc : ''}`).join('\n');
+        nodes.map((n) => `  - ${fmtYear(n)} ${n.title}${n.desc ? '：' + n.desc : ''}`).join('\n');
     });
     return { content: [{ type: 'text', text: lines.join('\n\n') || '(空)' }] };
   }
@@ -74,7 +78,7 @@ server.tool(
       collectNodes(tl).forEach((n) => {
         const abs = n.__source === 'loop' ? n.__absoluteYear : n.year;
         if (Math.abs(Number(abs) - year) < 1) {
-          hits.push(`【${tl.name}】${fmtYear(n.year)} ${n.title}${n.desc ? '：' + n.desc : ''}${n.__source === 'loop' ? '（轮回周期 ' + ((n.__cycle || 0) + 1) + '）' : ''}`);
+          hits.push(`【${tl.name}】${fmtYear(n)} ${n.title}${n.desc ? '：' + n.desc : ''}${n.__source === 'loop' ? '（轮回周期 ' + ((n.__cycle || 0) + 1) + '）' : ''}`);
         }
       });
     });
@@ -97,7 +101,7 @@ server.tool(
       collectNodes(tl).forEach((n) => {
         const hay = [n.title, n.desc, ...(n.people || []), ...(n.places || [])].join(' ').toLowerCase();
         if (hay.includes(q)) {
-          hits.push(`【${tl.name}】${fmtYear(n.year)} ${n.title}（人物：${(n.people || []).join('/') || '—'}，地点：${(n.places || []).join('/') || '—'}）`);
+          hits.push(`【${tl.name}】${fmtYear(n)} ${n.title}（人物：${(n.people || []).join('/') || '—'}，地点：${(n.places || []).join('/') || '—'}）`);
         }
       });
     });

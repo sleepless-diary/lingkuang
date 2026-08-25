@@ -8,8 +8,9 @@ export interface MdSection {
   level?: number;     // heading 级别
 }
 
-/** 按行解析 markdown → 段列表。连续同类行合并为一段，空行/缩进作为段边界标记。 */
-export function splitMarkdown(src: string): MdSection[] {
+/** 按行解析 markdown → 段列表。连续同类行合并为一段，空行/缩进作为段边界标记。
+ * keepBlank=true 时空行保留为独立 blank 段（source=''），供编辑器产生可继续编辑的空段。 */
+export function splitMarkdown(src: string, keepBlank = false): MdSection[] {
   const lines = src.split('\n');
   const sections: MdSection[] = [];
   let cur: { type: MdSection['type']; level?: number; start: number; lines: string[] } | null = null;
@@ -36,11 +37,10 @@ export function splitMarkdown(src: string): MdSection[] {
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
     const t = lineType(l);
-    /* 空白行：若当前有段，作为段结束标记（当前段到此为止，空白交给下一段） */
+    /* 空白行：若当前有段，作为段结束标记；keepBlank=true 时保留为独立空段 */
     if (t === 'blank') {
       flush();
-      /* 连续空行合并为一段 blank 也行，这里简单丢弃（段间空行自然分隔） */
-      // advance offset by line length + \n
+      if (keepBlank) sections.push({ start: offset, end: offset, source: '', type: 'blank' });
       offset += l.length + 1;
       continue;
     }

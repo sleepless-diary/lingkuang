@@ -6,6 +6,9 @@ import { currentWorld } from '../store/store';
 import { getTimeline, setTimeCursor, saveNodeDoc } from '../store/actions';
 import type { Timeline, TimelineNode, Storyline, Loop } from '../store/types';
 import { renderNodeForm } from './node-form';
+import { isEyedropActive, pick } from './eyedrop';
+import { toEpoch, fromEpoch, calendarOf, timePointOf, buildYearTable } from '../calendar';
+import type { Calendar, YearTable } from '../calendar';
 
 interface View {
   panX: number;
@@ -21,25 +24,63 @@ export function mountTimeline(
   host.classList?.remove('lk-placeholder');   /* 挂载后移除占位样式 */
   host.innerHTML = `
     <div class="tl-wrap" style="position:relative;width:100%;height:100%;overflow:hidden;cursor:default;">
-      <div class="tl-scale" style="position:absolute;top:0;left:0;right:0;height:26px;border-bottom:1px solid var(--border-soft);background:var(--surface-2);overflow:hidden;"></div>
-      <div class="tl-track" style="position:absolute;top:26px;left:0;right:0;bottom:0;cursor:crosshair;"></div>
+      <div class="tl-scale" style="position:absolute;top:0;left:0;right:0;height:34px;background:var(--surface-2);overflow:hidden;"></div>
+      <div class="tl-track" style="position:absolute;top:34px;left:0;right:0;bottom:0;cursor:crosshair;"></div>
+      <svg class="tl-causes" style="position:absolute;top:34px;left:0;right:0;bottom:0;pointer-events:none;z-index:4;overflow:visible;"></svg>
       <div class="tl-cursor" style="position:absolute;top:0;bottom:0;width:0;pointer-events:none;display:none;z-index:5;">
-        <div style="position:absolute;top:30px;bottom:0;left:-1px;width:2px;background:var(--accent);opacity:.55;"></div>
+        <div style="position:absolute;top:38px;bottom:0;left:-1px;width:2px;background:var(--accent);opacity:.55;"></div>
         <div class="tl-cursor-handle" style="position:absolute;top:4px;left:-9px;width:18px;height:18px;border-radius:50%;background:var(--chrome);border:1px solid var(--accent);cursor:ew-resize;pointer-events:auto;box-shadow:0 2px 6px rgba(0,0,0,.4);"></div>
-        <div class="tl-cursor-time" style="position:absolute;top:24px;left:6px;font-family:var(--font-mono);font-size:9px;color:var(--accent);background:rgba(15,15,17,.8);padding:1px 5px;border-radius:3px;white-space:nowrap;"></div>
+        <div class="tl-cursor-time" style="position:absolute;top:32px;left:6px;font-family:var(--font-mono);font-size:9px;color:var(--accent);background:rgba(15,15,17,.8);padding:1px 5px;border-radius:3px;white-space:nowrap;"></div>
       </div>
     </div>`;
 
   const wrap = host.querySelector('.tl-wrap') as HTMLElement;
   const scaleEl = host.querySelector('.tl-scale') as HTMLElement;
   const track = host.querySelector('.tl-track') as HTMLElement;
+  const causesSvg = host.querySelector('.tl-causes') as SVGSVGElement;
   const cursorEl = host.querySelector('.tl-cursor') as HTMLElement;
   const cursorTimeEl = cursorEl.querySelector('.tl-cursor-time') as HTMLElement;
   const view: View = { panX: 0, panY: 0, spacing: 2 };
 
-  /* ── 坐标换算（照抄 legacy）── */
-  function timeToX(t: number): number { return t * view.spacing + view.panX + 40; }
-  function xToTime(x: number): number { return (x - 40 - view.panX) / view.spacing; }
+  /* ── 坐标换算：出入公历 epoch 秒；spacing 为 px/年，内部用平均年宽(SEC_PER_YEAR)换算 ──
+     ⚠️ 位置定位用近似年宽，日期显示用 fromEpoch 精确(公历闰年) */
+  function timeToX(e: number): number { return (e / SEC_PER_YEAR) * view.spacing + view.panX + 40; }
+  function xToTime(x: number): number { return (x - 40 - view.panX) / view.spacing * SEC_PER_YEAR; }
+
+  /* ── 历法刻度辅助：节点/时间点 → 绝对刻度（统一坐标轴单位）── */
+  function cal(): Calendar {
+    return calendarOf(timeline() ?? {});
+  }
+  /* 历法年表缓存：把 toEpoch/fromEpoch 降为 O(1)，避免每次 O(年数) 累加导致卡顿 */
+  let yearTable: YearTable | undefined;
+  function getYearTable(): YearTable | undefined {
+    return yearTable;
+  }
+  function setYearTable(min: number, max: number): void {
+    yearTable = buildYearTable(cal(), min, max);
+  }
+  function nodeEpoch(n: TimelineNode): number {
+    return toEpoch(cal(), timePointOf(n.year ?? 0, n), getYearTable());
+  }
+  /* 纯年份 → epoch 秒（作为该年 1月1日，用于剧情框/循环的"年"定位转 epoch 秒） */
+  function yearEpoch(y: number): number {
+    return toEpoch(cal(), timePointOf(Math.floor(y), { month: 1, day: 1, hour: 0 }), getYearTable());
+  }
+  /* 按当前标尺档位(unit)裁剪显示：从『年』显示到该档位，如 unit='日' → 316年7月15日；unit='时' → ...9时 */
+  function epochText(epoch: number, unit?: string): string {
+    const tp = fromEpoch(cal(), epoch, getYearTable());
+    const y = tp.anchor.year, v = tp.values;
+    let s = `${y}年`;
+    if (unit === '年') return s;                    /* 只到年 */
+    if (v.month >= 1) s += `${v.month}月`;
+    if (unit === '月') return s;
+    if (v.day >= 1) s += `${v.day}日`;
+    if (unit === '日') return s;
+    if (v.hour) s += `${v.hour}时`;
+    if (unit === '时') return s;
+    if (v.minute) s += `${v.minute}分`;
+    return s;
+  }
 
   /* ── 有效时间线 id（兼容旧数据 order 与 key 不一致）── */
   function activeTimelineId(): string | undefined {
@@ -54,26 +95,116 @@ export function mountTimeline(
   }
 
   /* ── 标尺刻度（照抄 legacy niceStep/buildScale）── */
-  function niceStep(raw: number): number {
-    const p = Math.pow(10, Math.floor(Math.log10(raw)));
-    const m = raw / p;
-    return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p;
+  /* 公历平均年宽（365.25 天），用于坐标定位的「epoch秒 ↔ 年」近似换算；日期显示用 fromEpoch 精确 */
+  const SEC_PER_YEAR = 31557600;
+  /* 取最接近的 1/2/5/10 倍（使每格落在「整数个较友好单位」上，有中间过渡档） */
+  /* 标尺步长（d3 式参考版）：每格目标 72px → 算出每格应跨多少年 → 按单位(年/月/日/时/分)分档，niceStep 取整。
+     这是之前验证过「年→月→日→时→分」单调正确的版本，作为参考基准。 */
+  function quantStep(): { stepSec: number; unit: string } {
+    const sp = view.spacing;
+    const years = 72 / sp;   /* 每格应跨多少年 */
+    function niceStep(raw: number): number {
+      const p = Math.pow(10, Math.floor(Math.log10(raw)));
+      const m = raw / p;
+      return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p;
+    }
+    if (years >= 1) {
+      const n = Math.max(1, niceStep(years));
+      return { stepSec: Math.round(n * SEC_PER_YEAR), unit: '年' };
+    }
+    const months = years * 12;
+    if (months >= 1) {
+      const n = Math.max(1, niceStep(months));
+      return { stepSec: Math.round(n * (SEC_PER_YEAR / 12)), unit: '月' };
+    }
+    const days = months * 30.4375;
+    if (days >= 1) {
+      const n = Math.max(1, niceStep(days));
+      return { stepSec: Math.round(n * 86400), unit: '日' };
+    }
+    const hours = days * 24;
+    if (hours >= 1) return { stepSec: Math.round(hours * 3600), unit: '时' };
+    return { stepSec: 60, unit: '分' };
   }
-  function fmtScale(t: number): string {
-    if (t < 0) return `公元前 ${-t} 年`;
-    return `${t} 年`;
+  /* 标尺刻度文字：走历法(fromEpoch)，返回两级 {prev(上一级,更粗), cur(当前,细)}。
+     例 unit='日' → {prev:'7月', cur:'15号'}；unit='月' → {prev:'285年', cur:'7月'} */
+  /* 标尺刻度文字：用 fromEpoch(历法) 精确反推（坐标已统一 epoch 秒，SEC_PER_YEAR=公历平均年宽） */
+  function fmtScale(s: number, unit: string): { prev: string; cur: string } {
+    const tp = fromEpoch(cal(), s, getYearTable());
+    const y = tp.anchor.year, v = tp.values;
+    const m = v.month, d = v.day, h = v.hour, mi = v.minute;
+    switch (unit) {
+      case '年': return { prev: '', cur: `${y}年` };
+      case '月': return { prev: `${y}年`, cur: `${m}月` };
+      case '日': return { prev: `${m}月`, cur: `${d}号` };
+      case '时': return { prev: `${d}日`, cur: `${h}时` };      /* 上一级=日（纯日） */
+      case '分': return { prev: `${h}时`, cur: `${mi}分` };
+      default:  return { prev: `${mi}分`, cur: `${s % 60}秒` };
+    }
   }
   function renderScale() {
-    const raw = 100 / view.spacing;               // 100px 容器的年跨度
-    const step = niceStep(raw);
-    const t0 = Math.floor(xToTime(0) / step) * step;
-    const t1 = Math.ceil(xToTime(wrap.clientWidth) / step) * step;
-    let html = '';
-    for (let t = t0; t <= t1; t += step) {
-      const x = timeToX(t);
-      html += `<div class="tl__axis-tick" style="left:${x}px;"><span class="tl__axis-label">${fmtScale(Math.round(t * 100) / 100)}</span></div>`;
+    const { stepSec, unit } = quantStep();
+    currentScaleUnit = unit;                 /* 记录当前标尺档位，供指针文字裁剪 */
+    const s0 = Math.round(xToTime(0));                 /* 左边缘 epoch 秒（xToTime 已返回 epoch 秒） */
+    const s1 = Math.round(xToTime(wrap.clientWidth));   /* 右边缘 epoch 秒 */
+    /* 主刻度间距 stepSec；细分出小刻度（每主刻度间 subDiv 个小竖线，如尺子副刻度） */
+    const subDiv = 10;                      /* 每个主刻度间细分 10 个小刻度 */
+    const subStep = stepSec / subDiv;       /* 小刻度间距（单位秒） */
+    /* 起点对齐：各档位向上对齐到「整单位」边界（年→1月1日0点、月→1日0点、日→0点、时→整时、分→整分），
+       确保刻度落在整齐的整单位上，不跳过、不落中间 */
+    let start: number;
+    {
+      const tp = fromEpoch(cal(), s0);
+      let y = tp.anchor.year, mo = tp.values.month, d = tp.values.day, h = tp.values.hour, mi = tp.values.minute;
+      switch (unit) {
+        case '年': mo = 1; d = 1; h = 0; mi = 0; break;   /* 对齐到整年 1月1日 */
+        case '月': d = 1; h = 0; mi = 0; break;            /* 对齐到整月 1日 */
+        case '日': h = 0; mi = 0; break;                   /* 对齐到整日 0点 */
+        case '时': mi = 0; break;                          /* 对齐到整时 */
+        case '分': break;                                  /* 分档，保留 */
+      }
+      start = toEpoch(cal(), timePointOf(y, { month: mo, day: d, hour: h, minute: mi }), getYearTable());
     }
-    scaleEl.innerHTML = html;
+    const n = Math.floor((s1 - start) / stepSec);
+    const nSub = Math.floor((s1 - start) / subStep);
+    let html = '';
+    /* 先画主刻度：大竖线 + 两级文字。日档/月档按公历真实日期推进（尊重大小月），不用固定步长累加（否则跨月漂移） */
+    for (let i = 0; i <= n; i++) {
+      let s: number;
+      if (unit === '日') {
+        const stepDays = Math.max(1, Math.round(stepSec / 86400));
+        const tp0 = fromEpoch(cal(), start, getYearTable());
+        s = toEpoch(cal(), timePointOf(tp0.anchor.year, { month: tp0.values.month, day: tp0.values.day + i * stepDays }), getYearTable());
+      } else if (unit === '月') {
+        const stepMonths = Math.max(1, Math.round(stepSec / (SEC_PER_YEAR / 12)));
+        const tp0 = fromEpoch(cal(), start, getYearTable());
+        s = toEpoch(cal(), timePointOf(tp0.anchor.year, { month: tp0.values.month + i * stepMonths, day: 1 }), getYearTable());
+      } else {
+        s = start + i * stepSec;
+      }
+      const x = timeToX(s);
+      const t = fmtScale(s, unit);
+      /* 用历法数值判断是否「整单位边界」：日档=1号、月档=1月，才显示上一级；其他档看上一级变化 */
+      const tpNow = fromEpoch(cal(), s, getYearTable());
+      const tpPrev = fromEpoch(cal(), s - stepSec, getYearTable());
+      let showPrev = false;
+      if (unit === '日') showPrev = tpNow.values.day === 1;
+      else if (unit === '月') showPrev = tpNow.values.month === 1;
+      else if (unit === '时') showPrev = tpNow.values.day !== tpPrev.values.day;   /* 跨天(日变化)才显示上一级(日) */
+      else if (unit === '分') showPrev = tpNow.values.hour !== tpPrev.values.hour;   /* 跨小时才显示上一级(时) */
+      else showPrev = !!(t.prev && tpNow.values.month !== tpPrev.values.month);
+      const prev = showPrev ? `<span class="tl__axis-prev">${t.prev}</span>` : '';
+      html += `<div class="tl__axis-tick tl__axis-tick--major" style="left:${x}px;">${prev}<span class="tl__axis-label">${t.cur}</span></div>`;
+    }
+    /* 再画小刻度：小竖线（矮、不带文字；只在主刻度之间画，避开主刻度位置） */
+    let subHtml = '';
+    for (let k = 0; k <= nSub; k++) {
+      if (k % subDiv === 0) continue;           /* k 是 subDiv 的倍数 → 落在主刻度位置，跳过 */
+      const s = start + k * subStep;
+      const x = timeToX(s);
+      subHtml += `<div class="tl__axis-tick tl__axis-tick--minor" style="left:${x}px;"></div>`;
+    }
+    scaleEl.innerHTML = html + subHtml;
   }
 
   /* ── 渲染节点 ── */
@@ -90,10 +221,49 @@ export function mountTimeline(
     track.innerHTML =
       lineHtml +
       nodes
-        .map((n) => nodeHtml(n, timeToX(n.year), n.id === selectedId))
+        .map((n) => nodeHtml(n, timeToX(nodeEpoch(n)), n.id === selectedId))
         .join('');
     renderScale();
     updateCursor();
+  }
+
+  /* 因果线：从发起节点(n) 指向目标 cause(c)（用户在本节点添加 -> 箭头从本节点出发指向所选节点） */
+  /* 因果线：从发起节点(n) 指向目标 cause(c)。用节点元素真实位置（getBoundingClientRect）连到 cap 中心。
+     箭头大小/线宽/不透明度随节点间距联动（缩小→变小变淡，避免挤在一起回旋/看不清） */
+  function drawCauses() {
+    const tl = timeline();
+    const byId = new Map<string, TimelineNode>((tl?.nodes ?? []).map((n) => [n.id, n]));
+    let pathSvg = '';
+    let defsSvg = '';
+    let idx = 0;
+    const wrapRect = wrap.getBoundingClientRect();
+    const nodeCenter = (id: string): { x: number; y: number } | null => {
+      const el = track.querySelector(`[data-id="${id}"]`) as HTMLElement | null;
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2 - wrapRect.left, y: r.top + r.height / 2 - wrapRect.top - 26 };
+    };
+    for (const n of tl?.nodes ?? []) {
+      for (const cid of n.causes ?? []) {
+        if (!byId.get(cid)) continue;
+        const a = nodeCenter(n.id), b = nodeCenter(cid);
+        if (!a || !b) continue;
+        const dir = b.x >= a.x ? 1 : -1;
+        const x1 = a.x + dir * 5, y1 = a.y - 5;
+        const x2 = b.x - dir * 5, y2 = b.y - 5;
+        const seg = Math.abs(x2 - x1);
+        /* 控制点随间距缩放：cdx < seg/2 不回旋，高度随 seg 收敛 */
+        const cdx = seg * 0.4, cdy = Math.min(26, seg * 0.25);
+        /* 联动：箭头/线宽/不透明度随间距 */
+        const mSize = Math.max(3, Math.min(6, seg * 0.04));      /* 箭头大小（调细为 1/3） */
+        const width = Math.max(0.8, Math.min(1.6, seg * 0.006));  /* 线宽（更细） */
+        const op = Math.max(0.35, Math.min(0.9, seg / 130));
+        const mid = 'lk-ca-' + (idx++);
+        defsSvg += `<marker id="${mid}" markerWidth="${mSize}" markerHeight="${mSize}" refX="${mSize - 2}" refY="${mSize / 2}" orient="auto"><path d="M0,1 L${mSize - 1},${mSize / 2} L0,${mSize - 1} z" fill="var(--fg)"/></marker>`;
+        pathSvg += `<path d="M ${x1} ${y1} C ${x1 + dir * cdx} ${y1 - cdy}, ${x2 - dir * cdx} ${y2 - cdy}, ${x2} ${y2}" fill="none" stroke="var(--fg)" stroke-width="${width}" opacity="${op}" marker-end="url(#${mid})"></path>`;
+      }
+    }
+    causesSvg.innerHTML = defsSvg + pathSvg;
   }
 
   let render: () => void = renderBase;   /* 可被剧情线/循环包装重赋 */
@@ -107,16 +277,22 @@ export function mountTimeline(
   }
   function updateCursor() {
     const ws = currentWorld(store);
-    const t = ws.timeCursor;
-    if (t === null || t === undefined) { cursorEl.style.display = 'none'; return; }
+    let t = ws.timeCursor;
+    /* 常显：未设置/被清空时，记住最近一次有效值（不跳回最早节点 316），指针落在稳定位置 */
+    if (t === null || t === undefined) {
+      t = lastCursorT;
+    } else {
+      lastCursorT = t;
+    }
     cursorEl.style.display = '';
     cursorEl.style.left = timeToX(t) + 'px';
-    cursorTimeEl.textContent = fmtScale(Math.round(t * 100) / 100);
+    /* t 是 epoch 秒：直接 fromEpoch 反推显示（不再当"年"换算，避免 O(巨大年份) 累加卡死） */
+    cursorTimeEl.textContent = epochText(t, currentScaleUnit);
     /* 未发生节点淡化 */
     track.querySelectorAll('.tl__n').forEach((el) => {
       const n = (el as HTMLElement).dataset.id;
       const node = timeline()?.nodes.find((x) => x.id === n);
-      if (node) (el as HTMLElement).style.opacity = node.year > t ? '0.4' : '';
+      if (node) (el as HTMLElement).style.opacity = nodeEpoch(node) > t ? '0.4' : '';   /* 都用 epoch 秒比较 */
     });
   }
 
@@ -124,8 +300,13 @@ export function mountTimeline(
   function fitAll() {
     const tl = timeline();
     if (!tl || !tl.nodes.length) { view.panX = 0; view.spacing = 2; return; }
-    const years = tl.nodes.map((n) => n.year);
-    const lo = Math.min(...years), hi = Math.max(...years);
+    /* 先按节点原始年份范围建历法年表，让 nodeEpoch/fromEpoch 走 O(1)，避免 O(年数) 累加卡顿 */
+    const ys = tl.nodes.map((n) => n.year ?? 0);
+    const yLo = Math.min(...ys), yHi = Math.max(...ys);
+    setYearTable(yLo - 50, yHi + 50);
+    const epochs = tl.nodes.map((n) => nodeEpoch(n));        /* 节点 epoch 秒（用 O(1) table） */
+    const loE = Math.min(...epochs), hiE = Math.max(...epochs);
+    const lo = loE / SEC_PER_YEAR, hi = hiE / SEC_PER_YEAR;  /* 转成年(近似)，spacing 为 px/年 */
     const span = Math.max(1, hi - lo);
     view.spacing = Math.min(40, Math.max(0.05, (wrap.clientWidth - 120) / span));
     view.panX = 40 - lo * view.spacing;
@@ -137,6 +318,8 @@ export function mountTimeline(
   let dragging = false;        // 空格平移
   let lastX = 0;
   let cursorDrag = false;      // 空白拖动指针
+  let lastCursorT = 0;         // 记住最近一次有效时间指针位置（timeCursor 被清空时兜底，不跳回最早节点）
+  let currentScaleUnit = '年';  // 当前标尺档位（renderScale 更新，updateCursor 用它裁剪指针文字）
   let nodeDragId: string | null = null;
   let nodeDragMoved = false;
 
@@ -169,7 +352,8 @@ export function mountTimeline(
         const tl = timeline();
         const n = tl?.nodes.find((x) => x.id === nodeDragId);
         if (n) {
-          n.year = Math.round(xToTime(mx) * 10) / 10;
+          const e = xToTime(mx);                       /* 鼠标位置 → epoch 秒 */
+          n.year = fromEpoch(cal(), e).anchor.year;    /* 反推存年（精确到年） */
           render();
           saveNodeDoc(store, tl!.id, n.id, n.doc ?? '', { undo: false });   // 拖动中间态不进撤销
         }
@@ -188,9 +372,11 @@ export function mountTimeline(
   });
   window.addEventListener('pointerup', () => {
     const wasNodeClick = nodeDragId && !nodeDragMoved;
-    if (wasNodeClick) {
+    if (wasNodeClick && nodeDragId) {
       const n = timeline()?.nodes.find((x) => x.id === nodeDragId);
-      if (n) {
+      if (isEyedropActive()) {
+        if (n) pick(n.id);   /* 吸管：把点中的节点 id 交给调用方 */
+      } else if (n) {
         selectedId = n.id;
         render();
         if (onSelect) onSelect(n);
@@ -207,17 +393,17 @@ export function mountTimeline(
   window.addEventListener('keyup', (e) => { if (e.code === 'Space') spaceDown = false; });
   window.addEventListener('blur', () => { spaceDown = false; });
 
-  /* 滚轮：普通=左右平移（横向滚动），Ctrl=缩放（照抄 legacy scrollPan） */
+  /* 滚轮：普通=左右平移（横向滚动），Alt=缩放（照抄 legacy scrollPan） */
   wrap.addEventListener(
     'wheel',
     (e) => {
       e.preventDefault();
-      if (e.ctrlKey) {
+      if (e.altKey) {
         const rect = wrap.getBoundingClientRect();
         const mx = e.clientX - rect.left;
-        const tAt = xToTime(mx);
+        const tAt = xToTime(mx) / SEC_PER_YEAR;   /* 鼠标位置 epoch 秒 → 年(近似)，spacing 为 px/年 */
         const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-        view.spacing = Math.min(40, Math.max(0.05, view.spacing * factor));
+        view.spacing = Math.min(1e8, Math.max(0.05, view.spacing * factor));
         view.panX = mx - 40 - tAt * view.spacing;
       } else {
         view.panX -= e.deltaY;   /* 滚轮上下 → 时间线左右平移 */
@@ -231,12 +417,18 @@ export function mountTimeline(
     if ((e.target as HTMLElement).closest('.tl__n')) return;
     fitAll();
   });
+  /* 吸管模式提示：激活时 wrap 加类 + 光标变 copy */
+  window.addEventListener('lk-eyedrop-active', ((e: Event) => {
+    const on = !!(e as CustomEvent<boolean>).detail;
+    wrap.classList.toggle('lk-eyedrop', on);
+    wrap.style.cursor = on ? 'copy' : 'crosshair';
+  }) as EventListener);
 
   /* 指针手柄拖动 */
   const handle = cursorEl.querySelector('.tl-cursor-handle') as HTMLElement;
   let handleDrag = false;
   handle.addEventListener('pointerdown', (e) => {
-    if (!cursorEl.style.display) return;
+    if (cursorEl.style.display === 'none') return;   /* 仅真正隐藏时不能拖；常显('')可拖 */
     handleDrag = true;
     e.stopPropagation();
   });
@@ -261,7 +453,7 @@ export function mountTimeline(
   let pendingSegs: { start: number; end: number | null }[] = [];  // 累积段
   const brushSel = document.createElement('div');
   brushSel.style.cssText =
-    'position:absolute;top:26px;bottom:0;z-index:4;pointer-events:none;background:rgba(158,194,98,.10);border:1px solid rgba(158,194,98,.55);display:none;';
+    'position:absolute;top:34px;bottom:0;z-index:4;pointer-events:none;background:rgba(158,194,98,.10);border:1px solid rgba(158,194,98,.55);display:none;';
   wrap.appendChild(brushSel);
 
   function linesOf(): Storyline[] {
@@ -395,7 +587,7 @@ export function mountTimeline(
     if (!mask) {
       mask = document.createElement('div');
       mask.id = 'lk-story-mask';
-      mask.style.cssText = 'position:absolute;top:26px;bottom:0;left:0;right:0;z-index:2;pointer-events:none;';
+      mask.style.cssText = 'position:absolute;top:34px;bottom:0;left:0;right:0;z-index:2;pointer-events:none;';
       wrap.appendChild(mask);
     }
     mask.innerHTML = '';
@@ -405,7 +597,7 @@ export function mountTimeline(
       const hi = ln.segments.some((s) => s.end === null)
         ? Math.max(...ln.segments.map((s) => (s.end === null ? -Infinity : s.end)), ...ln.segments.filter((s) => s.end === null).map(() => (timeline()?.nodes.map((n) => n.year).reduce((a, b) => Math.max(a, b), -Infinity) ?? 0)))
         : Math.max(...ln.segments.map((s) => s.end!));
-      const xLo = timeToX(lo), xHi = timeToX(hi);
+      const xLo = timeToX(yearEpoch(lo)), xHi = timeToX(yearEpoch(hi));
       const w = wrap.clientWidth;
       if (xLo > 0) mask.innerHTML += `<div style="position:absolute;top:0;bottom:0;left:0;width:${xLo}px;background:rgba(110,108,100,.3);"></div>`;
       if (xHi < w) mask.innerHTML += `<div style="position:absolute;top:0;bottom:0;left:${xHi}px;width:${w - xHi}px;background:rgba(110,108,100,.3);"></div>`;
@@ -420,8 +612,8 @@ export function mountTimeline(
     bar.innerHTML = '';
     if (ln) {
       ln.segments.forEach((s) => {
-        const x0 = timeToX(s.start);
-        const x1 = s.end === null ? timeToX(Math.max(...(timeline()?.nodes.map((n) => n.year) ?? [s.start]))) : timeToX(s.end);
+        const x0 = timeToX(yearEpoch(s.start));
+        const x1 = s.end === null ? timeToX(yearEpoch(Math.max(...(timeline()?.nodes.map((n) => n.year) ?? [s.start])))) : timeToX(yearEpoch(s.end));
         bar.innerHTML += `<div class="tl__storybar-seg" style="left:${x0}px;width:${Math.max(2, x1 - x0)}px;"></div>`;
       });
     }
@@ -440,12 +632,13 @@ export function mountTimeline(
       origRender();
     }
     renderStoryOverlay();
+    drawCauses();
   };
 
   function lineHtmlOf(nodes: TimelineNode[]): string {
     let html = '<div class="tl-line"></div>';
     return html + nodes.map((n) => {
-      const x = timeToX(n.year);
+      const x = timeToX(nodeEpoch(n));
       const sel = n.id === selectedId;
       return nodeHtml(n, x, sel);
     }).join('');
@@ -512,7 +705,7 @@ export function mountTimeline(
     if (!frames) {
       frames = document.createElement('div');
       frames.id = 'lk-loop-frames';
-      frames.style.cssText = 'position:absolute;top:26px;left:0;right:0;bottom:0;z-index:1;pointer-events:none;';
+      frames.style.cssText = 'position:absolute;top:34px;left:0;right:0;bottom:0;z-index:1;pointer-events:none;';
       wrap.appendChild(frames);
     }
     frames.innerHTML = '';
@@ -521,14 +714,14 @@ export function mountTimeline(
     loopsOf().forEach((L) => {
       const r = loopRange(L);
       if (!r) return;
-      const x0 = timeToX(r.lo), x1 = timeToX(r.hi);
+      const x0 = timeToX(yearEpoch(r.lo)), x1 = timeToX(yearEpoch(r.hi));
       frames.innerHTML += `<div class="tl__loop" data-loop-id="${L.id}" style="left:${x0}px;width:${Math.max(2, x1 - x0)}px;" title="${L.name}（${L.count} 次）"><span class="tl__loop-badge">${L.count}×</span></div>`;
       /* 幽灵节点：范围内节点复制 count-1 次，偏移 span */
       if (L.count > 1) {
         const inner = tl.nodes.filter((n) => n.year >= r.lo && n.year <= r.hi);
         for (let c = 1; c < L.count; c++) {
           inner.forEach((n) => {
-            const x = timeToX(n.year + c * r.span);
+            const x = timeToX(yearEpoch(n.year + c * r.span));
             frames!.innerHTML += `<div class="tl__ghost" style="left:${x}px;"><div class="cap"></div><div class="tl__name">${n.title}²</div></div>`;
           });
         }

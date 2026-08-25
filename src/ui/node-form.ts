@@ -4,18 +4,18 @@ import { addNode } from '../store/actions';
 
 /** 时间文本解析（精简版，照抄 legacy parseTimeText）："312" / "312年7月" / "312年7月15日" */
 /** 时间文本解析（支持任意分隔符）："312" / "312年7月" / "312-7-15" / "312.7.15.8.30.45" / "312/7/15"
- * 分隔符可以是 -.、/，年月日时分秒字面量。自动识别精度，全部折算进小数年份。 */
+ * 分隔符可以是 -.、/，年月日时分秒字面量。自动识别精度，返回结构化 年/月/日/时/分/秒（不再压成小数）。 */
 export function parseTimeText(text: string): { year: number; precision: 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second'; month?: number; day?: number; hour?: number; minute?: number; second?: number } | null {
   const t = String(text || '').trim();
   if (!t) return null;
-  /* 把年月日时分秒字面量和任意分隔符统一归一成 "." 便于 split */
-  const norm = t
-    .replace(/[年月日时分秒]/g, '.')
-    .replace(/[\-\/\、,，\s·:：]+/g, '.');
-  const parts = norm.split('.').filter((p) => p !== '');
-  if (!parts.length) return null;
-  if (parts.length > 6) return null;
-  const nums = parts.map((p) => parseInt(p, 10));
+  /* 提取所有整数（带负号：负号仅当紧邻串首或非数字字符时才算，数字间的 - 当分隔符）。
+     任意非数字字符（年月日时分秒字面量、|/;~@、空格等）一律当分隔符 → 支持任意符号分隔。 */
+  const nums: number[] = [];
+  const re = /(^|[^\d])(-?\d+)/g;
+  let m;
+  while ((m = re.exec(t)) !== null) nums.push(parseInt(m[2], 10));
+  if (!nums.length) return null;
+  if (nums.length > 6) return null;
   if (nums.some((n) => Number.isNaN(n))) return null;
   const year = nums[0];
   const month = nums.length > 1 ? nums[1] : undefined;
@@ -28,15 +28,8 @@ export function parseTimeText(text: string): { year: number; precision: 'year' |
   if (hour !== undefined && (hour < 0 || hour > 23)) return null;
   if (minute !== undefined && (minute < 0 || minute > 59)) return null;
   if (second !== undefined && (second < 0 || second > 59)) return null;
-  /* 全折算进小数年份；月→/12，日→/360，时→/8640(24*360)，分→/518400，秒→/31104000 */
-  let y = year;
-  if (month) y += (month - 1) / 12;
-  if (day) y += (day - 1) / 360;
-  if (hour) y += hour / 8640;
-  if (minute) y += minute / 518400;
-  if (second) y += second / 31104000;
   const precision = second !== undefined ? 'second' : minute !== undefined ? 'minute' : hour !== undefined ? 'hour' : day !== undefined ? 'day' : month !== undefined ? 'month' : 'year';
-  return { year: Math.round(y * 1e6) / 1e6, precision, month, day, hour, minute, second };
+  return { year, precision, month, day, hour, minute, second };
 }
 
 /** 小数年份 → 人类可读时间文本（"312" / "312年7月" / "312年7月15日" / "312年7月15日9时30分"） */
@@ -132,6 +125,11 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
       type: type.value as 'world_event' | 'story_event',
       year: parsed?.year ?? 0,
       precision: parsed?.precision ?? 'year',
+      month: parsed?.month,
+      day: parsed?.day,
+      hour: parsed?.hour,
+      minute: parsed?.minute,
+      second: parsed?.second,
       desc: desc.value.trim() || undefined,
       doc: docBox.value,   /* 正文（Markdown） */
     });

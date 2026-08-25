@@ -21,6 +21,7 @@ export function addNode(store: Store, tlId: string, node: Partial<TimelineNode>)
     if (!tl) return;
     tl.nodes.push({
       id, title: node.title ?? '新节点', year: node.year ?? 0, precision: node.precision ?? 'year',
+      month: node.month, day: node.day, hour: node.hour, minute: node.minute, second: node.second,
       type: node.type ?? 'world_event', doc: node.doc ?? '',
     });
   });

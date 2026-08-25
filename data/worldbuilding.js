@@ -24,7 +24,16 @@ window.__SEED_TIMELINES__ = {
         { year: 1632, type: 'plot', title: '星语者出生', desc: '',
           tag: '人物', people: ['星语者'], places: [] },
         { year: 1832, type: 'event', title: '现在', desc: '示例世界·白石大陆，当前纪年。',
-          tag: '当下', people: [], places: [] }
+          tag: '当下', people: [], places: [] },
+        /* ── 公历测试节点（带 year/month/day，方便验证闰年/大小月）── */
+        { year: 1900, month: 2, day: 28, type: 'event', title: '公历·1900平年2月28', desc: '1900 非闰（百倍需400整除），2月只有28天。', tag: '测试', people: [], places: [] },
+        { year: 1999, month: 12, day: 31, type: 'event', title: '公历·1999年12月31', desc: '平年年末，12月有31天。', tag: '测试', people: [], places: [] },
+        { year: 2000, month: 2, day: 29, type: 'event', title: '公历·2000闰年2月29', desc: '2000 是闰年（400整除），2月29天。', tag: '测试', people: [], places: [] },
+        { year: 2023, month: 2, day: 28, type: 'event', title: '公历·2023平年2月28', desc: '2023 平年，2月28天。', tag: '测试', people: [], places: [] },
+        { year: 2024, month: 2, day: 29, type: 'event', title: '公历·2024闰年2月29', desc: '2024 闰年（4整除），2月29天。', tag: '测试', people: [], places: [] },
+        { year: 2024, month: 3, day: 1, type: 'event', title: '公历·2024年3月1', desc: '闰年后3月1，验证跨月边界。', tag: '测试', people: [], places: [] },
+        { year: 2024, month: 4, day: 30, type: 'event', title: '公历·2024年4月30', desc: '4月30天（小月）。', tag: '测试', people: [], places: [] },
+        { year: 2024, month: 7, day: 15, type: 'plot', title: '公历·2024年7月15', desc: '大月中的日子，测节点定位。', tag: '测试', people: [], places: [] }
       ]
     },
     'demo-echo': {

@@ -1,7 +1,9 @@
 /** 节点详情面板（TS 版）——分区就地编辑：点哪块编辑哪块，点区域外 blur 自动保存 */
 import type { Store } from '../store/store';
+import { currentWorld } from '../store/store';
 import type { TimelineNode } from '../store/types';
 import { parseTimeText } from './node-form';
+import { requestEyedrop } from './eyedrop';
 
 interface ParsedDoc {
   fields: { k: string; v: string }[];
@@ -26,25 +28,15 @@ export function parseDoc(doc: string | undefined): ParsedDoc {
 }
 
 export function fmtNodeTime(n: TimelineNode): string {
-  const yr = Math.floor(n.year + 1e-9);
-  const frac = n.year - yr;
-  if (n.precision === 'year' || frac <= 0.001) return `${yr}年`;
-  const month = Math.floor(frac * 12) + 1;
-  const rem = (frac * 12 - (month - 1)) * 30;
-  const day = Math.floor(rem + 1e-6) + 1;
-  let s = `${yr}年${month}月`;
-  if (n.precision === 'day' || n.precision === 'hour' || n.precision === 'minute' || n.precision === 'second') s += `${day}日`;
-  const dayFrac = rem - (day - 1);
-  if (n.precision === 'hour' || n.precision === 'minute' || n.precision === 'second') {
-    const hour = Math.floor(dayFrac * 24);
-    const hourRem = (dayFrac * 24 - hour) * 60;
-    const minute = Math.floor(hourRem + 1e-6);
-    const second = Math.floor((hourRem - minute) * 60 + 1e-6);
-    s += `${hour}时`;
-    if (n.precision === 'minute' || n.precision === 'second') s += `${minute}分`;
-    if (n.precision === 'second') s += `${second}秒`;
-  }
-  return s;
+  const yr = n.year;
+  const m = n.month, d = n.day, h = n.hour, mi = n.minute, s = n.second;
+  let str = `${yr}年`;
+  if (m !== undefined && m >= 1) str += `${m}月`;
+  if (d !== undefined && d >= 1) str += `${d}日`;
+  if (h !== undefined) str += `${h}时`;
+  if (mi !== undefined) str += `${mi}分`;
+  if (s !== undefined) str += `${s}秒`;
+  return str;
 }
 
 export function renderNodeDetail(
@@ -63,7 +55,7 @@ export function renderNodeDetail(
     /* 通过 tlId+id 在 store 里找最新节点（node 引用可能因外部重载失效），同步所有字段再保存 */
     store.update((d) => {
       const n = d.worldsets[store.activeWorld]?.timelines[tlId ?? '']?.nodes.find((x) => x.id === node.id);
-      if (n) { n.title = node.title; n.type = node.type; n.desc = node.desc; n.doc = node.doc; n.year = node.year; n.precision = node.precision; }
+      if (n) { n.title = node.title; n.type = node.type; n.desc = node.desc; n.doc = node.doc; n.year = node.year; n.precision = node.precision; n.month = node.month; n.day = node.day; n.hour = node.hour; n.minute = node.minute; n.second = node.second; n.causes = node.causes; }
     });
     if (onChanged) onChanged();
   }
@@ -84,6 +76,7 @@ export function renderNodeDetail(
         </div>
         <div id="d-d" style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;cursor:text;min-height:18px;">${cur.desc ? mdRender(cur.desc) : '<span style="color:var(--fg-2);">(无描述)</span>'}</div>
         <div id="d-fields" style="display:flex;flex-direction:column;gap:6px;"></div>
+        <div id="d-causes" style="display:flex;flex-direction:column;gap:4px;border-top:1px dashed var(--border-soft);padding-top:6px;"></div>
         <div id="d-b" style="font-size:var(--text-sm);color:var(--fg);line-height:1.7;cursor:text;min-height:18px;">${body ? mdRender(body) : '<span style="color:var(--fg-2);">(空正文)</span>'}</div>
       </div>`;
 
@@ -113,7 +106,7 @@ export function renderNodeDetail(
         inp.focus(); inp.select();
         inp.addEventListener('blur', () => {
           const p = parseTimeText(inp.value);
-          if (p) { node.year = p.year; node.precision = p.precision; save(); }
+          if (p) { node.year = p.year; node.precision = p.precision; node.month = p.month; node.day = p.day; node.hour = p.hour; node.minute = p.minute; node.second = p.second; save(); }
           renderView();
         });        inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') inp.blur(); });
       });
@@ -131,6 +124,40 @@ export function renderNodeDetail(
 
     const fieldsBox = host.querySelector('#d-fields') as HTMLElement;
     fields.forEach((f) => { fieldsBox.appendChild(makeFieldCard(f.k, f.v)); });
+    const causesBox = host.querySelector('#d-causes') as HTMLElement;
+    renderCauses(causesBox);
+  }
+
+  /* 因果区：本事件由哪些节点导致（可删/添加），画线数据存在 node.causes（目标节点 id） */
+  function renderCauses(box: HTMLElement) {
+    const tl = tlId ? currentWorld(store).timelines[tlId] : undefined;
+    const all: TimelineNode[] = (tl?.nodes ?? []) as TimelineNode[];
+    const nameOf = (id: string) => all.find((x: TimelineNode) => x.id === id)?.title ?? id;
+    box.innerHTML = `<div style="font-size:11px;font-weight:600;color:var(--fg-2);">因果</div>` +
+      `<div style="display:flex;flex-wrap:wrap;gap:4px;">` +
+      ((node.causes ?? []).map((id) =>
+        `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:2px 8px;font-size:var(--text-xs);color:var(--fg);">
+          <span style="color:var(--accent);">◈</span>${escapeHtml(nameOf(id))}
+          <button data-cid="${escapeHtml(id)}" style="border:none;background:none;color:var(--fg-2);cursor:pointer;font-size:12px;line-height:1;">×</button>
+        </span>`).join('')
+      ) +
+      `<button id="d-causes-add" style="border:1px dashed var(--border-strong);background:none;color:var(--fg-2);border-radius:var(--radius-sm);padding:2px 8px;font-size:var(--text-xs);cursor:pointer;">+ 添加导致</button>` +
+      `</div>`;
+    box.querySelectorAll('[data-cid]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = (btn as HTMLElement).dataset.cid!;
+        node.causes = (node.causes ?? []).filter((x) => x !== id);
+        save(); renderView();
+      });
+    });
+    box.querySelector('#d-causes-add')?.addEventListener('click', () => {
+      const slot = box.querySelector('#d-causes-add') as HTMLElement;
+      slot.textContent = '点取时间线节点… Esc 取消';
+      requestEyedrop((id) => {
+        node.causes = [...(node.causes ?? []), id];
+        save(); renderView();
+      });
+    });
   }
 
   /** 内联编辑：点击元素切换为 input/textarea，blur 保存并恢复只读 */

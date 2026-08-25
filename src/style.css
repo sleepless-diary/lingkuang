@@ -351,6 +351,46 @@ body {
   height: 100%;
   border-left: 1px solid var(--border-soft);
 }
+/* 主刻度：粗、更高、带文字；长度 = 小刻度的 1.5 倍 */
+.tl__axis-tick--major {
+  border-left: 2px solid var(--fg-2);
+  height: 12px;               /* 小刻度 8px × 1.5 */
+  top: 3px;                   /* 与小刻度顶部对齐 */
+  z-index: 2;
+}
+/* 小刻度：矮、细、不带文字，像尺子副刻度；顶部与主刻度对齐 */
+.tl__axis-tick--minor {
+  border-left: 1px solid var(--border-soft);
+  height: 8px;
+  top: 0;
+}
+/* 主刻度文字：上一级(prev)更粗在左、当前(cur)在右，位于大竖线正下方并排 */
+/* 主刻度：上一级(prev)在大竖线正下方居中，当前(label)在竖线右侧——上下分层区分 */
+.tl__axis-tick--major {
+  border-left: 2px solid var(--fg-2);
+  height: 12px;
+  top: 0;
+  z-index: 2;
+}
+.tl__axis-tick--major .tl__axis-label,
+.tl__axis-tick--major .tl__axis-prev {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  white-space: nowrap;
+}
+.tl__axis-tick--major .tl__axis-prev {
+  top: 14px;                    /* 大竖线下方 */
+  left: 0;
+  transform: translateX(-50%);  /* 居中到竖线位置 */
+  color: var(--fg);
+  font-weight: 600;
+}
+.tl__axis-tick--major .tl__axis-label {
+  top: 4px;                     /* 竖线旁 */
+  left: 3px;                    /* 竖线右侧 */
+  color: var(--fg-2);
+}
 .tl__axis-label {
   position: absolute;
   top: 3px;
@@ -374,45 +414,117 @@ body {
 .tl__ghost .cap { position: absolute; left: 8px; top: 8px; width: 10px; height: 10px; border-radius: 50%; background: var(--fg); border: 1px dashed var(--accent); }
 .tl__ghost .tl__name { position: absolute; top: 22px; left: 50%; transform: translateX(-50%); font-size: 9px; color: var(--fg-2); white-space: nowrap; }
 
-/* ── 分段 markdown 编辑器（光标段源码 + 其他段 markdown-it 预览）── */
+/* ── tiptap 所见即所得编辑器（简洁无框，撑满可点即输）── */
 #ed-doc { padding: 0; border: none !important; outline: none; box-shadow: none; }
-#ed-doc .md-editor { border: none !important; outline: none; box-shadow: none; }
-#ed-doc .md-editor {
+#ed-doc .tiptap {
   height: 100%;
   min-height: 100%;
   outline: none;
-  overflow-y: auto;
+  cursor: text;
   color: var(--fg);
-  font-size: var(--text-sm);
-  line-height: 1.7;
-  padding: 12px 14px;
+  font-size: 18px;
+  line-height: 1.65;
+  padding: 14px 16px;
   font-family: inherit;
 }
-#ed-doc .md-editor .md-seg { margin: 0 0 4px; border-radius: var(--radius-sm); }
-#ed-doc .md-editor .md-seg.is-prev { cursor: text; }
-#ed-doc .md-editor .md-seg.is-prev:hover { background: var(--surface-2); }
-#ed-doc .md-editor .md-seg.is-src {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  white-space: pre-wrap;
-  word-break: break-word;
-  outline: none;
-  cursor: text;
-}
-/* 禁编辑器内所有浏览器默认 focus ring（避免源码段聚焦时出现橙色 focus 框） */
-#ed-doc .md-editor .md-seg:focus,
-#ed-doc .md-editor .md-seg:focus-visible,
-#ed-doc .md-editor .md-seg *:focus,
-#ed-doc .md-editor .md-seg *:focus-visible {
+/* 屏蔽编辑器内所有浏览器默认 focus ring（含 -webkit-focus-ring-color 系统 accent 色），
+   避免点进编辑区出现橙色/蓝色系统焦点框 */
+#ed-doc .tiptap:focus,
+#ed-doc .tiptap:focus-within,
+#ed-doc .tiptap:focus-visible,
+#ed-doc .tiptap *, #ed-doc .tiptap *::before, #ed-doc .tiptap *::after {
   outline: none !important;
   box-shadow: none !important;
+  -webkit-focus-ring-color: transparent !important;
 }
-#ed-doc .md-editor .md-seg.is-prev p { margin: 0 0 0.4em; }
-#ed-doc .md-editor .md-seg.is-prev h1 { font-size: 18px; margin: 0.6em 0 0.3em; }
-#ed-doc .md-editor .md-seg.is-prev h2 { font-size: 16px; margin: 0.6em 0 0.3em; }
-#ed-doc .md-editor .md-seg.is-prev h3 { font-size: 14px; margin: 0.6em 0 0.3em; }
-#ed-doc .md-editor .md-seg.is-prev ul, #ed-doc .md-editor .md-seg.is-prev ol { padding-left: 1.2em; margin: 0.4em 0; }
-#ed-doc .md-editor .md-seg.is-prev code { background: var(--surface-2); padding: 0 4px; border-radius: 2px; font-family: var(--font-mono); font-size: 12px; }
-#ed-doc .md-editor .md-seg.is-prev pre { background: var(--surface-2); padding: 8px 10px; border-radius: var(--radius-sm); overflow: auto; }
-#ed-doc .md-editor .md-seg.is-prev a { color: var(--fg-2); }
-#ed-doc .md-editor .md-seg.is-prev blockquote { border-left: 2px solid var(--border-strong); margin: 0.4em 0; padding-left: 10px; color: var(--fg-2); }
+#ed-doc .tiptap p { margin: 0 0 0.4em; }
+#ed-doc .tiptap h1 { font-size: 2.3em; font-weight: 700; margin: 0.9em 0 0.5em; line-height: 1.25; }
+#ed-doc .tiptap h2 { font-size: 1.55em; font-weight: 700; margin: 0.8em 0 0.45em; line-height: 1.3; }
+#ed-doc .tiptap h3 { font-size: 1.3em; font-weight: 700; margin: 0.7em 0 0.4em; line-height: 1.35; }
+#ed-doc .tiptap h4 { font-size: 1.15em; font-weight: 700; margin: 0.6em 0 0.35em; line-height: 1.4; }
+#ed-doc .tiptap h5 { font-size: 1.05em; font-weight: 700; margin: 0.55em 0 0.3em; }
+#ed-doc .tiptap h6 { font-size: 1em; font-weight: 600; margin: 0.5em 0 0.3em; color: var(--fg-2); }
+#ed-doc .tiptap ul, #ed-doc .tiptap ol { padding-left: 1.2em; margin: 0.4em 0; }
+#ed-doc .tiptap code { background: var(--surface-2); padding: 0 4px; border-radius: 2px; font-family: var(--font-mono); font-size: 12px; }
+#ed-doc .tiptap pre { background: var(--surface-2); padding: 8px 10px; border-radius: var(--radius-sm); overflow: auto; }
+#ed-doc .tiptap a { color: var(--fg-2); }
+#ed-doc .tiptap blockquote { border-left: 2px solid var(--border-strong); margin: 0.4em 0; padding-left: 10px; color: var(--fg-2); }
+#ed-doc .tiptap img { max-width: 100%; border-radius: var(--radius-sm); }
+/* 正文 #tag 胶囊（Obsidian 风格；文字 --fg，不用绿色字体） */
+#ed-doc .tiptap .md-tag {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 0.88em;
+  line-height: 1.3;
+  vertical-align: baseline;
+  cursor: default;
+}
+
+/* ── 编辑器左侧 Obsidian 风格文件树（世界→时间线→节点）── */
+.ed-tree { display: flex; flex-direction: column; }
+.ed-tnode {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--fg);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+.ed-tnode:hover { background: var(--surface); }
+/* 世界层 */
+.ed-tworld { margin-top: 2px; font-weight: 600; }
+.ed-tworld .ed-tlabel { color: var(--fg); }
+/* 时间线层（缩进一档）*/
+.ed-ttl { padding-left: 18px; }
+.ed-ttl .ed-tlabel { color: var(--fg); }
+/* 类型文件夹层（时间线与节点之间缩进）*/
+.ed-tkind { padding-left: 27px; }
+.ed-tkind .ed-tlabel { color: var(--fg); font-weight: 500; }
+/* 节点层（再缩进）*/
+.ed-tnode-item { padding-left: 36px; }
+.ed-tnode-item .ed-tlabel { color: var(--fg-2); }
+.ed-tnode-item:hover .ed-tlabel { color: var(--fg); }
+/* 选中高亮：背景色，不用绿色字体 */
+.ed-tnode-item.is-on { background: var(--chrome); color: var(--fg-inverse); }
+.ed-tnode-item.is-on .ed-tlabel { color: var(--fg-inverse); }
+.ed-tnode-item.is-on .ed-tyear { color: var(--fg-2); }
+/* 展开箭头（caret）*/
+.ed-tcaret {
+  flex-shrink: 0;
+  width: 0;
+  height: 0;
+  border-left: 5px solid var(--fg-2);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 120ms ease;
+}
+.ed-tnode.is-open .ed-tcaret { transform: rotate(90deg); }
+/* 类型/实体树同样复用 */
+.ed-ttype { font-weight: 600; }
+.ed-ttype .ed-tlabel { color: var(--fg); }
+/* 计数（小字，右侧）*/
+.ed-tcount { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--fg-2); }
+.ed-tyear { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--fg-2); }
+
+/* ── 编辑器属性面板（Obsidian 键值对风格；文字 --fg/--fg-2，不用绿色字体）── */
+.ed-props { display: flex; flex-direction: column; gap: 5px; }
+.ed-prop { display: flex; align-items: center; gap: 8px; }
+.ed-prop-k { flex-shrink: 0; width: 46px; font-size: var(--text-xs); color: var(--fg-2); }
+.ed-prop-v { font-size: var(--text-xs); color: var(--fg); }
+.ed-prop-desc { display: flex; gap: 8px; margin-top: 2px; }
+.ed-prop-desc .ed-prop-v { white-space: pre-wrap; color: var(--fg-2); line-height: 1.5; }
+/* 可编辑输入（已回退，仅保留只读展示样式） */
+.ed-props-title { margin-top: 6px; font-size: var(--text-xs); font-weight: 600; color: var(--fg); }
+/* 吸管模式：时间线高亮提示 */
+.tl-wrap.lk-eyedrop { box-shadow: inset 0 0 0 2px var(--accent); }

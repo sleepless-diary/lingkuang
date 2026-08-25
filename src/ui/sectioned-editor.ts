@@ -21,9 +21,10 @@ function readSegText(el: HTMLElement): string {
 export function createSectionedEditor(host: HTMLElement, initialMd: string, opts: SectionedEditorOptions = {}): SectionedEditor {
   const md = new MarkdownIt({ html: false, linkify: false, typographer: false });
   let fullText = initialMd;
-  let sections: MdSection[] = splitMarkdown(fullText);
+  let sections: MdSection[] = splitMarkdown(fullText, true);
   let activeIdx = -1;
   let destroyed = false;
+  let suppressBlur = false;   /* renderAll 重建期间抑制 focusout，避免误存退出 */
   const segEls: HTMLElement[] = [];
 
   host.classList.add('md-editor');
@@ -41,13 +42,15 @@ export function createSectionedEditor(host: HTMLElement, initialMd: string, opts
     const newSrc = readSegText(segEls[activeIdx]);
     if (newSrc !== s.source) {
       fullText = fullText.slice(0, s.start) + newSrc + fullText.slice(s.end);
-      sections = splitMarkdown(fullText);
+      sections = splitMarkdown(fullText, true);
       activeIdx = Math.min(activeIdx, Math.max(0, sections.length - 1));
     }
   }
 
   /* 全量重建段 DOM；focusIdx 段为源码（contenteditable），其余预览（markdown-it 渲染） */
   function renderAll(focusIdx: number) {
+    /* 重建 DOM 会移除当前聚焦段 → 触发 focusout；抑制它，避免误判为"退出编辑"保存 */
+    suppressBlur = true;
     ensureSections();
     activeIdx = Math.max(0, Math.min(focusIdx, sections.length - 1));
     host.textContent = '';
@@ -61,32 +64,44 @@ export function createSectionedEditor(host: HTMLElement, initialMd: string, opts
       if (isSrc) {
         el.setAttribute('contenteditable', 'true');
         el.textContent = s.source;
+        /* 内联强制清 contenteditable 聚焦时的系统 focus ring（Chromium UA 层用
+           -webkit-focus-ring-color，外部 CSS 有时压不住；内联优先级最高一定能生效） */
+        const st = el.style;
+        st.outline = 'none';
+        st.boxShadow = 'none';
+        st.border = 'none';
+        (st as any).webkitFocusRingColor = 'transparent';
       } else {
         el.innerHTML = md.render(s.source);
       }
       segEls.push(el);
       host.appendChild(el);
     }
+    /* 不在此复位 suppressBlur：保持 true 直到 placeCaret 聚焦成功后再复位，覆盖重建产生的失焦 */
   }
 
-  /* 把光标放到源码段 caret 处 */
+  /* 把光标放到源码段 caret 处，并聚焦该段 */
   function placeCaret(idx: number, caret = 0) {
     const el = segEls[idx];
     if (!el) return;
     el.focus();
     const sel = window.getSelection();
-    if (!sel) return;
-    const tn = el.firstChild;
-    const range = document.createRange();
-    if (tn && tn.nodeType === Node.TEXT_NODE) {
-      const pos = Math.min(caret, (tn.textContent ?? '').length);
-      range.setStart(tn, pos);
-    } else {
-      range.setStart(el, 0);
+    if (sel) {
+      const tn = el.firstChild;
+      const range = document.createRange();
+      if (tn && tn.nodeType === Node.TEXT_NODE) {
+        const pos = Math.min(caret, (tn.textContent ?? '').length);
+        range.setStart(tn, pos);
+      } else {
+        /* 空段：以 el 为准，确保选区落在段内 */
+        range.setStart(el, 0);
+      }
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
     }
-    range.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(range);
+    /* 聚焦已回到 editor 内；延迟解除失焦抑制，确保 focusout 派发窗口已过 */
+    requestAnimationFrame(() => { suppressBlur = false; });
   }
 
   /* 切到某段为源码段：先 flush 当前段写回，再重分段重渲染，然后聚焦 */
@@ -129,16 +144,51 @@ export function createSectionedEditor(host: HTMLElement, initialMd: string, opts
     const idx = segIndexOfNode(sel.anchorNode);
     if (idx !== activeIdx || activeIdx < 0) return;
     const el = segEls[activeIdx];
-    const text = (el.firstChild?.textContent ?? el.innerText ?? '');
-    const caret = sel.anchorOffset;
-    const atStart = caret <= 0;
-    const atEnd = caret >= text.length;
+    const text = readSegText(el);
+    /* atStart/atEnd 用 Range 比较光标与段边界（比 anchorOffset 可靠，不受 anchorNode 类型影响） */
+    let atStart = false;
+    let atEnd = false;
+    try {
+      const range = sel.getRangeAt(0);
+      const head = document.createRange();
+      head.setStart(el, 0);
+      head.collapse(true);
+      atStart = range.compareBoundaryPoints(Range.START_TO_START, head) <= 0;
+      const tail = document.createRange();
+      tail.selectNodeContents(el);
+      tail.collapse(false);
+      atEnd = range.compareBoundaryPoints(Range.START_TO_START, tail) >= 0;
+    } catch { /* 保护：range 异常时视为非边界 */ }
     if (e.key === 'ArrowDown' && atEnd && activeIdx < sections.length - 1) {
       e.preventDefault();
       setActive(activeIdx + 1, 0);
     } else if (e.key === 'ArrowUp' && atStart && activeIdx > 0) {
       e.preventDefault();
       setActive(activeIdx - 1, 0);
+    } else if (e.key === 'Enter' && atEnd && /^ {0,3}#{1,6}/.test(text)) {
+      /* 标题语法：源码段段尾回车 → 该段渲染为标题预览，光标落入新的空白可编辑段继续写。
+         note-gen 手感：`##` 后没打空格也认（回车时自动补空格成合法标题）。
+         实现：先在段源码里补空格（若缺），再在段尾插入换行，使 splitMarkdown(keepBlank) 产出 heading + blank 两段。 */
+      e.preventDefault();
+      flushActive();
+      ensureSections();
+      const cur = sections[activeIdx];
+      /* note-gen 手感：标题行若 `#` 后无空格（如纯 `##` 或 `##标题`），自动补一个空格成合法标题 */
+      let titleSrc = cur.source;
+      let titleEnd = titleSrc.length;   // 标题行结束位置（在 titleSrc 中的索引）
+      if (/^ {0,3}#{1,6}/.test(titleSrc) && !/^ {0,3}#{1,6}\s/.test(titleSrc)) {
+        const m = /^ {0,3}(#{1,6})/.exec(titleSrc)!;
+        titleEnd = m[0].length;
+        titleSrc = titleSrc.slice(0, titleEnd) + ' ' + titleSrc.slice(titleEnd);
+        fullText = fullText.slice(0, cur.start) + titleSrc + fullText.slice(cur.end);
+        sections = splitMarkdown(fullText, true);
+      }
+      const c2 = sections[activeIdx];
+      fullText = fullText.slice(0, c2.end) + '\n' + fullText.slice(c2.end);
+      sections = splitMarkdown(fullText, true);
+      ensureSections();
+      renderAll(activeIdx + 1);
+      placeCaret(activeIdx + 1, 0);
     } else if (e.key === 'Backspace' && atStart && activeIdx > 0) {
       e.preventDefault();
       flushActive();
@@ -147,7 +197,7 @@ export function createSectionedEditor(host: HTMLElement, initialMd: string, opts
       const prev = sections[activeIdx - 1];
       const merged = prev.source + '\n' + cur.source;
       fullText = fullText.slice(0, prev.start) + merged + fullText.slice(cur.end);
-      sections = splitMarkdown(fullText);
+      sections = splitMarkdown(fullText, true);
       renderAll(activeIdx - 1);
       placeCaret(activeIdx, prev.source.length);
     }
@@ -156,8 +206,12 @@ export function createSectionedEditor(host: HTMLElement, initialMd: string, opts
   /* 失焦：当前源码段写回，回调保存 */
   function onFocusOut(e: FocusEvent) {
     if (destroyed) return;
+    /* 重建 DOM 时移除旧段触发 focusout，但新段马上会聚焦回 host：若当前/即将的焦点还在 host 内则不保存退出 */
     const related = e.relatedTarget as Node | null;
-    if (related && host.contains(related)) return;   // 仍在编辑器内
+    if (related && host.contains(related)) return;
+    const ae = document.activeElement as Node | null;
+    if (ae && host.contains(ae)) return;
+    if (suppressBlur) return;
     flushActive();
     opts.onBlur?.(getMarkdown());
   }
@@ -168,7 +222,7 @@ export function createSectionedEditor(host: HTMLElement, initialMd: string, opts
   }
   function setMarkdown(mdText: string) {
     fullText = mdText;
-    sections = splitMarkdown(fullText);
+    sections = splitMarkdown(fullText, true);
     renderAll(0);
     placeCaret(0);
   }
