@@ -51,13 +51,15 @@ function openDialog(opts: DialogOptions & { extra?: (card: HTMLElement) => Extra
     if (opts.message) {
       const p = document.createElement('div');
       p.textContent = opts.message;
-      p.style.cssText = 'font-size:var(--text-sm);line-height:var(--leading-body);';
+      /* pre-line：文案里的 \n 要真的换行（默认会被 HTML 折叠成空格，
+         恢复/删除这类需要讲清后果的弹层经常是多行文案） */
+      p.style.cssText = 'font-size:var(--text-sm);line-height:var(--leading-body);white-space:pre-line;';
       card.appendChild(p);
     }
     if (opts.detail) {
       const p = document.createElement('div');
       p.textContent = opts.detail;
-      p.style.cssText = 'font-size:var(--text-xs);line-height:var(--leading-body);color:var(--meta);';
+      p.style.cssText = 'font-size:var(--text-xs);line-height:var(--leading-body);color:var(--meta);white-space:pre-line;';
       card.appendChild(p);
     }
 

@@ -41,5 +41,13 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
   /* 导入图片到 vault assets（返回相对路径） */
   importImage: () => ipcRenderer.invoke('vault:importImage'),
   /* 退出前同步落盘：beforeunload 里用，异步 IPC 在窗口销毁后不保证跑完 */
-  flushSync: (payload) => ipcRenderer.sendSync('app:flush-sync', payload)
+  flushSync: (payload) => ipcRenderer.sendSync('app:flush-sync', payload),
+  /* 备份管理（target: 'data' = 世界观数据 | 'lib' = 角色词库）
+     每个数据文件都有：自动轮换 .backup-0/1/2、损坏存档 .bak-corrupt-*、
+     手动备份 .bak-manual-*、恢复前快照 .bak-prerestore-* */
+  backupList: (target) => ipcRenderer.invoke('backup:list', { target }),
+  backupCreate: (target) => ipcRenderer.invoke('backup:create', { target }),
+  backupRestore: (target, path) => ipcRenderer.invoke('backup:restore', { target, path }),
+  backupExport: (target) => ipcRenderer.invoke('backup:export', { target }),
+  backupImport: (target) => ipcRenderer.invoke('backup:import', { target })
 });

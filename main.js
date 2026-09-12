@@ -299,39 +299,102 @@ function createWindow() {
   });
 }
 
-/* ── 数据文件损坏的保护 ──────────────────────────────────────
-   解析不了的 worldbuilding.json **绝不能被空数据静默覆盖**。
-   旧行为：data:load 解析失败只回 ok:false → 渲染层 jsonData=null → emptyData() 顶上 →
-   400ms 防抖自动落盘把整个文件写成「新世界」。实测：造一个截断的 worldbuilding.json 启动，
-   **不做任何操作**，文件就从 296B 变成 369B 的空世界观，界面变成「新世界」、零提示零报错；
-   而 .backup-0/1/2 三格轮换会在 3 次保存内把最后一份原文件彻底挤掉 → 数据全丢。
-   这里先把损坏内容原样另存为带时间戳的副本（沿用机器上已有的 bak-corrupt 命名），再回 ok:false。 */
-function preserveCorruptDataFile() {
+/* ══════════ 备份 / 恢复基础设施 ═══════════════════════════════
+   两个受管数据文件：
+     data → worldbuilding.json（世界观，DATA_FILE()）
+     lib  → character_lib.json（角色词库，LIB_FILE()；缺省回落到随包只读种子 LIB_SEED()）
+   每个文件在同一目录下有三类可恢复副本：
+     <base>.backup-0/1/2.json        自动轮换：每次保存前把现有文件推进去
+     <base>.bak-corrupt-<ts>.json    解析失败时逐字节另存（绝不覆盖，保命用）
+     <base>.bak-manual-<ts>.json     用户手动「立即备份」
+     <base>.bak-prerestore-<ts>.json 恢复/导入前给「当前文件」留的快照
+   备份失败一律不挡正常保存——为了备份把保存搞挂是本末倒置。 */
+const BACKUP_KEEP = 3;
+const BACKUP_TARGETS = {
+  data: { label: '世界观数据', file: () => DATA_FILE() },
+  lib: { label: '角色词库', file: () => LIB_FILE(), seed: () => LIB_SEED() },
+};
+const backupBase = (file) => path.basename(file).replace(/\.json$/, '');
+/** 时间戳沿用机器上已有副本的命名：YYYYMMDD-HHMMSS */
+function backupStamp(d = new Date()) {
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+}
+/** 不覆盖的落点：同秒重名自动加 -2 / -3 … */
+function uniqueBackupPath(dir, base, kind) {
+  const stamp = backupStamp();
+  let dest = path.join(dir, `${base}.bak-${kind}-${stamp}.json`);
+  for (let i = 2; fs.existsSync(dest) && i < 1000; i++) {
+    dest = path.join(dir, `${base}.bak-${kind}-${stamp}-${i}.json`);
+  }
+  return dest;
+}
+/** 把现有文件逐字节另存为副本（kind: corrupt | manual | prerestore），返回落点；无源/失败 → '' */
+function preserveFile(file, kind) {
   try {
-    const dir = path.dirname(DATA_FILE());
-    const base = path.basename(DATA_FILE()).replace(/\.json$/, '');
-    const d = new Date();
-    const p2 = (n) => String(n).padStart(2, '0');
-    const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-    let dest = path.join(dir, `${base}.bak-corrupt-${stamp}.json`);
-    for (let i = 2; fs.existsSync(dest) && i < 100; i++) dest = path.join(dir, `${base}.bak-corrupt-${stamp}-${i}.json`);
-    fs.copyFileSync(DATA_FILE(), dest);
+    if (!file || !fs.existsSync(file)) return '';
+    const dest = uniqueBackupPath(path.dirname(file), backupBase(file), kind);
+    fs.copyFileSync(file, dest);
     return dest;
   } catch (e) { return ''; }
 }
+/** 自动轮换：现有文件 → .backup-0，旧 0/1 依次后移，最老的丢弃 */
+function rotateBackups(file) {
+  try {
+    if (!file || !fs.existsSync(file)) return;
+    const dir = path.dirname(file);
+    const slot = (n) => path.join(dir, `${backupBase(file)}.backup-${n}.json`);
+    if (fs.existsSync(slot(BACKUP_KEEP - 1))) fs.rmSync(slot(BACKUP_KEEP - 1), { force: true });
+    for (let i = BACKUP_KEEP - 2; i >= 0; i--) {
+      if (fs.existsSync(slot(i))) fs.copyFileSync(slot(i), slot(i + 1));
+    }
+    fs.copyFileSync(file, slot(0));
+  } catch (e) { /* 备份失败不挡保存 */ }
+}
+/** 列出某个受管文件的全部可恢复项（当前 / 自动轮换 / 损坏存档 / 手动 / 恢复前快照 / 出厂种子） */
+function listBackups(target) {
+  const t = BACKUP_TARGETS[target];
+  if (!t) return { ok: false, error: '未知目标' };
+  const file = t.file();
+  const dir = path.dirname(file);
+  const base = backupBase(file);
+  const entries = [];
+  const push = (kind, label, p, restorable) => {
+    try {
+      const st = fs.statSync(p);
+      entries.push({ kind, label, path: p, name: path.basename(p), bytes: st.size, mtime: st.mtimeMs, restorable });
+    } catch (e) { /* 列不到的项跳过 */ }
+  };
+  if (fs.existsSync(file)) push('current', '当前', file, false);
+  for (let i = 0; i < BACKUP_KEEP; i++) {
+    const p = path.join(dir, `${base}.backup-${i}.json`);
+    if (fs.existsSync(p)) push('auto', `自动备份 ${i + 1}`, p, true);
+  }
+  try {
+    const KINDS = [['corrupt', '损坏存档'], ['manual', '手动备份'], ['prerestore', '恢复前快照']];
+    for (const n of fs.readdirSync(dir)) {
+      for (const [kind, label] of KINDS) {
+        if (n.startsWith(`${base}.bak-${kind}-`)) push(kind, label, path.join(dir, n), true);
+      }
+    }
+  } catch (e) { /* 目录读不了就只列已知项 */ }
+  if (t.seed && fs.existsSync(t.seed())) push('builtin', '出厂词库（随包）', t.seed(), true);
+  entries.sort((a, b) => b.mtime - a.mtime);
+  return { ok: true, target, label: t.label, file: fs.existsSync(file) ? file : '', entries };
+}
 
 /** 数据文件损坏 → 原生对话框（这种事不该被错过）。带「打开所在文件夹」，
-    省得用户自己去翻 %APPDATA%；恢复只需把副本改名回 worldbuilding.json。 */
-function notifyCorruptData(corruptPath, bytes, err) {
+    省得用户自己去翻 %APPDATA%。 */
+function notifyCorruptData(label, fileName, corruptPath, bytes, err) {
   try {
     const opts = {
       type: 'error',
       title: '数据文件损坏',
-      message: `worldbuilding.json 读不出来（${bytes} 字节）`,
+      message: `${fileName} 读不出来（${bytes} 字节）`,
       detail: [
-        `原因：${err && err.message ? err.message : String(err)}`,
+        `（${label}）原因：${err && err.message ? err.message : String(err)}`,
         corruptPath ? `为避免被覆盖，损坏内容已原样另存为：\n${corruptPath}` : '另外保存失败——请立刻手动备份该文件，否则会被覆盖。',
-        '灵框现在显示的是空白世界观。你原来的世界没有被删除，就在上面那个副本里：\n关掉灵框 → 把新的 worldbuilding.json 删掉 → 把副本改名回 worldbuilding.json。'
+        '你原来的内容没有被删除，就在上面那个副本里。也可以开灵框的「备份管理」，从副本一键恢复。'
       ].join('\n\n'),
       buttons: corruptPath ? ['打开所在文件夹', '知道了'] : ['知道了'],
       defaultId: 0,
@@ -344,6 +407,11 @@ function notifyCorruptData(corruptPath, bytes, err) {
 
 /* ── IPC: read the worldbuilding data file ─────────────────── */
 ipcMain.handle('data:load', () => {
+  /* 解析不了的 worldbuilding.json **绝不能被空数据静默覆盖**。
+     旧行为：解析失败只回 ok:false → 渲染层 jsonData=null → emptyData() 顶上 →
+     400ms 防抖自动落盘把整个文件写成「新世界」。实测：造一个截断的 worldbuilding.json
+     启动、**不做任何操作**，文件就从 296B 变成 369B 的空世界观，界面变成「新世界」、
+     零提示零报错；而 .backup-0/1/2 三格轮换会在 3 次保存内把最后一份原文件也挤掉。 */
   let raw;
   try {
     raw = fs.readFileSync(DATA_FILE(), 'utf8');
@@ -354,12 +422,83 @@ ipcMain.handle('data:load', () => {
   try {
     return { ok: true, data: JSON.parse(raw) };
   } catch (e) {
-    const corruptPath = preserveCorruptDataFile();
+    const corruptPath = preserveFile(DATA_FILE(), 'corrupt');
     /* 用 Buffer.byteLength 而不是 raw.length：raw.length 是 JS 字符串长度（UTF-16 码元数），
        中文一个字只算 1，和文件真实字节数对不上（曾把 296 字节的文件报成 264 字节）。 */
-    notifyCorruptData(corruptPath, Buffer.byteLength(raw, 'utf8'), e);
+    notifyCorruptData('世界观数据', 'worldbuilding.json', corruptPath, Buffer.byteLength(raw, 'utf8'), e);
     return { ok: false, error: 'JSON 解析失败：' + (e && e.message ? e.message : String(e)), corruptPath };
   }
+});
+
+/* ── IPC: 备份管理（列表 / 立即备份 / 恢复 / 导出到文件 / 从文件导入）── */
+const showSave = (opts) => (mainWin ? dialog.showSaveDialog(mainWin, opts) : dialog.showSaveDialog(opts));
+const showOpen = (opts) => (mainWin ? dialog.showOpenDialog(mainWin, opts) : dialog.showOpenDialog(opts));
+
+ipcMain.handle('backup:list', (e, { target } = {}) => listBackups(target));
+
+ipcMain.handle('backup:create', (e, { target } = {}) => {
+  const t = BACKUP_TARGETS[target];
+  if (!t) return { ok: false, error: '未知目标' };
+  if (!fs.existsSync(t.file())) return { ok: false, error: '还没有可备份的文件' };
+  const dest = preserveFile(t.file(), 'manual');
+  return dest ? { ok: true, path: dest } : { ok: false, error: '备份失败' };
+});
+
+ipcMain.handle('backup:restore', (e, { target, path: src } = {}) => {
+  const t = BACKUP_TARGETS[target];
+  if (!t) return { ok: false, error: '未知目标' };
+  if (typeof src !== 'string' || !src || !fs.existsSync(src)) return { ok: false, error: '来源文件不存在' };
+  const file = t.file();
+  /* 只接受「同一数据目录下的备份」，不接受任意路径——避免被诱导去覆盖别处的文件 */
+  if (path.dirname(path.resolve(src)) !== path.dirname(path.resolve(file))) {
+    return { ok: false, error: '只支持从同一数据目录下的备份恢复' };
+  }
+  const safety = preserveFile(file, 'prerestore');   /* 恢复错了还能回头 */
+  rotateBackups(file);
+  try {
+    fs.copyFileSync(src, file);
+    return { ok: true, from: src, safety, bytes: fs.statSync(file).size };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+
+ipcMain.handle('backup:export', async (e, { target } = {}) => {
+  const t = BACKUP_TARGETS[target];
+  if (!t) return { ok: false, error: '未知目标' };
+  const file = t.file();
+  if (!fs.existsSync(file)) return { ok: false, error: '还没有可导出的文件' };
+  const r = await showSave({
+    title: `导出${t.label}`,
+    defaultPath: path.join(app.getPath('documents'), `${backupBase(file)}-${backupStamp()}.json`),
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  });
+  if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+  try {
+    fs.copyFileSync(file, r.filePath);
+    return { ok: true, path: r.filePath };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+
+ipcMain.handle('backup:import', async (e, { target } = {}) => {
+  const t = BACKUP_TARGETS[target];
+  if (!t) return { ok: false, error: '未知目标' };
+  const r = await showOpen({
+    title: `从文件导入${t.label}`,
+    properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  });
+  if (r.canceled || !r.filePaths || !r.filePaths.length) return { ok: false, canceled: true };
+  const src = r.filePaths[0];
+  /* 先校验是合法 JSON 再动现有文件——不能让「导入一个坏文件」反过来把数据毁了 */
+  let raw;
+  try { raw = fs.readFileSync(src, 'utf8'); } catch (err) { return { ok: false, error: '读不了该文件：' + err.message }; }
+  try { JSON.parse(raw); } catch (err) { return { ok: false, error: '不是合法 JSON：' + err.message }; }
+  const file = t.file();
+  const safety = preserveFile(file, 'prerestore');
+  rotateBackups(file);
+  try {
+    fs.writeFileSync(file, raw, 'utf8');
+    return { ok: true, from: src, safety, bytes: Buffer.byteLength(raw, 'utf8') };
+  } catch (err) { return { ok: false, error: String(err) }; }
 });
 
 /* ── 落盘实现（同步版，供 IPC 与退出前 flush 共用）──────────────
@@ -370,14 +509,7 @@ function writeDataFileSync(payload) {
   const dir = path.dirname(DATA_FILE());
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   /* 自动备份：写前把现有文件轮换备份，保留 3 份（防误操作/崩溃丢数据） */
-  const backup = (n) => DATA_FILE().replace(/\.json$/, `.backup-${n}.json`);
-  if (fs.existsSync(DATA_FILE())) {
-    /* 轮换：3→2, 2→1, 1→0；当前内容备份到 -1 */
-    if (fs.existsSync(backup(2))) fs.rmSync(backup(2), { force: true });
-    if (fs.existsSync(backup(1))) fs.copyFileSync(backup(1), backup(2));
-    if (fs.existsSync(backup(0))) fs.copyFileSync(backup(0), backup(1));
-    fs.copyFileSync(DATA_FILE(), backup(0));
-  }
+  rotateBackups(DATA_FILE());
   fs.writeFileSync(DATA_FILE(), JSON.stringify(payload, null, 2), 'utf8');
 }
 function writeVaultNodeSync(wsName, tlName, node) {
@@ -844,12 +976,24 @@ ipcMain.handle('vault:unwatch', () => {
 const LIB_SEED = () => path.join(__dirname, 'data', 'character_lib.json');
 const LIB_FILE = () => path.join(app.getPath('userData'), 'character_lib.json');
 ipcMain.handle('lib:load', () => {
+  /* 用户副本存在但解析不了时，和世界观数据同样处理：先逐字节另存再回 ok:false，
+     绝不让损坏的词库被下一次 lib:save 直接覆盖掉。种子解析失败没得救（只读、随包）。 */
+  const mine = LIB_FILE();
+  const useMine = fs.existsSync(mine);
+  const f = useMine ? mine : LIB_SEED();
+  let raw;
   try {
-    const f = fs.existsSync(LIB_FILE()) ? LIB_FILE() : LIB_SEED();
-    const raw = fs.readFileSync(f, 'utf8');
-    return { ok: true, data: JSON.parse(raw) };
+    raw = fs.readFileSync(f, 'utf8');
   } catch (e) {
     return { ok: false, error: e.code || String(e) };
+  }
+  try {
+    return { ok: true, data: JSON.parse(raw) };
+  } catch (e) {
+    if (!useMine) return { ok: false, error: '种子词库解析失败：' + (e && e.message ? e.message : String(e)) };
+    const corruptPath = preserveFile(mine, 'corrupt');
+    notifyCorruptData('角色词库', 'character_lib.json', corruptPath, Buffer.byteLength(raw, 'utf8'), e);
+    return { ok: false, error: 'JSON 解析失败：' + (e && e.message ? e.message : String(e)), corruptPath };
   }
 });
 
@@ -1003,9 +1147,13 @@ ipcMain.handle('ai:associate', async (e, word) => {
 /* ── IPC: write character lib（暂存词导出，写 userData 副本）────── */
 ipcMain.handle('lib:save', (e, data) => {
   try {
-    const dir = path.dirname(LIB_FILE());
+    const file = LIB_FILE();
+    const dir = path.dirname(file);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(LIB_FILE(), JSON.stringify(data, null, 2), 'utf8');
+    /* 和世界观数据一样先轮换备份。词库此前是完全裸奔的：lib:save 直接覆写，
+       写坏或误导出一次就再也找不回来（它是用户在联想图里一点点攒出来的）。 */
+    rotateBackups(file);
+    fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: String(err) };

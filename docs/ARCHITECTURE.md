@@ -19,7 +19,7 @@
 
 | 路径 | 职责 |
 |---|---|
-| `main.js` | Electron 主进程。IPC：`data:load/save`（世界观）、`settings`、`lib`（词库）、`ai:associate`（联想）、`ai:classify`（词分类）、`aiChat()`（双模式 LLM 调用）、`vault:*`（Obsidian 文稿：`scan`/`write`/`delete`/`delete-timeline`/`delete-world`/`trash-list`/`trash-restore`/`trash-purge`）、`formats:load/save`（结构体格式）、`app:flush-sync`（退出前同步落盘） |
+| `main.js` | Electron 主进程。IPC：`data:load/save`（世界观）、`settings`、`lib`（词库）、`ai:associate`（联想）、`ai:classify`（词分类）、`aiChat()`（双模式 LLM 调用）、`vault:*`（Obsidian 文稿：`scan`/`write`/`delete`/`delete-timeline`/`delete-world`/`trash-list`/`trash-restore`/`trash-purge`）、`formats:load/save`（结构体格式）、`backup:list/create/restore/export/import`（备份管理）、`app:flush-sync`（退出前同步落盘） |
 | `preload.js` | contextBridge 安全桥，暴露 `window.lingkuangAPI` |
 | `index.html` | Vite 入口（`<div id="app">` + `<script src="/src/main.ts">`） |
 | `mcp-server.js` | MCP 服务器（`query_timeline` / `query_node` / `search_world` / `query_loop`） |
@@ -39,6 +39,7 @@
 | `src/ui/eyedrop.ts` / `image-ext.ts` / `tag-ext.ts` | 吸管 / 编辑器图片扩展 / 标签扩展 |
 | `src/ui/confirm.ts` | 确认 / 输入弹层（`confirmDialog` / `promptDialog`）。**不要用 `window.confirm`**：同步阻塞渲染进程（卡 tiptap 与 rAF），且无法用 tokens 配色 |
 | `src/ui/trash.ts` | 回收站面板（`vault/.trash` 的列出 / 恢复 / 彻底清空；孤儿项需用户指定世界与格式） |
+| `src/ui/backup.ts` | 备份管理面板（世界观数据 / 角色词库的备份列表、恢复、导出、导入）。恢复要走「禁写 → 覆盖 → 重载」，见 §4 落盘保护 |
 | `src/ui/keys.ts` / `html.ts` | `isImeEnter(e)`（中文输入法回车守卫）/ `escapeHtml(s)`（外部文本进 innerHTML 前必过） |
 | `data/worldbuilding.js` | 世界观种子数据（`window.__SEED_TIMELINES__`），首次运行/无用户数据时使用 |
 | `data/character_lib.json` | 角色生成词库（58 分类，萌百来源 CC BY-NC-SA，勿商用） |
@@ -115,6 +116,15 @@
   `JSON.parse` 失败**，必须先逐字节另存为 `.bak-corrupt-<时间戳>.json` 再弹原生对话框，
   **绝不能让它演变成「空数据覆盖整个文件」**——旧行为实测：损坏后启动，不做任何操作，
   世界就被换成「新世界」，且 3 次保存内轮换会把最后一份原文件挤掉。
+- **两个受管文件**：`worldbuilding.json`（世界观）与 `character_lib.json`（词库）走同一套
+  备份/恢复基础设施（`main.js` 的 `BACKUP_TARGETS` + `preserveFile` / `rotateBackups` /
+  `listBackups`，IPC `backup:list|create|restore|export|import`）。
+- **恢复的闸门（删了就会静默回滚）**：恢复会替换磁盘上的数据文件，但内存 store 仍是旧数据。
+  「备份管理」在 `backup:restore` 前派发 `lingkuang-restore-start`，`src/main.ts` 据此
+  同时置 `suppressWrite`（停自动落盘）与 `restoreInProgress`（**跳过 beforeunload 的 flushSync**），
+  然后 `location.reload()`。少任何一个，退出补写都会用旧数据把恢复结果盖回去。
+- **语义边界**：节点正文在 vault 的 `.md` 里（**节点以文件为准**，见上），恢复 JSON 备份恢复的是
+  时间线结构 / 循环 / 剧情线 / 地图 / 实体 / 历法 / 世界笔记 / 时间指针，不会增删节点。
 
 ### vault（Obsidian 文稿源，`main.js`）
 - **判「世界/时间线是否存在」看目录，不看节点数**：`scanWorldDir` / `scanTimelineDir` 收空时间线（`nodes: []`）。

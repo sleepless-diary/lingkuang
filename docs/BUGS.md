@@ -50,11 +50,36 @@
   - 顺带修：对话框里的字节数原本用 `raw.length`（JS 字符串长度 = UTF-16 码元数），中文一字只算
     1，把 296 字节的文件报成「264 字节」→ 改用 `Buffer.byteLength(raw, 'utf8')`。
 
-### 仍未做（属 ROADMAP「数据备份/恢复」的另一半）
+### 备份 / 恢复（补齐 ROADMAP「数据备份/恢复」的另一半）
 
-- 手动导出 / 导入（把整库导出成带时间戳的文件、从文件导入回来）
-- 备份列表 UI（现在只能用文件管理器看 `.backup-0/1/2` 与 `.bak-corrupt-*`）
-- `data/character_lib.json`（词库）**完全没有备份机制**，`lib:save` 直接覆写
+- [x] **手动导出 / 导入**：`backup:export`（`dialog.showSaveDialog` 选落点，默认文件名带时间戳）/
+  `backup:import`（`showOpenDialog`）。导入**先校验是合法 JSON 再动现有文件**，
+  否则「导入一个坏文件」会反过来把数据毁掉。
+- [x] **备份列表 UI**：新增工具「备份管理」（`src/ui/backup.ts`）。两个受管目标各一节：
+  世界观数据 / 角色词库。逐项列出 当前 / 自动轮换 / 损坏存档 / 手动备份 / 恢复前快照 / 出厂词库，
+  带时间与大小，可一键恢复；顶部 立即备份 / 导出到文件 / 从文件导入。
+- [x] **`character_lib.json`（词库）接入备份**：此前完全裸奔——`lib:save` 直接覆写，
+  写坏或误导出一次就再也找不回来（它是用户在联想图里一点点攒出来的）。现在
+  `lib:save` 写前轮换 `.backup-0/1/2`，`lib:load` 解析失败时同样先另存 `.bak-corrupt-*`
+  再回 `ok:false`（种子词库解析失败没得救，只读、随包）。
+- **恢复的闸门（关键，别删）**：恢复要覆盖正在用的数据文件，但内存 store 还是旧数据，
+  之后任何一次自动落盘都会把恢复结果盖回去。所以「备份管理」在调用 `backup:restore` 前
+  派发 `lingkuang-restore-start`，`src/main.ts` 据此同时禁掉自动落盘与**退出前的
+  `beforeunload` flushSync**，然后 `location.reload()` 重新载入。
+  `lingkuang-restore-end` 用于失败时恢复常态。
+- **语义边界（实测确认，必须让用户知道）**：节点正文存在 vault 的 `.md` 里，
+  **节点以文件为准**，不在这份 JSON 中。所以恢复 `worldbuilding.json` 备份**不会**让节点增多或减少
+  ——它恢复的是时间线结构 / 循环 / 剧情线 / 地图 / 实体 / 历法 / 世界笔记 / 时间指针。
+  面板与确认弹层都写明了这一点（否则用户会以为恢复没生效）。删掉的节点去「回收站」找。
+- 顺带修：`src/ui/confirm.ts` 的 `message` / `detail` 用 `textContent` 且没设 `white-space`，
+  文案里的 `\n` 会被 HTML 折叠成空格 → 加 `white-space:pre-line`（需要讲清后果的弹层常是多行文案）。
+
+### 实测（本项）
+
+- 世界观数据侧 28 条、词库侧 14 条（stub electron 后 require 真实 `main.js` 直调 handler），
+  端到端 15 条（真实 Electron + CDP）：面板渲染、立即备份、恢复确认弹层、
+  恢复后重载、**数据文件保持备份内容（闸门有效性）**、恢复前快照含被丢弃内容、
+  拒绝目录外路径 / 不存在来源 / 未知 target、坏文件导入被拒且原文件未被动、取消导出与导入。
 
 ## 第五轮已修复（2026-08-27 收尾）
 

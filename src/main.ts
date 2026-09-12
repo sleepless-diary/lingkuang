@@ -244,6 +244,12 @@ async function main() {
   let saveTimer: number | undefined;
   let suppressWrite = false;   /* 外部 vault 改动重载时设为 true，避免写回造成循环 */
   let pendingWrite = false;    /* 有改动还没落盘（退出前要同步补写） */
+  /* 备份恢复中：恢复会替换磁盘上的数据文件，但内存 store 仍是旧数据。
+     期间必须同时禁掉「自动落盘」和「退出 flush」，否则任何一次写回都会把恢复结果盖掉。
+     「备份管理」面板在调用 backupRestore 前派发 lingkuang-restore-start。 */
+  let restoreInProgress = false;
+  window.addEventListener('lingkuang-restore-start', () => { restoreInProgress = true; suppressWrite = true; });
+  window.addEventListener('lingkuang-restore-end', () => { restoreInProgress = false; suppressWrite = false; });
   async function writeAll(): Promise<void> {
     const api = (window as any).lingkuangAPI;
     if (!api) return;
@@ -272,6 +278,9 @@ async function main() {
   /* 退出前落盘：先让当前工具把未提交的编辑交给 store（编辑器只在 tiptap blur 时提交，
      光标还在正文里就关窗口的话，那些字连 store 都没进），再同步写盘。 */
   window.addEventListener('beforeunload', () => {
+    /* 备份恢复中：文件刚被换成备份内容，内存里还是旧数据。
+       此时绝不能 flush——否则退出补写会用旧数据把恢复结果盖掉。 */
+    if (restoreInProgress) return;
     try { disposeCurrentTool(); } catch (e) { /* 清理失败不挡退出 */ }
     if (!pendingWrite) return;
     window.clearTimeout(saveTimer);
