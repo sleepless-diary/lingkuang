@@ -166,7 +166,7 @@ function autoFixFieldDiffs(store: any, repairable: { id: string; title: string; 
             }
           }
         }
-      }, { undo: false });
+      }, { undo: false, keepRedo: true });
       repaired.push(d.title || d.id);
     }
   }
@@ -225,7 +225,7 @@ function ensureAllFormatFields(store: any): void {
       }
     }
   }
-  if (changed) store.update(() => {}, { undo: false }); /* 触发落盘，把补全字段写回 vault */
+  if (changed) store.update(() => {}, { undo: false, keepRedo: true }); /* 触发落盘，把补全字段写回 vault */
 }
 
 async function main() {
@@ -237,7 +237,7 @@ async function main() {
     if (api0?.loadFormats) {
       const fr = await api0.loadFormats();
       if (fr && fr.ok && fr.data) {
-        store.update((d) => { d.formats = fr.data; }, { undo: false });
+        store.update((d) => { d.formats = fr.data; }, { undo: false, keepRedo: true });
       }
     }
   } catch (e) { /* 格式加载失败不影响启动 */ }
@@ -324,7 +324,10 @@ async function main() {
           /* 从源同步不是用户编辑：不占撤销格。否则每次外部改动都会压进一个
              「看起来什么都没变」的整库快照，Ctrl+Z 就被这些空转快照吃掉了。 */
           try {
-            store.update((d) => { d.worldsets = newData.worldsets; }, { undo: false });
+            /* 从源同步不是用户编辑：既不占撤销格，也不能作废重做分支 ——
+               否则撤销/重做自己触发的 vault 写盘会在 400ms 后把重做栈清掉，
+               「重做」就永远按不出来。 */
+            store.update((d) => { d.worldsets = newData.worldsets; }, { undo: false, keepRedo: true });
           } finally {
             /* 必须 finally：store.update 先改数据、后通知，任何订阅者抛异常都会穿出来；
                漏掉这一句 suppressWrite 就永久卡在 true → 此后**整个会话不再自动落盘**（静默丢数据）。 */

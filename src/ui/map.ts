@@ -41,7 +41,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
       if (!w.maps || !w.maps.length) {
         w.maps = [{ id: 'm' + Date.now(), name: '默认地图', width: 900, height: 500, regions: [], markers: [], paths: [] }];
       }
-    }, { undo: false });
+    }, { undo: false, keepRedo: true });
   }
 
   /* 每次用时从 store 解析当前地图，不缓存对象引用：

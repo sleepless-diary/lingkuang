@@ -8,7 +8,7 @@ export interface Store {
   subscribe(fn: (store: Store) => void): () => void;
   setActiveWorld(name: string): void;
   setActiveTimeline(id: string): void;
-  update(fn: (data: WorldData) => void, opts?: { undo?: boolean }): void;
+  update(fn: (data: WorldData) => void, opts?: { undo?: boolean; keepRedo?: boolean }): void;
   undo(): void;
   redo(): void;
   canUndo(): boolean;
@@ -78,8 +78,17 @@ function createStore(initial: WorldData): Store {
       if (opts?.undo !== false) {
         undoStack.push(clone(data));
         if (undoStack.length > 100) undoStack.shift();
-        redoStack.length = 0;
       }
+      /* 重做分支的作废规则：**任何用户造成的持久化改动**都要作废它。
+         以前只在推快照时清空，于是 `{undo:false}` 的写入口（时间指针拖动、回收站恢复）
+         改了数据却不清重做栈 —— 「撤销 → 在旧状态又改了点东西 → 重做」还能跳回后面那个
+         状态，把刚才的改动悄悄吃掉（用户实测反馈的现象）。
+         `keepRedo` 只给**应用自己的记账**用，不是用户编辑：
+           - vault 重扫（src/main.ts）必须豁免，否则撤销/重做触发的文件同步会在 400ms 后
+             把重做栈清掉，重做就永远用不了；
+           - 其余：格式字段补全 / formats 载入 / 外部改动的自动修复 / 挂载时建默认地图 /
+             拖动中间的逐帧帧（拖动自己的提交那一步已经清过了）。 */
+      if (!opts?.keepRedo) redoStack.length = 0;
       fn(data);
       notify();
     },

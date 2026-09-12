@@ -37,7 +37,7 @@ export function addNode(store: Store, tlId: string, node: Partial<TimelineNode>)
 /** 写回节点正文。opts.world 用于「编辑非活动世界的节点」——
     编辑器侧栏会列出所有世界，若一律按 store.activeWorld 解析，点开别的世界的节点
     再编辑会被静默丢弃（`if (n)` 直接 no-op），状态栏却仍显示「已保存 ✓」。 */
-export function saveNodeDoc(store: Store, tlId: string, nodeId: string, doc: string, opts?: { undo?: boolean; world?: string }) {
+export function saveNodeDoc(store: Store, tlId: string, nodeId: string, doc: string, opts?: { undo?: boolean; world?: string; keepRedo?: boolean }) {
   store.update(
     (d) => {
       const n = d.worldsets[opts?.world ?? store.activeWorld]?.timelines[tlId]?.nodes.find((x) => x.id === nodeId);
@@ -75,7 +75,10 @@ export function setTimeCursor(store: Store, t: number | null) {
       const ws = d.worldsets[store.activeWorld];
       if (ws) ws.timeCursor = t;
     },
-    { undo: false }   /* 指针拖动高频，不进撤销栈 */
+    /* 指针拖动高频 → 不占撤销格（一次拖动会触发几十次）。但它**仍是持久化的用户改动**
+       （时间指针是「这个世界此刻的时间」，不是滚动位置），所以按 store 的新规则
+       它会作废重做分支 —— 故意**不**传 keepRedo。 */
+    { undo: false }
   );
 }
 

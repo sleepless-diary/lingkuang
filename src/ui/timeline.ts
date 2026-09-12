@@ -411,7 +411,7 @@ export function mountTimeline(
           }
           n.year = yr;
           render();
-          saveNodeDoc(store, tl!.id, n.id, n.doc ?? '', { undo: false });   // 拖动中间态不进撤销
+          saveNodeDoc(store, tl!.id, n.id, n.doc ?? '', { undo: false, keepRedo: true });   // 拖动中间态不进撤销；是否作废重做由本次拖动那一次提交决定
         }
       }
       return;
