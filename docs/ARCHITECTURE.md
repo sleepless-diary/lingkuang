@@ -42,7 +42,9 @@
 | `src/ui/backup.ts` | 备份管理面板（世界观数据 / 角色词库的备份列表、恢复、导出、导入）。恢复要走「禁写 → 覆盖 → 重载」，见 §4 落盘保护 |
 | `src/ui/keys.ts` / `html.ts` | `isImeEnter(e)`（中文输入法回车守卫）/ `escapeHtml(s)`（外部文本进 innerHTML 前必过） |
 | `src/ui/schema.ts` | **结构体管理**面板（两个分区：**节点种类** / **实体类型**）。保存 → 节点种类写 `formats`（`formats.json`）或实体类型写 `worldsets[active].entityTypes` → 派发 `lingkuang-formats-changed`，由 `src/main.ts` 的 `ensureAllFormatFields` / `ensureEntityLayer` 补空值、清模板外的字段 |
-| `src/ui/codex.ts` | **设定库**面板（实体档案：类型筛选 + 实体列表 + 档案卡；字段按实体类型模板渲染） |
+| `src/ui/codex.ts` | **设定库**面板（实体档案：类型筛选 + 实体列表 + 档案卡 + **正文真编辑器**）。字段用 `src/ui/fields.ts` 的公共控件、正文用 `src/ui/doc-editor.ts` |
+| `src/ui/fields.ts` | 模板字段控件的**公共渲染**（`fieldRow(field, value, onChange, labelWidth)` / `parseFieldInput` / `formatFieldValue`），按模板声明的类型决定形态。约定：只在 `change`（失焦/回车）提交 |
+| `src/ui/doc-editor.ts` | 极简文稿编辑器（tiptap，与 `editor.ts` 同一套扩展）：`createDocEditor(el, onFlush)` → `{ setDoc, getDoc, flush, dispose }`。⚠️ 切条目必须 flush 再 dispose |
 | `src/store/entities.ts` | 实体层基础：`BUILTIN_ENTITY_TYPES`（角色/地点/物品/组织/种族）、`ensureEntityTypes`（世界没有类型时**播种一次**）、`ensureEntityFields`（按类型补字段）、`entityTypeOf` |
 | `data/worldbuilding.js` | 世界观种子数据（`window.__SEED_TIMELINES__`），首次运行/无用户数据时使用 |
 | `data/character_lib.json` | 角色生成词库（58 分类，萌百来源 CC BY-NC-SA，勿商用） |

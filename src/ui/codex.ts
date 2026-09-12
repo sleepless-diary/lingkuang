@@ -8,12 +8,13 @@
  * 模板是唯一权威（`src/main.ts` 的 ensureEntityLayer 负责补空字段），所以这里的字段集合跟着类型走。
  */
 import type { Store } from '../store/store';
-import type { Entity, FieldType } from '../store/types';
+import type { Entity } from '../store/types';
 import { currentWorld } from '../store/store';
 import { addEntity, removeEntity } from '../store/actions';
 import { confirmDialog } from './confirm';
 import { escapeHtml } from './html';
-import { isImeEnter } from './keys';
+import { fieldRow } from './fields';
+import { createDocEditor, type DocEditor } from './doc-editor';
 
 const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;font-family:inherit;user-select:text;';
 
@@ -22,6 +23,11 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   let filterType = '';          // '' = 全部
   let activeId = '';
   let msgTimer: number | undefined;
+  /* 正文编辑器（tiptap）。切换条目时必须先 flush 再 dispose —— 否则正在编辑的正文会丢，
+     而 tiptap 实例不销毁会积 window 监听与订阅。 */
+  let docEditor: DocEditor | null = null;
+  /* 正文自身提交时不要再整块重渲染（否则每敲完一段失焦都会重建编辑器、丢光标位置） */
+  let quiet = false;
 
   const world = () => currentWorld(store);
   const types = () => world().entityTypes ?? {};
@@ -51,28 +57,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     });
   }
 
-  /** 字段控件：模板声明的类型决定形态（长文本 textarea / 列表用「、」分隔 / 数值 number / 开关 checkbox） */
-  function fieldRow(name: string, type: FieldType, e: Entity): string {
-    const v = e.properties?.[name];
-    const nm = escapeHtml(name);
-    const label = `<span style="width:64px;flex-shrink:0;font-size:var(--text-xs);color:var(--fg-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${nm}">${nm}</span>`;
-    if (type === 'boolean') {
-      return `<div style="display:flex;align-items:center;gap:6px;">${label}<input data-cx-field="${nm}" type="checkbox"${v === true ? ' checked' : ''} style="width:15px;height:15px;cursor:pointer;"/></div>`;
-    }
-    if (type === 'number') {
-      return `<div style="display:flex;align-items:center;gap:6px;">${label}<input data-cx-field="${nm}" type="number" value="${typeof v === 'number' ? v : ''}" style="${INP}"/></div>`;
-    }
-    if (type === 'list') {
-      const arr = Array.isArray(v) ? v : [];
-      return `<div style="display:flex;align-items:center;gap:6px;">${label}<input data-cx-field="${nm}" type="text" value="${escapeHtml(arr.join('、'))}" placeholder="多项用、分隔" style="${INP}"/></div>`;
-    }
-    if (type === 'longtext') {
-      return `<div style="display:flex;align-items:flex-start;gap:6px;">${label}<textarea data-cx-field="${nm}" placeholder="（可留空）" style="${INP}min-height:52px;resize:vertical;line-height:1.6;">${escapeHtml(typeof v === 'string' ? v : '')}</textarea></div>`;
-    }
-    return `<div style="display:flex;align-items:center;gap:6px;">${label}<input data-cx-field="${nm}" type="text" value="${escapeHtml(typeof v === 'string' ? v : '')}" placeholder="（可留空）" style="${INP}"/></div>`;
-  }
-
   function render(): void {
+    /* 切条目 / 重渲染前先把正文结算掉（未失焦的编辑也在里面），再销毁旧实例 */
+    if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }
     const list = filtered();
     if (!active() || !list.some((e) => e.id === activeId)) activeId = list[0]?.id ?? '';
     const cur = active();
@@ -113,9 +100,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
                    <button id="cx-del" style="margin-left:auto;flex-shrink:0;background:transparent;border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;">删除</button>
                  </div>
                  <div style="display:flex;flex-direction:column;gap:5px;margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
-                   ${(t?.fields ?? []).map((f) => fieldRow(f.name, f.type, cur)).join('') || '<div style="font-size:var(--text-xs);color:var(--fg-2);">这个类型还没有字段 —— 到左栏「结构体管理」的“实体类型”里加。</div>'}
+                   <div id="cx-fields" style="display:flex;flex-direction:column;gap:5px;"></div>
                  </div>
-                 <div style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;font-size:var(--text-sm);color:var(--fg);line-height:1.7;white-space:pre-wrap;">${cur.doc ? escapeHtml(cur.doc).slice(0, 800) : '<span style="color:var(--fg-2);">（正文为空 · 在左栏「编辑器」的实体页里写）</span>'}</div>`
+                 <div style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
+                   <div style="font-size:10px;color:var(--fg-2);margin-bottom:4px;">正文（Markdown · 失焦自动保存）</div>
+                   <div id="cx-doc"></div>
+                 </div>`
               : '<div style="font-size:var(--text-xs);color:var(--fg-2);">左边选一个实体看图。</div>'}
           </div>
         </div>
@@ -150,39 +140,32 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       window.dispatchEvent(new CustomEvent('lingkuang-formats-changed'));
       say('已换类型 ✓');
     });
-    /* 字段：**只在 change（失焦/回车）提交** —— 这个面板每次 store 通知会重渲染，
-       用 input 边打边存会把正在输入的框销毁。 */
-    host.querySelectorAll<HTMLElement>('[data-cx-field]').forEach((el) => {
-      const name = el.dataset.cxField ?? '';
-      const fType = (t?.fields ?? []).find((f) => f.name === name)?.type ?? 'text';
-      el.addEventListener('change', () => {
-        if (fType === 'boolean') {
-          const checked = (el as HTMLInputElement).checked;
-          patchEntity((e) => { e.properties = { ...(e.properties ?? {}), [name]: checked }; });
+    /* 字段行（公共控件 `src/ui/fields.ts`）：模板声明的类型决定控件形态 */
+    const fieldsHost = host.querySelector('#cx-fields') as HTMLElement | null;
+    if (fieldsHost && cur) {
+      if (!(t?.fields ?? []).length) {
+        const hint = document.createElement('div');
+        hint.style.cssText = 'font-size:var(--text-xs);color:var(--fg-2);';
+        hint.textContent = '这个类型还没有字段 —— 到左栏「结构体管理」的“实体类型”里加。';
+        fieldsHost.appendChild(hint);
+      }
+      for (const f of t?.fields ?? []) {
+        fieldsHost.appendChild(fieldRow(f, cur.properties?.[f.name], (v) => {
+          patchEntity((e) => { e.properties = { ...(e.properties ?? {}), [f.name]: v }; });
           say('已保存 ✓');
-          return;
-        }
-        const raw = (el as HTMLInputElement | HTMLTextAreaElement).value;
-        patchEntity((e) => {
-          const p = { ...(e.properties ?? {}) };
-          if (fType === 'number') {
-            const num = Number(raw);
-            p[name] = raw.trim() !== '' && Number.isFinite(num) ? num : 0;
-          } else if (fType === 'list') {
-            p[name] = raw.split(/[、,，/|]/).map((x) => x.trim()).filter(Boolean);
-          } else {
-            p[name] = raw;
-          }
-          e.properties = p;
-        });
-        say('已保存 ✓');
+        }));
+      }
+    }
+    /* 正文：真编辑器（tiptap）。onFlush 回写实体 doc（只存 worldbuilding.json，没有 vault 文件） */
+    const docHost = host.querySelector('#cx-doc') as HTMLElement | null;
+    if (docHost && cur) {
+      docEditor = createDocEditor(docHost, (md) => {
+        quiet = true;   /* 正文自身的提交不整块重渲染 —— 否则会重建编辑器、丢光标位置 */
+        try { patchEntity((e) => { e.doc = md; }); } finally { quiet = false; }
       });
-      el.addEventListener('keydown', (ev) => {
-        const k = ev as KeyboardEvent;
-        if (fType === 'longtext' || k.key !== 'Enter' || isImeEnter(k)) return;
-        (el as HTMLInputElement).blur();
-      });
-    });
+      docEditor.setDoc(cur.doc ?? '');
+    }
+
     host.querySelector('#cx-del')?.addEventListener('click', () => {
       const c = active();
       if (!c) return;
@@ -202,13 +185,18 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     });
   }
 
+  let torn = false;
   const unsub = store.subscribe(() => {
+    if (torn || quiet) return;
     if (!host.isConnected || !host.querySelector('#cx-root')) { unsub(); return; }
     render();
   });
   render();
   return () => {
+    torn = true;
     unsub();
+    /* 切走工具时把未失焦的正文也结算掉，再销毁 tiptap 实例 */
+    if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }
     if (msgTimer) window.clearTimeout(msgTimer);
   };
 }
