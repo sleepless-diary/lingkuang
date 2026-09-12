@@ -42,8 +42,9 @@
 | `src/ui/trash.ts` | 回收站面板（`vault/.trash` 的列出 / 恢复 / 彻底清空；孤儿项需用户指定世界与格式） |
 | `src/ui/backup.ts` | 备份管理面板（世界观数据 / 角色词库的备份列表、恢复、导出、导入）。恢复要走「禁写 → 覆盖 → 重载」，见 §4 落盘保护 |
 | `src/ui/keys.ts` / `html.ts` | `isImeEnter(e)`（中文输入法回车守卫）/ `escapeHtml(s)`（外部文本进 innerHTML 前必过） |
+| `src/ui/alert.ts` | **壳级横幅**（`#lk-alerts` 通栏，`showShellAlert`/`removeShellAlert`/`hasShellAlert`）：放「必须被看见、且要用户做选择」的状态（数据文件判损、自动保存已暂停）。与编辑器内部的 `addHint` 不同 —— 那条活在编辑器工具里、切走就没了，这条挂壳上，任何工具下都在 |
 | `src/ui/schema.ts` | **结构体管理**面板（两个分区：**节点种类** / **实体类型**）。保存 → 节点种类写 `formats`（`formats.json`）或实体类型写 `worldsets[active].entityTypes` → 派发 `lingkuang-formats-changed`，由 `src/main.ts` 的 `ensureAllFormatFields` / `ensureEntityLayer` 补空值、清模板外的字段 |
-| `src/ui/codex.ts` | **设定库 = 工作台**（合并方案 A 第 3 步）：左列「实体」/「时间线节点」双页签 + 搜索框（节点是 世界→时间线→种类→节点 四级树，搜索时摊平成列表）、中栏档案字段、右栏正文编辑器。节点中栏用 `src/ui/props-panel.ts`（与编辑器同一份）、实体用 `src/ui/fields.ts`、正文用 `src/ui/doc-editor.ts`。⚠️ 换条目必须走 `switchTarget()`（先 flush 再改选择），正文写回**创建时捕获的目标** |
+| `src/ui/codex.ts` | **设定库 = 工作台**（合并方案 A 第 3 步）：左列「实体」/「时间线节点」双页签 + 搜索框（节点是 世界→时间线→种类→节点 四级树，搜索时摊平成列表）、中栏档案字段、右栏正文编辑器。节点中栏用 `src/ui/props-panel.ts`（与编辑器同一份）、实体用 `src/ui/fields.ts`、正文用 `src/ui/doc-editor.ts`。⚠️ 换条目必须走 `switchTarget()`（先 flush 再改选择），正文写回**创建时捕获的目标**。⚠️ store 订阅**按 `bodySignature()` 决定要不要重建**中/右栏 —— 无条件 `render()` 会 dispose 掉 tiptap，而「自动落盘 → vault 回扫」每次编辑后约 360ms 就会走一趟订阅，实测每换一次 DOM 就有丢击键/焦点/IME 的风险（第十八轮） |
 | `src/ui/fields.ts` | 模板字段控件的**公共渲染**（`fieldRow(field, value, onChange, labelWidth)` / `parseFieldInput` / `formatFieldValue`），按模板声明的类型决定形态。约定：只在 `change`（失焦/回车）提交 |
 | `src/ui/doc-editor.ts` | 极简文稿编辑器（tiptap，与 `editor.ts` 同一套扩展）：`createDocEditor(el, onFlush)` → `{ setDoc, getDoc, flush, dispose }`。⚠️ 切条目必须 flush 再 dispose |
 | `src/store/entities.ts` | 实体层基础：`BUILTIN_ENTITY_TYPES`（角色/地点/物品/组织/种族）、`ensureEntityTypes`（世界没有类型时**播种一次**）、`ensureEntityFields`（按类型补字段）、`entityTypeOf` |
@@ -164,6 +165,20 @@
   `JSON.parse` 失败**，必须先逐字节另存为 `.bak-corrupt-<时间戳>.json` 再弹原生对话框，
   **绝不能让它演变成「空数据覆盖整个文件」**——旧行为实测：损坏后启动，不做任何操作，
   世界就被换成「新世界」，且 3 次保存内轮换会把最后一份原文件挤掉。
+- **判损护栏（第十八轮，两层）**：
+  ① **先重读再判损** —— 判损前重读 3 次、每次隔 200ms（`READ_ATTEMPTS`/`READ_RETRY_MS`）。
+  单次读失败不足定罪：本应用自己的 `writeFileSync` 先截断再写，读者会看到中间态；而
+  `preserveFile` 是 `copyFileSync`，拷的是**失败那次读之后**的磁盘现状（2026-08-23 那份 290KB
+  的 `.bak-corrupt` 至今能正常解析，就是这么来的）。`data:load` 回传 `attempts`。
+  ② **判损即上锁（`dataWriteLock`）** —— 锁挂在 **`writeDataFileSync()`** 里，那是 `data:save` 与
+  `app:flush-sync` **唯一的共用写入口**，锁在这里两条路径同时失效。上锁后 `data:save` 回
+  `{ok:false, locked:true}`、且**不轮换备份**；`backup:restore`/`backup:import` **不经**它
+  （留给用户的救援通道）。出口两个，都是显式的：IPC `data:allow-write`（壳级横幅「继续用新数据」，
+  解锁后派发 `lingkuang-force-save` 立刻落一次盘）、或从备份恢复。
+  **读到一份能解析的文件 = 自动解锁**。
+- **判损要在 UI 上说出来**：`loadData()` 不再吞 `ok:false`，把它作为 `corrupt` 回传，
+  由 `src/ui/alert.ts` 的 `showShellAlert` 挂一条**壳级横幅**（`#lk-alerts`）。文案分两种：
+  vault 兜住了（节点/实体在 `.md` 里没事，只是循环/剧情线/历法读不出来）vs vault 也空（界面是空的，别再动它）。
 - **两个受管文件**：`worldbuilding.json`（世界观）与 `character_lib.json`（词库）走同一套
   备份/恢复基础设施（`main.js` 的 `BACKUP_TARGETS` + `preserveFile` / `rotateBackups` /
   `listBackups`，IPC `backup:list|create|restore|export|import`）。
@@ -175,6 +190,11 @@
   时间线结构 / 循环 / 剧情线 / 地图 / 实体 / 历法 / 世界笔记 / 时间指针，不会增删节点。
 
 ### vault（Obsidian 文稿源，`main.js`）
+- **`vault:watch` 先建根目录再监听**：vault 根不存在时**不能直接失败退出** —— 首次启动、或
+  `LINGKUANG_VAULT` 指向还没建的目录时它必然不存在，而应用自己第一次保存就会把它建出来。
+  曾经这里 `return {ok:false}` 而渲染层 `vaultWatch().catch(()=>{})` 接不住 `ok:false`
+  ⇒ **整个会话没有监听**，外部改的 `.md` 一律不回扫且无提示（第十八轮修的既有 bug）。
+  渲染层现在会对 `ok:false` 打 `console.warn`。
 - **判「世界/时间线是否存在」看目录，不看节点数**：`scanWorldDir` / `scanTimelineDir` 收空时间线（`nodes: []`）。
   旧逻辑 `if (nodes.length)` 会让「删掉一条时间线里最后一个节点」导致整个世界从扫描结果里消失，
   而渲染层是 `d.worldsets = newData.worldsets` 整体替换 ⇒ 整体被冲掉并被写回 JSON（数据损失）。

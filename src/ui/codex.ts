@@ -44,6 +44,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   /* 正文/面板**自身**的提交不要整块重渲染：否则每敲完一段失焦都会重建编辑器丢光标，
      拖拽中的 scrub 控件也会被销毁（props-panel 依赖这一点）。 */
   let quiet = false;
+  /* 中/右栏的内容签名（见 bodySignature）。声明在这里而不是订阅旁边：
+     render() 里要写它，而 render() 定义在前 —— 放后面会形成 TDZ。 */
+  let bodySig = '';
   /* 节点页签的树展开状态（世界 / 时间线 / 种类 三级，与编辑器同一套交互） */
   const expandedWorlds = new Set<string>();
   const expandedTls = new Set<string>();
@@ -317,6 +320,36 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         say('已删除');
       });
     });
+    /* 骨架重建完就把签名对齐，免得下一次 store 变化因为签名过期而白重建一次 */
+    bodySig = bodySignature();
+  }
+
+  /** 中/右栏「该显示什么」的内容签名（目标身份 + 字段 + 正文）。
+   *  订阅里**只有它变了才重建** —— 理由见 unsub 处的长注释。 */
+  function bodySignature(): string {
+    /* 带上 activeWorld：骨架里的标题（「XX」的条目）与中栏取的实体都跟着它走，
+       换世界必须重建，否则留着上一个世界的名字。 */
+    const w = store.activeWorld ?? '';
+    if (mode === 'entity') {
+      const e = active();
+      const kindList = Object.keys(types()).join(',');
+      if (!e) return ['entity', w, 'none', kindList].join('|');
+      return ['entity', w, e.id, e.typeId ?? '', e.name, JSON.stringify(e.properties ?? {}), e.doc ?? '', kindList].join('|');
+    }
+    if (!nodeTarget) return ['node', w, 'none'].join('|');
+    const n = activeNode();
+    if (!n) return ['node', w, nodeTarget.world, nodeTarget.tlId, nodeTarget.nodeId, 'gone'].join('|');
+    return ['node', w, nodeTarget.world, nodeTarget.tlId, nodeTarget.nodeId,
+      n.title, n.year, n.precision, n.type, n.kind ?? '',
+      JSON.stringify(n.properties ?? {}), n.desc ?? '', n.doc ?? ''].join('|');
+  }
+
+  /** 两个页签上的计数在**骨架**里（不在 renderList 里）—— 单独刷，别为它重建整块。 */
+  function updateTabCounts(): void {
+    const b1 = host.querySelector('#cx-tab-entity');
+    const b2 = host.querySelector('#cx-tab-node');
+    if (b1) b1.textContent = `实体 ${entities().length}`;
+    if (b2) b2.textContent = `时间线节点 ${nodeCount()}`;
   }
 
   /** 只重画左列（chips + 列表/树）。搜索框在它外面，所以打字不会被重建、不丢焦点。 */
@@ -433,9 +466,23 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
 
   let torn = false;
   const unsub = store.subscribe(() => {
-    if (torn || quiet) return;
+    if (torn) return;
     if (!host.isConnected || !host.querySelector('#cx-root')) { unsub(); return; }
-    render();
+    /* 左列照旧重画：那一列没有编辑器，重建只花 DOM 钱，而且实体/节点增删必须立刻反映 */
+    updateTabCounts();
+    renderList();
+    /* ★ 中/右栏按**内容签名**决定要不要重建 —— 这是本节最容易踩的坑：
+       自动落盘 → vault watcher 回扫 → store.update 这条链**每次编辑后约 360ms 都会走到
+       这里一次**（实测：改「描述」落盘 t=1234ms，正文编辑器被换掉 t=1597ms）。
+       而 render() 开头会 flush + dispose 掉 tiptap 再新建一个，于是在正文里打字时
+       编辑器每隔几秒就被换一次 DOM：**恰好落在换的那一瞬的击键/焦点/IME 组合状态会丢**
+       （codex-node-tab 的 ★11 「改正文落进 .md」就是这么间歇性失败的 —— 不是测试写错，
+       真人打字一样会丢）。签名没变 = 屏幕上该显示的东西没变 = 编辑器没必要动。
+       面板自己的提交（quiet）同样跳过，理由同前：拖拽中的 scrub 控件不能被销毁；
+       但签名要跟上，否则下一次真正的外部改动会被漏掉。 */
+    const sig = bodySignature();
+    if (quiet) { bodySig = sig; return; }
+    if (sig !== bodySig) render();
   });
   render();
   return () => {

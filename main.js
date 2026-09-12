@@ -437,6 +437,7 @@ function notifyCorruptData(label, fileName, corruptPath, bytes, err) {
       detail: [
         `（${label}）原因：${err && err.message ? err.message : String(err)}`,
         corruptPath ? `为避免被覆盖，损坏内容已原样另存为：\n${corruptPath}` : '另外保存失败——请立刻手动备份该文件，否则会被覆盖。',
+        '本次运行已暂停自动保存（灵框窗口顶部有常驻提示），所以在你去恢复之前，原文件不会再被写一次。',
         '你原来的内容没有被删除，就在上面那个副本里。也可以开灵框的「备份管理」，从副本一键恢复。'
       ].join('\n\n'),
       buttons: corruptPath ? ['打开所在文件夹', '知道了'] : ['知道了'],
@@ -448,13 +449,33 @@ function notifyCorruptData(label, fileName, corruptPath, bytes, err) {
   } catch (e) { /* 提示失败不能挡启动 */ }
 }
 
+/* ══ 损坏锁定（dataWriteLock）══════════════════════════════════════════
+   解析不了的 worldbuilding.json 绝不能被空数据静默覆盖。
+   旧行为：解析失败只回 ok:false → 渲染层 jsonData=null → emptyData() 顶上 →
+   400ms 防抖自动落盘把整个文件写成「新世界」。实测：造一个截断的 worldbuilding.json
+   启动、不做任何操作，文件就从 296B 变成 369B 的空世界观，界面变成「新世界」、
+   零提示零报错；而 .backup-0/1/2 三格轮换会在 3 次保存内把最后一份原文件也挤掉。
+
+   两层护栏：
+   ① 先重读再判损 —— 读到的字节解析不了，可能是真损坏，也可能是「恰好读到别人正在写的
+      半截文件」（本应用自己的 writeFileSync 就是先截断再写，读它的人会看到中间态）。
+      而 preserveFile 拷的是失败那次读**之后**的磁盘现状：2026-08-23 那份 290KB 的
+      .bak-corrupt 至今能正常 JSON.parse（见 docs/BUGS.md 第十八轮「一、判损护栏」），
+      所以「判损瞬间的字节」和「拷下来的字节」可以不是同一份东西。判损前重读 3 次、
+      每次隔 200ms：真损坏必然次次失败，竞态读到的半截几乎必然在下一次就完整了。
+   ② 判损即上锁 —— 锁挂在 writeDataFileSync 里，那是 data:save 与 app:flush-sync
+      （退出前落盘）**唯一的共用写入口**，所以两条路径同时失效，不存在漏一条的可能。
+      上锁期间用户的资产只多不少：损坏文件原样留在原地、副本也在，等他决定。
+      两个出口都是显式的：点顶部横幅「继续用新数据」→ data:allow-write 解锁；
+      或走「备份管理」恢复（backup:restore / backup:import 不经 writeDataFileSync，
+      上锁不影响它们——这正是留给用户的救援通道）。
+      读到一份能解析的文件 = 损坏已解决 → 自动解锁，不必让用户记着去点。 */
+let dataWriteLock = null;     /* { corruptPath, bytes, error, attempts, at } | null */
+const READ_ATTEMPTS = 4;      /* 首次 + 3 次重读 */
+const READ_RETRY_MS = 200;
+
 /* ── IPC: read the worldbuilding data file ─────────────────── */
-ipcMain.handle('data:load', () => {
-  /* 解析不了的 worldbuilding.json **绝不能被空数据静默覆盖**。
-     旧行为：解析失败只回 ok:false → 渲染层 jsonData=null → emptyData() 顶上 →
-     400ms 防抖自动落盘把整个文件写成「新世界」。实测：造一个截断的 worldbuilding.json
-     启动、**不做任何操作**，文件就从 296B 变成 369B 的空世界观，界面变成「新世界」、
-     零提示零报错；而 .backup-0/1/2 三格轮换会在 3 次保存内把最后一份原文件也挤掉。 */
+ipcMain.handle('data:load', async () => {
   let raw;
   try {
     raw = fs.readFileSync(DATA_FILE(), 'utf8');
@@ -462,15 +483,39 @@ ipcMain.handle('data:load', () => {
     /* file missing = first run: return nothing, front-end falls back to seed */
     return { ok: false, error: e.code || String(e) };
   }
-  try {
-    return { ok: true, data: JSON.parse(raw) };
-  } catch (e) {
-    const corruptPath = preserveFile(DATA_FILE(), 'corrupt');
-    /* 用 Buffer.byteLength 而不是 raw.length：raw.length 是 JS 字符串长度（UTF-16 码元数），
-       中文一个字只算 1，和文件真实字节数对不上（曾把 296 字节的文件报成 264 字节）。 */
-    notifyCorruptData('世界观数据', 'worldbuilding.json', corruptPath, Buffer.byteLength(raw, 'utf8'), e);
-    return { ok: false, error: 'JSON 解析失败：' + (e && e.message ? e.message : String(e)), corruptPath };
+  let attempts = 0;
+  let err = null;
+  while (attempts < READ_ATTEMPTS) {
+    attempts++;
+    try {
+      const data = JSON.parse(raw);
+      if (dataWriteLock) dataWriteLock = null;   /* 能读 = 损坏已解决（换了文件/已恢复）→ 解锁 */
+      return { ok: true, data, attempts };
+    } catch (e) {
+      err = e;
+    }
+    if (attempts >= READ_ATTEMPTS) break;
+    await new Promise((r) => setTimeout(r, READ_RETRY_MS));
+    /* 重读失败（文件被删/被独占）就拿着上一份 raw 继续重试，不把「读不到」当成「没损坏」 */
+    try { raw = fs.readFileSync(DATA_FILE(), 'utf8'); } catch (e) { /* 保持上一份 */ }
   }
+  const corruptPath = preserveFile(DATA_FILE(), 'corrupt');
+  /* 用 Buffer.byteLength 而不是 raw.length：raw.length 是 JS 字符串长度（UTF-16 码元数），
+     中文一个字只算 1，和文件真实字节数对不上（曾把 296 字节的文件报成 264 字节）。 */
+  const bytes = Buffer.byteLength(raw, 'utf8');
+  dataWriteLock = { corruptPath, bytes, error: err && err.message ? err.message : String(err), attempts, at: Date.now() };
+  notifyCorruptData('世界观数据', 'worldbuilding.json', corruptPath, bytes, err);
+  return { ok: false, error: 'JSON 解析失败：' + (err && err.message ? err.message : String(err)), corruptPath, corrupt: true, locked: true, attempts, bytes };
+});
+
+/* 判损状态查询：渲染层顶栏横幅用；也让自动化能断言「确实上了锁」而不是靠差文件推断 */
+ipcMain.handle('data:corrupt-state', () => ({ ok: true, locked: !!dataWriteLock, ...(dataWriteLock || {}) }));
+
+/* 「继续用新数据」：用户显式放弃损坏文件里的内容 → 解锁，之后照常落盘 */
+ipcMain.handle('data:allow-write', () => {
+  const wasLocked = !!dataWriteLock;
+  dataWriteLock = null;
+  return { ok: true, unlocked: wasLocked };
 });
 
 /* ── IPC: 备份管理（列表 / 立即备份 / 恢复 / 导出到文件 / 从文件导入）── */
@@ -549,6 +594,13 @@ ipcMain.handle('backup:import', async (e, { target } = {}) => {
    异步 IPC 在 beforeunload 之后不保证跑得完，编辑器里没失焦的内容
    和 400ms 防抖还没触发的 store 变化都会随窗口一起消失。 */
 function writeDataFileSync(payload) {
+  /* 损坏锁定：这里是唯一写入口，锁在这里 = data:save 与 app:flush-sync 一起守住（见 dataWriteLock 注释 ②）。
+     抛错而不是静默 return：静默会把「没保存」伪装成「保存成功」，用户以为存上了。 */
+  if (dataWriteLock) {
+    const e = new Error('数据文件被判为损坏，已暂停写入以免覆盖它——请到「备份管理」恢复，或点窗口顶部横幅的「继续用新数据」放弃它');
+    e.locked = true;
+    throw e;
+  }
   const dir = path.dirname(DATA_FILE());
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   /* 自动备份：写前把现有文件轮换备份，保留 3 份（防误操作/崩溃丢数据） */
@@ -611,6 +663,8 @@ ipcMain.handle('data:save', (e, payload) => {
     writeDataFileSync(payload);
     return { ok: true };
   } catch (err) {
+    /* 上锁不是故障而是有意为之：单列 locked 让渲染层/自动化能区分「写失败」与「故意不写」 */
+    if (err && err.locked) return { ok: false, locked: true, error: String(err.message) };
     return { ok: false, error: String(err) };
   }
 });
@@ -1064,7 +1118,9 @@ ipcMain.on('app:flush-sync', (e, payload) => {
   const out = { ok: true, wrote: 0, failed: 0 };
   try {
     if (payload && payload.data) {
-      try { writeDataFileSync(payload.data); out.wrote++; } catch (err) { out.failed++; out.error = String(err); }
+      /* 上锁时跳过 JSON 但不计入 failed：节点/实体仍要写进 vault，退出不该因此报错 */
+      try { writeDataFileSync(payload.data); out.wrote++; }
+      catch (err) { if (err && err.locked) out.locked = true; else out.failed++; out.error = String(err); }
     }
     for (const it of (payload && payload.nodes) || []) {
       try { writeVaultNodeSync(it.wsName, it.tlName, it.node); out.wrote++; } catch (err) { out.failed++; out.error = String(err); }
@@ -1112,7 +1168,15 @@ let vaultWatcher = null, watchTimer = null;
 ipcMain.handle('vault:watch', () => {
   try {
     const root = VAULT_DIR();
-    if (!fs.existsSync(root)) return { ok: false, error: 'vault not exist' };
+    /* vault 根不存在时**先建再监听**，不能直接失败退出。
+       首次启动、或用户把 LINGKUANG_VAULT 指到一个还没建的目录时，它必然不存在；
+       而「应用自己把 vault 建出来」是常态（第一次保存节点/实体就 mkdir）。
+       以前这里直接 return ok:false，渲染层那句 `vaultWatch().catch(() => {})` 只接 reject、
+       接不住 ok:false —— 于是**整个会话都不会有监听**，外部改的 .md 一律不回扫，
+       直到下次重启才恢复（界面上没有任何提示）。
+       实测：空目录起步的实例跑 tools/e2e/entity-vault.cjs 必挂 ★5/★6（外部改字段/正文
+       回扫进活 UI），而 vault 目录已存在的实例全过 —— 差别就在这一行。 */
+    if (!fs.existsSync(root)) fs.mkdirSync(root, { recursive: true });
     if (vaultWatcher) return { ok: true };
     vaultWatcher = fs.watch(root, { recursive: true }, (ev, file) => {
       if (!file || !file.endsWith('.md')) return;

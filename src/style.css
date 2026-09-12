@@ -49,6 +49,47 @@ body {
 
 .lk-app { display: flex; flex-direction: column; height: 100%; }
 
+/* 壳级横幅（数据安全级状态，如数据文件判损）：窗口顶部通栏，任何工具下都在。
+   语气用 --danger（锈棕），不用红：与设计系统的克制基调一致。 */
+.lk-alerts { flex: none; }
+.lk-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--chrome-2);
+  color: var(--fg-inverse);
+  border-bottom: 1px solid var(--border-strong);
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+.lk-alert.is-danger { box-shadow: inset 3px 0 0 var(--danger); }
+.lk-alert-text { flex: 1; min-width: 0; }
+.lk-alert-title { font-size: var(--text-sm); font-weight: 600; }
+.lk-alert-body {
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  color: var(--fg-inverse);
+  opacity: 0.78;
+  line-height: 1.6;
+  word-break: break-all;
+}
+.lk-alert-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.lk-alert-btn {
+  flex: none;
+  padding: 5px 10px;
+  font-size: var(--text-xs);
+  font-family: inherit;
+  color: var(--fg-inverse);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.lk-alert-btn:hover { background: var(--chrome); }
+.lk-alert-btn.is-primary { border-color: var(--accent); color: var(--accent); }
+.lk-alert-btn.is-primary:hover { background: rgba(158,194,98,0.14); }
+
 /* 世界栏（工具栏右侧顶部条）：世界 tab 横向 */
 .lk-worldbar {
   display: flex;

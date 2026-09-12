@@ -15,6 +15,7 @@ export function renderShell(store: Store, host: HTMLElement): void {
 
   host.innerHTML = `
     <div class="lk-app">
+      <div class="lk-alerts" id="lk-alerts" style="display:none;"></div>
       <main class="lk-main">
         <nav class="lk-toolbar" id="lk-toolbar"></nav>
         <div class="lk-right">

@@ -6,6 +6,10 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
   loadData: () => ipcRenderer.invoke('data:load'),
   /* persist the whole data file */
   saveData: (data) => ipcRenderer.invoke('data:save', data),
+  /* 数据文件判损状态 / 解锁：data:load 回 corrupt:true 后，写盘被主进程上锁挡住，
+     这两个是渲染层询问状态与「继续用新数据」的通道（见 main.js 的 dataWriteLock） */
+  dataCorruptState: () => ipcRenderer.invoke('data:corrupt-state'),
+  allowDataWrite: () => ipcRenderer.invoke('data:allow-write'),
   /* user settings (glide speed, sensitivity, ruler density) */
   loadSettings: () => ipcRenderer.invoke('settings:load'),
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),

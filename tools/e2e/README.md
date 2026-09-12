@@ -45,6 +45,12 @@ cwd 与环境变量不跨调用保留 —— 环境变量要和命令写在同�
 2. **页面内选择器片段是「字符串」**，要用 Node 模板插值展开进表达式：
    `` ev(`(${SEL('发色')})?.value`) ``。写成 `(SEL.toString())('发色')` 是在页面里**调用**它，
    得到的是函数源码字符串，`?.value` 恒为 `undefined`。
+3. **「昨天还全过、今天挂了」先做 A/B，别急着改代码。**
+   `git stash push -u` → `npx vite build`（此时工作树 = HEAD）→ 用**同一个全新目录**复跑那条套件。
+   同一条挂 = 既有缺陷，不是本次改动引入的（第十八轮就是这么定案的：`entity-vault` 从 17/17 掉到 14/17，
+   A/B 证明 HEAD 同样 14/17，真因是 `vault:watch` 在 vault 根不存在时静默不挂监听）。
+   另外**目录状态会影响结果**：空 vault 起步 ≠ 用过一轮的 vault（同一条 bug 只在前者现形），
+   所以复现时永远从 `reset-*.cjs` + 全新临时目录开始。
 
 ## 文件
 
@@ -59,6 +65,9 @@ cwd 与环境变量不跨调用保留 —— 环境变量要和命令写在同�
 | `codex-node-tab.cjs` | 设定库「时间线节点」页签：四级树 → 公共属性面板固定行 → 改描述/正文落到节点的 `.md` → 搜索 → 跨页签不串文档 |
 | `editor-props-panel.cjs` | 编辑器侧的共享面板守卫：固定行齐全、时间是 scrub、描述是 textarea、**提交后面板不重建**（元素身份不变） |
 | `codex-switch-target.cjs` | 不变量：换条目不能把上一条的正文写进下一条（按 `.md` 文件断言正文归属；走「不失焦就切」的危险路径） |
+| `seed-corrupt-data.cjs` | 前置：造出「截断的 `worldbuilding.json` + 空 vault」（= `docs/BUGS.md` 记的那条数据损失场景；**空 vault 是关键**，否则 vault 会兜住） |
+| `data-corrupt-guard.cjs` | 判损护栏 16 项：截断文件启动后**原文件逐字节未被覆盖** + 副本隔离 + 重读过（`attempts>1`）+ `data:save` 被拒且标明 `locked` + 壳级横幅两条出口 + 点「继续用新数据」解锁并自愈 + 中途补全的文件被重读捞回 |
+| `data-load-clean.cjs` | 误报守卫 6 项：**干净**数据启动时护栏一步都不该动（`attempts===1`、无横幅、无副本、写盘照常） |
 
 启动补写那条单独跑一次：
 
@@ -79,4 +88,29 @@ node tools\e2e\editor-props-panel.cjs        # 9 项（同一个实例直接接�
 
 # 另一轮：换条目串不串正文（先 reset，不用 seed）
 node tools\e2e\codex-switch-target.cjs       # 7 项
+```
+
+判损护栏那条（**必须用全新目录** —— 那条既有 bug 只在「启动时 vault 根还不存在」时现形）：
+
+```powershell
+$env:LINGKUANG_TEST_DATA="C:\Users\<你>\AppData\Local\Temp\lk-corrupt\worldbuilding.json"
+$env:LINGKUANG_VAULT="C:\Users\<你>\AppData\Local\Temp\lk-corrupt\vault"   # 目录不存在 = 空 vault
+
+node tools\e2e\seed-corrupt-data.cjs         # 播种一个截断的文件（真解析不了）
+# 起应用（同上面的 Start-Process）→ 会弹原生「数据文件损坏」对话框（**这是被测行为**）
+node tools\e2e\data-corrupt-guard.cjs        # 16 项
+```
+
+`data-corrupt-guard.cjs` 的最后一项（★14「中途补全的文件能被重读捞回」）需要在
+`loadData()` 飞行途中把文件补全 —— 脚本自己控时（截断 → 发起读 → 60ms 后补齐），
+跑三轮取一次 `ok && attempts>1` 的观测，避免 IPC 抖动把首读挤到补齐之后。
+
+**误报守卫 `data-load-clean.cjs` 不能跑在这个目录里**：判损那轮已经留下 `.bak-corrupt-*`，
+它的 ★4「没有凭空生成损坏副本」会挂。它要的是**干净数据**，跟上面「设定库工作台那两条」用同一个前置：
+
+```powershell
+node tools\e2e\reset-entity-vault.cjs
+node tools\e2e\seed-node.cjs                 # 干净数据 + 一条节点 + 一条实体
+# 起应用
+node tools\e2e\data-load-clean.cjs           # 6 项：attempts===1 / 无横幅 / 无副本 / 写盘照常
 ```

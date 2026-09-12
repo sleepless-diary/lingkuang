@@ -4,19 +4,43 @@ import { renderShell } from './ui/shell';
 import { disposeCurrentTool } from './tools/registry';
 import { undoWithVault, redoWithVault } from './store/actions';
 import { ensureEntityTypes, ensureEntityFields } from './store/entities';
+import { showShellAlert, removeShellAlert } from './ui/alert';
 import './style.css';
 
-/** 数据加载：优先 vault(.md 文件为源)；无 vault 则回退 JSON/空数据 */
-async function loadData() {
+/** JSON 缓存判损信息（主进程 `data:load` 回传）。null = 正常。
+ *  `vaultHasData` 由本文件填：vault 里有没有可用的世界，决定横幅说「你的内容还在 .md 里」
+ *  还是「界面现在是空的」—— 这两句话对用户的紧迫程度差得远，不能混着说。 */
+interface DataCorruptInfo {
+  corruptPath: string;
+  bytes: number;
+  error: string;
+  attempts: number;
+  vaultHasData: boolean;
+}
+
+/** 数据加载：优先 vault(.md 文件为源)；无 vault 则回退 JSON/空数据。
+ *  返回 `corrupt` 而不是在内部吞掉失败：JSON 读不出来时主进程已经**暂停写盘**，
+ *  用户必须知道这件事（否则他会对着一个空世界继续编辑，以为一切正常）。 */
+async function loadData(): Promise<{ data: any; corrupt: DataCorruptInfo | null }> {
   const api = (window as any).lingkuangAPI;
   /* ⓪ 先读 JSON 兜底数据：.md 只承载节点，循环/剧情线/历法/时间指针/世界笔记
      只存在于 JSON 里。下面 vaultToWorldData 要用它回填——不回填的话，
      「vault 为源」每次启动都会把这些字段清空（启用 vault 后建的循环/剧情线活不过一次重启）。 */
   let jsonData: any = null;
+  let corrupt: DataCorruptInfo | null = null;
   if (api && api.loadData) {
     try {
       const res = await api.loadData();
       if (res && res.ok && res.data) jsonData = res.data;
+      else if (res && res.corrupt) {
+        corrupt = {
+          corruptPath: res.corruptPath ?? '',
+          bytes: res.bytes ?? 0,
+          error: res.error ?? '',
+          attempts: res.attempts ?? 0,
+          vaultHasData: false,
+        };
+      }
     } catch (e) { /* JSON 读失败就只靠 vault */ }
   }
   /* ① vault 为源：扫描 .md 文件生成 store 数据（节点以文件为准，其余字段从 JSON 回填） */
@@ -25,13 +49,16 @@ async function loadData() {
       const vres = await api.vaultScan();
       if (vres && vres.ok && vres.worlds) {
         const data = vaultToWorldData(vres.worlds, vres.entities, jsonData);
-        if (Object.keys(data.worldsets).length) return data;
+        if (Object.keys(data.worldsets).length) {
+          if (corrupt) corrupt.vaultHasData = true;
+          return { data, corrupt };
+        }
       }
     } catch (e) { /* vault 失败则回退 */ }
   }
   /* ② 回退 JSON（旧数据/首次） */
-  if (jsonData) return jsonData;
-  return emptyData();
+  if (jsonData) return { data: jsonData, corrupt };
+  return { data: emptyData(), corrupt };
 }
 
 /** vault 扫描结果 {世界观:{时间线:[节点]}} → WorldData。
@@ -39,6 +66,45 @@ async function loadData() {
  *  loops / storylines / calendar / absOffset / docs / timeCursor。
  *  只在「vault 里确实存在这条时间线/这个世界」时回填——vault 里没有的一律不复活，
  *  否则外部删掉整个文件夹后，旧数据会把整批节点一起带回来。 */
+/** 数据文件判损 → 壳级横幅。两条出口都必须显式：
+ *  「去备份管理恢复」= 抢救（损坏文件原样在原地，副本也在）；
+ *  「继续用新数据」= 放弃它（解锁 → 立刻落一次盘把损坏文件换成正常数据，免得下次启动又弹一遍）。
+ *  为什么不能只靠主进程那个原生对话框：那个框点掉就没了，此后用户看到的只是一个空世界
+ *  或一个旧世界，完全不知道自动落盘已经被停掉、也不知道原文件还躺在原地等他决定。 */
+function mountDataCorruptAlert(info: DataCorruptInfo): void {
+  const api = (window as any).lingkuangAPI;
+  const kb = (info.bytes / 1024).toFixed(1);
+  const retried = info.attempts > 1 ? `连读 ${info.attempts} 次都解析失败` : '解析失败';
+  showShellAlert({
+    id: 'data-corrupt',
+    tone: 'danger',
+    title: '世界观数据文件读不出来：本次运行已暂停自动保存，原文件原样留在原地',
+    body: info.vaultHasData
+      ? `worldbuilding.json（${kb} KB）${retried}。节点和实体在 vault 的 .md 里、没受影响；但只存在 JSON 里的东西（循环、剧情线、历法、时间指针）这次读不出来。已隔离副本：${info.corruptPath}`
+      : `worldbuilding.json（${kb} KB）${retried}，且 vault 里没有可用的世界，所以界面现在是空的。在你决定之前灵框不会再写这个文件 —— 原文件和副本都还在：${info.corruptPath}`,
+    actions: [
+      {
+        text: '去备份管理恢复',
+        primary: true,
+        /* 走工具栏按钮而不是直接调 openTool：openTool 要 (id, moduleView, store) 三个参数，
+           而工具栏的点击逻辑已经把它们（含「切走时结算上一个工具」）都处理好了，
+           复用它比自己再拼一遍可靠。 */
+        onClick: () => { (document.querySelector('[data-tool="backup"]') as HTMLElement | null)?.click(); },
+      },
+      {
+        text: '继续用新数据（放弃损坏文件）',
+        onClick: async () => {
+          await api?.allowDataWrite?.();
+          removeShellAlert('data-corrupt');
+          /* 解锁后立刻落一次盘：否则损坏文件一直躺到用户下一次编辑才被替换，
+             而「下次启动再弹一遍」正是这条链路最烦人的地方。 */
+          window.dispatchEvent(new CustomEvent('lingkuang-force-save'));
+        },
+      },
+    ],
+  });
+}
+
 /** 把扫描到的实体摊平成 `{ id: Entity }`：**文件为源**（Obsidian 改过的值生效），
  *  但保留 base 里文件没写的字段（例如差异帧 `layers` —— 实体 .md 暂时不序列化它，
  *  用扩展展开就能让它熬过每一次回扫）。文件里没有的实体就是不在了。 */
@@ -265,7 +331,7 @@ function ensureEntityLayer(store: any): void {
 }
 
 async function main() {
-  const data = await loadData();
+  const { data, corrupt } = await loadData();
   const store = createStore(data);
   /* 加载格式定义（kind → 应填字段集合）进 store.formats */
   try {
@@ -331,6 +397,8 @@ async function main() {
     window.clearTimeout(saveTimer);
     saveTimer = window.setTimeout(() => { void writeAll(); }, 400);
   });
+  /* 手动落一次盘：目前只有「判损横幅 → 继续用新数据」用（解锁后立刻把损坏文件换成正常数据） */
+  window.addEventListener('lingkuang-force-save', () => { void writeAll(); });
   /* 退出前落盘：先让当前工具把未提交的编辑交给 store（编辑器只在 tiptap blur 时提交，
      光标还在正文里就关窗口的话，那些字连 store 都没进），再同步写盘。 */
   window.addEventListener('beforeunload', () => {
@@ -363,6 +431,10 @@ async function main() {
   ensureEntityLayer(store);
   const host = document.getElementById('app')!;
   renderShell(store, host);
+  /* 判损横幅必须挂在壳渲染之后（宿主 #lk-alerts 在那之前不存在）。
+     放在这里而不是 loadData 里：横幅要说的话取决于「vault 有没有兜住」，
+     而那要等 vault 扫描完才知道。 */
+  if (corrupt) mountDataCorruptAlert(corrupt);
 
   /* 启动时补写一遍实体（**只写实体、不写节点**）：writeAll 只在「store 有改动」时才触发，
      于是升级前就存在的 JSON-only 实体要等用户碰它一下才会变成文件 —— 而这条链路的目的
@@ -373,7 +445,11 @@ async function main() {
 
   /* 同步刷新：监听外部 Obsidian 改 vault .md → 重新 scan → 替换 store（文件为源，不写回） */
   const api = (window as any).lingkuangAPI;
-  if (api?.vaultWatch) api.vaultWatch().catch(() => {});
+  /* 监听失败要说出来：`ok:false` 不是 reject，`.catch()` 接不住 ——
+     曾经 vault 目录还没建时它静默失败，结果整个会话外部改 .md 都不回扫（见 main.js 的 vault:watch）。 */
+  if (api?.vaultWatch) api.vaultWatch().then((r: any) => {
+    if (r && r.ok === false) console.warn('[lingkuang] vault 监听未启动，外部改 .md 不会自动回扫：', r.error);
+  }).catch(() => {});
   if (api?.onVaultChanged) {
     api.onVaultChanged(async () => {
       try {

@@ -15,6 +15,109 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第十八轮（2026-09-12）· 数据判损护栏 + 两个静默失效
+
+> **目的**：`main.js` 里那条注释早就写下了后果 —— 解析不了的 `worldbuilding.json`
+> **绝不能被空数据静默覆盖**（截断文件启动、不做任何操作，文件就变成「新世界」）。
+> 这一轮去堵它，顺带挖出两个同族毛病：**都是静默失效 —— 出事了，但界面上零提示**。
+> 用户选了「先做判损护栏」。
+
+### 一、判损护栏（`main.js` 的 `dataWriteLock`）
+
+**为什么不是「解析失败就报损坏」那么简单**：2026-08-23 那份 290KB 的
+`worldbuilding.bak-corrupt-20260823-175035.json` **至今能正常 `JSON.parse`**
+（无 BOM、结尾完整，5 个世界 / 17 条时间线 / 99 个节点）。而 `preserveFile()` 是朴素的
+`fs.copyFileSync`（`main.js:380`），拷的是**失败那次读之后**的磁盘现状 —— 所以
+「判损瞬间的字节」和「拷下来的字节」可以不是同一份东西。能解释这件事的机制只有竞态：
+本应用自己的 `writeFileSync` 先截断再写，读它的人会看到中间态；读失败 → 报损坏 →
+拷的时候写入方已经完成。（时间戳对不上：副本 mtime 17:49:52 vs 文件名戳 17:50:35 差 43 秒，
+所以**没坐实**，但它证明了「单次读失败」不足以定罪。）
+
+两层护栏：
+- **① 先重读再判损**：判损前重读 3 次、每次隔 200ms（`READ_ATTEMPTS = 4`、`READ_RETRY_MS = 200`），
+  读不到就拿着上一份 raw 继续重试。真损坏必然次次失败，竞态读到的半截几乎必然在下一次就完整。
+  `data:load` 因此改成 async，并回传 `attempts`（自动化据它断言「确实重读过」）。
+- **② 判损即上锁**：锁挂在 **`writeDataFileSync()`** 里 —— 那是 `data:save` 与
+  `app:flush-sync`（退出前落盘）**唯一的共用写入口**，锁在这里两条路径同时失效，不存在漏一条。
+  上锁后 `data:save` 回 `{ok:false, locked:true}`（不是普通失败：这是有意为之，自动化与 UI 要能区分）。
+  两个出口都是显式的：新 IPC `data:allow-write`（顶部横幅「继续用新数据」）解锁并立刻落一次盘
+  （`lingkuang-force-save` 事件 → `writeAll()`），或者走「备份管理」（`backup:restore` / `backup:import`
+  **不经** `writeDataFileSync`，上锁不影响它们 —— 这正是留给用户的救援通道）。
+  **读到一份能解析的文件 = 损坏已解决 → 自动解锁**，不让用户记着去点。
+
+**渲染层**：`loadData()` 不再把 `ok:false` 静默吞掉（旧代码 `if (res.ok && res.data)` 之后就没有 else，
+失败与「首次启动」不可区分），改为回传 `corrupt`，由 `mountDataCorruptAlert()` 挂一条**壳级横幅**。
+新增 `src/ui/alert.ts`（`showShellAlert`/`removeShellAlert`/`hasShellAlert`）+ 壳里加 `#lk-alerts` 通栏：
+编辑器内部那套 `addHint` 活在编辑器工具里、切走就没了，而这条必须**任何工具下都在**。
+横幅按 `vaultHasData` 说两句不同的话：vault 兜住了 →「节点/实体没受影响，但循环/剧情线/历法读不出来」；
+vault 也是空的 →「界面现在是空的，别再动它」。正文用 `textContent`（带用户路径，不拼 HTML）。
+
+### 二、`vault:watch` 静默失效（`main.js:1171`，**既有 bug，已修**）
+
+```js
+if (!fs.existsSync(root)) return { ok: false, error: 'vault not exist' };   // 修前：直接不挂监听
+```
+vault 根目录不存在时**永远不挂监听**，而渲染层那句 `api.vaultWatch().catch(() => {})`
+（`src/main.ts`）只能接 reject、接不住 `ok:false` —— 于是**整个会话外部改的 `.md` 一律不回扫**，
+界面零提示，直到下次重启。首次启动、或 vault 指向一个还没建的目录，必然命中；
+而应用自己第一次保存就会把目录建出来，所以「目录已存在」的实例一切正常。
+
+**怎么发现的**：这一轮的 e2e 用了全新临时目录，`entity-vault.cjs` 从 17/17 变成 **14/17**（★5/★6 挂）。
+做了 **A/B**：`git stash push -u` → 用 HEAD（本轮改动之前）重新 `vite build` → 同一个 fresh 目录复跑
+→ **同样 14/17、同样三条失败** ⇒ 不是本轮引入，是既有缺陷。差异只在于「启动时 vault 根存不存在」。
+- 修法：`vault:watch` 里**先 `mkdirSync(root, {recursive:true})` 再监听**（vault 是应用自己的数据根，
+  应用本来就往里写文件）；渲染层再加一句 `console.warn`，让 `ok:false` 不再无声无息。
+- 验证：同一个 fresh 目录 **14/17 → 17/17**。
+
+### 三、设定库的正文编辑器每 ~360ms 被整块重建一次（`src/ui/codex.ts`，**既有 bug，已修**）
+
+**症状**：`codex-node-tab.cjs` 的 ★11（改正文落进 .md）间歇性失败，而 ★10（改描述）稳定通过 ——
+两者走同一条写盘通路，所以先怀疑测试。**探针给了机制**（`MutationObserver` 盯 `#cx-doc`）：
+
+| | 修复前 | 修复后 |
+| --- | --- | --- |
+| 改「描述」落盘 | t=1234ms | t=790ms |
+| `#cx-doc` 里的编辑器 | **t=1597ms 被 removed 换成新的** | 观察器日志 **`[]`（一次都没动）** |
+| 抓着的那个元素 | `elConnected:false`、`sameEl:false` | `elConnected:true`、**`sameEl:true`** |
+
+**机制**：`store.subscribe` 里只要不是面板自己的提交（`quiet`）就 `render()`，而 `render()` 开头会
+`flush + dispose` 掉 tiptap 再新建一个。**自动落盘 → vault watcher 回扫 → `store.update`**
+这条链在每次编辑后约 360ms 都会走到这里一次 —— 于是在正文里打字时，编辑器每隔几秒被换一次 DOM。
+已进编辑器的字**不会**丢（`render()` 先 flush 再 dispose），丢的是**恰好落在换 DOM 那一瞬的
+击键/焦点/IME 组合状态**（探针那次卡在 1350ms 侥幸没事，测试那次卡在 1600ms 之后就丢了）。
+**这不是测试写错：真人打字一样会丢。**
+
+**修法**：订阅里加**内容签名闸门** —— `bodySignature()` = 目标身份 + 该目标的全部显示字段 + 正文
++ `activeWorld`（骨架标题跟着它走）。签名没变 = 屏幕上该显示的东西没变 = 编辑器没必要动。
+左列照旧每次重画（那一列没有编辑器，重建只花 DOM 钱），页签计数单独用 `updateTabCounts()` 刷
+（计数在**骨架**里，不在 `renderList()` 里，否则会留着旧数字）。
+`quiet` 提交仍然跳过重建（拖拽中的 scrub 不能被销毁），但**签名要跟上**，否则下一次真外部改动会被漏掉。
+`switchTarget()` 依旧直接调 `render()`（换条目必须重建），所以换文档的语义没变。
+`bodySig` 声明在 `quiet` 旁边而不是订阅旁（`render()` 里要写它，放后面会形成 TDZ）。
+
+### 验证（真实 Electron + CDP，`LINGKUANG_TEST_DATA`/`LINGKUANG_VAULT` 隔离）
+- 新增 `tools/e2e/data-corrupt-guard.cjs` **16/16**：★1 截断文件启动 6 秒后**原文件逐字节未变**、
+  ★2/★3 副本存在且与原文一致、★4/★5 已上锁且 `attempts=4`（证明重读）、★6/★7 上锁期间
+  `data:save` 被拒且文件未变、★8~★10 横幅可见/两个出口/正文带副本路径、11~13 点「继续用新数据」
+  → 横幅消失 + 解锁 + 文件被换成合法 JSON（自愈）、★14 中途补全的文件被重读捞回（`ok:true, attempts:2`）。
+- 新增 `tools/e2e/data-load-clean.cjs` **6/6**：**误报守卫** —— 干净数据下次读通（`attempts === 1`）、
+  没有横幅、没有凭空生成副本、写盘通路照常。
+- `codex-node-tab.cjs` **15/15 连跑 3 轮**（含旧组合 `data-load-clean` 先跑 —— 那是修复前 2/2 复现失败的组合）。
+- `codex-switch-target.cjs` **7/7 连跑 3 轮**；`editor-props-panel.cjs` **9/9**；
+  `entity-vault.cjs` **17/17**（fresh 目录，修复前 14/17）；`startup-materialize-entity.cjs` **6/6**；
+  冷启动 **PASS**。`node --check main.js/preload.js`、`tsc --noEmit`、`vite build` 全部 exit 0。
+
+### 已知限制（新增，未修）
+- **节点侧换「种类」的旧 `.md` 残留**：`writeVaultNodeSync`（`main.js:558`）只清理**目标目录**里同 id 的
+  旧文件，而 `nodePath()` 按 `kind` 分文件夹 ⇒ 改 kind 后旧文件留在原文件夹，重扫按 id 去重是
+  **后扫到者赢**（readdir 顺序决定，NTFS 按 UTF-16 序）⇒ 类型/字段会被打回旧值。
+  实体侧本轮之前已用 `entityFiles()` 全树清理修好，**节点侧同类问题仍在**（与实体同一套修法）。
+- **实体字段仍是两套**：设定库实体档案用 `fields.ts`、公共面板的属性行用 `buildPropCtrl`（等第 4 步收）。
+- **判损上锁期间的取舍**（有意为之，记在案）：上锁后 JSON 不再被写，而循环/剧情线/历法**只存在于 JSON**，
+  所以这段时间里对它们的改动不会落盘 —— 换来的是「唯一可恢复的那份文件不被覆盖」。
+  用户点「继续用新数据」或从备份恢复即解除；两条路都在横幅上写着。
+- `rotateBackups` 只留 3 份，且上锁期间不轮换（这正是要保的：别把最后一份原文件挤出去）。
+
 ## 第十七轮（2026-09-12）· 合并方案 A 第 3 步：设定库长成工作台
 
 > **目的**（先目的后实现）：第 1、2 步做完后，编辑器和设定库**都能「列条目 + 改字段 + 写正文」**了
@@ -67,6 +170,7 @@
   （含 tiptap 实例）重建，若恰好落在「用户刚点进正文、还没打字」的瞬间，那一下输入会落空。
   这是**既有行为**（旧 `codex.ts` 同样整块重渲染；`editor.ts` 只重画 sidebar 所以没这个问题），
   本步未改。修法方向：正文编辑器跨重建保留 selection，或让 store 订阅只重画左列。
+  → **第十八轮已修**（订阅改按内容签名决定要不要重建；探针实测修复前每 ~360ms 换一次编辑器 DOM）。
 - **实体字段仍是两套**：设定库实体档案用 `fields.ts`、公共面板的属性行用 `buildPropCtrl`。
   节点侧已经收敛成一份，实体侧等第 4 步（编辑器去留）定了再收。
 - 设定库的节点视图**没有「删除节点」**（节点生命周期仍归世界沙盘 / 详情面板），
