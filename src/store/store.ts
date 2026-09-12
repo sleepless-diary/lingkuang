@@ -36,6 +36,23 @@ function createStore(initial: WorldData): Store {
     });
   };
 
+  /* 撤销/重做是整份替换 data，而 activeWorld / activeTimeline 是**独立的**两个游标，
+     不在快照里。于是新建世界观 B → 切到 B → Ctrl+Z 时，B 随快照一起消失，游标却仍指向 B：
+     `currentWorld()` 只能返回兜底空对象 → 界面变成「一个没有名字的空世界」，
+     世界页签一个都不高亮，看起来像撤销把数据毁掉了（其实是游标悬空）。
+     这里按 setActiveWorld / setActiveTimeline 同样的规则重新落位到仍然存在的项。 */
+  const reseatSelection = (): void => {
+    if (!data.worldsets[activeWorld]) {
+      activeWorld = Object.keys(data.worldsets)[0] ?? '';
+      activeTimeline = '';
+    }
+    const ws = data.worldsets[activeWorld];
+    if (!ws) { activeTimeline = ''; return; }
+    if (!ws.timelines[activeTimeline]) {
+      activeTimeline = (ws.order ?? []).find((id) => ws.timelines[id]) || Object.keys(ws.timelines)[0] || '';
+    }
+  };
+
   const store: Store = {
     get data() { return data; },
     get activeWorld() { return activeWorld; },
@@ -70,12 +87,14 @@ function createStore(initial: WorldData): Store {
       if (!undoStack.length) return;
       redoStack.push(clone(data));
       data = undoStack.pop()!;
+      reseatSelection();
       notify();
     },
     redo() {
       if (!redoStack.length) return;
       undoStack.push(clone(data));
       data = redoStack.pop()!;
+      reseatSelection();
       notify();
     },
     canUndo() { return undoStack.length > 0; },

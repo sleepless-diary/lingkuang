@@ -350,6 +350,8 @@ export function mountTimeline(
   let currentScaleUnit = '年';  // 当前标尺档位（renderScale 更新，updateCursor 用它裁剪指针文字）
   let nodeDragId: string | null = null;
   let nodeDragMoved = false;
+  /* 本次拖动是否已经压过「拖动前」的撤销快照（见 pointermove 里那段注释） */
+  let nodeDragSnapshotted = false;
 
   wrap.addEventListener('pointerdown', (e) => {
     /* 只响应左键：pointerdown 对任意按键都触发，不判断的话
@@ -362,6 +364,7 @@ export function mountTimeline(
       /* 节点：点击选中 / 拖动改时间 */
       nodeDragId = nodeEl.dataset.id ?? null;
       nodeDragMoved = false;
+      nodeDragSnapshotted = false;
       lastX = e.clientX;
       return;
     }
@@ -392,7 +395,21 @@ export function mountTimeline(
         const n = tl?.nodes.find((x) => x.id === nodeDragId);
         if (n) {
           const e = xToTime(mx);                       /* 鼠标位置 → epoch 秒 */
-          n.year = fromEpoch(cal(), e, getYearTable()).anchor.year;    /* 反推存年（精确到年）；拖动热路径必须带年表，否则 O(年数) */
+          const yr = fromEpoch(cal(), e, getYearTable()).anchor.year;   /* 反推存年（精确到年）；拖动热路径必须带年表，否则 O(年数) */
+          /* ★ 拖动前先压一次撤销快照（整个拖动只压一次）。
+             拖动为了跟手，是**直接改 store.data 里的活引用** n.year，逐帧再
+             saveNodeDoc({undo:false}) 只负责通知+落盘。若等 pointerup 再提交，
+             store.update 的快照拍到的就是「已经改过」的数据 → Ctrl+Z 是空操作
+             ——map.ts 曾踩过同一个坑（save() 里 map 就是 ws.maps[0]）。
+             所以在这里空提交一次，把「拖动前」定格进撤销栈；
+             年份真的变了才压，微动 2px 往往还是同一年，不该留一个空撤销格。
+             效果：Ctrl+Z 只回退这一次拖动，不再连上一个无关操作一起回滚
+             （用户反馈的「撤销一次，两处都变了」）。 */
+          if (yr !== n.year && !nodeDragSnapshotted) {
+            nodeDragSnapshotted = true;
+            store.update(() => {});
+          }
+          n.year = yr;
           render();
           saveNodeDoc(store, tl!.id, n.id, n.doc ?? '', { undo: false });   // 拖动中间态不进撤销
         }
@@ -413,6 +430,7 @@ export function mountTimeline(
   function endDrag(): void {
     nodeDragId = null;
     nodeDragMoved = false;
+    nodeDragSnapshotted = false;
     dragging = false;
     cursorDrag = false;
     /* 吸管模式下光标是 copy，不要一律打回 default */

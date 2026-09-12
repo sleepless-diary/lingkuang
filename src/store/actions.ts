@@ -1,7 +1,7 @@
 /** 灵框 · actions（通过 store.update 修改数据——视图不直接碰 data） */
 import type { Store } from './store';
 import { currentWorld } from './store';
-import type { Timeline, TimelineNode, Entity, Worldset } from './types';
+import type { Timeline, TimelineNode, Entity, Worldset, WorldData } from './types';
 
 export function addTimeline(store: Store, name: string): string {
   const id = 'tl' + Date.now();
@@ -255,4 +255,60 @@ export function applyTrashRestore(store: Store, restored: TrashRestored[]): { no
     }
   }, { undo: false });
   return { nodes: nNodes, timelines: nTls, worlds: nWs };
+}
+
+/* ── 撤销/重做（带 vault 同步）─────────────────────────────────────
+   节点以 vault 的 .md 为**源**（`vaultToWorldData` 拿文件重建节点），而撤销/重做只改内存。
+   于是撤销「建节点」后：节点从内存消失、.md 却还在 vault 里 → 下一次 vault 重扫
+   （我们自己写盘也会触发 watcher，主进程防抖 400ms）就把它从文件里拉回来。
+   实测（真实 Electron + CDP，每 100ms 采样画布节点数）：Ctrl+Z 后序列是
+   `[0,1,1,1,…]` —— 节点消失约 100ms 又出现。用户看到的就是「撤销按了没反应」，
+   而撤销栈本身完全正常（本轮之前已修的拖动入栈也一并被它掩盖）。
+   反向同理：重做让节点回到内存，但它的 .md 已经进了回收站，不补写就又被重扫抹掉。
+   所以这里在撤销/重做前后各取一次节点索引：消失的移进回收站、回来的写回 vault。
+   只处理「前后差集」里的节点 id —— 外部（Obsidian）新建的文件不在索引里，不会被误删。 */
+type NodeRef = { wsName: string; tlName: string; node: TimelineNode };
+
+function indexNodes(data: WorldData): Map<string, NodeRef> {
+  const map = new Map<string, NodeRef>();
+  for (const [wsName, ws] of Object.entries(data.worldsets ?? {})) {
+    for (const tlId of ws.order ?? []) {
+      const tl = ws.timelines?.[tlId];
+      if (!tl) continue;
+      for (const node of tl.nodes ?? []) map.set(`${wsName}\u0000${tl.name}\u0000${node.id}`, { wsName, tlName: tl.name, node });
+    }
+  }
+  return map;
+}
+
+type VaultBridge = {
+  vaultDelete?: (ws: string, tl: string, n: unknown) => Promise<unknown>;
+  vaultWrite?: (ws: string, tl: string, n: unknown) => Promise<unknown>;
+};
+
+function syncVaultAfterHistory(store: Store, run: () => void): void {
+  const before = indexNodes(store.data);
+  run();
+  const after = indexNodes(store.data);
+  const api = (window as unknown as { lingkuangAPI?: VaultBridge }).lingkuangAPI;
+  if (!api) return;
+  /* 先移走后补写：时间线改名会让同一个节点在前后索引里键不同，写回要赢过移除 */
+  for (const [key, ref] of before) {
+    if (after.has(key)) continue;
+    void api.vaultDelete?.(ref.wsName, ref.tlName, ref.node)?.catch(() => {});
+  }
+  for (const [key, ref] of after) {
+    if (before.has(key)) continue;
+    void api.vaultWrite?.(ref.wsName, ref.tlName, ref.node)?.catch(() => {});
+  }
+}
+
+/** 撤销（并把 vault 文件同步到撤销后的状态，见上） */
+export function undoWithVault(store: Store): void {
+  syncVaultAfterHistory(store, () => store.undo());
+}
+
+/** 重做（并把 vault 文件同步到重做后的状态，见上） */
+export function redoWithVault(store: Store): void {
+  syncVaultAfterHistory(store, () => store.redo());
 }

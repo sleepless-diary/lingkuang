@@ -5,7 +5,7 @@ import { registerAllTools } from '../tools/register';
 import { mountTimeline } from './timeline';
 import { renderNodeDetail } from './detail';
 import { escapeHtml } from './html';
-import { addTimeline, addWorld, removeTimeline, removeWorld } from '../store/actions';
+import { addTimeline, addWorld, removeTimeline, removeWorld, undoWithVault, redoWithVault } from '../store/actions';
 import { confirmDialog, promptDialog } from './confirm';
 import { currentWorld } from '../store/store';
 import { renderNodeForm } from './node-form';
@@ -144,8 +144,8 @@ function renderTimelineTabs(store: Store): void {
     undoBtn = head.querySelector('#lk-undo');
     redoBtn = head.querySelector('#lk-redo');
     nodeBtn = head.querySelector('#lk-node-new');
-    undoBtn?.addEventListener('click', () => store.undo());
-    redoBtn?.addEventListener('click', () => store.redo());
+    undoBtn?.addEventListener('click', () => undoWithVault(store));
+    redoBtn?.addEventListener('click', () => redoWithVault(store));
     nodeBtn?.addEventListener('click', () => {
       const id = activeTimelineId(store);
       const tl = id ? currentWorld(store).timelines[id] : undefined;

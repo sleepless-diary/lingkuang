@@ -2,6 +2,7 @@
 import createStore, { emptyData } from './store/store';
 import { renderShell } from './ui/shell';
 import { disposeCurrentTool } from './tools/registry';
+import { undoWithVault, redoWithVault } from './store/actions';
 import './style.css';
 
 /** 数据加载：优先 vault(.md 文件为源)；无 vault 则回退 JSON/空数据 */
@@ -347,11 +348,11 @@ async function main() {
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();
-      if (e.shiftKey) store.redo();
-      else store.undo();
+      if (e.shiftKey) redoWithVault(store);
+      else undoWithVault(store);
     } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
       e.preventDefault();
-      store.redo();
+      redoWithVault(store);
     }
   });
 }
