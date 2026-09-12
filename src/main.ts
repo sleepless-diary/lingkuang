@@ -293,6 +293,11 @@ async function main() {
   if (api?.onVaultChanged) {
     api.onVaultChanged(async () => {
       try {
+        /* vault 是源，但内存里还可能有没落盘的改动（自动落盘有 400ms 防抖，写一整个
+           世界的 .md 也要时间）。直接拿磁盘快照整片替换会把它们抹掉——先把待写内容
+           推进 vault 让源追上内存，再重载。 */
+        for (let i = 0; i < 3 && pendingWrite; i++) await writeAll();
+        if (pendingWrite) return; /* 仍在写（正在连续输入）→ 放弃这轮，下个变化事件再来 */
         const vres = await api.vaultScan();
         if (vres && vres.ok && vres.worlds) {
           /* 以当前 store 为 base：外部改 .md 只该覆盖节点，不能顺手清空循环/剧情线/历法 */
@@ -300,7 +305,9 @@ async function main() {
           /* 检测外部对节点字段的增删（属性/描述/正文），对比重载前的 store 与扫描结果 */
           const diffs = nodeFieldDiff(store.data, newData);
           suppressWrite = true;
-          store.update((d) => { d.worldsets = newData.worldsets; });
+          /* 从源同步不是用户编辑：不占撤销格。否则每次外部改动都会压进一个
+             「看起来什么都没变」的整库快照，Ctrl+Z 就被这些空转快照吃掉了。 */
+          store.update((d) => { d.worldsets = newData.worldsets; }, { undo: false });
           suppressWrite = false;
           /* 自动修复可安全恢复的字段（描述/正文标签/属性被增删），其余仍提示 */
           const repairable = diffs.filter((d: any) => d.diffs.some((x: string) => x.includes('「#正文：」标签被删除') || x.includes('描述被删除') || x.startsWith('属性「') || x.includes('字段被删除')));

@@ -1,5 +1,13 @@
 # 灵框 v3 编辑器重构任务交接（2026-08-23）
 
+> ⚠️ **本方案已回退，本文件仅作历史记录，勿据此继续开发**（2026-08-27 核实）
+> 项目现路径为 `F:\Projects\lingkuang-v3`。方案2（分段编辑器）曾于 `3f68607` 落地，
+> 随后被 `9926baa` **整体回退**：当前 `src/ui/editor.ts:317-318` 仍是
+> `new Editor({ element: docBox, extensions: [StarterKit, Markdown, Image, Tag], contentType: 'markdown', content: '' })`，
+> `@tiptap/*` 是**在用**的依赖，不是待清理项。`src/ui/sectioned-editor.ts` +
+> `src/ui/section-markdown.ts` 已无任何引用，也不会被打进产物（vite 不打包未引用模块），
+> 属于可删的死代码。下文「已完成」「下一步」两节描述的都是那个已被回退的实现。
+
 > 本文件给后续会话/Rule 接手"编辑器方案2"任务用。项目路径：`F:\OpenDesign\.od\projects\lingkuang-v3-ui\`
 
 ## 任务背景
@@ -50,7 +58,7 @@
 6. tsc/build 验证 + 提交，用户实测迭代
 
 ## 本轮进度（2026-08-23，方案2 编辑器骨架已完成，待用户实测）
-- **已完成**：新增 `src/ui/sectioned-editor.ts` —— contenteditable 分段编辑器（光标段源码、其他段 markdown-it 预览；点击预览段/方向键跨段切源码；离开段 `flushActive` 原位替换回拼 markdown；失焦 `onBlur` 保存）；`editor.ts` 已移除 tiptap（含 `MarkdownMarkers`）改用新编辑器；`style.css` 用 `.md-editor` 样式替换 tiptap 样式；`tsc` + `vite build` 通过，editor chunk 已无 tiptap/ProseMirror 引用。
+- **已完成**：新增 `src/ui/sectioned-editor.ts` —— contenteditable 分段编辑器（光标段源码、其他段 markdown-it 预览；点击预览段/方向键跨段切源码；离开段 `flushActive` 原位替换回拼 markdown；失焦 `onBlur` 保存）；`editor.ts` 已移除 tiptap（含 `MarkdownMarkers`）改用新编辑器；`style.css` 用 `.md-editor` 样式替换 tiptap 样式；`tsc` + `vite build` 通过，editor chunk 已无 tiptap/ProseMirror 引用。**（⚠️ 该状态已被 `9926baa` 回退，tiptap 现仍在用——详见文首说明）**
 - **骨架已知局限（下一轮优化，非本轮）**：① 点击预览段 → 源码段光标落**段首**（未精确映射落点偏移）；② 编辑中段内加空行导致段落分裂时，切段索引可能定位偏差（沿用 note-gen 思路后续优化）；③ `@tiptap/*`/`@tiptap/pm` 未 `npm uninstall`；④ 长文档性能（分段节流）未做。等用户实测反馈后处理。
 
 ## 一句话给新会话

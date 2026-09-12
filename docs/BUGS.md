@@ -7,6 +7,47 @@
 > 下面「本轮已修复」记录已改掉的，文末「本轮新发现（未修复）」记录还没动的。
 > 同日第二轮：继续清「底层」问题（数据保真 / 退出落盘 / 注入 / 死状态），见「第二轮已修复」。
 
+## 第三轮已修复（2026-08-27 收尾）
+
+> 本轮口径：**只动底层，不改用户能看到的界面/交互**。全部通过 `tsc --noEmit`、
+> `node --check`、`vite build`。
+
+- [x] **`src/ui/map.ts` 的 window 指针监听只加不减**
+  - 位置：`renderMap()` 里的 `window.addEventListener('pointermove'/'pointerup')`。
+  - 根因：每次进入地图工具都重新注册，旧的从不移除 → 进出 N 次就叠 2N 个监听，
+    且每个都在对着已废弃的 SVG 跑 `renderSvg()`。
+  - 修法：新增模块级 `mapCleanup`，重新进入时先摘掉旧的；store 订阅自退订时一并摘掉。
+- [x] **`src/ui/map.ts` 拖动状态无兜底**（与 `timeline.ts` 同类）
+  - 根因：`panning`/`drawing` 只在 `pointerup` 里清。丢失那次 pointerup（在窗口外松开、
+    指针被系统取消）之后，不按键移动鼠标也会一直平移画布、或一直往区域里加点。
+  - 修法：抽出 `endDrag(commit: boolean)` 统一收尾；注册 `pointercancel`；
+    `pointermove` 首行判断 `e.buttons === 0` 即就地收尾；`pointerdown` 加 `e.button !== 0` 早退
+    （右键/中键不再画区域或拖画布）。区域只在正常 pointerup 落盘，取消则丢弃半成品。
+- [x] **vault 重新扫描覆盖尚未写盘的改动（自动保存竞态）**
+  - 位置：`src/main.ts` 的 `onVaultChanged` 回调。
+  - 根因：watcher 对自己写的文件也会触发；回调在「内存比磁盘新」时仍拿磁盘快照整片替换。
+  - 修法：替换前先把待写内容推进 vault——
+    `for (let i = 0; i < 3 && pendingWrite; i++) await writeAll();`，
+    仍为 true 就放弃这轮（说明正在连续输入），等下个变化事件再重载。
+- [x] **外部同步占用撤销格，把 Ctrl+Z 吃掉**
+  - 位置：同上回调里的 `store.update((d) => { d.worldsets = newData.worldsets; })`。
+  - 根因：该 `update` 用默认 `{ undo: true }`，于是每次外部改动（含自己写盘触发的回环）
+    都压进一个整库深拷贝快照，其内容与当前状态看起来一致 → Ctrl+Z 表现为「按了没反应」。
+  - 修法：传 `{ undo: false }`——从源同步不是用户编辑。
+- [x] **`files` 里的死重**
+  - `lingkuang.js`（263.7 KB）与根 `index.html`（vite 源入口）已从 `build.files` 移除。
+    二者运行时不加载：`main.js` 全仓只有一处
+    `loadFile(path.join(__dirname, 'app-dist', 'index.html'))`；`lingkuang.js` 唯一引用者是
+    未被应用加载的 `legacy-index.html`。`index.html` 仍是 vite 的**构建入口**，留在仓库根目录不受影响。
+  - 复核过的误报：`design-system/**/*` 同样不被构建引用（`src/style.css` 自带 `:root` 令牌），
+    但只有 3 文件 24.4 KB，且是 `AGENTS.md` 指定的颜色来源，**故意保留**。
+- [x] **文档与现实不符（3 处）**
+  - `EDITOR-ESAY-TODO.md`：文首加显著回退说明（`9926baa` 已把方案2 整体回退、tiptap 现仍在用、
+    项目路径更正为 `F:\Projects\lingkuang-v3`），并在第 53 行原处标注该状态已失效。
+  - `docs/EDITOR-SANDBOX-BRIDGE.md:59`：`makePropCtrl` → `buildPropCtrl`。
+  - `docs/EDITOR-SANDBOX-BRIDGE.md:71`：改写为与实际一致，并把键名字符类的真实后果
+    升格成下面那条数据损失条目。
+
 ## 第二轮已修复（2026-08-27 下半场）
 
 > 用户口径：「底层优化都可以直接动手，不影响我表面看到的就行」。
@@ -216,6 +257,12 @@
     修法：`pointerdown` 记下原年份，`pointerup` 用 `store.update`（走 actions）提交一次。
   - 已确认原因二：**循环/右键菜单的写操作绕过 `store.update`**（见文末新发现第 1 条），
     既不进撤销栈也不落盘，撤销时会被一起回滚。
+    → 第二轮已修（循环写操作改走 `src/store/actions.ts` 的
+    `addLoop`/`setLoopCount`/`removeLoop`/`copyNode`/`removeNode`）。
+  - 已确认原因三（第三轮已修）：**外部 vault 同步把自己塞进撤销栈**。`src/main.ts` 的
+    `onVaultChanged` 回调用默认 `{ undo: true }` 做整片替换，而 watcher 对自己写盘的文件也会触发
+    → 每次编辑都会推入一个「看起来什么都没变」的整库深拷贝快照，Ctrl+Z 就表现为按了没反应。
+    修法：该次 `store.update` 传 `{ undo: false }`；并在替换前先 flush 待写内容，避免又抹掉内存里的改动。
   - 其余仍待查：编辑面板内联编辑（title/desc）、people/places chips 等路径是否都 pushUndo；
     渲染重建后撤销/重做状态；redo 栈正确性。
   - 待办：用户复现现象后定位；修复后补验证（多次编辑→撤销→重做→对比数据）。
@@ -287,17 +334,17 @@
 
 ### 数据损失 / 崩溃风险
 
-> 本轮已修 4 条（循环写操作绕过 store.update、循环/剧情线重启即丢、删除节点复活、
-> 退出不 flush）——见上面「第二轮已修复」。这里只剩下面这条。
+> 第二轮已修 4 条，第三轮又修掉 vault 重扫竞态——见上面「第二轮已修复」「第三轮已修复」。
 
-- [ ] **vault 重新扫描会覆盖尚未写盘的改动（自动保存竞态）**
-  - 位置：`src/main.ts` 的扫描回调（`store.update((d) => { d.worldsets = newData.worldsets; })`）。
-  - 根因：watcher 对自己写的文件也会触发，回调**整片替换** `worldsets` 而不合并待写改动；
-    `suppressWrite` 只抑制回写，挡不住已在排队或更晚的写盘。
-    （第二轮已经把 loops/storylines/calendar 这类「.md 表达不了」的字段改成从 base 回填，
-    但节点本身仍是整片替换。）
-  - 建议：节点也按 id 合并而非替换；或对比 mtime/hash 跳过自己刚写的那次扫描；
-    替换前先取消/落地待写定时器。
+- [ ] **frontmatter 键名含 `-` `.` `(` 或空格的 Obsidian 属性会被静默删除**
+  - 位置：`main.js:121` 的 `line.match(/^([\w\u4e00-\u9fa5]+):\s*(.*)$/)`。
+  - 现象：在 Obsidian 里写 `身高(cm): 170`、`所属-阵营: 甲`、`所属.阵营: 甲`、`note 1: x`，
+    灵框不但读不到这些属性，下次保存还会**把它们从文件里删掉**——`mdToNode` 只把匹配上的行
+    收进 `fm`，而 `nodeToMd` 会整体重写 frontmatter。属数据损失，不只是「不显示」。
+    （`()` `-` `.` 空格都不在字符类里；值侧宽松得多。）
+  - 建议：把 `:121` 的字符类放宽到「非空白、非冒号」（如 `[^\s:：]+`）。
+  - ⚠️ **修这个会让原本被丢弃的键出现在属性面板＝可见变化**，按用户
+    「不影响我表面看到的」口径**待定，需用户点头**。
 
 ### 时间线
 
@@ -337,24 +384,20 @@
     ③ `readSegText` 走 `innerText`，受布局/CSS 影响，应改用 `textContent`。
   - 建议：要么删掉这两个文件，要么在文件头注明「当前未接入」。
 
-- [ ] **`EDITOR-ESAY-TODO.md` 的描述在 HEAD 上是错的**
-  - 内容：第 53 行称「`editor.ts` 已移除 tiptap…已无 tiptap/ProseMirror 引用」，与当前代码相反；
-    文件头还指向另一个 checkout（`F:\OpenDesign\...`）。建议改标注为历史记录或删除。
+- [x] **`EDITOR-ESAY-TODO.md` 的描述在 HEAD 上是错的** → 第三轮已修：
+  文首加回退说明（含当前真实代码引用），第 53 行原处标注该状态已失效。
 
-- [ ] **`docs/EDITOR-SANDBOX-BRIDGE.md` 两处不符**
-  - 第 71 行称 `mdToNode`/`parseProp` 能读回 Obsidian 加的属性 —— 实际 frontmatter 键受
-    `/^([\w\u4e00-\u9fa5]+):/` 限制，`身高(cm)`、`所属-阵营` 这类键会被静默丢弃；
-    第 59 行写 `makePropCtrl`，代码里是 `buildPropCtrl`。
+- [x] **`docs/EDITOR-SANDBOX-BRIDGE.md` 两处不符** → 第三轮已修：
+  第 59 行改为 `buildPropCtrl`；第 71 行改写为与实际一致，并把「键受字符类限制」的
+  真实后果（会删属性）升格成上面「数据损失」里的独立条目。
 
 ### 优化（非 bug）
 
-> 本轮已做：渲染层依赖移出 asar（见「第二轮已修复」）。下面剩纯死重。
+> 第二轮已做：渲染层依赖移出 asar。第三轮已做：`files` 死重。当前无遗留。
 
-- [ ] **`files` 里的死重**
-  - `lingkuang.js`（270KB legacy 单体）与根目录 `index.html`（vite 源入口，`<script src="/src/main.ts">`）
-    都在 electron-builder 的 `files` 里，但运行时不加载任何一个
-    （`main.js` 加载的是 `app-dist/index.html`，而它在打包时会被 vite 重新生成）。
-  - 建议：从 `files` 移除这两项（顺带删掉仓库里那个 `legacy-index.html`）。
+- [x] **`files` 里的死重** → 第三轮已从 `build.files` 移除 `lingkuang.js`（263.7 KB）与根 `index.html`。
+  仓库里的 `legacy-index.html`（`lingkuang.js` 的唯一引用者，本身也不被应用加载）
+  用户选择保留并已随本轮一起提交，**未删**。
 
 
 ---

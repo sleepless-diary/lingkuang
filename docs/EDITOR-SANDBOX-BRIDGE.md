@@ -56,7 +56,7 @@ type PropValue = string | number | boolean | (string | number)[];
 
 `properties` 的键值对按值类型决定控件与展示（两端一致）：
 
-| PropValue 类型 | 编辑器控件（makePropCtrl，已实现） | 展示/序列化 | frontmatter（Obsidian） |
+| PropValue 类型 | 编辑器控件（buildPropCtrl，已实现） | 展示/序列化 | frontmatter（Obsidian） |
 |---|---|---|---|
 | `number` | `<input type="number">` | 数字 | `key: 123` |
 | `boolean` | `<input type="checkbox">` | 是 / 否 | `key: true/false` |
@@ -68,7 +68,13 @@ type PropValue = string | number | boolean | (string | number)[];
 
 ## 5. 序列化与 Obsidian 兼容
 
-- `main.js`：`nodeToMd` 用 `fmtProp` 按类型写 frontmatter；`mdToNode` 用 `parseProp` 按格式解析回 `properties`（Obsidian 加的属性类型能读回）。
+- `main.js`：`nodeToMd` 用 `fmtProp` 按类型写 frontmatter；`mdToNode` 用 `parseProp` 按格式解析回 `properties`。
+- ⚠️ **键名限制（与实现一致）**：属性行匹配是 `main.js:121` 的 `/^([\w\u4e00-\u9fa5]+):\s*(.*)$/`，
+  键**只允许 ASCII 词字符与中文**。所以 `身高(cm): 170`、`所属-阵营: 甲`、`所属.阵营: 甲`、`note 1: x`
+  这类键**匹配不上**（`()` `-` `.` 空格 都不在字符类里）。而 `mdToNode` 只把匹配上的行收进 `fm`，
+  `nodeToMd` 又会**整体重写** frontmatter——这些键于是在下一次保存时被**从文件里删掉**，
+  不是仅仅"不显示"。值的限制宽松得多（`fmtProp` 的字符串分支额外允许 `.-/ ` 与空格）。
+  放宽 :121 字符类即可修复，但那会让原本被丢弃的键出现在属性面板＝可见变化，故待定，见 `docs/BUGS.md`。
 - 固定字段 `id/title/year/precision/type` 不进入 `properties`。
 - 多行列表格式（`key:\n  - a`）暂不解析，Obsidian 默认行内 `[a, b]` 已兼容。
 

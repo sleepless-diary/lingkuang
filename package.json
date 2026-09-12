@@ -24,8 +24,6 @@
     "files": [
       "main.js",
       "preload.js",
-      "lingkuang.js",
-      "index.html",
       "mcp-server.js",
       "package.json",
       "app-dist/**/*",

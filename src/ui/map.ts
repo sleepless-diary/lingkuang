@@ -28,6 +28,9 @@ function smoothClosedPath(pts: [number, number][]): string {
 /* 同 detail.ts：host 是长生命周期容器，重新渲染必须摘掉上一次的订阅，
    否则切到别的工具后旧订阅仍会往别人的界面里画东西。 */
 let mapUnsub: (() => void) | null = null;
+/* window 上的指针监听同理：只加不减的话，进出地图工具 N 次就叠 2N 个，
+   且每个都还在对着已废弃的 SVG 跑重绘。 */
+let mapCleanup: (() => void) | null = null;
 
 export function renderMap(store: Store, host: HTMLElement): void {
   /* 首次进入若还没有地图就补一张默认地图（写入走 store.update，不直接改 data；
@@ -110,7 +113,30 @@ export function renderMap(store: Store, host: HTMLElement): void {
   }
 
   let panning = false, panX = 0, panY = 0, panSX = 0, panSY = 0;
+
+  /* 收尾统一入口。commit=true（正常 pointerup）才把区域落盘；
+     其余情况（pointercancel、丢失的 pointerup）丢弃这一笔，避免半成品区域写进数据。 */
+  function endDrag(commit: boolean) {
+    if (commit && mode === 'region' && drawing.length >= 3) {
+      const pts = drawing;
+      const fill = `rgba(${158 + Math.floor(Math.random() * 60)},${150 + Math.floor(Math.random() * 50)},${98},0.25)`;
+      save((m) => {
+        m.regions.push({
+          id: 'rg' + Date.now(),
+          name: `区域 ${m.regions.length + 1}`,
+          points: pts,
+          path: smoothClosedPath(pts),
+          fill,
+        });
+      });
+    }
+    drawing = [];
+    panning = false;
+    renderSvg();
+  }
+
   svg.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return; // 右键/中键不画区域、不拖画布
     const rect = svg.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
     if (mode === 'region') {
@@ -128,7 +154,13 @@ export function renderMap(store: Store, host: HTMLElement): void {
       panY = parseFloat(svg.style.top) || 0;
     }
   });
-  window.addEventListener('pointermove', (e) => {
+  const onMove = (e: PointerEvent) => {
+    /* 丢失 pointerup 的兜底：没按键却收到 move，说明收尾信号丢了
+       （在窗口外松开 / pointercancel 没派发），就地收尾——否则会一直画下去或一直平移。 */
+    if (e.buttons === 0) {
+      if (panning || drawing.length) endDrag(false);
+      return;
+    }
     if (mode === 'region' && drawing.length) {
       const rect = svg.getBoundingClientRect();
       drawing.push([e.clientX - rect.left, e.clientY - rect.top]);
@@ -137,25 +169,18 @@ export function renderMap(store: Store, host: HTMLElement): void {
       svg.style.left = panX + (e.clientX - panSX) + 'px';
       svg.style.top = panY + (e.clientY - panSY) + 'px';
     }
-  });
-  window.addEventListener('pointerup', () => {
-    if (mode === 'region' && drawing.length >= 3) {
-      const pts = drawing;
-      const fill = `rgba(${158 + Math.floor(Math.random() * 60)},${150 + Math.floor(Math.random() * 50)},${98},0.25)`;
-      save((m) => {
-        m.regions.push({
-          id: 'rg' + Date.now(),
-          name: `区域 ${m.regions.length + 1}`,
-          points: pts,
-          path: smoothClosedPath(pts),
-          fill,
-        });
-      });
-    }
-    drawing = [];
-    panning = false;
-    renderSvg();
-  });
+  };
+  const onUp = () => endDrag(true);
+  const onCancel = () => endDrag(false);
+  mapCleanup?.();
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onCancel);
+  mapCleanup = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onCancel);
+  };
 
   /* 改动必须发生在 store.update 内部：update() 先把「当前」data 深拷贝进撤销栈，
      再执行 fn。旧写法是「先直接改 map —— 而 map 就是 ws.maps[0] 这个活引用 ——
@@ -170,8 +195,14 @@ export function renderMap(store: Store, host: HTMLElement): void {
 
   mapUnsub?.();
   mapUnsub = store.subscribe(() => {
-    /* #map-svg 只由本模块产出：容器被别的工具接管 → 自行退订 */
-    if (!host.isConnected || !host.querySelector('#map-svg')) { mapUnsub?.(); mapUnsub = null; return; }
+    /* #map-svg 只由本模块产出：容器被别的工具接管 → 自行退订（window 监听一并摘掉） */
+    if (!host.isConnected || !host.querySelector('#map-svg')) {
+      mapUnsub?.();
+      mapUnsub = null;
+      mapCleanup?.();
+      mapCleanup = null;
+      return;
+    }
     renderSvg();
   });
   renderSvg();
