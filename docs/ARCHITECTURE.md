@@ -44,7 +44,7 @@
 | `src/ui/keys.ts` / `html.ts` | `isImeEnter(e)`（中文输入法回车守卫）/ `escapeHtml(s)`（外部文本进 innerHTML 前必过） |
 | `src/ui/alert.ts` | **壳级横幅**（`#lk-alerts` 通栏，`showShellAlert`/`removeShellAlert`/`hasShellAlert`）：放「必须被看见、且要用户做选择」的状态（数据文件判损、自动保存已暂停）。与编辑器内部的 `addHint` 不同 —— 那条活在编辑器工具里、切走就没了，这条挂壳上，任何工具下都在 |
 | `src/ui/schema.ts` | **结构体管理**面板（两个分区：**节点种类** / **实体类型**）。保存 → 节点种类写 `formats`（`formats.json`）或实体类型写 `worldsets[active].entityTypes` → 派发 `lingkuang-formats-changed`，由 `src/main.ts` 的 `ensureAllFormatFields` / `ensureEntityLayer` 补空值、清模板外的字段 |
-| `src/ui/motion.ts` | **动效层**（`enter(el, cls='lk-enter')` 重放入场 / `staggerIn(container)` 常驻错峰（页签栏）/ `cascadeIn(container, step, maxDelay, start)` 一次性错峰（工具打开、换页签、换条目）/ `motionReduced()`）：keyframes 在 `src/style.css` 末尾「动效层」一节，时长走 `--motion-*` 令牌。⚠️ 只挂**显式切换**（切工具/开面板/换页签/弹窗），别挂 store 订阅触发的重渲染；⚠️ **不给整块容器挂**（会"洗白一下"且盖掉元素错峰） |
+| `src/ui/motion.ts` | **动效层**（`enter(el, cls='lk-enter')` 重放入场 / `staggerIn(container)` 常驻错峰（页签栏）/ `cascadeIn(container, step, maxDelay, start)` 一次性错峰（工具打开、换页签、换条目）/ `stopCascade(container)` 取消一次性错峰（"这次不许播"的分支要显式调）/ `motionReduced()`）：keyframes 在 `src/style.css` 末尾「动效层」一节，时长走 `--motion-*` 令牌。⚠️ 只挂**显式切换**（切工具/开面板/换页签/弹窗），别挂 store 订阅触发的重渲染；⚠️ **不给整块容器挂**（会"洗白一下"且盖掉元素错峰） |
 | `src/ui/codex.ts` | **设定库 = 工作台**（合并方案 A 第 3 步）：左列「实体」/「时间线节点」双页签 + 搜索框（节点是 世界→时间线→种类→节点 四级树，搜索时摊平成列表）、中栏档案字段、右栏正文编辑器。节点中栏用 `src/ui/props-panel.ts`（与编辑器同一份）、实体用 `src/ui/fields.ts`、正文用 `src/ui/doc-editor.ts`。⚠️ 换条目必须走 `switchTarget()`（先 flush 再改选择），正文写回**创建时捕获的目标**。⚠️ store 订阅**按 `bodySignature()` 决定要不要重建**中/右栏 —— 无条件 `render()` 会 dispose 掉 tiptap，而「自动落盘 → vault 回扫」每次编辑后约 360ms 就会走一趟订阅，实测每换一次 DOM 就有丢击键/焦点/IME 的风险（第十八轮） |
 | `src/ui/fields.ts` | 模板字段控件的**公共渲染**（`fieldRow(field, value, onChange, labelWidth)` / `parseFieldInput` / `formatFieldValue`），按模板声明的类型决定形态。约定：只在 `change`（失焦/回车）提交 |
 | `src/ui/doc-editor.ts` | 极简文稿编辑器（tiptap，与 `editor.ts` 同一套扩展）：`createDocEditor(el, onFlush)` → `{ setDoc, getDoc, flush, dispose }`。⚠️ 切条目必须 flush 再 dispose |
@@ -303,9 +303,13 @@
   **只入场不退场**：退场要等 animationend 才能 resolve，破坏性操作的 Promise 不该为观感延迟）；
   设定库换条目/换页签 = `src/ui/codex.ts`（`pendingEnter` 标志：只有显式切换播，store 订阅触发的
   重建不播，否则改一个字段整块淡入一次；两级 `cascadeIn`：顶层块 0/100/200/300 + 左列条目 200ms 起逐条 60ms）；
-  **灵感触发器卡片** = `src/ui/inspire.ts` 的 `renderChar()` 末尾 `cascadeIn(result, 50, 720, 120)`
-  （`#insp-result` 是卡片网格，13 张卡排 `120…720ms` 阶梯；只在打开工具 /「重新生成」/ 加载组合时播 ——
-  锁定与改词条数按既有设计不重建卡片，故不重播）；
+  **灵感触发器卡片** = `src/ui/inspire.ts` 的 `renderChar(combo, animate)` 末尾
+  `if (animate) cascadeIn(result, 50, 720, 120); else stopCascade(result);`
+  （`#insp-result` 是卡片网格，13 张卡排 `120…720ms` 阶梯；**只有初次进入**（`renderChar(null, true)`）
+  播，「重新生成」与加载组合**不播** —— 用户 2026-09-12 二次要求「重新生成改成无错分的，
+  只有初次进入时才有错分」：那两种是"我要立刻看新词"，排队只会碍事。非动画分支必须显式调
+  `stopCascade`，理由见下面「`stopCascade`」那条）；
+  锁定与改词条数按既有设计不重建卡片，故也不播。
   详情面板 = `src/ui/detail.ts`（只在首次 `renderView`）；新建节点表单 = `src/ui/node-form.ts`；
   壳级横幅 = `src/ui/alert.ts`。
 - ⚠️ **纪律**：入场动画只挂显式切换 —— `src/ui/timeline.ts` 每次 store 通知都整体重渲染，
@@ -321,6 +325,12 @@
      `motionReduced()` 把延迟清零，只靠 CSS 的降级块压不住（`DESIGN.md:159` 要求减少动效下错峰归零）。
   ② `animationend` **会冒泡** ⇒ 收手监听器必须认 `e.target === 最后一块`，且不能用 `{ once: true }`
      （冒泡事件会把它消耗掉）。不认的话，一个早早结束的后代动画就会把整组错峰提前收掉。
+- **`stopCascade(container)`** = 取消一次性错峰（摘类 + 清子项行内延迟），`cascadeIn` 自己收手时也走它。
+  存在的理由：错峰类要等**最后一块**的 `animationend`（或 `maxDelay + 2000ms` 兜底）才摘，
+  在它挂着的这段时间里重渲染同一个容器（灵感触发器「重新生成」重建 13 张卡），新子项会从父类
+  继承 `.lk-enter-stagger > *` 的 nth-child 延迟 ⇒ **又错峰一遍**，"不该播的那一次"照样播了。
+  ⇒ 凡是「同一个容器有时要播、有时不许播」的挂点，**不播的分支必须显式 `stopCascade`**，
+  结果才与点击时刻无关。
 - Anime.js（`animejs@4.5.0`，devDependency）已装但**尚未使用**：它留给「元素被重建、却要从旧位置
   连续滑到新位置」的场景（画布节点移动 / 列表增删让位），那是 CSS transition 表达不了的
   （重建后的元素没有"旧位置"这个概念）。

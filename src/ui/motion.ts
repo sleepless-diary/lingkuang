@@ -93,8 +93,7 @@ export function cascadeIn(container: HTMLElement | null, step = 100, maxDelay = 
   const last = kids[kids.length - 1];
   const clear = (): void => {
     last.removeEventListener('animationend', onEnd);
-    container.classList.remove('lk-enter-stagger');
-    for (const el of kids) el.style.animationDelay = '';
+    stopCascade(container);
   };
   /* ⚠️ `animationend` **会冒泡**：容器里任何后代元素自己的动画结束时都会飘上来。
      不认 `e.target` 的话，一个早早结束的后代动画就会把整组错峰提前收掉
@@ -104,4 +103,17 @@ export function cascadeIn(container: HTMLElement | null, step = 100, maxDelay = 
   last.addEventListener('animationend', onEnd);
   /* 兜底：元素中途被换掉 / 动画被跳过时 animationend 不会来，不清的话下次切换会带着旧延迟重播 */
   window.setTimeout(clear, md + 2000);
+}
+
+/** 取消**一次性**错峰：摘掉容器上的错峰类、清掉子项的行内延迟（`cascadeIn` 自己收手时也走这里）。
+ *
+ *  为什么需要它（用户 2026-09-12 二次要求「重新生成改成无错分的，只有初次进入时才有错分」）：
+ *  错峰类是等**最后一块**的 animationend（或 `maxDelay + 2000ms` 兜底）才摘掉的，
+ *  在它挂着的这段时间里重渲染容器（灵感触发器「重新生成」重建 13 张卡），
+ *  新子项会从父类继承 `.lk-enter-stagger > *` 那套 nth-child 延迟 ⇒ **又错峰一遍**，
+ *  "不该播的那一次"照样播了。非动画分支显式调这个函数，结果就与点击时刻无关。 */
+export function stopCascade(container: HTMLElement | null): void {
+  if (!container) return;
+  container.classList.remove('lk-enter-stagger');
+  for (const el of Array.from(container.children) as HTMLElement[]) el.style.animationDelay = '';
 }

@@ -1,6 +1,6 @@
 /** 灵感触发器——随机角色生成（词库 58 分类；照抄 legacy 生成/锁定/组数逻辑）+ 词义联想画布 */
 import type { Store } from '../store/store';
-import { cascadeIn } from './motion';
+import { cascadeIn, stopCascade } from './motion';
 
 interface Group { t: string; keys: string[]; n: number; }
 type Lib = Record<string, string[]>;
@@ -93,7 +93,11 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
     return o;
   }
 
-  function renderChar(combo: Combo | null) {
+  /* animate：只有**初次进入**（工具打开、:237）才逐张错峰。
+     用户 2026-09-12 二次要求：「重新生成改成无错分的，只有初次进入时才有错分」——
+     点「重新生成」是在盯着卡片看，还要等 13 张排完队才看得全，反而碍事；
+     加载已存组合同理（用户要的是立刻看到那一组长什么样）。 */
+  function renderChar(combo: Combo | null, animate = false) {
     if (!lib) return;
     result.innerHTML = CHAR_GROUPS.map((g, gi) => {
       const picks = combo ? combo[g.t] || {} : rollGroup(g, currentCount(g, gi));
@@ -116,9 +120,12 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
        步长 50ms、封顶 720ms：13 张正好排成 120→720ms 的阶梯（不封顶的话后面几张会挤在一起同时冒出来）。
        #insp-result 带 .lk-own-cascade ⇒ 它自己**不整块淡入**（整块半透明会又把卡片错峰洗掉，
        就是用户报过的"闪一下 + 没错开"），由每张卡自己浮现。
-       触发时机：打开工具（:227）、点「重新生成」（:201）、点「组合 N」加载（:193）—— 都是显式动作；
-       锁定与改词条数按既有设计**不重建卡片**（见 :134 / :148 两处注释），所以不会重播。 */
-    cascadeIn(result, 50, 720, 120);
+       只由 animate 参数决定播不播：初次进入（:237）播；「重新生成」（:211）与加载组合（:203）
+       不播 —— 那两种都是"我要立刻看新词"，排队只会碍事。
+       不播时还要显式 `stopCascade`：错峰类要等最后一张动画结束才摘，打开后马上点「重新生成」的话
+       它还挂在卡片区上，新卡片会从父类继承 nth-child 延迟又错峰一遍（"不该播的那次"照样播）。 */
+    if (animate) cascadeIn(result, 50, 720, 120);
+    else stopCascade(result);
   }
 
   /* ── 语义联想（Ollama，设置里配引擎）── */
@@ -234,7 +241,7 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
   if (!lib) { statusMsg('词库加载失败'); return; }
   statusMsg(`${Object.keys(lib).length} 分类 · ${Object.values(lib).reduce((a, v) => a + v.length, 0)} 词条`);
   renderSaves();
-  renderChar(null);
+  renderChar(null, true);   /* 初次进入：卡片逐张错峰 */
   /* 挂载联想画布（灵感生成卡片下方），并把它的清理函数往上传：
      mountAssocCanvas → 本函数 → register.ts 的 open 返回值 → registry.adopt。 */
   const canvasHost = host.querySelector('#insp-assoc') as HTMLElement | null;

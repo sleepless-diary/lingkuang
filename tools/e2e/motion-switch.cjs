@@ -306,12 +306,23 @@ async function main() {
       && blocks10[0]?.[0]?.delay === 0 && blocks10[2]?.[0]?.delay === 100,
     { cardsOk, n: cards?.length, head: cards?.slice(0, 4), gridSelf, blocks10 });
 
-  /* ★19 显式动作才播：点「重新生成」= 卡片重洗 ⇒ 再错峰一次（renderChar 是同步的，同一块里读） */
-  const rollCards = await clickChildAnims(`document.querySelector('#insp-roll').click();`, '#insp-result');
-  check('★19 点「重新生成」：卡片重洗后**再错峰一次**（每张仍 lk-wake / running / 阶梯不变）',
-    Array.isArray(rollCards) && rollCards.length >= 5
-      && rollCards.every((c, i) => c[0]?.name === 'lk-wake' && c[0]?.state === 'running' && c[0]?.delay === Math.min(120 + i * 50, 720)),
-    rollCards?.slice(0, 3));
+  /* ★19 **反转**（用户 2026-09-12 二次要求：「重新生成改成无错分的，只有初次进入时才有错分」）。
+     理由：点「重新生成」是在盯着卡片等新词，再排 13 张队只会碍事；只有"初次进入"才值得演一次。
+     这里必须**同时**断言容器上那个错峰类被摘掉 —— 类只在最后一张动画结束（或 2.5s 兜底）时才清，
+     而 ★18 刚打开工具，它多半还挂着；若不清，新卡片会从父类继承 `.lk-enter-stagger > *` 又错峰一遍。
+     所以 renderChar 的非动画分支会显式调 stopCascade(卡片区)（见 src/ui/inspire.ts）。 */
+  const rollRes = await ev(`(() => {
+    document.querySelector('#insp-roll').click();
+    const box = document.querySelector('#insp-result');
+    const cards = [...box.children];
+    return { n: cards.length, cls: box.classList.contains('lk-enter-stagger'),
+      anims: cards.reduce((a, el) => a + el.getAnimations().length, 0),
+      inline: cards.filter((el) => el.style.animationDelay).length,
+      opacity: cards.length ? getComputedStyle(cards[0]).opacity : null };
+  })()`);
+  check('★19 点「重新生成」：卡片**无错峰**、直接可见（容器错峰类已摘、零动画、零行内延迟、opacity 1）',
+    rollRes && rollRes.n >= 5 && rollRes.cls === false && rollRes.anims === 0 && rollRes.inline === 0 && rollRes.opacity === '1',
+    rollRes);
 
   /* ★20 锁定词条**不重建**卡片（既有设计：只改颜色/高亮）⇒ 元素身份不变 = 不会重播错峰。
      localStorage 里的锁会跨次运行留下，所以断言写的是"高亮状态**变了**"，不假定初始方向。 */
