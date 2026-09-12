@@ -8,6 +8,7 @@ import type { Timeline, TimelineNode, Storyline, Loop } from '../store/types';
 import { renderNodeForm } from './node-form';
 import { isEyedropActive, pick } from './eyedrop';
 import { escapeHtml } from './html';
+import { confirmDialog } from './confirm';
 import { toEpoch, fromEpoch, calendarOf, timePointOf, buildYearTable } from '../calendar';
 import type { Calendar, YearTable } from '../calendar';
 
@@ -829,10 +830,20 @@ export function mountTimeline(
     toolHost.querySelector('#lp-del')?.addEventListener('click', () => {
       const tid = activeTimelineId();
       if (!tid || !L) return;
-      removeLoop(store, tid, L.id);
-      loopPanelId = null;
-      toolHost.innerHTML = '';
-      renderLoops();
+      /* 循环是纯视图结构（重复展示一段节点），不持有数据，所以只加确认、不进回收站 */
+      void confirmDialog({
+        title: `删除循环「${L.name}」？`,
+        message: '循环框会从时间线上移除，循环内的节点本身不受影响。',
+        detail: '循环只是视图结构（把一段节点重复展示 N 次），不持有数据。',
+        confirmText: '删除',
+        danger: true,
+      }).then((okDel) => {
+        if (!okDel) return;
+        removeLoop(store, tid, L.id);
+        loopPanelId = null;
+        toolHost.innerHTML = '';
+        renderLoops();
+      });
     });
   }
 
@@ -961,7 +972,19 @@ export function mountTimeline(
           }],
           ['删除节点', () => {
             const tid = activeTimelineId();
-            if (tid && nodeId) { removeNode(store, tid, nodeId); render(); }
+            const n = timeline()?.nodes.find((x) => x.id === nodeId);
+            if (!tid || !nodeId) return;
+            void confirmDialog({
+              title: `删除节点「${n?.title ?? '未命名'}」？`,
+              message: '节点会从时间线移除，对应的 .md 文件移入 vault 的回收站。',
+              detail: '需要时可从工具栏「回收站」恢复。',
+              confirmText: '删除',
+              danger: true,
+            }).then((okDel) => {
+              if (!okDel) return;
+              removeNode(store, tid, nodeId);
+              render();
+            });
           }],
         ]
       : [

@@ -1,7 +1,7 @@
 /** 灵框 · actions（通过 store.update 修改数据——视图不直接碰 data） */
 import type { Store } from './store';
 import { currentWorld } from './store';
-import type { Timeline, TimelineNode, Entity } from './types';
+import type { Timeline, TimelineNode, Entity, Worldset } from './types';
 
 export function addTimeline(store: Store, name: string): string {
   const id = 'tl' + Date.now();
@@ -145,4 +145,114 @@ export function removeNode(store: Store, tlId: string, nodeId: string) {
   if (api?.vaultDelete && node && tlName) {
     api.vaultDelete(store.activeWorld, tlName, node).catch(() => { /* 文件删除失败不阻断 */ });
   }
+}
+
+/* ── 世界观 / 时间线（增删与回收站配套）───────────────────────────────
+   为什么这些动作也要碰 vault：`.md` 是「文件为源」。只从 store 删而文件还在，
+   下次扫描会把整条时间线 / 整个世界读回来 —— 删除等于没生效。 */
+
+/** 新建世界观。重名自动加序号（避免覆盖已有世界）。 */
+export function addWorld(store: Store, name: string): string {
+  const base = name.trim() || '新世界';
+  let finalName = base;
+  let i = 2;
+  while (store.data.worldsets[finalName]) finalName = `${base} ${i++}`;
+  store.update((d) => {
+    d.worldsets[finalName] = { name: finalName, timelines: {}, order: [], docs: {} };
+  });
+  store.setActiveWorld(finalName);
+  return finalName;
+}
+
+/** 删除整条时间线：store 移除 + vault 对应目录移进回收站（可恢复）。
+ *  删的是当前时间线时切到剩下的第一条，否则 activeTimeline 悬空、沙盘空白。 */
+export function removeTimeline(store: Store, tlId: string): void {
+  const ws0 = currentWorld(store);
+  const tlName = ws0.timelines?.[tlId]?.name;
+  const wsName = store.activeWorld;
+  const rest = (ws0.order ?? []).filter((id) => id !== tlId && ws0.timelines[id]);
+  store.update((d) => {
+    const ws = d.worldsets[wsName];
+    if (!ws) return;
+    delete ws.timelines[tlId];
+    ws.order = (ws.order ?? []).filter((x) => x !== tlId);
+  });
+  if (store.activeTimeline === tlId && rest[0]) store.setActiveTimeline(rest[0]);
+  const api = (window as unknown as { lingkuangAPI?: { vaultDeleteTimeline?: (ws: string, tl: string) => Promise<unknown> } }).lingkuangAPI;
+  if (api?.vaultDeleteTimeline && tlName) api.vaultDeleteTimeline(wsName, tlName).catch(() => { /* 文件移动失败不阻断 UI */ });
+}
+
+/** 删除整个世界观：store 移除 + vault 目录移进回收站（可恢复）。
+ *  删的是当前世界时切到剩下的第一个；一个都不剩就补一个空世界 ——
+ *  否则 activeWorld 悬空，且灵框内没有别的「新建世界」入口，会走进死路。 */
+export function removeWorld(store: Store, wsName: string): void {
+  const rest = Object.keys(store.data.worldsets).filter((n) => n !== wsName);
+  store.update((d) => { delete d.worldsets[wsName]; });
+  if (store.activeWorld === wsName) {
+    if (rest.length) store.setActiveWorld(rest[0]);
+    else addWorld(store, '新世界');
+  }
+  const api = (window as unknown as { lingkuangAPI?: { vaultDeleteWorld?: (ws: string) => Promise<unknown> } }).lingkuangAPI;
+  if (api?.vaultDeleteWorld) api.vaultDeleteWorld(wsName).catch(() => { /* 文件移动失败不阻断 UI */ });
+}
+
+/** vault 里的时间线是**按名字**分目录，而 store 里 timelines 是**按 id** 索引 —— 恢复时要对回名字。 */
+function ensureTimelineByName(ws: Worldset, name: string): Timeline {
+  const found = Object.values(ws.timelines ?? {}).find((t) => t.name === name);
+  if (found) return found;
+  const id = 'tl' + Date.now() + Math.floor(Math.random() * 1000);
+  const tl: Timeline = { id, name, absOffset: 0, nodes: [], loops: [], storylines: [] };
+  ws.timelines[id] = tl;
+  ws.order = ws.order ?? [];
+  if (!ws.order.includes(id)) ws.order.push(id);
+  return tl;
+}
+
+/** 主进程 `vault:trash-restore` 的返回值（见 main.js 同名 handler） */
+export interface TrashRestored {
+  relPath: string;
+  kind: string;
+  world?: string;
+  timeline?: string;
+  node?: TimelineNode | null;
+  nodes?: TimelineNode[];
+  timelines?: Record<string, TimelineNode[]>;
+}
+
+/** 把回收站恢复出来的数据插回 store。
+ *  只把文件移回 vault 是不够的：界面要等下次扫描才看得到，用户会以为恢复失败。
+ *  按 id 幂等（vault 文件监听可能同时触发一次全量重扫，重复插入不会产生副本）。
+ *  用 `{ undo: false }`：恢复是「找回已有文件」，不该占用撤销格。 */
+export function applyTrashRestore(store: Store, restored: TrashRestored[]): { nodes: number; timelines: number; worlds: number } {
+  let nNodes = 0;
+  let nTls = 0;
+  let nWs = 0;
+  store.update((d) => {
+    for (const r of restored) {
+      if (r.kind === 'world' && r.world) {
+        if (!d.worldsets[r.world]) {
+          d.worldsets[r.world] = { name: r.world, timelines: {}, order: [], docs: {} };
+          nWs++;
+        }
+        const ws = d.worldsets[r.world];
+        for (const [tlName, nodes] of Object.entries(r.timelines ?? {})) {
+          const tl = ensureTimelineByName(ws, tlName);
+          for (const n of nodes) if (!tl.nodes.some((x) => x.id === n.id)) { tl.nodes.push(n); nNodes++; }
+        }
+      } else if (r.kind === 'timeline' && r.world && r.timeline) {
+        if (!d.worldsets[r.world]) { d.worldsets[r.world] = { name: r.world, timelines: {}, order: [], docs: {} }; nWs++; }
+        const ws = d.worldsets[r.world];
+        const existed = Object.values(ws.timelines ?? {}).some((t) => t.name === r.timeline);
+        const tl = ensureTimelineByName(ws, r.timeline);
+        if (!existed) nTls++;
+        for (const n of r.nodes ?? []) if (!tl.nodes.some((x) => x.id === n.id)) { tl.nodes.push(n); nNodes++; }
+      } else if (r.node && r.world && r.timeline) {
+        const ws = d.worldsets[r.world];
+        if (!ws) continue;
+        const tl = ensureTimelineByName(ws, r.timeline);
+        if (!tl.nodes.some((x) => x.id === r.node!.id)) { tl.nodes.push(r.node); nNodes++; }
+      }
+    }
+  }, { undo: false });
+  return { nodes: nNodes, timelines: nTls, worlds: nWs };
 }

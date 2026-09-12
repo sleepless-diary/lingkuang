@@ -25,6 +25,14 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
   vaultWrite: (wsName, tlName, node) => ipcRenderer.invoke('vault:write', { wsName, tlName, node }),
   /* 删节点时把 vault 里对应 .md 移到 .trash（不删文件的话下次启动会复活） */
   vaultDelete: (wsName, tlName, node) => ipcRenderer.invoke('vault:delete', { wsName, tlName, node }),
+  /* 删除整条时间线 / 整个世界观：目录整体移进回收站 */
+  vaultDeleteTimeline: (wsName, tlName) => ipcRenderer.invoke('vault:delete-timeline', { wsName, tlName }),
+  vaultDeleteWorld: (wsName) => ipcRenderer.invoke('vault:delete-world', { wsName }),
+  /* 回收站（vault/.trash + index.json）：列表 / 恢复 / 彻底删除 */
+  trashList: () => ipcRenderer.invoke('vault:trash-list'),
+  trashRestore: (items) => ipcRenderer.invoke('vault:trash-restore', { items }),
+  trashPurge: (names) => ipcRenderer.invoke('vault:trash-purge', { names }),
+  trashPurgeAll: () => ipcRenderer.invoke('vault:trash-purge', { all: true }),
   vaultWatch: () => ipcRenderer.invoke('vault:watch'),
   vaultUnwatch: () => ipcRenderer.invoke('vault:unwatch'),
   onVaultChanged: (cb) => ipcRenderer.on('vault-changed', () => cb()),

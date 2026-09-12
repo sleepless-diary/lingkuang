@@ -19,7 +19,7 @@
 
 | 路径 | 职责 |
 |---|---|
-| `main.js` | Electron 主进程。IPC：`data:load/save`（世界观）、`settings`、`lib`（词库）、`ai:associate`（联想）、`ai:classify`（词分类）、`aiChat()`（双模式 LLM 调用）、`vault:*`（Obsidian 文稿） |
+| `main.js` | Electron 主进程。IPC：`data:load/save`（世界观）、`settings`、`lib`（词库）、`ai:associate`（联想）、`ai:classify`（词分类）、`aiChat()`（双模式 LLM 调用）、`vault:*`（Obsidian 文稿：`scan`/`write`/`delete`/`delete-timeline`/`delete-world`/`trash-list`/`trash-restore`/`trash-purge`）、`formats:load/save`（结构体格式）、`app:flush-sync`（退出前同步落盘） |
 | `preload.js` | contextBridge 安全桥，暴露 `window.lingkuangAPI` |
 | `index.html` | Vite 入口（`<div id="app">` + `<script src="/src/main.ts">`） |
 | `mcp-server.js` | MCP 服务器（`query_timeline` / `query_node` / `search_world` / `query_loop`） |
@@ -37,6 +37,9 @@
 | `src/ui/detail.ts` / `node-form.ts` | 节点详情 / 新建节点表单 |
 | `src/ui/settings.ts` | 设置（AI 引擎 / 偏好项，存 localStorage） |
 | `src/ui/eyedrop.ts` / `image-ext.ts` / `tag-ext.ts` | 吸管 / 编辑器图片扩展 / 标签扩展 |
+| `src/ui/confirm.ts` | 确认 / 输入弹层（`confirmDialog` / `promptDialog`）。**不要用 `window.confirm`**：同步阻塞渲染进程（卡 tiptap 与 rAF），且无法用 tokens 配色 |
+| `src/ui/trash.ts` | 回收站面板（`vault/.trash` 的列出 / 恢复 / 彻底清空；孤儿项需用户指定世界与格式） |
+| `src/ui/keys.ts` / `html.ts` | `isImeEnter(e)`（中文输入法回车守卫）/ `escapeHtml(s)`（外部文本进 innerHTML 前必过） |
 | `data/worldbuilding.js` | 世界观种子数据（`window.__SEED_TIMELINES__`），首次运行/无用户数据时使用 |
 | `data/character_lib.json` | 角色生成词库（58 分类，萌百来源 CC BY-NC-SA，勿商用） |
 | `design-system/` | 设计令牌（`tokens.css` 权威颜色/字体源） |
@@ -100,9 +103,26 @@
 - `actions.ts`：`addNode` / `addTimeline` / `setTimeCursor` 等，视图不直接碰 data
 - 持久化经 `main.js` IPC（`%APPDATA%\lingkuang\worldbuilding.json`；`LINGKUANG_TEST_DATA` 覆盖测试路径）
 
+### vault（Obsidian 文稿源，`main.js`）
+- **判「世界/时间线是否存在」看目录，不看节点数**：`scanWorldDir` / `scanTimelineDir` 收空时间线（`nodes: []`）。
+  旧逻辑 `if (nodes.length)` 会让「删掉一条时间线里最后一个节点」导致整个世界从扫描结果里消失，
+  而渲染层是 `d.worldsets = newData.worldsets` 整体替换 ⇒ 整体被冲掉并被写回 JSON（数据损失）。
+- `VAULT_RESERVED = new Set(['.trash','assets'])` + `isReservedDir()`：保留目录不进扫描。
+  必须挡 `assets`（编辑器导入图片放 `VAULT_DIR()/assets`，在 vault 根），否则它会被当成一个世界观。
+- **删除 = `moveToTrash()`**（同盘 rename）到 `vault/.trash/`，`index.json` 记原相对路径与元数据
+  （平铺文件 + 索引，兼容旧的无索引平铺文件）。`pruneTrashIndex()` 自愈。
+- **恢复要同时回插 store**（`applyTrashRestore`，按 id 幂等、`{ undo:false }`）：只把文件移回 vault 的话，
+  界面要等下次扫描才看得到，用户会认为恢复失败。
+- frontmatter **不写 kind**（kind 由所在文件夹名承载，`vault:scan` 用 `sub.name` 回填）
+  ⇒ 孤儿（回收站里路径信息缺失的项）恢复时必须由用户选格式，不能默认落 `事件/`。
+
 ## 5. 脚手架
 
 - **TypeScript**（`tsconfig.json`，strict + noUnusedLocals/noUnusedParameters）
 - **Vite**：`vite build`；`npm start` = build + electron
-- **打包**：`npm run dist`（electron-builder，NSIS 安装版 + portable）
+- **打包**：`npm run dist`（= `vite build` + electron-builder，NSIS 安装版 + portable）
+  - 渲染层产物在 **`app-dist/`**，不是 `dist/`：electron-builder 会把自己 `directories.output`
+    从 app files 里强制排除，两者同名时渲染层**永远进不了包**（曾因此打出必然白屏的安装包）。
+    `main.js` 的 `win.loadFile` 指向 `app-dist/index.html`，`build.files` 必须含 `app-dist/**/*`。
+  - **改完代码要先 `vite build` 再启动**（桌面快捷方式直接跑 `electron .`，不会自己构建）。
 - **语法检查**：`node --check <file>.js`；TS 由 `tsc` 走 strict

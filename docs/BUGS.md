@@ -9,6 +9,83 @@
 > 同日第三轮：继续清泄漏与拖动兜底，见「第三轮已修复」。
 > 同日第四轮：清掉一条会让**整个会话停止自动落盘**的异常链，以及 epoch/年份混用、
 > vault 回扫清空地图与实体库两条数据损失，见「第四轮已修复」。
+> 同日第五轮（用户选定 A = 删除保护 + 回收站恢复）：全仓破坏性操作加确认、回收站从
+> 「只能移进去」补成「能列能恢复能清空」，并顺带修掉一条「删掉最后一个节点 → 整个世界被清掉」
+> 的数据损失，见「第五轮已修复」。
+
+## 第五轮已修复（2026-08-27 收尾）
+
+> 本轮口径仍为「只动底层，不改用户能看到的界面/交互」的延续——但本轮**是用户点名要的功能**，
+> 所以新增了可见入口（回收站面板、新建世界观）。全部通过 `tsc --noEmit`、`node --check`、
+> `vite build`；用 stub-electron 的 IPC 测试 42 条 + 真实 Electron/CDP 的 UI 测试 23 条 +
+> 扫描回归 9 条共 74 条断言验证。
+
+### 数据损失 / 崩溃
+
+- [x] **删掉时间线里最后一个节点 → 整个世界被扫描结果清掉**
+  - 位置：`main.js` 的 `vault:scan`（`if (Object.keys(tls).length) worlds[ws.name] = tls;` +
+    `scanWorldDir` 的 `if (nodes.length) tls[tl.name] = nodes;`）。
+  - 现象：把一条时间线里的节点全删掉（**目录还在**），扫描结果里连这个世界都不再出现；
+    而渲染层 `src/main.ts:317` 是 `d.worldsets = newData.worldsets`（整体替换）⇒
+    世界的时间线 / 地图（区域+标记+路径）/ 实体库 / 循环 / 剧情线 / 自定义历法 / docs /
+    timeCursor **当场从界面消失**，并被随后的自动落盘写进 `worldbuilding.json`。属数据损失。
+  - 根因：把「目录是否存在」和「目录里有没有节点」混为一谈。vault 是源，判存在应看目录。
+  - 修法：抽出 `scanTimelineDir(tlDir)` / `scanWorldDir(wsDir)`，**空时间线/空世界也收**
+    （`nodes: []`）；`vaultToWorldData`（`src/main.ts:40-79`）本来就能处理空数组。
+    「外部真删目录才消失」的语义不变（已验证：真删目录后确实消失，不会被 base 复活）。
+  - 附带：`VAULT_RESERVED = new Set(['.trash','assets'])` + `isReservedDir()` ——
+    必须挡 `assets`：`main.js` 把编辑器导入的图片放 `VAULT_DIR()/assets`（vault 根），
+    过去靠「有节点才收」被顺带跳过，改成「目录即存在」后它就会被当成一个世界观。
+  - 验证：扫描回归 9 条（assets 不成世界观 / 空时间线仍列出 / 空世界仍列出 /
+    删掉最后一个节点后世界与时间线不消失 / 外部真删目录才消失）。
+
+### 破坏性操作无保护（本轮重点）
+
+- [x] **全仓没有任何删除确认**（`confirm(` 零命中）→ 节点/循环一点就没了，且**没有撤销兜底**
+  （拖动改时间不可撤销那条仍在，见下方「时间线」）。
+  - 修法：新增 `src/ui/confirm.ts` —— 自建弹层而不是 `window.confirm`，理由有三：
+    ① `window.confirm` 无法用 `design-system/tokens.css` 配色；② 它是**同步阻塞**渲染进程的，
+    会卡住 tiptap 与时间线的 rAF；③ 破坏性操作需要把后果写清楚（节点数 / 是否进回收站）。
+    导出 `confirmDialog(opts): Promise<boolean>` 与 `promptDialog(opts): Promise<string|null>`。
+    配色用 `var(--danger)`（tokens 注释「rust, never alarm red」）/ `var(--accent)`，
+    默认焦点在「取消」；**纯确认弹层故意不绑回车**（删除最容易被误触），
+    `promptDialog` 有输入框所以回车=确认，但走 `isImeEnter()`（`src/ui/keys.ts`）。
+  - 接线：`src/ui/timeline.ts`（右键删除节点、`#lp-del` 删除循环）、`src/ui/detail.ts`（`#d-del`）。
+
+- [x] **时间线与世界观在灵框内根本删不掉**
+  - 根因：`removeTimeline` 在当前代码里不存在（唯一命中 `lingkuang.js:828`，那是已从 `build.files`
+    摘掉的遗留单文件版）。
+  - 修法：`src/store/actions.ts` 新增 `removeTimeline(store, tlId)`、`removeWorld(store, wsName)`、
+    `addWorld(store, name)`（重名自动加序号）；`src/ui/shell.ts` 加「＋」新建世界观按钮，
+    并为世界页签 / 时间线页签加右键菜单（删除项标注影响面，如节点数）。
+    **删除最后一个世界时自动补一个空世界**，否则 `activeWorld` 悬空、而灵框内没有别的
+    「新建世界」入口会走进死路。
+
+- [x] **`.trash` 是半成品**：删除只是把 `.md` `rename` 进 `VAULT_DIR()/.trash`，而
+    `vault:scan` 与 `cleanupStaleVaultFiles` 都显式跳过隐藏目录 ⇒ 灵框内**没有任何地方能读它**，
+    所谓「可恢复」只能自己去资源管理器翻。且旧命名 `${Date.now()}-${i}-${basename}` 只留 basename，
+    **丢掉了「哪个世界 / 哪条时间线 / 哪个类型文件夹」**，而那正是恢复要用的路径。
+  - 修法：`.trash/index.json` 记录每条的原相对路径与元数据（`moveToTrash(relPath, meta)` 保存
+    `{id,kind,relPath,trashName,ts,title,world,timeline,nodeId}`）；**平铺文件 + 索引**而不是
+    镜像目录结构，为的是兼容机器上可能已存在的旧平铺文件。`pruneTrashIndex()` 会把磁盘上
+    已消失的项从索引摘掉（恢复/清空后自愈）。
+    新 IPC：`vault:trash-list`（返回 `{entries, orphans}`）、`vault:trash-restore`、
+    `vault:trash-purge`（`{names}` 或 `{all:true}`，拒绝 `..` 与路径分隔符）、
+    `vault:delete-timeline`、`vault:delete-world`。
+  - **恢复必须同时回插 store**（`applyTrashRestore`，按 id 幂等、`{ undo:false }`）：
+    只把文件移回 vault 的话界面要等下次扫描才看得到，用户会以为恢复失败。
+    原位若有同名文件则加「-恢复<时间戳>」后缀，**不覆盖**。
+  - 新增 `src/ui/trash.ts`（注册成工具栏「回收站」）：分「可恢复」与「位置未知（孤儿）」两组，
+    支持逐项恢复 / 彻底删除 / 清空回收站（双重确认）/ 刷新。
+  - 孤儿恢复的 kind 修正：原逻辑硬编码 `safeName(nodeData.kind || '事件')`，但 `nodeToMd` 的
+    frontmatter **不写 kind**（kind 由文件夹名承载，靠 `vault:scan` 用 `sub.name` 回填）⇒
+    孤儿会静默落到 `事件/`。改为 `it.nodeKind || nodeData.kind || '事件'`，并由 UI 让用户选格式。
+
+### 其他
+
+- [x] **`src/ui/shell.ts` 的 `renderWorldTabs` 每次通知都无条件重写 innerHTML** →
+  拖动节点期间（每帧 `saveNodeDoc`）每帧重建整个世界页签栏并重绑监听。
+  修法：模块级 `let worldTabsSig = ''` 签名比对后再重建（与上一轮 `timelineTabsSig` 同法）。
 
 ## 第四轮已修复（2026-08-27 深夜）
 

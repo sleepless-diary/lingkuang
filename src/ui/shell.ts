@@ -5,7 +5,8 @@ import { registerAllTools } from '../tools/register';
 import { mountTimeline } from './timeline';
 import { renderNodeDetail } from './detail';
 import { escapeHtml } from './html';
-import { addTimeline } from '../store/actions';
+import { addTimeline, addWorld, removeTimeline, removeWorld } from '../store/actions';
+import { confirmDialog, promptDialog } from './confirm';
 import { currentWorld } from '../store/store';
 import { renderNodeForm } from './node-form';
 
@@ -62,18 +63,52 @@ export function renderShell(store: Store, host: HTMLElement): void {
   });
 }
 
+/* 世界栏签名缓存：与时间线页签同理 —— renderWorldTabs 挂在 store 订阅里，
+   拖动节点时每帧被调一次，无条件重写 innerHTML 会每帧重建整个世界栏并重绑监听。 */
+let worldTabsSig = '';
+
 function renderWorldTabs(store: Store): void {
   const tabs = document.getElementById('lk-world-tabs');
   if (!tabs) return;
   const worlds = Object.keys(store.data.worldsets);
-  tabs.innerHTML = worlds
-    .map(
-      (w) =>
-        `<button class="lk-world-tab${w === store.activeWorld ? ' is-active' : ''}" data-world="${escapeHtml(w)}">${escapeHtml(w)}</button>`
-    )
-    .join('');
-  tabs.querySelectorAll('.lk-world-tab').forEach((el) => {
-    el.addEventListener('click', () => store.setActiveWorld((el as HTMLElement).dataset.world!));
+  const sig = JSON.stringify(worlds.map((w) => [w, w === store.activeWorld]));
+  if (sig === worldTabsSig) return;
+  worldTabsSig = sig;
+  tabs.innerHTML =
+    worlds
+      .map(
+        (w) =>
+          `<button class="lk-world-tab${w === store.activeWorld ? ' is-active' : ''}" data-world="${escapeHtml(w)}" title="${escapeHtml(w)}（右键删除）">${escapeHtml(w)}</button>`
+      )
+      .join('') + `<button class="lk-world-tab is-new" id="lk-world-new" title="新建世界观">＋</button>`;
+  tabs.querySelectorAll('.lk-world-tab[data-world]').forEach((el) => {
+    const name = (el as HTMLElement).dataset.world!;
+    el.addEventListener('click', () => store.setActiveWorld(name));
+    /* 右键删除：与沙盘节点右键菜单同一套入口约定（避免误点即删） */
+    el.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      const ws = store.data.worldsets[name];
+      const tlCount = ws ? Object.keys(ws.timelines ?? {}).length : 0;
+      const nodeCount = ws
+        ? Object.values(ws.timelines ?? {}).reduce((a, t) => a + (t.nodes?.length ?? 0), 0)
+        : 0;
+      void confirmDialog({
+        title: `删除世界观「${name}」？`,
+        message: `将移除 ${tlCount} 条时间线、${nodeCount} 个节点；vault 里整个目录会移入回收站。`,
+        detail: '可从工具栏「回收站」恢复。删掉最后一个世界时会自动补一个空世界。',
+        confirmText: '删除',
+        danger: true,
+      }).then((okDel) => { if (okDel) removeWorld(store, name); });
+    });
+  });
+  tabs.querySelector('#lk-world-new')?.addEventListener('click', () => {
+    void promptDialog({
+      title: '新建世界观',
+      label: '名称',
+      value: '新世界',
+      placeholder: '世界名',
+      confirmText: '创建',
+    }).then((name) => { if (name !== null) addWorld(store, name); });
   });
 }
 
@@ -134,7 +169,19 @@ function renderTimelineTabs(store: Store): void {
       .join('');
     tabs.innerHTML = tabsHtml + `<button class="lk-tl-tab is-new" id="lk-tl-new" title="新建时间线">＋</button>`;
     tabs.querySelectorAll('.lk-tl-tab[data-tl]').forEach((el) => {
-      el.addEventListener('click', () => store.setActiveTimeline((el as HTMLElement).dataset.tl!));
+      const id = (el as HTMLElement).dataset.tl!;
+      el.addEventListener('click', () => store.setActiveTimeline(id));
+      el.addEventListener('contextmenu', (ev) => {
+        ev.preventDefault();
+        const tl = ws.timelines[id];
+        void confirmDialog({
+          title: `删除时间线「${tl?.name ?? '?'}」？`,
+          message: `将移除该时间线的 ${tl?.nodes.length ?? 0} 个节点；vault 里对应目录会移入回收站。`,
+          detail: '可从工具栏「回收站」恢复。',
+          confirmText: '删除',
+          danger: true,
+        }).then((okDel) => { if (okDel) removeTimeline(store, id); });
+      });
     });
     tabs.querySelector('#lk-tl-new')?.addEventListener('click', () => addTimeline(store, '新时间线'));
   }

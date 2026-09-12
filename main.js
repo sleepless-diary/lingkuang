@@ -340,6 +340,52 @@ ipcMain.handle('data:save', (e, payload) => {
   }
 });
 
+/** 路径安全化：vault 的目录/文件名不能含 Windows 非法字符（与 nodePath 的规则一致）。 */
+function safeName(s) {
+  return String(s || '').replace(/[\\/:*?"<>|]/g, '_');
+}
+
+/* vault 根目录下**不属于世界观**的保留目录：.trash（回收站）、assets（导入的图片）。
+   扫描必须跳过，否则它们会被列成空世界（.trash 靠 startswith('.') 挡，assets 要靠这张表）。 */
+const VAULT_RESERVED = new Set(['.trash', 'assets']);
+const isReservedDir = (name) => name.startsWith('.') || VAULT_RESERVED.has(name);
+
+/** 扫描一个时间线目录 → 节点数组（按 id 去重）。
+ *  节点可能落在两处：时间线直接层（旧两层结构，kind 缺省「事件」）与类型文件夹层（kind = 文件夹名）；
+ *  同 id 以类型文件夹版为准。vault:scan 与回收站恢复共用这一份遍历逻辑。 */
+function scanTimelineDir(tlDir) {
+  const nodesById = new Map();
+  for (const f of fs.readdirSync(tlDir)) {
+    if (!f.endsWith('.md')) continue;
+    const n = mdToNode(fs.readFileSync(path.join(tlDir, f), 'utf8'));
+    if (n && n.id) { if (!n.title) n.title = f.replace(/\.md$/, ''); if (!n.kind) n.kind = '事件'; nodesById.set(n.id, n); }
+  }
+  for (const sub of fs.readdirSync(tlDir, { withFileTypes: true })) {
+    if (!sub.isDirectory() || sub.name.startsWith('.')) continue;
+    const subDir = path.join(tlDir, sub.name);
+    for (const f of fs.readdirSync(subDir)) {
+      if (!f.endsWith('.md')) continue;
+      const n = mdToNode(fs.readFileSync(path.join(subDir, f), 'utf8'));
+      if (n && n.id) { if (!n.title) n.title = f.replace(/\.md$/, ''); n.kind = sub.name; nodesById.set(n.id, n); }
+    }
+  }
+  return [...nodesById.values()];
+}
+
+/** 扫描一个世界观目录 → { 时间线名: 节点[] }（跳过隐藏目录）。
+ *  **空的时间线也要收（nodes: []）**：vault 的目录结构才是「这个世界有几条时间线」的依据，
+ *  节点只是内容。过去只收「有节点的」时间线/世界，后果是：删掉一条时间线里的最后一个节点后，
+ *  重扫结果里连这条时间线、这个世界都不存在了 —— 而渲染层是 `d.worldsets = 扫描结果` 整体替换，
+ *  于是整个世界（地图/实体/循环/剧情线/自定义历法）当场从界面消失，并被随后的自动落盘写进 JSON。 */
+function scanWorldDir(wsDir) {
+  const tls = {};
+  for (const tl of fs.readdirSync(wsDir, { withFileTypes: true })) {
+    if (!tl.isDirectory() || tl.name.startsWith('.')) continue;
+    tls[tl.name] = scanTimelineDir(path.join(wsDir, tl.name));
+  }
+  return tls;
+}
+
 /* ── IPC: 扫描 vault 全部节点 .md（frontmatter + 正文）→ 按世界观/时间线分组 ── */
 ipcMain.handle('vault:scan', () => {
   try {
@@ -347,35 +393,9 @@ ipcMain.handle('vault:scan', () => {
     if (!fs.existsSync(root)) return { ok: true, worlds: [] };
     const worlds = {};
     for (const ws of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!ws.isDirectory() || ws.name.startsWith('.')) continue;   /* .trash 等隐藏目录不是世界观 */
-      const wsDir = path.join(root, ws.name);
-      const tls = {};
-      for (const tl of fs.readdirSync(wsDir, { withFileTypes: true })) {
-        if (!tl.isDirectory() || tl.name.startsWith('.')) continue;
-        const tlDir = path.join(wsDir, tl.name);
-        /* 按 id 去重：先收直连 .md（旧两层，默认事件），再收类型文件夹内（优先覆盖，即优先文件夹版） */
-        const nodesById = new Map();
-        for (const f of fs.readdirSync(tlDir)) {
-          if (!f.endsWith('.md')) continue;
-          const text = fs.readFileSync(path.join(tlDir, f), 'utf8');
-          const n = mdToNode(text);
-          if (n && n.id) { if (!n.title) n.title = f.replace(/\.md$/, ''); if (!n.kind) n.kind = '事件'; nodesById.set(n.id, n); }
-        }
-        /* 类型文件夹层：每个 sub（如 事件/角色/地点）是一个格式文件夹，kind = 文件夹名；同 id 覆盖直连版 */
-        for (const sub of fs.readdirSync(tlDir, { withFileTypes: true })) {
-          if (!sub.isDirectory() || sub.name.startsWith('.')) continue;
-          const subDir = path.join(tlDir, sub.name);
-          for (const f of fs.readdirSync(subDir)) {
-            if (!f.endsWith('.md')) continue;
-            const text = fs.readFileSync(path.join(subDir, f), 'utf8');
-            const n = mdToNode(text);
-            if (n && n.id) { if (!n.title) n.title = f.replace(/\.md$/, ''); n.kind = sub.name; nodesById.set(n.id, n); }
-          }
-        }
-        const nodes = [...nodesById.values()];
-        if (nodes.length) tls[tl.name] = nodes;
-      }
-      if (Object.keys(tls).length) worlds[ws.name] = tls;
+      if (!ws.isDirectory() || isReservedDir(ws.name)) continue;   /* .trash / assets 不是世界观 */
+      /* 空世界也要收：世界目录存在 = 这个世界存在（见 scanWorldDir 注释） */
+      worlds[ws.name] = scanWorldDir(path.join(root, ws.name));
     }
     return { ok: true, worlds };
   } catch (err) {
@@ -424,18 +444,84 @@ ipcMain.handle('vault:write', (e, { wsName, tlName, node }) => {
   }
 });
 
-/* ── IPC: 删除节点的 .md（移到 vault/.trash/，可人工恢复）──
-   为什么必须删文件：.md 是「文件为源」，store 里删掉节点但文件还在的话，
+/* ══ 回收站（vault/.trash）══════════════════════════════════════════════
+   为什么需要：删除不可逆，而 .md 是「文件为源」——只从 store 删不清文件，下次扫描节点就复活。
+   所以「删除」= 把 vault 内的文件/目录**移进** .trash（同盘 rename，瞬时且可恢复）。
+
+   结构：.trash/ 下**平铺**存放实体文件，另有一份 index.json 记录每一项的原始相对路径。
+   为什么要有索引：文件名带时间戳前缀只能避免重名，还原不出「哪个世界/哪条时间线/哪个类型文件夹」，
+   而恢复要的正是那一条路径。
+   index.json 里没有的项 = 「孤儿」（早期版本删除留下的平铺文件），恢复时定位不了原位，
+   由用户在回收站里指定目标世界/时间线，按 md 内容里的 kind/title 拼回路径。 */
+const TRASH_DIR = () => path.join(VAULT_DIR(), '.trash');
+const TRASH_INDEX = () => path.join(TRASH_DIR(), 'index.json');
+
+function readTrashIndex() {
+  try {
+    const a = JSON.parse(fs.readFileSync(TRASH_INDEX(), 'utf8'));
+    return Array.isArray(a) ? a.filter((x) => x && x.trashName) : [];
+  } catch (err) { return []; }   /* 索引缺失/损坏 → 全部按孤儿处理，不阻塞回收站 */
+}
+function writeTrashIndex(arr) {
+  const d = TRASH_DIR();
+  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(TRASH_INDEX(), JSON.stringify(arr, null, 2), 'utf8');
+}
+/** 回收站里已不存在的项 → 从索引摘掉（恢复/清空后自愈，不需要各自维护） */
+function pruneTrashIndex() {
+  const d = TRASH_DIR();
+  writeTrashIndex(readTrashIndex().filter((x) => fs.existsSync(path.join(d, x.trashName))));
+}
+
+/** 把 vault 内的相对路径（文件或目录）移进 .trash 并登记。源不存在返回 null。 */
+function moveToTrash(relPath, meta) {
+  const src = path.join(VAULT_DIR(), relPath);
+  if (!fs.existsSync(src)) return null;
+  const d = TRASH_DIR();
+  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+  const ts = Date.now();
+  const base = path.basename(relPath) || 'item';
+  let n = 0;
+  let name = `${ts}-${base}`;
+  while (fs.existsSync(path.join(d, name))) { n++; name = `${ts}-${n}-${base}`; }
+  fs.renameSync(src, path.join(d, name));
+  const entry = {
+    id: `${ts}-${n}-${Math.random().toString(36).slice(2, 8)}`,
+    kind: (meta && meta.kind) || 'node',        /* node | timeline | world */
+    relPath,                                     /* vault 内原始相对路径 —— 恢复就靠它 */
+    trashName: name,
+    ts,
+    title: (meta && meta.title) || base,
+    world: (meta && meta.world) || undefined,
+    timeline: (meta && meta.timeline) || undefined,
+    nodeId: (meta && meta.nodeId) || undefined,
+  };
+  const idx = readTrashIndex();
+  idx.push(entry);
+  writeTrashIndex(idx);
+  return entry;
+}
+
+/** 目录项占用（文件取字节，目录递归累加）：回收站列表显示用 */
+function pathSize(p) {
+  try {
+    const st = fs.statSync(p);
+    if (!st.isDirectory()) return st.size;
+    let sum = 0;
+    for (const ent of fs.readdirSync(p, { withFileTypes: true })) sum += pathSize(path.join(p, ent.name));
+    return sum;
+  } catch (err) { return 0; }
+}
+
+/* ── IPC: 删除节点的 .md（移到 vault/.trash/，回收站可恢复）──
+   为什么必须动文件：.md 是「文件为源」，store 里删掉节点但文件还在的话，
    下次启动 vault 扫描会把它读回来 —— 节点复活。
-   为什么不真删：误删不可逆，且灵框没有回收站。.trash 是隐藏目录，
-   vault:scan 会跳过（否则会被当成一个叫「.trash」的世界观）。
    按 id 在时间线目录下递归找，而不是用 nodePath 直接算：
    title 改过或 kind 换过文件夹时，算出来的路径已经不是文件实际所在位置。 */
 ipcMain.handle('vault:delete', (e, { wsName, tlName, node }) => {
   try {
     if (!node || !node.id) return { ok: false, error: 'missing node id' };
-    const safe = (s) => String(s || '').replace(/[\\/:*?"<>|]/g, '_');
-    const tlDir = path.join(VAULT_DIR(), safe(wsName), safe(tlName));
+    const tlDir = path.join(VAULT_DIR(), safeName(wsName), safeName(tlName));
     const found = [];
     const collect = (dir) => {
       if (!fs.existsSync(dir)) return;
@@ -451,15 +537,164 @@ ipcMain.handle('vault:delete', (e, { wsName, tlName, node }) => {
     };
     collect(tlDir);
     if (!found.length) return { ok: true, moved: 0 };   /* 从没落过盘，也算删成功 */
-    const trash = path.join(VAULT_DIR(), '.trash');
-    if (!fs.existsSync(trash)) fs.mkdirSync(trash, { recursive: true });
-    const stamp = Date.now();
-    found.forEach((p, i) => fs.renameSync(p, path.join(trash, `${stamp}-${i}-${path.basename(p)}`)));
-    return { ok: true, moved: found.length };
+    let moved = 0;
+    for (const p of found) {
+      const ent = moveToTrash(path.relative(VAULT_DIR(), p), {
+        kind: 'node', title: node.title || path.basename(p),
+        world: wsName, timeline: tlName, nodeId: node.id,
+      });
+      if (ent) moved++;
+    }
+    return { ok: true, moved };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
 });
+
+/* ── IPC: 删除整条时间线 / 整个世界观（目录整体移进回收站，可恢复）── */
+ipcMain.handle('vault:delete-timeline', (e, { wsName, tlName }) => {
+  try {
+    const ent = moveToTrash(path.join(safeName(wsName), safeName(tlName)), {
+      kind: 'timeline', title: tlName, world: wsName, timeline: tlName,
+    });
+    return { ok: true, moved: ent ? 1 : 0, entry: ent };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+ipcMain.handle('vault:delete-world', (e, { wsName }) => {
+  try {
+    const ent = moveToTrash(safeName(wsName), { kind: 'world', title: wsName, world: wsName });
+    return { ok: true, moved: ent ? 1 : 0, entry: ent };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+
+/* ── IPC: 回收站列表 = 索引登记项 + 孤儿项 ── */
+ipcMain.handle('vault:trash-list', () => {
+  try {
+    const d = TRASH_DIR();
+    if (!fs.existsSync(d)) return { ok: true, entries: [], orphans: [] };
+    const idx = readTrashIndex();
+    const known = new Set(idx.map((x) => x.trashName));
+    known.add('index.json');
+    const entries = idx.map((x) => {
+      const p = path.join(d, x.trashName);
+      const exists = fs.existsSync(p);
+      let preview = '';
+      try {
+        if (exists && fs.statSync(p).isFile()) {
+          const n = mdToNode(fs.readFileSync(p, 'utf8'));
+          if (n) preview = `${n.title || ''}${n.year !== undefined ? ' · ' + n.year : ''}`;
+        }
+      } catch (err) { /* 预览失败不影响列表 */ }
+      return { ...x, exists, size: exists ? pathSize(p) : 0, preview };
+    });
+    const orphans = fs.readdirSync(d, { withFileTypes: true })
+      .filter((ent) => !known.has(ent.name))
+      .map((ent) => ({
+        id: 'orphan:' + ent.name, kind: 'orphan', trashName: ent.name, title: ent.name,
+        ts: 0, exists: true, size: pathSize(path.join(d, ent.name)), preview: '',
+      }))
+      .sort((a, b) => a.trashName.localeCompare(b.trashName));
+    entries.sort((a, b) => b.ts - a.ts);
+    return { ok: true, entries, orphans };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/* ── IPC: 从回收站恢复 ──
+   items = [{ trashName, world?, timeline? }]（孤儿项必须带 world/timeline —— 它没有原路径）。
+   恢复 = 移回 vault 原位；并把恢复出来的数据一并返回，渲染层据此直接插回 store，
+   不必重启或整库重扫（节点级恢复即时可见）。 */
+ipcMain.handle('vault:trash-restore', (e, payload) => {
+  try {
+    const d = TRASH_DIR();
+    const items = (payload && payload.items) || [];
+    const idx = readTrashIndex();
+    const restored = [];
+    const failed = [];
+    for (const it of items) {
+      const name = String(it.trashName || '');
+      if (!name || name === 'index.json' || name.includes('..') || name.includes('/') || name.includes('\\')) {
+        failed.push({ name, error: '非法项名' }); continue;
+      }
+      const src = path.join(d, name);
+      if (!fs.existsSync(src)) { failed.push({ name, error: '回收站里已不存在该文件' }); continue; }
+      const rec = idx.find((x) => x.trashName === name);
+      let relPath = rec && rec.relPath ? rec.relPath : '';
+      let nodeData = null;
+      if (!relPath) {
+        /* 孤儿：位置未知，用 md 内容里的 kind/title 拼回指定时间线下的正确类型文件夹。
+           注意 nodeToMd 的 frontmatter **不写 kind**（kind 由「文件夹名」承载，vault:scan 才用
+           sub.name 回填），所以孤儿文件里通常没有 kind —— 由调用方（回收站 UI）让用户选，
+           否则会静默落到「事件/」把角色/地点错位。 */
+        if (!it.world || !it.timeline) { failed.push({ name, error: '缺少原始位置，需指定恢复到哪个世界/时间线' }); continue; }
+        try { if (fs.statSync(src).isFile()) nodeData = mdToNode(fs.readFileSync(src, 'utf8')); } catch (err) { nodeData = null; }
+        if (!nodeData) { failed.push({ name, error: '无法解析为节点文件，请手工处理' }); continue; }
+        relPath = path.join(safeName(it.world), safeName(it.timeline),
+          safeName(it.nodeKind || nodeData.kind || '事件'), safeName(nodeData.title || nodeData.id) + '.md');
+      }
+      const dest = path.join(VAULT_DIR(), relPath);
+      const destDir = path.dirname(dest);
+      if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+      let finalDest = dest;
+      if (fs.existsSync(finalDest)) {   /* 原位已有同名文件：不覆盖，加后缀并存 */
+        const parsed = path.parse(dest);
+        finalDest = path.join(parsed.dir, `${parsed.name}-恢复${Date.now() % 100000}${parsed.ext}`);
+      }
+      fs.renameSync(src, finalDest);
+      const kind = (rec && rec.kind) || 'node';
+      const out = { relPath: path.relative(VAULT_DIR(), finalDest), kind };
+      if (kind === 'world') {
+        out.world = path.basename(finalDest);
+        out.timelines = scanWorldDir(finalDest);
+      } else if (kind === 'timeline') {
+        out.world = path.relative(VAULT_DIR(), path.dirname(finalDest));
+        out.timeline = path.basename(finalDest);
+        out.nodes = scanTimelineDir(finalDest);
+      } else {
+        let n = nodeData;
+        if (!n) { try { n = mdToNode(fs.readFileSync(finalDest, 'utf8')); } catch (err) { n = null; } }
+        out.node = n;
+        out.world = (rec && rec.world) || it.world;
+        out.timeline = (rec && rec.timeline) || it.timeline;
+      }
+      restored.push(out);
+    }
+    pruneTrashIndex();
+    return { ok: true, restored, failed };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/* ── IPC: 彻底删除回收站项（不可恢复）。payload.all=true 清空 ── */
+ipcMain.handle('vault:trash-purge', (e, payload) => {
+  try {
+    const d = TRASH_DIR();
+    if (!fs.existsSync(d)) return { ok: true, purged: 0 };
+    let purged = 0;
+    if (payload && payload.all) {
+      for (const ent of fs.readdirSync(d)) {
+        if (ent === 'index.json') continue;
+        fs.rmSync(path.join(d, ent), { recursive: true, force: true });
+        purged++;
+      }
+      writeTrashIndex([]);
+    } else {
+      for (const n of (payload && payload.names) || []) {
+        const s = String(n || '');
+        if (!s || s === 'index.json' || s.includes('..') || s.includes('/') || s.includes('\\')) continue;
+        fs.rmSync(path.join(d, s), { recursive: true, force: true });
+        purged++;
+      }
+      pruneTrashIndex();
+    }
+    return { ok: true, purged };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
 
 /* ── IPC: 退出前同步落盘（渲染进程在 beforeunload 里 sendSync）──
    payload = { data?: WorldData, nodes?: [{wsName, tlName, node}] }

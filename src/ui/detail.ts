@@ -7,6 +7,7 @@ import { requestEyedrop } from './eyedrop';
 import { escapeHtml } from './html';
 import { isImeEnter } from './keys';
 import { removeNode } from '../store/actions';
+import { confirmDialog } from './confirm';
 
 interface ParsedDoc {
   fields: { k: string; v: string }[];
@@ -138,13 +139,22 @@ export function renderNodeDetail(
 
     host.querySelector('#d-del')?.addEventListener('click', () => {
       if (!tlId) return;
-      /* 走 removeNode：它同时会把 vault 里对应的 .md 移进 .trash。
+      /* 走 removeNode：它同时会把 vault 里对应的 .md 移进回收站。
          旧写法在这里自己 filter 一遍，绕过了动作层 → 文件残留 → 节点下次启动复活。 */
-      removeNode(store, tlId, node.id);
-      host.innerHTML = '';
-      detailUnsub?.();
-      detailUnsub = null;
-      if (onChanged) onChanged();
+      void confirmDialog({
+        title: `删除节点「${node.title || '未命名'}」？`,
+        message: '节点会从时间线移除，对应的 .md 文件移入 vault 的回收站。',
+        detail: '需要时可从工具栏「回收站」恢复。',
+        confirmText: '删除',
+        danger: true,
+      }).then((okDel) => {
+        if (!okDel) return;
+        removeNode(store, tlId, node.id);
+        host.innerHTML = '';
+        detailUnsub?.();
+        detailUnsub = null;
+        if (onChanged) onChanged();
+      });
     });
 
     const fieldsBox = host.querySelector('#d-fields') as HTMLElement;
