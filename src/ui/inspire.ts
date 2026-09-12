@@ -1,6 +1,6 @@
 /** 灵感触发器——随机角色生成（词库 58 分类；照抄 legacy 生成/锁定/组数逻辑）+ 词义联想画布 */
 import type { Store } from '../store/store';
-import { cascadeIn, stopCascade } from './motion';
+import { cascadeIn, childHeights, smoothHeights, stopCascade } from './motion';
 
 interface Group { t: string; keys: string[]; n: number; }
 type Lib = Record<string, string[]>;
@@ -99,6 +99,10 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
      加载已存组合同理（用户要的是立刻看到那一组长什么样）。 */
   function renderChar(combo: Combo | null, animate = false) {
     if (!lib) return;
+    /* 重建前先量下每张卡现在的高度：重建后平滑过渡过去（用户 2026-09-12「刷新词条的时候
+       高度会变，能不能改成平滑过渡」）。每张卡的词条数是随机的 ⇒ 高度只有 80/104/128/152 四档，
+       不补间的话整片卡片区（连同下面的联想画布）会在同一个 tick 里上下跳一下。 */
+    const heightsBefore = childHeights(result);
     result.innerHTML = CHAR_GROUPS.map((g, gi) => {
       const picks = combo ? combo[g.t] || {} : rollGroup(g, currentCount(g, gi));
       const rows = Object.keys(picks).map((k) => {
@@ -125,7 +129,10 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
        不播时还要显式 `stopCascade`：错峰类要等最后一张动画结束才摘，打开后马上点「重新生成」的话
        它还挂在卡片区上，新卡片会从父类继承 nth-child 延迟又错峰一遍（"不该播的那次"照样播）。 */
     if (animate) cascadeIn(result, 50, 720, 120);
-    else stopCascade(result);
+    else {
+      stopCascade(result);
+      smoothHeights(result, heightsBefore);   /* 高度平滑落位（减少动效时内部自动跳过） */
+    }
   }
 
   /* ── 语义联想（Ollama，设置里配引擎）── */

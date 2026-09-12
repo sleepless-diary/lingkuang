@@ -117,3 +117,51 @@ export function stopCascade(container: HTMLElement | null): void {
   container.classList.remove('lk-enter-stagger');
   for (const el of Array.from(container.children) as HTMLElement[]) el.style.animationDelay = '';
 }
+
+/** 量下容器每个子项此刻的高度（**重建之前**调，结果喂给 `smoothHeights`）。
+ *  高度只在"改 DOM 之前"才量得到旧值，所以是两步 API，不能合成一个函数。 */
+export function childHeights(container: HTMLElement | null): number[] {
+  if (!container) return [];
+  return Array.from(container.children).map((el) => (el as HTMLElement).getBoundingClientRect().height);
+}
+
+/** 让容器子项从 `before`（`childHeights` 量的旧高度）**平滑过渡**到重建后的自然高度。
+ *
+ *  为什么需要（用户 2026-09-12：「刷新词条的时候高度会变，能不能改成平滑过渡」）：
+ *  灵感触发器点「重新生成」时每张卡的词条数随机变（实测高度只有 80/104/128/152 四档），
+ *  卡片区**同一个 tick 内**从 570px 跳到 498px —— 下面所有内容"啪"地弹一下。
+ *  CSS 过渡不了 `height: auto`（内容驱动的变化不触发 height 过渡），所以这里量出前后 px、
+ *  临时写死高度再过渡。网格行高与外层容器高度都是**跟着子项算出来的**，子项平滑变高变矮时
+ *  它们自然一起平滑，不用单独处理。
+ *
+ *  与 `cascadeIn` 的区别：那个是**入场**（新元素浮现，动 opacity）；这个是**重排**（元素还在，
+ *  只是变高变矮、把下面的挤开，动的是 height）。过渡期间挂 `.lk-h-smooth`（裁剪 + 时长/缓动）。
+ *  减少动效时**整段跳过**：系统偏好的语义就是"别动"，高度直接落位。 */
+export function smoothHeights(container: HTMLElement | null, before: number[]): void {
+  if (!container || !before.length || motionReduced()) return;
+  const kids = Array.from(container.children) as HTMLElement[];
+  /* 先一次性量完所有"新高度"再动手：一旦给某张卡写死高度，后面量到的就是**过渡中的值** */
+  const tos = kids.map((el) => el.getBoundingClientRect().height);
+  kids.forEach((el, i) => {
+    const from = before[i];
+    const to = tos[i];
+    if (from === undefined || to === undefined) return;   /* 新出现的子项没有旧高度可比，不补间 */
+    if (Math.abs(to - from) < 1) return;                  /* 高度没变的卡：白挂一次过渡 */
+    el.style.height = `${from}px`;
+    el.classList.add('lk-h-smooth');
+    void el.offsetWidth;   /* 强制重排：让 from 成为过渡起点（否则与 to 同一帧写入会被合并） */
+    el.style.height = `${to}px`;
+    const done = (): void => {
+      el.removeEventListener('transitionend', onEnd);
+      el.classList.remove('lk-h-smooth');
+      el.style.height = '';   /* 还回 auto，高度重新由内容/网格说了算 */
+    };
+    /* ⚠️ `transitionend` **会冒泡**（同 cascadeIn 那个坑）：子孙元素自己的过渡结束也会飘上来，
+       所以既要认 `e.target === el`，也不能用 `{ once: true }`（会被冒泡事件消耗掉）。
+       另加 propertyName 过滤：这个类只过渡 height 一个属性。 */
+    const onEnd = (e: TransitionEvent): void => { if (e.target === el && e.propertyName === 'height') done(); };
+    el.addEventListener('transitionend', onEnd);
+    /* 兜底：元素中途被换掉 / 过渡被打断时 transitionend 不会来，不清的话行内高度会一直挂着 */
+    window.setTimeout(done, 900);
+  });
+}

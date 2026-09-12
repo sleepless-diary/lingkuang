@@ -643,6 +643,15 @@ body {
    只是下沉一层。cascadeIn() 在 JS 侧跳过它的行内延迟，动画由这一条压掉。
    特异性 (0,2,0) 高于上面的 `> *` 与降级块里的 `> *:nth-child(n)`，所以减少动效下同样不播。 */
 .lk-enter-stagger > .lk-own-cascade { animation: none; }
+/* 高度平滑（重排类）：内容变了、高度跟着跳，整片会"啪"地弹一下（灵感触发器点「重新生成」时
+   每张卡的词条数是随机的 ⇒ 实测高度只有 80/104/128/152 四档，卡片区同一个 tick 内 570→498px）。
+   CSS 过渡不了 `height: auto`（内容驱动的变化不触发 height 过渡），所以由 src/ui/motion.ts 的
+   `smoothHeights()` 量出前后 px、临时写死高度再过渡，跑完还回 auto —— 这个类只管时长/缓动，
+   以及过渡期间**裁剪**（变高那半程内容比盒子高，不裁会盖到下一张卡上）。 */
+.lk-h-smooth {
+  overflow: hidden;
+  transition: height var(--motion-base) var(--ease-standard);
+}
 /* 减少动效：错峰归零 + 入场降级为纯淡入（DESIGN.md:159）。
    选择器要与上面同特异性（`> *:nth-child(n)` 对 `> *:nth-child(2)`）并且**排在后面**才压得住。 */
 @media (prefers-reduced-motion: reduce) {

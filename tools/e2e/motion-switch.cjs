@@ -155,9 +155,16 @@ async function main() {
      ⚠️ **只打一帧是不够的**（实测：单张 `Page.captureScreenshot` 后 `__ends` 仍然是空的 —— 隐藏页面
      要连续几帧才走完动画生命周期），所以按铁律 6 的姿势用 `forceFrames()` 连打。
      顺便这一条也证明了错峰收手是**靠动画播完**触发的，不是靠那个 2500ms 兜底定时器。 */
-  await forceFrames(6);
-  await sleep(200);
-  const ends = await ev(`window.__ends`);
+  /* ⚠️ 隐藏窗口里只有"出帧"才推进会画（铁律 6），而**出帧本身不稳**：同一套件连跑两次，
+     一次 6 帧就把动画推到底（收到 animationend），一次 6 帧纹丝不动（`__ends` 是空数组）
+     ⇒ ★4 随机挂。改成**出帧到事件出现为止**：多打几轮，只要有一帧真的推进了就会留下事件。
+     断言本身没放宽 —— 仍然要求真的收到「lk-wake 在 cx-root 的一级块上播完」的证据。 */
+  let ends = [];
+  for (let i = 0; i < 8 && !ends.some((x) => x[0] === 'lk-wake' && x[2] === 'cx-root'); i++) {
+    await forceFrames(3);
+    await sleep(150);
+    ends = (await ev(`window.__ends`)) || [];
+  }
   check('★4 出一帧后入场动画真的播完了（收到 lk-wake 的 animationend，目标是工具的一级块）',
     Array.isArray(ends) && ends.some((x) => x[0] === 'lk-wake' && x[2] === 'cx-root'), ends);
 
@@ -311,12 +318,15 @@ async function main() {
      这里必须**同时**断言容器上那个错峰类被摘掉 —— 类只在最后一张动画结束（或 2.5s 兜底）时才清，
      而 ★18 刚打开工具，它多半还挂着；若不清，新卡片会从父类继承 `.lk-enter-stagger > *` 又错峰一遍。
      所以 renderChar 的非动画分支会显式调 stopCascade(卡片区)（见 src/ui/inspire.ts）。 */
+  /* ⚠️ `getAnimations()` 会把 **CSS 过渡**也算进去（`CSSTransition` 与 `CSSAnimation` 同一张表）。
+     这里要判的是"没有入场动画"，所以必须按 `animationName` 过滤 —— ★23 给变高矮的卡挂了
+     height 过渡，不过滤的话本条的 anims 会变成 13（第一版就是这么误报的）。 */
   const rollRes = await ev(`(() => {
     document.querySelector('#insp-roll').click();
     const box = document.querySelector('#insp-result');
     const cards = [...box.children];
     return { n: cards.length, cls: box.classList.contains('lk-enter-stagger'),
-      anims: cards.reduce((a, el) => a + el.getAnimations().length, 0),
+      anims: cards.reduce((a, el) => a + el.getAnimations().filter((x) => x.animationName).length, 0),
       inline: cards.filter((el) => el.style.animationDelay).length,
       opacity: cards.length ? getComputedStyle(cards[0]).opacity : null };
   })()`);
@@ -336,6 +346,85 @@ async function main() {
   })()`);
   check('★20 锁定条目：卡片不重建（元素身份不变 ⇒ 不重播），行高亮照常切换',
     lockRes && lockRes.sameEl === true && lockRes.bgChanged === true, lockRes);
+
+  /* ★23 高度平滑（用户 2026-09-12：「刷新词条的时候高度会变，能不能改成平滑过渡」）。
+     起因实测：每张卡的词条数是随机的 ⇒ 卡片高度只有 80/104/128/152 四档，
+     点「重新生成」时卡片区**同一个 tick 内**从 570px 跳到 522px（同一行取最高那张，
+     所以是整行一起变），下面所有内容跟着"啪"地弹一下。
+
+     ⚠️ 断言的关键（踩过）：过渡会把卡片**钉在旧高度上**，所以「重建后立刻量渲染高度」
+     量到的还是旧值 —— 我第一版探针就是这么写的，十轮全报"高度没变"、误以为改动没生效。
+     这反而成了免费的中间态证据：同一 tick 里 **样式的目标高度 ≠ 渲染出来的高度**，
+     就说明过渡确实在跑（终点已写入、起点还在显示）。
+     为了让"高度真的变了"这件事确定发生，这里先把 13 个「词条数」下拉全部设成 1（都变最矮），
+     再全部设成各自最大值 + 点「重新生成」⇒ 每行必然至少有一张变高。 */
+  await ev(`(() => {
+    const set = (v) => document.querySelectorAll('#insp-result .insp-count').forEach((s) => {
+      const opt = v === 'max' ? [...s.options].pop().value : v;
+      s.value = opt; s.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    set('1');
+  })()`);
+  await ev(`document.querySelector('#insp-roll').click(); true`);
+  await waitFor(`document.querySelectorAll('#insp-result > .tool-card .insp-row').length === 0 || [...document.querySelectorAll('#insp-result > .tool-card')].every((c) => c.querySelectorAll('.insp-row').length === 1)`);
+  await sleep(1100);   /* 等上一次落位（兜底定时器 900ms） */
+  const before23 = await ev(`(() => {
+    const box = document.querySelector('#insp-result');
+    return { grid: Math.round(box.getBoundingClientRect().height),
+      h: [...box.children].map((el) => Math.round(el.getBoundingClientRect().height)) };
+  })()`);
+  const t23 = await ev(`(() => {
+    document.querySelectorAll('#insp-result .insp-count').forEach((s) => {
+      s.value = [...s.options].pop().value; s.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const box = document.querySelector('#insp-result');
+    const before = ${JSON.stringify(before23.h)};
+    document.querySelector('#insp-roll').click();
+    const cards = [...box.children].map((el, i) => ({ i, from: before[i],
+      rendered: Math.round(el.getBoundingClientRect().height), inline: el.style.height,
+      cls: el.classList.contains('lk-h-smooth') }));
+    /* 参数要从**真的挂上过渡的那张卡**上读：没变高矮的卡根本没有 .lk-h-smooth，
+       读它只会得到默认的 transitionProperty: 'all'（第一版就是这么写错的） */
+    const hit = cards.find((c) => c.inline);
+    const cs = hit ? getComputedStyle(box.children[hit.i]) : null;
+    return { cards, prop: cs ? cs.transitionProperty : '', dur: cs ? cs.transitionDuration : '' };
+  })()`);
+  const anim23 = (t23?.cards || []).filter((c) => c.inline);
+  const still23 = (t23?.cards || []).filter((c) => !c.inline);
+  check('★23 点「重新生成」：变高的卡挂上高度过渡（起点钉在旧高度、样式已写目标高度、transition height）',
+    anim23.length >= 4 && t23.prop.split(',').map((s) => s.trim()).includes('height') && t23.dur === '0.32s'
+      && anim23.every((c) => c.cls === true && Math.abs(c.rendered - c.from) <= 1)
+      && still23.every((c) => c.cls === false),
+    { nAnimated: anim23.length, head: anim23.slice(0, 3), stillSkipped: still23.length, prop: t23.prop, dur: t23.dur });
+
+  /* 落位：强制出帧 + 等兜底定时器 → 行内高度与类都必须清掉，且**停在目标高度上**（不许回跳/留在半路） */
+  for (let i = 0; i < 4; i++) await forceFrames(2);
+  await sleep(1000);
+  const end23 = await ev(`(() => {
+    const box = document.querySelector('#insp-result');
+    const targets = ${JSON.stringify(anim23.map((c) => ({ i: c.i, inline: c.inline })))};
+    return { leftover: [...box.children].filter((el) => el.style.height || el.classList.contains('lk-h-smooth')).length,
+      off: targets.filter((t) => Math.abs(Math.round(box.children[t.i].getBoundingClientRect().height) - parseFloat(t.inline)) > 1).length,
+      grid: Math.round(box.getBoundingClientRect().height) };
+  })()`);
+  check('★23b 高度过渡落位：行内高度清空、类摘掉、每张卡停在目标高度（不回跳）',
+    end23.leftover === 0 && end23.off === 0 && end23.grid !== before23.grid,
+    { ...end23, gridBefore: before23.grid });
+
+  /* ★24 减少动效下**根本不许挂**过渡：smoothHeights 直接返回（DESIGN.md:159 的语义就是"别动"） */
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  const t24 = await ev(`(() => {
+    document.querySelectorAll('#insp-result .insp-count').forEach((s) => {
+      s.value = '1'; s.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    document.querySelector('#insp-roll').click();
+    const box = document.querySelector('#insp-result');
+    return { hung: [...box.children].filter((el) => el.style.height || el.classList.contains('lk-h-smooth')).length,
+      rows: [...box.children].map((el) => el.querySelectorAll('.insp-row').length) };
+  })()`);
+  check('★24 减少动效：点「重新生成」不挂高度过渡（零行内高度、零过渡类），高度直接落位',
+    t24 && t24.hung === 0 && t24.rows.every((n) => n === 1), t24);
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
 
   /* ── ⑨ 竞态守卫：慢工具不许在切走之后把新工具盖掉 ──
      工具是「先渲染进**自己那一格**（`.lk-tool-slot`）、再把清理函数交回来」，所以**未缓存**的
