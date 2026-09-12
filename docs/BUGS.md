@@ -15,6 +15,67 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第十一轮已修复（2026-09-12）· 历法内核（`src/calendar.ts`）
+
+> 用户问「我们的日历系统还有 bug 吗」。做法：`src/calendar.ts` **自包含、零 import**，
+> 所以把它**单独编译成 JS 直接在 Node 里跑**（`npx tsc src/calendar.ts --ignoreConfig ...`），
+> 对内核做穷举与性能实测，不必起 Electron。所有数字都是实测值。
+
+### ① `toEpoch` 丢掉「秒」→ 与 `fromEpoch` 不是严格互逆（而文档声称互逆）
+- `toEpoch` 原来只累加 `hour * hourSec + minute * cal.unit.minute`，**没有加 `second`**；
+  而 `fromEpoch` 会算出 `second` 并写进 `TimePoint`。
+- 实测：`312-7-15 9:30:45` → epoch → 反推回 `9:30:00`；直接对比
+  `toEpoch(9:30:45) === toEpoch(9:30:00)`（差 0 秒，应为 45）。13 条往返用例里 3 条不一致，全是秒。
+- 影响：`precision: 'second'` 的节点被摆到最多偏 1 秒的位置（年在坐标轴上是 3.15e7 秒，肉眼无感），
+  但**显示**会与数据不一致 —— 编辑器的时间 scrub 用 `fmtYearDisplay` → `fromEpoch`，于是
+  「数据里有 45 秒、面板显示 0 秒」。
+- 修法：`epoch += hour * hourSec + minute * cal.unit.minute + second;`
+- 实测：**13/13 往返恒等**（含 `312-12-31 23:59:59`、`312-6-6 6:6:6`）。
+
+### ② 年表构建与无表换算都是 O(|year|) → 年份多敲几个数字就冻界面
+- `buildYearTable` 算 min 年起点、`yearStart` 的回退分支、`fromEpoch` 的回退分支
+  原来一律「从 0 年逐年累加 / 扣减」。
+- 实测斜率（默认公历）：年表构建 1e6 年 11ms → 1e7 年 119ms → 按同斜率 **1e10 年约 2 分钟**；
+  `fromEpoch`（表外）1e7 年 15ms → 1e10 年约 15 秒。
+- **可达路径**：`parseTimeText` 对年份**没有任何上限**（`nums[0]` 取任意整数），
+  在「＋节点」的时间框里多敲几个 0 → `fitAll()` → `setYearTable(yLo-50, yHi+50)` → 直接冻住。
+- 修法：
+  - 新增 `daysBeforeYear(cal, year)`：function 模式走**闭式公式** —— 公历用 floor 除法
+    `⌊(y+3)/4⌋ − ⌊(y+99)/100⌋ + ⌊(y+399)/400⌋`（0 年是 400 的倍数所以算作闰年，与 `daysInYear` 一致），
+    负数年利用「闰年集合关于 0 对称」折算；fixed365/360 直接乘。table 模式仍逐年累加（列表历法天然 O(n)）。
+  - `buildYearTable` 的 min 年起点、`yearStart` 的回退分支改用 `daysBeforeYear` → O(1)。
+  - `fromEpoch` 回退路径改为「用**平均年宽**（新增 `avgDaysInYear`，公历 365.2425）估一个年 →
+    按差值跳年迭代收敛 → ±1 精调」。原先拿 `daysInYear(0)`（366）当均值会偏 0.2%，
+    在 1e10 年上放大成几千万年的误差，±1 逼近仍是 O(误差)（实测 348ms）。
+  - 顺带给 `fromEpoch` 的逐月扣减加 `w <= 0` 保护：月长取不到值时旧写法 `rem >= 0` 恒真 → 死循环。
+- 实测（修复后）：年表构建 1e10 年 **0.01ms**、`toEpoch` 0.00ms、
+  `fromEpoch`（表外、1e10 年）**0.00ms**；负年份同样 0.01ms。
+- **正确性证明**（不是只测快）：闭式公式与「逐年累加参考实现」在 **-3000~3000 共 6001 年**
+  逐点比对**全部一致**；年表 `starts` 4001 项与参考一致；有表/无表 32 组换算完全一致。
+
+### 已核对、**无 bug** 的部分（避免重复排查）
+- 闰年规则：312 年 366 天、1900 年 365 天（百年不闰）、2000 年 366 天（400 年闰）✓
+- 大小月与跨年：`312-02-28 +1天 = 02-29`、`02-29 +1天 = 03-01`、`11-30 +1天 = 12-01`、
+  `12-31 +1天 = 313-01-01` ✓
+- 负年份与 0 年：`-800-01-01`、`-1-12-31 12:00`、`0-01-01` 往返全对 ✓
+- `width()` 只在 table 模式内部被调用，没有外部调用点（默认历法 `layers: []` 时返回 0 不影响任何路径）✓
+- `variantOf` / `layerValues` 选变体用的年份与 `daysInMonth` / `daysInYear` 一致 ✓
+- 时间轴调用点（`src/ui/timeline.ts`）**全部**传了 `getYearTable()` ✓
+
+### 相邻发现（属编辑器面板，**未修**，待用户决定）
+- `src/ui/editor.ts` 的时间 scrub（`createScrubField`）：
+  `fmtYearDisplay` 只显示到「时」（丢 分/秒）；`onCommit` 只拼「年/月/日」再交给 `parseTimeText`
+  → 判成「日」精度 → **把节点的 时/分/秒 清空**，而同时又用旧值覆盖 `精度` 字段
+  → 出现「精度写着 minute、数据里没有分」的矛盾态。注释写的是「反推存完整时间」，与实现不符。
+- `src/ui/editor.ts` 的 `fmtYearDisplay(epoch, c)`、`toEpoch(...)`、`fromEpoch(c, n)` 三处**没传年表**
+  （`timeline.ts` 全部传了）→ 年份大时每次重绘都是 O(年)。内核修好后这条已不致命。
+
+### ★ 更大的缺口（不是 bug，是功能没入口）
+- **历法系统没有 UI**：全仓 grep `calendar` 的写入点，只有 `src/main.ts:61` 的「vault 回扫时保留 JSON 里
+  已有的 calendar」，**`src/ui/` 里没有任何代码能创建 / 修改 / 切换历法**。
+  也就是说 `layers` / `variants` / `switches` / `mode:'table'` / `Epoch`（年号）这一整套数据层能力，
+  用户手上的唯一可达历法就是默认公历（格里高利）。ROADMAP P2 的「自定义历法/纪年」还没接 UI。
+
 ## 第十轮已修复（2026-09-12）· 节点面板的时间精度选择（补回 legacy 功能）
 
 > 用户问「节点面板的时间精度选择是不是不见了」。查证结论：**不是本轮改丢的** ——

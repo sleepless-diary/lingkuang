@@ -74,16 +74,8 @@ export function buildYearTable(cal: Calendar, min: number, max: number): YearTab
   const size = max - min + 1;
   const starts = new Array<number>(size);
   const daySec = cal.unit.minute * cal.unit.hour * cal.unit.day;
-  // 从纪元原点 0 年起点 0 出发，先向负方向补齐，再向正方向累加
-  starts[min - min] = 0;   // 占位，下面用绝对定位覆盖
-  // 先算 min 年起点：从 0 年 0 点向 min 方向累加
-  let acc = 0;
-  if (min < 0) {
-    for (let y = 0; y > min; y--) acc -= daysInYear(cal, y - 1) * daySec;
-  } else {
-    for (let y = 0; y < min; y++) acc += daysInYear(cal, y) * daySec;
-  }
-  starts[0] = acc;
+  // 从纪元原点 0 年起点 0 出发：min 年起点直接用闭式公式（O(1)，不再逐年后推）
+  starts[0] = daysBeforeYear(cal, min) * daySec;
   // 向正方向逐年后推
   for (let y = min; y < max; y++) {
     starts[y + 1 - min] = starts[y - min] + daysInYear(cal, y) * daySec;
@@ -91,16 +83,40 @@ export function buildYearTable(cal: Calendar, min: number, max: number): YearTab
   return { min, max, starts };
 }
 
-/** 查某年起点刻度：在表范围内 O(1)，范围外回退到逐年累加 */
+/** 某年 1 月 1 日 0 点相对纪元原点（0 年 1 月 1 日 0 点）的**累计天数**（可为负）。
+ *  function 模式走闭式公式 → O(1)；table 模式只能逐年累加（列表能表达任意历法，但慢）。
+ *  ★ 必须 O(1)：`buildYearTable` 要拿它算 min 年的起点，而 `yearStart` / `fromEpoch` 的回退路径
+ *  也用它。旧实现一律从 0 年逐年累加 —— 用户在「＋节点」里多敲几个数字就能冻住界面
+ *  （实测年表构建耗时：1e6 年 11ms、1e7 年 119ms、按同一斜率 1e10 年约 2 分钟）。
+ *  格里高利闰年累计数用 floor 除法（对负数年同样成立）：
+ *  [0, y) 内闰年数 = ⌊(y+3)/4⌋ − ⌊(y+99)/100⌋ + ⌊(y+399)/400⌋ —— 与 `daysInYear` 的判定一致
+ *  （0 年是 400 的倍数，所以它是闰年，这条公式把它算进去了）。负数年利用
+ *  「闰年集合关于 0 对称」把 [y,0) 折到正值侧，再减掉 0 年自己。 */
+function daysBeforeYear(cal: Calendar, year: number): number {
+  if (cal.mode === 'table') {
+    let acc = 0;
+    if (year >= 0) { for (let y = 0; y < year; y++) acc += daysInYear(cal, y); }
+    else { for (let y = 0; y > year; y--) acc -= daysInYear(cal, y - 1); }
+    return acc;
+  }
+  switch (cal.fn) {
+    case 'gregorian': {
+      const leapsBefore = (y: number) => Math.floor((y + 3) / 4) - Math.floor((y + 99) / 100) + Math.floor((y + 399) / 400);
+      const n = year >= 0 ? leapsBefore(year) : -(leapsBefore(1 - year) - 1);
+      return 365 * year + n;
+    }
+    case 'fixed365': return 365 * year;
+    case 'fixed360': return 360 * year;
+    default: return 360 * year;
+  }
+}
+
+/** 查某年起点刻度：在表范围内 O(1)，范围外回退到 O(1) 的闭式公式 */
 function yearStart(cal: Calendar, table: YearTable | undefined, year: number, daySec: number): number {
   if (table) {
     if (year >= table.min && year <= table.max) return table.starts[year - table.min];
   }
-  // 回退：逐年累加
-  let acc = 0;
-  if (year >= 0) { for (let y = 0; y < year; y++) acc += daysInYear(cal, y) * daySec; }
-  else { for (let y = 0; y > year; y--) acc -= daysInYear(cal, y - 1) * daySec; }
-  return acc;
+  return daysBeforeYear(cal, year) * daySec;
 }
 
 /* ── 基础查询 ── */
@@ -194,6 +210,19 @@ function daysInYear(cal: Calendar, year: number): number {
   }
 }
 
+/** 平均年宽（天）：仅用于 `fromEpoch` 回退路径**估**一个年，估完还有精调。
+ *  用真实均值而不是 daysInYear(0)：公历用 366 会偏 0.2%，在超大年份上放大成几千万年的误差，
+ *  ±1 逼近就退化成 O(误差)（实测 1e10 年要 348ms）。 */
+function avgDaysInYear(cal: Calendar): number {
+  if (cal.mode === 'table') return Math.max(1, daysInYear(cal, 0));
+  switch (cal.fn) {
+    case 'gregorian': return 365.2425;
+    case 'fixed365': return 365;
+    case 'fixed360': return 360;
+    default: return 360;
+  }
+}
+
 /** 完整序列 → 单调整数刻度（秒）。年月日逐层累加（下标从 1），无浮点。
  *  传入 yearTable 则年部分 O(1) 查表，否则回退逐年累加。 */
 export function toEpoch(cal: Calendar, tp: TimePoint, table?: YearTable): number {
@@ -207,11 +236,14 @@ export function toEpoch(cal: Calendar, tp: TimePoint, table?: YearTable): number
   // 日：(D-1) × 一天秒
   const day = tp.values['day'] ?? 1;
   epoch += (day - 1) * daySec;
-  // 时/分：H × 一天秒(时进制) + Mi × 秒
+  // 时/分/秒：H × 一小时秒 + Mi × 60 + S
   const hour = tp.values['hour'] ?? 0;
   const minute = tp.values['minute'] ?? 0;
+  const second = tp.values['second'] ?? 0;
   const hourSec = cal.unit.minute * cal.unit.hour;
-  epoch += hour * hourSec + minute * cal.unit.minute;
+  /* ★ 秒必须一起加：漏掉它 toEpoch/fromEpoch 就不是严格互逆（实测 9:30:45 往返变成 9:30:00），
+     而这一对函数的互逆性是「节点位置 ↔ 时间文字」的地基（精度支持到「秒」档）。 */
+  epoch += hour * hourSec + minute * cal.unit.minute + second;
   return epoch;
 }
 
@@ -235,26 +267,37 @@ export function fromEpoch(cal: Calendar, epoch: number, table?: YearTable): Time
     year = table.min + lo;
     rem = epoch - table.starts[lo];
   } else {
-    // 回退：逐年扣减
-    year = 0;
-    rem = epoch;
-    if (rem >= 0) {
-      while (rem >= daysInYear(cal, year) * daySec) {
-        rem -= daysInYear(cal, year) * daySec;
-        year++;
-      }
-    } else {
-      while (rem < 0) {
-        year--;
-        rem += daysInYear(cal, year) * daySec;
-      }
+    /* 回退路径也保持 O(1)：旧实现从 0 年开始逐年扣减，年份大时卡死
+       （实测 1e7 年 15ms、按同一斜率 1e10 年约 15 秒）。先用平均年宽估一个年，
+       再按「差多少秒就跳多少年」迭代收敛，最后 ±1 精调 —— 不许用 ±1 逼近大误差，
+       那还是 O(误差)（实测 1e10 年 348ms）。 */
+    const avgSec = avgDaysInYear(cal) * daySec;
+    let y = Math.floor(epoch / avgSec);
+    /* table 模式没有闭式公式：把估计值夹到年表区间内，免得用巨大年份去走列表累加 */
+    if (cal.mode === 'table' && table) y = Math.min(Math.max(y, table.min - 1), table.max + 1);
+    let start = yearStart(cal, table, y, daySec);
+    for (let i = 0; i < 8 && start > epoch; i++) {
+      y -= Math.max(1, Math.round((start - epoch) / avgSec));
+      start = yearStart(cal, table, y, daySec);
     }
+    for (let i = 0; i < 8 && start + daysInYear(cal, y) * daySec <= epoch; i++) {
+      y += Math.max(1, Math.round((epoch - start) / avgSec));
+      start = yearStart(cal, table, y, daySec);
+    }
+    while (start > epoch) { y--; start = yearStart(cal, table, y, daySec); }
+    while (start + daysInYear(cal, y) * daySec <= epoch) { y++; start = yearStart(cal, table, y, daySec); }
+    year = y;
+    rem = epoch - start;
   }
 
   // 月：逐月扣减，直到余量落进某月
   let month = 1;
-  while (rem >= daysInMonth(cal, year, month) * daySec) {
-    rem -= daysInMonth(cal, year, month) * daySec;
+  for (;;) {
+    const w = daysInMonth(cal, year, month) * daySec;
+    /* w <= 0 只在历法退化（该年没有这个月，如月长表取不到值）时出现；
+       不挡的话 `rem >= 0` 恒真 → 死循环。 */
+    if (w <= 0 || rem < w) break;
+    rem -= w;
     month++;
   }
   // 日
