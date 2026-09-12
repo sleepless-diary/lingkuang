@@ -34,7 +34,7 @@
 | `src/ui/editor.ts` | 编辑器（tiptap，左侧 sidebar 时间线/实体 tab，右侧文稿编辑） |
 | `src/ui/ai-workbench.ts` / `roleplay.ts` / `tavern.ts` | AI 工作台 / 角色扮演 / 酒馆剧情推演 |
 | `src/ui/map.ts` | 手绘矢量地图（区域 + 标记） |
-| `src/ui/detail.ts` / `node-form.ts` | 节点详情 / 新建节点表单 |
+| `src/ui/detail.ts` / `node-form.ts` | 节点详情 / 新建节点表单（详情面板里的「模板字段」区按节点种类渲染该种类的结构化字段，直接可填） |
 | `src/ui/settings.ts` | 设置（AI 引擎 / 偏好项，存 localStorage） |
 | `src/ui/eyedrop.ts` / `image-ext.ts` / `tag-ext.ts` | 吸管 / 编辑器图片扩展 / 标签扩展 |
 | `src/ui/confirm.ts` | 确认 / 输入弹层（`confirmDialog` / `promptDialog`）。**不要用 `window.confirm`**：同步阻塞渲染进程（卡 tiptap 与 rAF），且无法用 tokens 配色 |
@@ -63,6 +63,11 @@
   （`cssclasses`/`tags`/`aliases` 除外）。
 - **给节点指定种类**：＋节点窗口的「种类」下拉（`src/ui/node-form.ts`）、编辑器属性面板的「种类」行
   （`src/ui/editor.ts`）。两处都走 `addNode`/`saveFixed`，最终落到 `node.kind`。
+- **填字段值**：点沙盘上的节点 → 详情面板的「模板字段」区（`src/ui/detail.ts`，控件形态跟字段类型走：
+  短文本 input / 长文本 textarea / 数值 number / 开关 checkbox / 列表用「、」分隔的 input）；
+  或在编辑器的属性区填。两处写的是同一份 `node.properties`，都走 `store.update`（可撤销）。
+  ⚠️ 这两个面板都是**每次 store 通知就整块重渲染**，所以字段控件只在 `change`（失焦/回车）时提交 ——
+  用 `input` 边打边存会触发重渲染、把正在输入的框销毁。
 
 ## 3. 数据模型
 

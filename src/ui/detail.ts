@@ -1,7 +1,7 @@
 /** 节点详情面板（TS 版）——分区就地编辑：点哪块编辑哪块，点区域外 blur 自动保存 */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
-import type { TimelineNode, TimePrecision } from '../store/types';
+import type { TimelineNode, TimePrecision, FormatField } from '../store/types';
 import { PRECISION_ORDER, PRECISION_LABELS } from '../store/types';
 import { parseTimeText } from './node-form';
 import { requestEyedrop } from './eyedrop';
@@ -79,10 +79,40 @@ export function renderNodeDetail(
   /** 读值一律走这里：外部重载后闭包里的 node 已失效 */
   const latest = (): TimelineNode => freshNode() ?? node;
 
+  /* ── 模板字段（种类定义的结构化字段）──
+     种类=模板、节点=实现；字段集合由「结构体管理」维护，`ensureAllFormatFields` 保证每个节点
+     都有这些键（带默认值）。这里让它们在**点节点就能看见/填写** —— 以前只有左栏编辑器的
+     属性区能改，从沙盘过去要绕好几步。控件形态跟字段类型走，值与编辑器共用同一份 `properties`。 */
+  const PROP_INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-xs);outline:none;font-family:inherit;user-select:text;';
+  const PROP_LAB = 'width:58px;flex-shrink:0;font-size:var(--text-xs);color:var(--fg-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+  function propRow(f: FormatField, n: TimelineNode): string {
+    const v = n.properties?.[f.name];
+    const nm = escapeHtml(f.name);
+    const label = `<span style="${PROP_LAB}" title="${nm}">${nm}</span>`;
+    if (f.type === 'boolean') {
+      return `<div style="display:flex;align-items:center;gap:6px;">${label}<input data-prop="${nm}" type="checkbox"${v === true ? ' checked' : ''} style="width:15px;height:15px;cursor:pointer;"/></div>`;
+    }
+    if (f.type === 'number') {
+      return `<div style="display:flex;align-items:center;gap:6px;">${label}<input data-prop="${nm}" type="number" value="${typeof v === 'number' ? v : ''}" style="${PROP_INP}"/></div>`;
+    }
+    if (f.type === 'list') {
+      const arr = Array.isArray(v) ? v : [];
+      return `<div style="display:flex;align-items:center;gap:6px;">${label}<input data-prop="${nm}" type="text" value="${escapeHtml(arr.join('、'))}" placeholder="多项用、分隔" style="${PROP_INP}"/></div>`;
+    }
+    if (f.type === 'longtext') {
+      return `<div style="display:flex;align-items:flex-start;gap:6px;">${label}<textarea data-prop="${nm}" placeholder="（可留空）" style="${PROP_INP}min-height:42px;resize:vertical;line-height:1.5;">${escapeHtml(typeof v === 'string' ? v : '')}</textarea></div>`;
+    }
+    return `<div style="display:flex;align-items:center;gap:6px;">${label}<input data-prop="${nm}" type="text" value="${escapeHtml(typeof v === 'string' ? v : '')}" placeholder="（可留空）" style="${PROP_INP}"/></div>`;
+  }
+
   function renderView() {
     const cur = freshNode() ?? node;   /* 用最新节点渲染（Obsidian 改动后显示最新值） */
     const { fields, body } = parseDoc(cur.doc);
     const timeText = fields.find((f) => f.k === '时间')?.v ?? fmtNodeTime(cur);
+    /* 模板字段：种类决定这个节点该有哪些字段（在「结构体管理」里定义；
+       `ensureAllFormatFields` 保证键都在、带默认值）。没有模板就不渲染这一块。 */
+    const kind = cur.kind ?? '事件';
+    const tmplFields = store.data.formats?.[kind]?.fields ?? [];
     host.innerHTML = `
       <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;user-select:none;" id="d-view">
         <div style="display:flex;align-items:baseline;gap:8px;">
@@ -90,14 +120,21 @@ export function renderNodeDetail(
           <span id="d-tm" style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);cursor:text;">${timeText}</span>
           <button id="d-del" style="margin-left:auto;background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;align-self:baseline;">删除</button>
         </div>
-        <div style="display:flex;gap:4px;flex-wrap:wrap;">
+        <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
           <span id="d-ty" style="font-size:10px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;cursor:pointer;">${cur.type === 'story_event' ? '剧情事件' : cur.type === 'world_event' ? '世界事件' : cur.type === 'loop-boundary' ? '循环边界' : '节点'}</span>
+          <span id="d-kind" title="种类（模板）：决定这个节点有哪些属性字段，在左栏「结构体管理」里定义" style="font-size:10px;color:var(--fg-2);background:var(--surface-2);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;">${escapeHtml(kind)}</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
           <span style="font-size:var(--text-xs);color:var(--fg-2);">精度</span>
           <select id="d-prec" title="这个节点的时间精确到哪一档（改档位会补/清对应的月日时分秒）" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:2px 5px;font-size:var(--text-xs);outline:none;cursor:pointer;">${PRECISION_ORDER.map((p) => `<option value="${p}"${(cur.precision ?? 'year') === p ? ' selected' : ''}>${PRECISION_LABELS[p]}</option>`).join('')}</select>
         </div>
         <div id="d-d" style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;cursor:text;min-height:18px;">${cur.desc ? mdRender(cur.desc) : '<span style="color:var(--fg-2);">(无描述)</span>'}</div>
+        ${tmplFields.length
+          ? `<div id="d-props" style="display:flex;flex-direction:column;gap:5px;border-top:1px dashed var(--border-soft);padding-top:8px;">
+               <div style="font-size:10px;color:var(--fg-2);">${escapeHtml(kind)} · 模板字段（在左栏「结构体管理」里增删字段）</div>
+               ${tmplFields.map((f) => propRow(f, cur)).join('')}
+             </div>`
+          : ''}
         <div id="d-fields" style="display:flex;flex-direction:column;gap:6px;"></div>
         <div id="d-causes" style="display:flex;flex-direction:column;gap:4px;border-top:1px dashed var(--border-soft);padding-top:6px;"></div>
         <div id="d-b" style="font-size:var(--text-sm);color:var(--fg);line-height:1.7;cursor:text;min-height:18px;">${body ? mdRender(body) : '<span style="color:var(--fg-2);">(空正文)</span>'}</div>
@@ -163,6 +200,38 @@ export function renderNodeDetail(
         });
       });
     }
+
+    /* 模板字段：**只在 change（失焦 / 回车）时提交** —— 用 input 事件会边打边存，
+       而每次保存都会触发 store 通知 → 这个面板整块重渲染 → 正在输入的框会被销毁，没法连着打字。 */
+    host.querySelectorAll<HTMLElement>('#d-props [data-prop]').forEach((el) => {
+      const name = el.dataset.prop ?? '';
+      const fType = tmplFields.find((f) => f.name === name)?.type ?? 'text';
+      el.addEventListener('change', () => {
+        if (fType === 'boolean') {
+          const checked = (el as HTMLInputElement).checked;
+          patch((n) => { n.properties = { ...(n.properties ?? {}), [name]: checked }; });
+          return;
+        }
+        const raw = (el as HTMLInputElement | HTMLTextAreaElement).value;
+        patch((n) => {
+          const p = { ...(n.properties ?? {}) };
+          if (fType === 'number') {
+            const num = Number(raw);
+            p[name] = raw.trim() !== '' && Number.isFinite(num) ? num : 0;   /* 数值字段的默认值就是 0 */
+          } else if (fType === 'list') {
+            p[name] = raw.split(/[、,，/|]/).map((x) => x.trim()).filter(Boolean);   /* 多项用、分隔 */
+          } else {
+            p[name] = raw;
+          }
+          n.properties = p;
+        });
+      });
+      el.addEventListener('keydown', (ev) => {
+        const k = ev as KeyboardEvent;
+        if (fType === 'longtext' || k.key !== 'Enter' || isImeEnter(k)) return;
+        (el as HTMLInputElement).blur();   /* 回车 = 提交并退出（blur 会触发 change） */
+      });
+    });
 
     host.querySelector('#d-del')?.addEventListener('click', () => {
       if (!tlId) return;
