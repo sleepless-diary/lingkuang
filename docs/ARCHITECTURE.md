@@ -19,7 +19,7 @@
 
 | 路径 | 职责 |
 |---|---|
-| `main.js` | Electron 主进程。IPC：`data:load/save`（世界观）、`settings`、`lib`（词库）、`ai:associate`（联想）、`ai:classify`（词分类）、`aiChat()`（双模式 LLM 调用）、`vault:*`（Obsidian 文稿：`scan`/`write`/`delete`/`delete-timeline`/`delete-world`/`trash-list`/`trash-restore`/`trash-purge`）、`formats:load/save`（结构体格式）、`backup:list/create/restore/export/import`（备份管理）、`app:flush-sync`（退出前同步落盘） |
+| `main.js` | Electron 主进程。IPC：`data:load/save`（世界观）、`settings`、`lib`（词库）、`ai:associate`（联想）、`ai:classify`（词分类）、`aiChat()`（双模式 LLM 调用）、`vault:*`（Obsidian 文稿：`scan`/`write`/`write-entity`/`delete`/`delete-entity`/`delete-timeline`/`delete-world`/`trash-list`/`trash-restore`/`trash-purge`）、`formats:load/save`（结构体格式）、`backup:list/create/restore/export/import`（备份管理）、`app:flush-sync`（退出前同步落盘） |
 | `preload.js` | contextBridge 安全桥，暴露 `window.lingkuangAPI` |
 | `index.html` | Vite 入口（`<div id="app">` + `<script src="/src/main.ts">`） |
 | `mcp-server.js` | MCP 服务器（`query_timeline` / `query_node` / `search_world` / `query_loop`） |
@@ -185,6 +185,18 @@
   界面要等下次扫描才看得到，用户会认为恢复失败。
 - frontmatter **不写 kind**（kind 由所在文件夹名承载，`vault:scan` 用 `sub.name` 回填）
   ⇒ 孤儿（回收站里路径信息缺失的项）恢复时必须由用户选格式，不能默认落 `事件/`。
+- **实体（设定库）也写 vault 的 `.md`**：`<世界>/_设定/<类型>/<名字>.md`（`const ENTITY_DIR = '_设定'`）。
+  实体不属于任何时间线（它们属于整个世界），所以走单独一趟 `scanEntityDir(wsDir)` → `{ 类型名: 实体[] }`，
+  由 `vault:scan` 一并返回；`scanWorldDir` 跳过 `_设定`，它不会被当成一条时间线。
+  frontmatter 存 `id/name/type` + 全部 `properties`，正文写在 `#正文：` 标签之后。
+  - **`type` 由文件夹名承载**，与节点侧的 kind 同构：`mdToEntity` 读回 frontmatter 的 `type`，
+    但 `scanEntityDir` 会用所在文件夹名覆盖它（重扫时文件夹才是权威）。
+  - 节点与实体**共用 `parseFm(text)`**（frontmatter 解析只有一份，避免两处漂移）。
+  - 换类型/改名后 `writeVaultEntitySync` 要用 `entityFiles(wsName)` 在 `_设定/**` **全树**找同 id 的旧 `.md`
+    再删 —— 只清目标目录的话，旧文件会残留并被回扫捞回来（`mergeEntities` 按 id 去重是后扫到者赢，
+    旧类型反而可能胜出 ⇒ **类型改不回去**）。节点侧换 kind 目前仍有同样的残留问题。
+  - `src/main.ts` 的 `mergeEntities(byType, baseEntities)` 把扫描结果摊平成 `{ id: Entity }` 并带 `typeId`；
+    **例外**：这个世界在 vault 里还没有 `_设定` 目录时保留 `base` 的实体，别把升级前 JSON-only 的实体整批抹掉。
 
 ## 5. 脚手架
 

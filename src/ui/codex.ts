@@ -156,7 +156,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         }));
       }
     }
-    /* 正文：真编辑器（tiptap）。onFlush 回写实体 doc（只存 worldbuilding.json，没有 vault 文件） */
+    /* 正文：真编辑器（tiptap）。onFlush 回写实体 doc —— 落盘时由主进程写进
+       `<世界>/_设定/<类型>/<名字>.md` 的 `#正文：` 之后，Obsidian 双向可读 */
     const docHost = host.querySelector('#cx-doc') as HTMLElement | null;
     if (docHost && cur) {
       docEditor = createDocEditor(docHost, (md) => {

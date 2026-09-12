@@ -72,14 +72,19 @@ export function addEntity(store: Store, entity: Partial<Entity>): string {
   return id;
 }
 
-/** 删除实体（设定库条目）。注意：地图标记等地方可能存了它的 id 作为引用 ——
- *  那些引用会变成悬空（地图标记自身还有 label，所以只是退化、不会报错）。 */
+/** 删除实体（设定库条目）。与 removeNode 同一个道理：实体也有 vault 的 .md（`_设定/<类型>/`），
+ *  只从 store 删不清文件的话，下次重扫会把它从文件里拉回来 —— 所以先把文件移进回收站再删内存。
+ *  注意先取出实体对象再 update（update 之后 store 里就没有它了）。 */
 export function removeEntity(store: Store, entityId: string): void {
+  const e = store.data.worldsets[store.activeWorld]?.entities?.[entityId];
+  if (!e) return;
   store.update((d) => {
     const ws = d.worldsets[store.activeWorld];
     if (!ws?.entities) return;
     delete ws.entities[entityId];
   });
+  const api = (window as unknown as { lingkuangAPI?: { vaultDeleteEntity?: (ws: string, e: unknown) => Promise<unknown> } }).lingkuangAPI;
+  void api?.vaultDeleteEntity?.(store.activeWorld, e)?.catch(() => {});
 }
 
 export function addMap(store: Store, name: string): string {
@@ -244,6 +249,9 @@ export interface TrashRestored {
   node?: TimelineNode | null;
   nodes?: TimelineNode[];
   timelines?: Record<string, TimelineNode[]>;
+  /** 实体恢复用（kind === 'entity'）：type = 类型 id，entity = 从 .md 解析出来的实体 */
+  type?: string;
+  entity?: Entity | null;
 }
 
 /** 把回收站恢复出来的数据插回 store。
@@ -256,6 +264,19 @@ export function applyTrashRestore(store: Store, restored: TrashRestored[]): { no
   let nWs = 0;
   store.update((d) => {
     for (const r of restored) {
+      if (r.kind === 'entity' && r.world && r.entity) {
+        /* 实体恢复：文件已由 main.js 移回 `_设定/<类型>/`，这里只把它插回 store */
+        const ws = d.worldsets[r.world];
+        if (!ws) continue;
+        if (!ws.entities) ws.entities = {};
+        if (!ws.entities[r.entity.id]) {
+          /* .md 里存的是 `type:`（文件夹/类型 id），不是 `typeId:` —— 归一成 store 用的 typeId */
+          const et = (r.entity as Entity & { type?: string }).type;
+          ws.entities[r.entity.id] = { ...r.entity, typeId: r.type ?? et ?? r.entity.typeId };
+          nNodes++;
+        }
+        continue;
+      }
       if (r.kind === 'world' && r.world) {
         if (!d.worldsets[r.world]) {
           d.worldsets[r.world] = { name: r.world, timelines: {}, order: [], docs: {} };

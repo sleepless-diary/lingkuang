@@ -39,7 +39,7 @@ interface TrashAPI {
   trashPurgeAll?: () => Promise<PurgeResult>;
 }
 
-const KIND_LABEL: Record<string, string> = { node: '节点', timeline: '时间线', world: '世界观', orphan: '位置未知' };
+const KIND_LABEL: Record<string, string> = { node: '节点', timeline: '时间线', world: '世界观', entity: '实体', orphan: '位置未知' };
 
 function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`;

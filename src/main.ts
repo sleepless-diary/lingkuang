@@ -24,7 +24,7 @@ async function loadData() {
     try {
       const vres = await api.vaultScan();
       if (vres && vres.ok && vres.worlds) {
-        const data = vaultToWorldData(vres.worlds, jsonData);
+        const data = vaultToWorldData(vres.worlds, vres.entities, jsonData);
         if (Object.keys(data.worldsets).length) return data;
       }
     } catch (e) { /* vault 失败则回退 */ }
@@ -39,8 +39,23 @@ async function loadData() {
  *  loops / storylines / calendar / absOffset / docs / timeCursor。
  *  只在「vault 里确实存在这条时间线/这个世界」时回填——vault 里没有的一律不复活，
  *  否则外部删掉整个文件夹后，旧数据会把整批节点一起带回来。 */
+/** 把扫描到的实体摊平成 `{ id: Entity }`：**文件为源**（Obsidian 改过的值生效），
+ *  但保留 base 里文件没写的字段（例如差异帧 `layers` —— 实体 .md 暂时不序列化它，
+ *  用扩展展开就能让它熬过每一次回扫）。文件里没有的实体就是不在了。 */
+function mergeEntities(byType: Record<string, any[]>, baseEntities?: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [typeName, list] of Object.entries(byType ?? {})) {
+    for (const e of list ?? []) {
+      if (!e || !e.id) continue;
+      out[e.id] = { ...(baseEntities?.[e.id] ?? {}), ...e, typeId: e.type ?? typeName };
+    }
+  }
+  return out;
+}
+
 function vaultToWorldData(
   worlds: Record<string, Record<string, any[]>>,
+  entities: Record<string, Record<string, any[]>> | null | undefined,
   base?: { worldsets?: Record<string, any> } | null,
 ) {
   const worldsets: Record<string, any> = {};
@@ -75,6 +90,12 @@ function vaultToWorldData(
       order,
       docs: baseWs?.docs ?? {},
       timeCursor: baseWs?.timeCursor ?? null,
+      /* 实体（设定库）与节点同一套「文件为源」语义：vault 里 `_设定/<类型>/*.md` 是源，
+         同 id 以文件版为准、文件里没有的实体就不在了（删除＝文件移进回收站，所以不会复活）。
+         **例外**：这个世界在 vault 里**还没有 `_设定` 目录**（= 实体从没被写过文件，
+         比如升级前建好的 JSON-only 实体）→ 保留 base 里的实体，别把它们整批抹掉。 */
+      entities: Object.keys(entities?.[wsName] ?? {}).length ? mergeEntities(entities![wsName], baseWs?.entities) : (baseWs?.entities ?? {}),
+      entityTypes: baseWs?.entityTypes ?? {},
     };
   }
   return { worldsets };
@@ -288,6 +309,16 @@ async function main() {
         }
       }
     }
+    /* 实体也写 .md（<世界>/_设定/<类型id>/<名字>.md）—— 文件放在这里，Obsidian 才能看/改。
+       ⚠️ 这一趟必须在**世界循环之外**：放进循环里会让每个世界都把全世界的实体各写一遍
+       （W 个世界 = W² 次 IPC 写盘 + W² 轮 vault 监听回调），10 个世界时自动落盘会明显卡。 */
+    if (api.vaultWriteEntity) {
+      for (const [wsName, ws] of Object.entries(store.data.worldsets)) {
+        for (const e of Object.values((ws.entities ?? {}))) {
+          try { await api.vaultWriteEntity(wsName, (e as any).typeId, e); } catch (err) { /* 单实体失败忽略 */ }
+        }
+      }
+    }
     /* ② 写 JSON 缓存（保留旧流程，作备份；formats 由独立 formats.json 管，不写进这里） */
     if (api.saveData) { const { formats: _fmt, ...rest } = store.data; api.saveData(rest); }
   }
@@ -316,8 +347,13 @@ async function main() {
         for (const node of tl.nodes) nodes.push({ wsName, tlName: tl.name, node });
       }
     }
+    /* 实体也要同步落盘（未失焦的正文在 doc-editor 的 flush 里已交给 store） */
+    const entities: { wsName: string; typeName: string; entity: unknown }[] = [];
+    for (const [wsName, ws] of Object.entries(store.data.worldsets)) {
+      for (const e of Object.values((ws.entities ?? {}))) entities.push({ wsName, typeName: (e as any).typeId, entity: e });
+    }
     const { formats: _fmt, ...rest } = store.data;
-    try { api.flushSync({ data: rest, nodes }); pendingWrite = false; } catch (e) { /* 下一次启动还有 JSON 备份 */ }
+    try { api.flushSync({ data: rest, nodes, entities }); pendingWrite = false; } catch (e) { /* 下一次启动还有 JSON 备份 */ }
   });
   /* 在落盘订阅注册后才补全，确保 store.update 能触发落盘写回 .md（type/precision/kind + 格式字段） */
   ensureAllFormatFields(store);
@@ -344,7 +380,7 @@ async function main() {
         if (pendingWrite) return;
         if (vres && vres.ok && vres.worlds) {
           /* 以当前 store 为 base：外部改 .md 只该覆盖节点，不能顺手清空循环/剧情线/历法 */
-          const newData = vaultToWorldData(vres.worlds, store.data);
+          const newData = vaultToWorldData(vres.worlds, vres.entities, store.data);
           /* 检测外部对节点字段的增删（属性/描述/正文），对比重载前的 store 与扫描结果 */
           const diffs = nodeFieldDiff(store.data, newData);
           suppressWrite = true;

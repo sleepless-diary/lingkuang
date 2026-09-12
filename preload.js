@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
   /* vault：每个节点 = 外部 .md 文件（Obsidian 可编辑，文件为源） */
   vaultScan: () => ipcRenderer.invoke('vault:scan'),
   vaultWrite: (wsName, tlName, node) => ipcRenderer.invoke('vault:write', { wsName, tlName, node }),
+  vaultWriteEntity: (wsName, typeName, entity) => ipcRenderer.invoke('vault:write-entity', { wsName, typeName, entity }),
+  vaultDeleteEntity: (wsName, entity) => ipcRenderer.invoke('vault:delete-entity', { wsName, entity }),
   /* 删节点时把 vault 里对应 .md 移到 .trash（不删文件的话下次启动会复活） */
   vaultDelete: (wsName, tlName, node) => ipcRenderer.invoke('vault:delete', { wsName, tlName, node }),
   /* 删除整条时间线 / 整个世界观：目录整体移进回收站 */

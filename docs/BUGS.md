@@ -15,6 +15,60 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第十六轮（2026-09-12）· 实体（设定库）也写 vault 的 .md
+
+> 接第十五轮留下的「已知限制」：`entity.doc` 只在 `worldbuilding.json` 里 ⇒ 实体正文在 Obsidian 里
+> 看不到、也改不了。这一刀给实体也写 vault 文件，与节点同一套**文件为源**语义。
+
+### 新增
+- vault 里的实体根目录 **`_设定`**（`main.js` 的 `const ENTITY_DIR = '_设定'`）：
+  `<世界>/_设定/<类型>/<名字>.md`。以 `_` 开头 = 「灵框的系统目录」，`scanWorldDir` / `vault:scan`
+  会跳过它，不会把它当成一条时间线。
+- `main.js`：`parseFm(text)`（从 `mdToNode` 抽出的 frontmatter 解析，**节点与实体共用**，避免两处漂移；
+  键匹配顺序「先试带引号的键、再退回非贪婪裸键」**不能反**）、`entityToMd(e, typeName)` / `mdToEntity(text)`
+  （frontmatter 存 id/name/type + 全部字段，正文写在 `#正文：` 标签之后，兼容手写 .md）、`entityPath()`、
+  `writeVaultEntitySync()`、`scanEntityDir(wsDir)`、IPC `vault:write-entity` / `vault:delete-entity`；
+  `vault:scan` 返回值新增 `entities`；`vault:trash-list` / `vault:trash-restore` / `app:flush-sync` 各加实体分支。
+- `preload.js`：暴露 `vaultWriteEntity` / `vaultDeleteEntity`。
+- `src/main.ts`：`mergeEntities(byType, baseEntities)` 摊平成 `{ id: Entity }` 并带上 `typeId`；
+  `vaultToWorldData(worlds, entities, base)` 三处调用点（loadData / writeAll / onVaultChanged 回扫）改齐；
+  `writeAll` 与退出时的 `flushSync` 都带上 `entities`。
+- `src/store/actions.ts`：`removeEntity` 改为「先取出实体对象 → 删内存 → `vaultDeleteEntity` 把文件移进回收站」
+  （与 `removeNode` 同理：只从 store 删、不清文件的话，下次重扫会把它从文件里拉回来）；
+  `applyTrashRestore` 加 `kind === 'entity'` 分支。
+
+### 本轮修掉的 4 条缺陷（都是这一刀自己带出来的）
+1. **`src/main.ts` 实体写盘循环嵌错了层**：循环被嵌在「世界循环」内部 ⇒ W 个世界把全世界的实体各写一遍
+   = **W² 次 IPC 写盘 + W² 轮 vault 监听回调**。已挪到世界循环**之外**。
+2. **换类型后旧 `.md` 残留，类型改不回去**：`writeVaultEntitySync` 原来只清**目标目录**里同 id 的旧文件，
+   实体从「角色」改成「地点」后 `_设定/角色/<名字>.md` 还在，回扫按 id 去重是**后扫到者赢**
+   （NTFS 目录序下 `地` < `角`，旧的「角色」反而后扫到）⇒ **每次回扫都把 `typeId` 打回「角色」**。
+   已改成用 `entityFiles(wsName)` 在 `_设定/**` 全树找同 id 旧文件再删。
+   **节点侧换 `kind` 有同样的残留问题**（`nodePath()` 按 kind 分目录），属既有问题，本轮未动。
+3. **`main.js` 的 `moveToTrash` 漏登记实体字段**：`vault:delete-entity` 传了 `type` / `entityId`，
+   但 entry 只写 `kind/relPath/trashName/ts/title/world/timeline/nodeId` ⇒ 恢复时 `rec.type` 取不到。
+   已补登记 `type` / `entityId`，`kind` 注释改为 `node | timeline | world | entity`。
+4. **`src/ui/trash.ts:42 KIND_LABEL` 缺 `entity`** ⇒ 回收站里实体项显示成 raw 值「entity」。已补「实体」。
+
+### 实测（真实 Electron + CDP 9334，`LINGKUANG_TEST_DATA` / `LINGKUANG_VAULT` 隔离真实数据）**17/17 PASS**
+建实体 → 改名字/填字段/写正文 → `_设定/角色/银发少女.md`（frontmatter 的 id/name/type/字段齐全 + `#正文：`）→
+`_设定` 没被当成时间线 → **外部改 .md 的字段与正文都回扫进活 UI** → 换类型后文件搬到 `_设定/地点/`、
+旧目录清空、再触发一轮回扫类型**仍是「地点」** → 删除后文件进回收站、重扫**不复活** →
+回收站里显示中文「实体」→ 恢复后文件回原位、实体回 store、正文还在 → 全程无未捕获异常。
+另做**冷启动**复验：重启后实体类型仍是「地点」、文件仍在 `_设定/地点/`。
+
+> **排查教训（重要，别重犯）**：验证「外部改 .md 有没有生效」**必须读活 UI**，不能读 `worldbuilding.json`
+> —— 回扫路径按设计 `suppressWrite = true`，**只进内存不回写 JSON**（文件为源，JSON 只是缓存，
+> 下次启动仍以 .md 为准，不丢数据）。上一版测试脚本正是拿 JSON 断言，误报「字段/正文没同步」两条，白排查数轮。
+> 另一条：CDP 脚本里的 DOM 选择器片段是**字符串**，要用 Node 模板插值 `${SEL('发色')}` 展开进表达式；
+> 写成 `(SEL.toString())('发色')` 是在页面里**调用**它 → 得到源码字符串 → `?.value` 恒为 `undefined`。
+
+### 已知限制（新增，未修）
+- 实体**重名**会写进**同一个 `.md` 路径**互相覆盖（`entityPath` = `<名字>.md`）。节点侧 `nodePath()`
+  同样是 `safe(n.title) + '.md'`，属**既有设计**，这一刀沿用 —— 没变好，也没变坏。
+- 回收站恢复实体的提示语仍把它算进「N 个节点」（`applyTrashRestore` 复用了 `nNodes` 计数器），
+  文案不精确，不影响数据。
+
 ## 第十五轮（2026-09-12）· 合并方案 A 第 1+2 步（设定库能写正文了）
 
 > 用户提问：「编辑器和设定库是不是功能有点重叠了，能不能做在一起，先谈方案」。
@@ -37,9 +91,8 @@
 - 实测（真实 Electron + CDP）**11/11**：建实体改名 → 11 个字段由公共控件渲染、长文本是 textarea →
   字段值能存 → 正文区有 ProseMirror → **正文失焦后落盘**（`entity.doc`）→ 存的是 Markdown（无 HTML 标签）→
   切走再切回正文回显且未丢 → 切换条目时页面上**只有 1 个编辑器**（不漏实例）→ 切走工具后编辑器已销毁 → 全程无异常。
-- **已知限制**：`entity.doc` 目前**只存在 `worldbuilding.json` 里**，不像节点那样有 vault 的 `.md`
-  （`writeAll` / `vault:scan` 都只处理 `tl.nodes`）⇒ 实体的正文在 Obsidian 里看不到、也编辑不了。
-  要么后续给实体也写 vault 文件，要么接受"实体是 JSON-only"。**待用户决定**。
+- ~~**已知限制**：`entity.doc` 目前**只存在 `worldbuilding.json` 里**……~~ → **已解决**：见下面
+  「第十六轮」——实体（含正文）现在也写成 vault 的 `.md`（`<世界>/_设定/<类型>/<名字>.md`）。
 
 ### 剩下的小步（未做）
 3. 设定库左列加「时间线节点」页签（把编辑器那棵 世界→时间线→种类→节点 的树搬过来 + 搜索框）。

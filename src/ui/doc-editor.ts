@@ -4,8 +4,8 @@
  * 但只管「编辑一份 Markdown 正文」，不带侧栏、属性面板、目标跟踪那些事。
  *
  * ⚠️ 切换条目必须 `dispose()` 旧实例再建新的 —— tiptap 实例不销毁会积 window 监听与订阅。
- * ⚠️ 另外：entity.doc 目前**只存在 worldbuilding.json 里**（不像节点那样有 vault 的 .md），
- * 所以工作台里改的实体正文不会以文件形式出现在 Obsidian 里（已知限制，待后续阶段）。
+ * 正文最终落到 `entity.doc`，由主进程写进 vault 的 `<世界>/_设定/<类型>/<名字>.md`
+ * （`#正文：` 标签之后），所以 Obsidian 里能看、也能改回来（文件为源）。
  */
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';

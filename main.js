@@ -116,6 +116,27 @@ function parseKey(s) {
   return k;
 }
 
+/** 解析 .md 的 YAML frontmatter → { fm, rest }（节点与实体共用，避免两处逻辑漂移）。
+ *  键的解析规则见下面注释：先试「带引号的键」再退回非贪婪裸键 —— 顺序不能反。 */
+function parseFm(text) {
+  const fm = {};
+  let rest = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (rest.startsWith('---')) {
+    const end = rest.indexOf('\n---', 3);
+    if (end !== -1) {
+      rest.slice(3, end).split('\n').forEach((line) => {
+        /* 键 = 该行冒号前的任意字符（非贪婪），交给 parseKey 去引号。
+           写入端对键名零校验，读取端若收窄（原 `[\w\u4e00-\u9fa5]+`）就会「写完读不回」——
+           用户在属性面板手打 `身高(cm)` / `所属-阵营` 会静默消失。
+           注意：灵框外（Obsidian）任意增删字段不是受支持的流程，这里只保证自家写出的键能读回。 */
+        const m = line.match(/^("(?:[^"\\]|\\.)*")\s*:\s*(.*)$/) || line.match(/^(.+?):\s*(.*)$/);
+        if (m) fm[parseKey(m[1])] = m[2].trim();
+      });
+      rest = rest.slice(end + 4);
+    }
+  }
+  return { fm, rest };
+}
 function nodeToMd(n) {
   const meta = ['id', 'title', 'year', 'precision', 'type'].filter((k) => n[k] !== undefined && n[k] !== null)
     .map((k) => k === 'year' ? `year: ${yearToDateStr(n)}` : `${k}: ${n[k]}`).join('\n');
@@ -132,23 +153,8 @@ function nodeToMd(n) {
   return `---\n${meta}${causesLine ? '\n' + causesLine : ''}${propsMeta ? '\n' + propsMeta : ''}\n---\n${body}`.replace(/\r\n/g, '\n');
 }
 function mdToNode(text) {
-  let fm = {}, rest = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  if (rest.startsWith('---')) {
-    const end = rest.indexOf('\n---', 3);
-    if (end !== -1) {
-      rest.slice(3, end).split('\n').forEach((line) => {
-        /* 键 = 该行冒号前的任意字符（非贪婪），交给 parseKey 去引号。
-           写入端（nodeToMd）对键名零校验，读取端若收窄（原 `[\w\u4e00-\u9fa5]+`）就会
-           「写完读不回」——用户在属性面板手打 `身高(cm)` / `所属-阵营` 会静默消失。
-           注意：灵框外（Obsidian）任意增删字段不是受支持的流程，这里只保证自家写出的键能读回。 */
-        /* 先试「带引号的键」（写入端 fmtKey 只在键含冒号/首尾空白/为空时加引号），
-           再退回非贪婪裸键。顺序不能反：反了 `"a:b": v` 会被裸键分支吃成键 `"a`。 */
-        const m = line.match(/^("(?:[^"\\]|\\.)*")\s*:\s*(.*)$/) || line.match(/^(.+?):\s*(.*)$/);
-        if (m) fm[parseKey(m[1])] = m[2].trim();
-      });
-      rest = rest.slice(end + 4);
-    }
-  }
+  const { fm, rest: rest0 } = parseFm(text);
+  let rest = rest0;
   const node = {};
   ['id', 'title', 'precision', 'type'].forEach((k) => { if (fm[k] !== undefined) node[k] = fm[k]; });
   if (fm.year !== undefined) {
@@ -199,6 +205,39 @@ function mdToNode(text) {
   node._hasBodyTag = hadBodyTag;   /* 标记原始 .md 是否含 #正文： 标签（nodeToMd 不会把它写入 frontmatter） */
   return node;
 }
+/* 实体（设定库）在 vault 里的根目录名。以 `_` 开头表示「灵框的系统目录，不是一条时间线」——
+   `scanWorldDir` / `vault:scan` 会把它单独当实体读，不会把它算成时间线。 */
+const ENTITY_DIR = '_设定';
+
+/* ── 实体序列化：Entity <-> .md（frontmatter 存 id/name/type + 全部字段，正文用 #正文： 标签）──
+   与节点同构：字段写进 frontmatter（Obsidian 双向可读），正文写进 body。 */
+function entityToMd(e, typeName) {
+  const meta = ['id', 'name', 'type'].filter((k) => k === 'type' ? (typeName || e[k]) : (e[k] !== undefined && e[k] !== null))
+    .map((k) => (k === 'type' ? `type: ${typeName || e[k]}` : `${k}: ${e[k]}`)).join('\n');
+  const props = e.properties || {};
+  const propsMeta = Object.entries(props)
+    .filter(([k, v]) => v !== undefined && v !== null && !['id', 'name', 'type'].includes(k))
+    .map(([k, v]) => `${fmtKey(k)}: ${fmtProp(v)}`).join('\n');
+  const body = e.doc ? `#正文：\n${e.doc}\n` : '';
+  return `---\n${meta}${propsMeta ? '\n' + propsMeta : ''}\n---\n${body}`.replace(/\r\n/g, '\n');
+}
+function mdToEntity(text) {
+  const { fm, rest } = parseFm(text);
+  const e = {};
+  if (fm.id !== undefined) e.id = fm.id;
+  if (fm.name !== undefined) e.name = fm.name;
+  if (fm.type !== undefined) e.type = fm.type;
+  const FIXED = ['id', 'name', 'type'];
+  const props = {};
+  Object.entries(fm).forEach(([k, v]) => { if (!FIXED.includes(k) && v !== undefined && v !== null) props[k] = parseProp(v); });
+  if (Object.keys(props).length) e.properties = props;
+  /* 正文：只认 `#正文：` 标签后的内容（没有标签就把整段当正文，兼容手写的 .md） */
+  const lines = rest.split('\n');
+  const idx = lines.findIndex((l) => /^#\s*正文\s*[：:]\s*$/.test(l.trim()));
+  e.doc = (idx === -1 ? lines : lines.slice(idx + 1)).join('\n').trim();
+  return e;
+}
+
 function nodePath(wsName, tlName, n) {
   const safe = (s) => String(s || '').replace(/[\\/:*?"<>|]/g, '_');
   /* kind 文件夹层：世界观/时间线/kind文件夹/节点.md（kind 缺省归「事件」） */
@@ -531,6 +570,41 @@ function writeVaultNodeSync(wsName, tlName, node) {
   fs.writeFileSync(target, nodeToMd(node), 'utf8');
 }
 
+/** 实体的 .md 路径：<世界>/_设定/<类型>/<名字>.md */
+function entityPath(wsName, typeName, e) {
+  return path.join(VAULT_DIR(), safeName(wsName), ENTITY_DIR, safeName(typeName || '未分类'), safeName(e.name) + '.md');
+}
+/** 实体根目录里的全部 .md 路径（`.trash` 等隐藏目录不算）。 */
+function entityFiles(wsName) {
+  const root = path.join(VAULT_DIR(), safeName(wsName), ENTITY_DIR);
+  const out = [];
+  if (!fs.existsSync(root)) return out;
+  for (const t of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!t.isDirectory() || t.name.startsWith('.')) continue;
+    const tDir = path.join(root, t.name);
+    for (const f of fs.readdirSync(tDir)) if (f.endsWith('.md')) out.push(path.join(tDir, f));
+  }
+  return out;
+}
+function writeVaultEntitySync(wsName, typeName, entity) {
+  const target = entityPath(wsName, typeName, entity);
+  const dir = path.dirname(target);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  /* 改名 / **换类型** 后同 id 的旧 .md 会残留 → 删掉。
+     为什么要在 `_设定/**` 全树里找、而不是像 writeVaultNodeSync 那样只看目标目录：
+     换类型时残留落在**另一个类型文件夹**里，而回扫是按 id 去重的（合并时谁后扫到谁赢，
+     readdir 顺序决定），留着就会让「类型改不回去」—— 每次回扫都从旧文件把 typeId 打回原值。
+     （节点那边换 kind 同样会残留，属既有问题，见 docs/BUGS.md 已记录。） */
+  for (const p of entityFiles(wsName)) {
+    if (p === target) continue;
+    try {
+      const old = mdToEntity(fs.readFileSync(p, 'utf8'));
+      if (old && old.id === entity.id) fs.rmSync(p, { force: true });
+    } catch (e) { /* 读不了的旧文件忽略 */ }
+  }
+  fs.writeFileSync(target, entityToMd(entity, typeName), 'utf8');
+}
+
 /* ── IPC: write the worldbuilding data file ────────────────── */
 ipcMain.handle('data:save', (e, payload) => {
   try {
@@ -573,7 +647,7 @@ function scanTimelineDir(tlDir) {
   return [...nodesById.values()];
 }
 
-/** 扫描一个世界观目录 → { 时间线名: 节点[] }（跳过隐藏目录）。
+/** 扫描一个世界观目录 → { 时间线名: 节点[] }（跳过隐藏目录与实体根目录 `_设定`）。
  *  **空的时间线也要收（nodes: []）**：vault 的目录结构才是「这个世界有几条时间线」的依据，
  *  节点只是内容。过去只收「有节点的」时间线/世界，后果是：删掉一条时间线里的最后一个节点后，
  *  重扫结果里连这条时间线、这个世界都不存在了 —— 而渲染层是 `d.worldsets = 扫描结果` 整体替换，
@@ -582,23 +656,53 @@ function scanWorldDir(wsDir) {
   const tls = {};
   for (const tl of fs.readdirSync(wsDir, { withFileTypes: true })) {
     if (!tl.isDirectory() || tl.name.startsWith('.')) continue;
+    if (tl.name === ENTITY_DIR) continue;   /* 实体根目录不是一条时间线 */
     tls[tl.name] = scanTimelineDir(path.join(wsDir, tl.name));
   }
   return tls;
 }
 
-/* ── IPC: 扫描 vault 全部节点 .md（frontmatter + 正文）→ 按世界观/时间线分组 ── */
+/** 扫描一个世界的实体根目录 `_设定/<类型>/*.md` → { 类型名: 实体[] }（按 id 去重）。
+ *  实体不存在时间线层级（它们属于整个世界），所以单独一趟。 */
+function scanEntityDir(wsDir) {
+  const root = path.join(wsDir, ENTITY_DIR);
+  const out = {};
+  if (!fs.existsSync(root)) return out;
+  for (const t of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!t.isDirectory() || t.name.startsWith('.')) continue;
+    const tDir = path.join(root, t.name);
+    const list = [];
+    const seen = new Set();
+    for (const f of fs.readdirSync(tDir)) {
+      if (!f.endsWith('.md')) continue;
+      const e = mdToEntity(fs.readFileSync(path.join(tDir, f), 'utf8'));
+      if (e && e.id && !seen.has(e.id)) {
+        if (!e.name) e.name = f.replace(/\.md$/, '');
+        e.type = t.name;
+        seen.add(e.id);
+        list.push(e);
+      }
+    }
+    out[t.name] = list;
+  }
+  return out;
+}
+
+/* ── IPC: 扫描 vault 全部节点 .md（frontmatter + 正文）→ 按世界观/时间线分组；实体另开一路 ── */
 ipcMain.handle('vault:scan', () => {
   try {
     const root = VAULT_DIR();
-    if (!fs.existsSync(root)) return { ok: true, worlds: [] };
+    if (!fs.existsSync(root)) return { ok: true, worlds: {}, entities: {} };
     const worlds = {};
+    const entities = {};
     for (const ws of fs.readdirSync(root, { withFileTypes: true })) {
       if (!ws.isDirectory() || isReservedDir(ws.name)) continue;   /* .trash / assets 不是世界观 */
       /* 空世界也要收：世界目录存在 = 这个世界存在（见 scanWorldDir 注释） */
-      worlds[ws.name] = scanWorldDir(path.join(root, ws.name));
+      const wsDir = path.join(root, ws.name);
+      worlds[ws.name] = scanWorldDir(wsDir);
+      entities[ws.name] = scanEntityDir(wsDir);
     }
-    return { ok: true, worlds };
+    return { ok: true, worlds, entities };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
@@ -640,6 +744,44 @@ ipcMain.handle('vault:write', (e, { wsName, tlName, node }) => {
   try {
     writeVaultNodeSync(wsName, tlName, node);
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/* ── IPC: 写入单个实体 .md（<世界>/_设定/<类型>/<名字>.md）── */
+ipcMain.handle('vault:write-entity', (e, { wsName, typeName, entity }) => {
+  try {
+    writeVaultEntitySync(wsName, typeName, entity);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/** 删除实体：把它的 .md 移进回收站（按 id 在 `<世界>/_设定/**` 里找，而不是按名字 ——
+ *  用户可能刚改过名字，文件名已经变了）。不移走文件的话，下次重扫会把它从文件里拉回来
+ *  （与节点删除同一个坑，见上面 vault:delete 的说明）。 */
+ipcMain.handle('vault:delete-entity', (e, { wsName, entity }) => {
+  try {
+    const root = VAULT_DIR();
+    const entRoot = path.join(root, safeName(wsName), ENTITY_DIR);
+    if (!fs.existsSync(entRoot)) return { ok: true, moved: 0 };
+    let moved = 0;
+    for (const t of fs.readdirSync(entRoot, { withFileTypes: true })) {
+      if (!t.isDirectory() || t.name.startsWith('.')) continue;
+      const tDir = path.join(entRoot, t.name);
+      for (const f of fs.readdirSync(tDir)) {
+        if (!f.endsWith('.md')) continue;
+        const p = path.join(tDir, f);
+        let old = null;
+        try { old = mdToEntity(fs.readFileSync(p, 'utf8')); } catch (err) { continue; }
+        if (!old || old.id !== entity.id) continue;
+        moveToTrash(path.relative(root, p), { kind: 'entity', title: old.name || f, world: wsName, type: t.name, entityId: entity.id });
+        moved++;
+      }
+    }
+    return { ok: true, moved };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
@@ -688,7 +830,7 @@ function moveToTrash(relPath, meta) {
   fs.renameSync(src, path.join(d, name));
   const entry = {
     id: `${ts}-${n}-${Math.random().toString(36).slice(2, 8)}`,
-    kind: (meta && meta.kind) || 'node',        /* node | timeline | world */
+    kind: (meta && meta.kind) || 'node',        /* node | timeline | world | entity */
     relPath,                                     /* vault 内原始相对路径 —— 恢复就靠它 */
     trashName: name,
     ts,
@@ -696,6 +838,11 @@ function moveToTrash(relPath, meta) {
     world: (meta && meta.world) || undefined,
     timeline: (meta && meta.timeline) || undefined,
     nodeId: (meta && meta.nodeId) || undefined,
+    /* 实体专用：type = 类型 id（恢复到 store 时要还原成 typeId），entityId = 被删实体的 id。
+       以前这两项收了却没登记 —— 恢复时只能靠 .md frontmatter 里的 `type:` 兜底，
+       而 frontmatter 的 type 来自文件夹名，用户改过类型后就对不上。 */
+    type: (meta && meta.type) || undefined,
+    entityId: (meta && meta.entityId) || undefined,
   };
   const idx = readTrashIndex();
   idx.push(entry);
@@ -782,8 +929,13 @@ ipcMain.handle('vault:trash-list', () => {
       let preview = '';
       try {
         if (exists && fs.statSync(p).isFile()) {
-          const n = mdToNode(fs.readFileSync(p, 'utf8'));
-          if (n) preview = `${n.title || ''}${n.year !== undefined ? ' · ' + n.year : ''}`;
+          if (x.kind === 'entity') {
+            const e = mdToEntity(fs.readFileSync(p, 'utf8'));
+            preview = `${e.name || ''}${e.type ? ' · ' + e.type : ''}`;
+          } else {
+            const n = mdToNode(fs.readFileSync(p, 'utf8'));
+            if (n) preview = `${n.title || ''}${n.year !== undefined ? ' · ' + n.year : ''}`;
+          }
         }
       } catch (err) { /* 预览失败不影响列表 */ }
       return { ...x, exists, size: exists ? pathSize(p) : 0, preview };
@@ -852,6 +1004,14 @@ ipcMain.handle('vault:trash-restore', (e, payload) => {
         out.world = path.relative(VAULT_DIR(), path.dirname(finalDest));
         out.timeline = path.basename(finalDest);
         out.nodes = scanTimelineDir(finalDest);
+      } else if (kind === 'entity') {
+        /* 实体恢复：文件已按索引里的 relPath 移回 `_设定/<类型>/<名字>.md`，
+           这里把解析出来的实体一并返回，渲染层据此直接插回 store（不必重扫）。 */
+        let en = null;
+        try { en = mdToEntity(fs.readFileSync(finalDest, 'utf8')); } catch (err) { en = null; }
+        out.world = (rec && rec.world) || it.world;
+        out.type = (rec && rec.type) || it.entityType;
+        out.entity = en;
       } else {
         let n = nodeData;
         if (!n) { try { n = mdToNode(fs.readFileSync(finalDest, 'utf8')); } catch (err) { n = null; } }
@@ -908,6 +1068,9 @@ ipcMain.on('app:flush-sync', (e, payload) => {
     }
     for (const it of (payload && payload.nodes) || []) {
       try { writeVaultNodeSync(it.wsName, it.tlName, it.node); out.wrote++; } catch (err) { out.failed++; out.error = String(err); }
+    }
+    for (const it of (payload && payload.entities) || []) {
+      try { writeVaultEntitySync(it.wsName, it.typeName, it.entity); out.wrote++; } catch (err) { out.failed++; out.error = String(err); }
     }
   } catch (err) {
     out.ok = false;
