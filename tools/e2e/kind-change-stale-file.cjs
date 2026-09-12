@@ -72,6 +72,10 @@ async function main() {
   /** 属性面板里「种类」那一行的控件（是个 select，选项来自 formats） */
   const KIND_SEL = `[...document.querySelectorAll('#cx-props .ed-props > div')].find((r) => r.firstElementChild?.textContent === '种类')?.querySelector('select,input')`;
   const kindNow = () => ev(`(${KIND_SEL})?.value`);
+  /** 「标题」那一行（断言「界面说的就是盘上活下来那份」时要读它） */
+  const TITLE_SEL = `[...document.querySelectorAll('#cx-props .ed-props > div')].find((r) => r.firstElementChild?.textContent === '标题')?.querySelector('input,textarea')`;
+  /** 「描述」那一行（改一下触发落盘用） */
+  const DESC_SEL = `[...document.querySelectorAll('#cx-props .ed-props > div')].find((r) => r.firstElementChild?.textContent === '描述')?.querySelector('input,textarea')`;
   async function waitFor(fn, ms = 10000) { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await fn()) return true; await sleep(200); } return false; }
 
   await sleep(1500);
@@ -126,13 +130,40 @@ type: world_event
 `, 'utf8');
   const healed = await waitFor(() => filesWithId().length === 1, 12000);
   const left = filesWithId();
-  check('★8 盘上的旧残留被自愈清掉（便宜层，目标路径已存在也生效）', healed, left);
-  /* 收敛后必须自洽：活 UI 说的种类 == 活下来的那个文件所在的文件夹（谁赢都行，但不能两边不一致） */
+  check('★8 盘上的旧残留被自愈清掉（同名兜底层，目标路径已存在也生效）', healed, left);
+  /* 收敛后必须自洽：活 UI 说的「种类 + 标题」就是活下来的那个文件（谁赢都行，但不能两边不一致） */
   const kind = await kindNow();
-  check('9 收敛后界面种类与活下来的文件一致', left.length === 1 && left[0].startsWith(kind + '/'), { kind, left });
+  const title = await ev(`(${TITLE_SEL})?.value`);
+  check('9 收敛后界面（种类 + 标题）与活下来的文件一致', left.length === 1 && left[0] === `${kind}/${title}.md`, { kind, title, left });
+
+  /* ⑥ 同目录里「改了名」的旧残留 —— 同名那层筛子抓不到它，靠**扫描索引**认出来。
+     这正是修复前每次写盘「把目标文件夹整个读一遍」负责的形状，也是 A/B 里那个脏目录暴露的形状；
+     现在改成扫描期登记 → 写盘时按 id 一步删（不再扫目录，见 main.js 的 vaultFileIndex）。
+     ⚠️ 清理是**挂在写盘上**的（既有语义，修复前也一样）：这份残留是「输家」，
+     不改变回扫赢家 ⇒ 界面没变化 ⇒ 不会自己触发写盘。所以要像真人那样**动一下这个节点**，
+     下一趟落盘顺手把它清掉。 */
+  fs.writeFileSync(path.join(VAULT, WS, TL, NEW_KIND, TITLE + '（改）.md'), `---
+id: ${ID}
+title: ${TITLE}（改）
+year: 312
+precision: year
+type: world_event
+参战方: 旧名字那一份
+---
+#正文：
+王国在灰烬上建立起来。
+`, 'utf8');
+  await sleep(1500);   /* 让 watcher 回扫一趟，索引里登记上这份残留 */
+  await ev(`(() => { const el = ${DESC_SEL}; if (!el) return false; el.value = '顺手改一下描述（触发落盘）。'; el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  const healed2 = await waitFor(() => filesWithId().length === 1, 12000);
+  const left2 = filesWithId();
+  const kind2 = await kindNow();
+  const title2 = await ev(`(${TITLE_SEL})?.value`);
+  check('★11 同目录里改了名的旧残留在下一次落盘时被清掉，且界面与文件仍一致',
+    healed2 && left2.length === 1 && left2[0] === `${kind2}/${title2}.md`, { kind2, title2, left2 });
 
   const errs = await ev(`window.__errs`);
-  check('10 全程无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
+  check('12 全程无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 
   const ok = results.filter(Boolean).length;
   console.log(`\n==== ${ok}/${results.length} PASS ====`);

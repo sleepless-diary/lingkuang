@@ -607,67 +607,75 @@ function writeDataFileSync(payload) {
   rotateBackups(DATA_FILE());
   fs.writeFileSync(DATA_FILE(), JSON.stringify(payload, null, 2), 'utf8');
 }
+/* ── 「这个 id 的 .md 在哪儿」索引 ──────────────────────────────
+   扫描（`vault:scan`）本来就把每个 `.md` 读了一遍，顺手记下 **id → 它见过的那几个文件路径**，
+   零额外 I/O。写盘时按 id 直接找到旧文件删掉，**不必再把目录里每个 .md 读一遍比对** ——
+   那是 O(节点数²) 次读盘：`writeAll` 每次自动落盘都会遍历全部节点，几百个节点就是每次落盘几万次读盘。
+   值里**含同 id 的全部文件**（不只扫描的赢家）：那些败者同样要清掉，正是「同 id 只留一份」。
+   键 = `世界\u0000范围\u0000id`，范围 = 时间线名（节点）或 `_设定`（实体）。
+   ⚠️ 索引只是**线索**不是真相：删之前会再解析一遍确认 id（见 `dropVaultFileIfSameId`），
+   所以索引半张、过期都不会误删别人的文件（`vault:scan` 开头清空重建）。 */
+const vaultFileIndex = new Map();
+const vaultIdxKey = (wsName, scope, id) => `${wsName}\u0000${scope}\u0000${id}`;
+/** 扫描期登记：这个 id 在这个文件里出现过（同 id 的败者也登记）。wsName 缺省 = 这一趟不登记。 */
+function indexVaultFile(wsName, scope, id, p) {
+  if (!wsName) return;
+  const k = vaultIdxKey(wsName, scope, id);
+  const arr = vaultFileIndex.get(k);
+  if (!arr) vaultFileIndex.set(k, [p]);
+  else if (!arr.includes(p)) arr.push(p);
+}
+
+/** 删掉一份「同 id 的旧文件」（`keepPath` 那份留着）。
+ *  **必须自己再解析一遍确认 id**：索引与兜底都可能过期，或者那个路径已被用户换成别的节点。
+ *  也只删**当前 vault 根目录里**的文件 —— 免得换了 vault 之后拿旧索引去删上一个 vault 的东西。 */
+function dropVaultFileIfSameId(p, keepPath, id, parse) {
+  if (path.resolve(p) === path.resolve(keepPath)) return false;
+  if (!path.resolve(p).startsWith(path.resolve(VAULT_DIR()) + path.sep)) return false;
+  let old = null;
+  try { old = parse(fs.readFileSync(p, 'utf8')); } catch (e) { return false; }   /* 读不了的旧文件忽略 */
+  if (!old || old.id !== id) return false;
+  try { fs.rmSync(p, { force: true }); return true; } catch (e) { return false; }   /* 删不掉就算了，下次写盘再试 */
+}
+
 /** 删掉这条时间线下**同 id 的旧节点 .md**（`keepPath` 那份留着）。
  *
  *  为什么非要删：节点的「种类」= 它所在的文件夹名（见 nodePath / scanTimelineDir），
- *  所以在应用里改种类 = 把文件搬到另一个文件夹。旧文件夹里那份不走，
- *  重扫时同 id 是**后来者覆盖**（scanTimelineDir 里 `nodesById.set(n.id, n)`），
- *  readdir 顺序一不合适，旧文件就会把种类连同字段一起打回旧值 ——
- *  用户看到的是「我改的东西自己变回去了」。
+ *  所以在应用里换种类 = 把文件搬到另一个文件夹。旧文件夹里那份不走，重扫时同 id 是
+ *  **后来者覆盖**（`scanTimelineDir` 里 `nodesById.set(n.id, n)`），readdir 顺序一不合适，
+ *  旧文件就会把种类连同字段一起打回旧值 —— 用户看到的是「我改的东西自己变回去了」。
  *
- *  三层，从便宜到贵（`kill` 一律**按 id 命中才删**：id 相同即同一个节点，那份是被应用忽略的旧副本）：
- *    ⓪ 同目录按 id：改名后的残留（旧文件还在同一个文件夹、只是换了名字）。**修复前就有的行为，保留。**
- *    ① 别的种类文件夹里**同名**的那份：换种类的残留。只认同名、命中才读内容 ——
- *       应用自己造的残留必定同名（换种类只换文件夹），所以这一层同时**自愈升级前就留在盘上的旧残留**。
- *    ② `deep`（目标路径还不存在 = 搬到没住过的地方）时按 id 扫这条时间线全树：
- *       覆盖「改名 + 换种类同时发生」（两个字段落进同一次 400ms 防抖落盘里就会这样）。
- *  ② 只在搬到新位置那一次跑，是为了别让每次落盘都全解析一遍 ——
- *  writeVaultNodeSync 每次自动落盘都会被调一次（渲染层 writeAll 遍历全部节点），
- *  全树解析 = O(节点数²) 次读盘。⓪ 的代价与修复前相同（那个 O(N²) 是既有问题，见 docs/BUGS.md）。 */
-function dropStaleNodeFiles(wsName, tlName, node, keepPath, deep) {
+ *  两层（从一次解析起步，不再扫目录）：
+ *    ① **索引**：扫描时见过这个 id 的每个文件 —— 改名 / 换种类 / 同 id 两份，全覆盖，O(1)。
+ *    ② **兜底**：这条时间线的**其它种类文件夹里同名**的那份。索引冷或过期时（例如刚从回收站恢复、
+ *       或重复是扫描之后才在外部冒出来的）还能兜住最常见的那种形状；只 stat，不读内容。
+ *  「改名 + 换种类同时发生」也在 ① 的覆盖里，所以不再需要全树扫。 */
+function dropStaleNodeFiles(wsName, tlName, node, keepPath) {
   const safe = (s) => String(s || '').replace(/[\\/:*?"<>|]/g, '_');
+  /* ① 索引 */
+  for (const p of vaultFileIndex.get(vaultIdxKey(wsName, tlName, node.id)) ?? []) {
+    dropVaultFileIfSameId(p, keepPath, node.id, mdToNode);
+  }
+  /* ② 兜底：别的种类文件夹 / 时间线直接层（旧两层结构）里的同名文件 */
   const tlDir = path.join(VAULT_DIR(), safe(wsName), safe(tlName));
-  const dir = path.dirname(keepPath);
   const fileName = safe(node.title) + '.md';
-  const kill = (p) => {
-    if (path.resolve(p) === path.resolve(keepPath)) return;
-    let old = null;
-    try { old = mdToNode(fs.readFileSync(p, 'utf8')); } catch (e) { return; }   /* 读不了的旧文件忽略 */
-    if (!old || old.id !== node.id) return;
-    try { fs.rmSync(p, { force: true }); } catch (e) { /* 删不掉就算了，下次写盘再试 */ }
-  };
-  /* ⓪ 同目录（同名或改了名的旧文件） */
-  try { for (const f of fs.readdirSync(dir)) if (f.endsWith('.md')) kill(path.join(dir, f)); } catch (e) { /* 目录不在 */ }
-  /* ① 别处同名：各「种类」文件夹 + 时间线直接层（旧两层结构） */
   const elsewhere = [path.join(tlDir, fileName)];
   try {
     for (const e of fs.readdirSync(tlDir, { withFileTypes: true })) {
       if (e.isDirectory() && !e.name.startsWith('.')) elsewhere.push(path.join(tlDir, e.name, fileName));
     }
   } catch (e) { /* 时间线目录还不存在：没有旧文件可清 */ }
-  for (const p of elsewhere) if (fs.existsSync(p)) kill(p);
-  /* ② 搬到新位置那一次，按 id 全树兜底 */
-  if (!deep) return;
-  const walk = (d) => {
-    let ents;
-    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { return; }
-    for (const e of ents) {
-      if (e.name.startsWith('.')) continue;   /* 跳过 .trash 等隐藏目录 */
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.name.endsWith('.md')) kill(p);
-    }
-  };
-  walk(tlDir);
+  for (const p of elsewhere) if (fs.existsSync(p)) dropVaultFileIfSameId(p, keepPath, node.id, mdToNode);
 }
 
 function writeVaultNodeSync(wsName, tlName, node) {
   const target = nodePath(wsName, tlName, node);
   const dir = path.dirname(target);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  /* 目标是新位置（改名 / 换种类 / 这个节点还没有文件）时，才需要按 id 全树找旧文件 */
-  dropStaleNodeFiles(wsName, tlName, node, target, !fs.existsSync(target));
+  dropStaleNodeFiles(wsName, tlName, node, target);
   fs.writeFileSync(target, nodeToMd(node), 'utf8');
+  /* 写完了：这个 id 现在住在这儿（收窄到一份；扫描期仍会登记同 id 的全部文件） */
+  vaultFileIndex.set(vaultIdxKey(wsName, tlName, node.id), [target]);
 }
 
 /** 实体的 .md 路径：<世界>/_设定/<类型>/<名字>.md */
@@ -686,22 +694,21 @@ function entityFiles(wsName) {
   }
   return out;
 }
-/** 删掉这个世界里**同 id 的旧实体 .md**（`keepPath` 那份留着）。理由与三层结构同 dropStaleNodeFiles
+/** 删掉这个世界里**同 id 的旧实体 .md**（`keepPath` 那份留着）。结构与理由同 dropStaleNodeFiles
  *  （实体侧「换类型」= 搬到另一个类型文件夹，残留会让 typeId 每次回扫被打回原值）：
- *  ⓪ 同类型目录按 id（改名残留）；① 别的类型目录里**同名**的那份（换类型残留，也自愈旧残留）；
- *  ② `deep`（目标路径还不存在）时 `_设定/**` 全树按 id 兜底（改名 + 换类型同时发生）。
- *  分三层是为了别让每次落盘都全解析一遍 —— writeAll 会遍历全部实体，那就是 O(实体数²) 次读盘。 */
-function dropStaleEntityFiles(wsName, entity, keepPath, deep) {
+ *  ① **索引**按 id：改名 / 换类型 / 同 id 两份全覆盖，O(1)；
+ *  ② **兜底**：**别的类型文件夹里同名**的那份（索引冷或过期时兜住换类型这一种形状）。 */
+function dropStaleEntityFiles(wsName, entity, keepPath) {
+  /* ① 索引 */
+  for (const p of vaultFileIndex.get(vaultIdxKey(wsName, ENTITY_DIR, entity.id)) ?? []) {
+    dropVaultFileIfSameId(p, keepPath, entity.id, mdToEntity);
+  }
+  /* ② 兜底：别的类型文件夹里的同名文件（同类型目录那份由索引负责，这里不重复读） */
   const fileName = safeName(entity.name) + '.md';
   const dir = path.dirname(keepPath);
   for (const p of entityFiles(wsName)) {
-    if (path.resolve(p) === path.resolve(keepPath)) continue;
-    /* 便宜的筛子：同目录（改名残留）或别处同名（换类型残留）才值得读内容确认 */
-    if (!deep && path.dirname(p) !== dir && path.basename(p) !== fileName) continue;
-    try {
-      const old = mdToEntity(fs.readFileSync(p, 'utf8'));
-      if (old && old.id === entity.id) fs.rmSync(p, { force: true });
-    } catch (e) { /* 读不了的旧文件忽略 */ }
+    if (path.dirname(p) === dir || path.basename(p) !== fileName) continue;
+    dropVaultFileIfSameId(p, keepPath, entity.id, mdToEntity);
   }
 }
 
@@ -709,8 +716,9 @@ function writeVaultEntitySync(wsName, typeName, entity) {
   const target = entityPath(wsName, typeName, entity);
   const dir = path.dirname(target);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  dropStaleEntityFiles(wsName, entity, target, !fs.existsSync(target));
+  dropStaleEntityFiles(wsName, entity, target);
   fs.writeFileSync(target, entityToMd(entity, typeName), 'utf8');
+  vaultFileIndex.set(vaultIdxKey(wsName, ENTITY_DIR, entity.id), [target]);
 }
 
 /* ── IPC: write the worldbuilding data file ────────────────── */
@@ -738,20 +746,37 @@ const isReservedDir = (name) => name.startsWith('.') || VAULT_RESERVED.has(name)
 /** 扫描一个时间线目录 → 节点数组（按 id 去重）。
  *  节点可能落在两处：时间线直接层（旧两层结构，kind 缺省「事件」）与类型文件夹层（kind = 文件夹名）；
  *  同 id 以类型文件夹版为准。vault:scan 与回收站恢复共用这一份遍历逻辑。 */
-function scanTimelineDir(tlDir) {
+/** 扫描一个时间线目录 → 节点数组（按 id 去重）。
+ *  节点可能落在两处：时间线直接层（旧两层结构，kind 缺省「事件」）与类型文件夹层（kind = 文件夹名）；
+ *  同 id 以类型文件夹版为准。vault:scan 与回收站恢复共用这一份遍历逻辑（恢复那趟不传 wsName = 不登记索引）。
+ *  顺带把**每个**解析到的 (id → 文件路径) 登记进 `vaultFileIndex`（含同 id 的败者），
+ *  写盘时才能按 id O(1) 找旧文件删 —— 见该索引入口的注释。 */
+function scanTimelineDir(tlDir, wsName, tlName) {
   const nodesById = new Map();
   for (const f of fs.readdirSync(tlDir)) {
     if (!f.endsWith('.md')) continue;
-    const n = mdToNode(fs.readFileSync(path.join(tlDir, f), 'utf8'));
-    if (n && n.id) { if (!n.title) n.title = f.replace(/\.md$/, ''); if (!n.kind) n.kind = '事件'; nodesById.set(n.id, n); }
+    const p = path.join(tlDir, f);
+    const n = mdToNode(fs.readFileSync(p, 'utf8'));
+    if (n && n.id) {
+      indexVaultFile(wsName, tlName, n.id, p);
+      if (!n.title) n.title = f.replace(/\.md$/, '');
+      if (!n.kind) n.kind = '事件';
+      nodesById.set(n.id, n);
+    }
   }
   for (const sub of fs.readdirSync(tlDir, { withFileTypes: true })) {
     if (!sub.isDirectory() || sub.name.startsWith('.')) continue;
     const subDir = path.join(tlDir, sub.name);
     for (const f of fs.readdirSync(subDir)) {
       if (!f.endsWith('.md')) continue;
-      const n = mdToNode(fs.readFileSync(path.join(subDir, f), 'utf8'));
-      if (n && n.id) { if (!n.title) n.title = f.replace(/\.md$/, ''); n.kind = sub.name; nodesById.set(n.id, n); }
+      const p = path.join(subDir, f);
+      const n = mdToNode(fs.readFileSync(p, 'utf8'));
+      if (n && n.id) {
+        indexVaultFile(wsName, tlName, n.id, p);
+        if (!n.title) n.title = f.replace(/\.md$/, '');
+        n.kind = sub.name;
+        nodesById.set(n.id, n);
+      }
     }
   }
   return [...nodesById.values()];
@@ -762,19 +787,19 @@ function scanTimelineDir(tlDir) {
  *  节点只是内容。过去只收「有节点的」时间线/世界，后果是：删掉一条时间线里的最后一个节点后，
  *  重扫结果里连这条时间线、这个世界都不存在了 —— 而渲染层是 `d.worldsets = 扫描结果` 整体替换，
  *  于是整个世界（地图/实体/循环/剧情线/自定义历法）当场从界面消失，并被随后的自动落盘写进 JSON。 */
-function scanWorldDir(wsDir) {
+function scanWorldDir(wsDir, wsName) {
   const tls = {};
   for (const tl of fs.readdirSync(wsDir, { withFileTypes: true })) {
     if (!tl.isDirectory() || tl.name.startsWith('.')) continue;
     if (tl.name === ENTITY_DIR) continue;   /* 实体根目录不是一条时间线 */
-    tls[tl.name] = scanTimelineDir(path.join(wsDir, tl.name));
+    tls[tl.name] = scanTimelineDir(path.join(wsDir, tl.name), wsName, tl.name);
   }
   return tls;
 }
 
 /** 扫描一个世界的实体根目录 `_设定/<类型>/*.md` → { 类型名: 实体[] }（按 id 去重）。
  *  实体不存在时间线层级（它们属于整个世界），所以单独一趟。 */
-function scanEntityDir(wsDir) {
+function scanEntityDir(wsDir, wsName) {
   const root = path.join(wsDir, ENTITY_DIR);
   const out = {};
   if (!fs.existsSync(root)) return out;
@@ -785,12 +810,16 @@ function scanEntityDir(wsDir) {
     const seen = new Set();
     for (const f of fs.readdirSync(tDir)) {
       if (!f.endsWith('.md')) continue;
-      const e = mdToEntity(fs.readFileSync(path.join(tDir, f), 'utf8'));
-      if (e && e.id && !seen.has(e.id)) {
-        if (!e.name) e.name = f.replace(/\.md$/, '');
-        e.type = t.name;
-        seen.add(e.id);
-        list.push(e);
+      const p = path.join(tDir, f);
+      const e = mdToEntity(fs.readFileSync(p, 'utf8'));
+      if (e && e.id) {
+        indexVaultFile(wsName, ENTITY_DIR, e.id, p);   /* 同 id 的败者也登记（写盘时要清掉） */
+        if (!seen.has(e.id)) {
+          if (!e.name) e.name = f.replace(/\.md$/, '');
+          e.type = t.name;
+          seen.add(e.id);
+          list.push(e);
+        }
       }
     }
     out[t.name] = list;
@@ -802,6 +831,9 @@ function scanEntityDir(wsDir) {
 ipcMain.handle('vault:scan', () => {
   try {
     const root = VAULT_DIR();
+    /* 索引 = 「上一次扫描看到的样子」，所以每次整张重建：不然删掉/挪走的旧条目会越积越多。
+       清空是安全的 —— 每一条都只是**线索**，真删之前还会再解析一遍确认 id（dropVaultFileIfSameId）。 */
+    vaultFileIndex.clear();
     if (!fs.existsSync(root)) return { ok: true, worlds: {}, entities: {} };
     const worlds = {};
     const entities = {};
@@ -809,8 +841,8 @@ ipcMain.handle('vault:scan', () => {
       if (!ws.isDirectory() || isReservedDir(ws.name)) continue;   /* .trash / assets 不是世界观 */
       /* 空世界也要收：世界目录存在 = 这个世界存在（见 scanWorldDir 注释） */
       const wsDir = path.join(root, ws.name);
-      worlds[ws.name] = scanWorldDir(wsDir);
-      entities[ws.name] = scanEntityDir(wsDir);
+      worlds[ws.name] = scanWorldDir(wsDir, ws.name);
+      entities[ws.name] = scanEntityDir(wsDir, ws.name);
     }
     return { ok: true, worlds, entities };
   } catch (err) {
