@@ -61,7 +61,13 @@ function vaultToWorldData(
       };
       order.push(id);
     }
+    /* 先继承 base（JSON 缓存）里的整份世界设定，再用 vault 结果覆写「以 .md 为源」的部分。
+       以前只挑 name/timelines/order/docs/timeCursor 重建，把 vault 里**根本不存在**的字段
+       全丢了：`maps`（地图的区域/标记/路径）、`entities` / `entityTypes`（实体库）。
+       而 vault 是源、外部 Obsidian 每改一次就回扫一次 —— 于是这些数据每次都被清空，
+       紧接着又被写回 JSON 变成永久丢失（实测：回扫后 maps 被换成一张新建的空默认地图）。 */
     worldsets[wsName] = {
+      ...baseWs,
       name: wsName,
       timelines,
       order,
@@ -307,8 +313,13 @@ async function main() {
           suppressWrite = true;
           /* 从源同步不是用户编辑：不占撤销格。否则每次外部改动都会压进一个
              「看起来什么都没变」的整库快照，Ctrl+Z 就被这些空转快照吃掉了。 */
-          store.update((d) => { d.worldsets = newData.worldsets; }, { undo: false });
-          suppressWrite = false;
+          try {
+            store.update((d) => { d.worldsets = newData.worldsets; }, { undo: false });
+          } finally {
+            /* 必须 finally：store.update 先改数据、后通知，任何订阅者抛异常都会穿出来；
+               漏掉这一句 suppressWrite 就永久卡在 true → 此后**整个会话不再自动落盘**（静默丢数据）。 */
+            suppressWrite = false;
+          }
           /* 自动修复可安全恢复的字段（描述/正文标签/属性被增删），其余仍提示 */
           const repairable = diffs.filter((d: any) => d.diffs.some((x: string) => x.includes('「#正文：」标签被删除') || x.includes('描述被删除') || x.startsWith('属性「') || x.includes('字段被删除')));
           const residual = diffs.filter((d: any) => !repairable.includes(d));

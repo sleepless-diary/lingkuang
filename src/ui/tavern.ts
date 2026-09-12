@@ -1,7 +1,7 @@
 /** 酒馆剧情推演模块——基于当前剧情线/时间线，AI 推演下一步剧情走向（分支选项） */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
-import { aiChat, type ChatMsg } from './ai';
+import { aiChat } from './ai';
 import { escapeHtml } from './html';
 
 export function renderTavern(store: Store, host: HTMLElement): void {
@@ -25,17 +25,27 @@ export function renderTavern(store: Store, host: HTMLElement): void {
   const sel = host.querySelector('#tv-tl') as HTMLSelectElement;
   const log = host.querySelector('#tv-log') as HTMLElement;
   const status = host.querySelector('#tv-status') as HTMLElement;
-  let history: ChatMsg[] = [];
+
+  /* 时间线一律「用的时候现取」，不存构建期快照：
+     store.undo()/redo()（store.ts:58-69）与 vault 重载（main.ts:310）都是整体替换
+     store.data，构建期抓到的 ws 会变成孤儿引用——撤销之后面板仍拿旧世界的数据推演。 */
+  const tlList = () => {
+    const ws = currentWorld(store);
+    return (ws.order ?? []).filter((id) => ws.timelines[id]).map((id) => ws.timelines[id]);
+  };
+  const getTimeline = (id: string) => currentWorld(store).timelines[id];
 
   /* 填充剧情线（含时间线名 + 剧情线名） */
-  const ws = currentWorld(store);
-  const tls = (ws.order ?? []).filter((id) => ws.timelines[id]).map((id) => ws.timelines[id]);
-  sel.innerHTML = tls.length
-    ? tls.map((tl) => `<option value="${escapeHtml(tl.id)}">${escapeHtml(tl.name)}（${tl.nodes.length} 节点）</option>`).join('')
-    : '<option value="">（无时间线）</option>';
+  function fillTlOptions(): void {
+    const tls = tlList();
+    sel.innerHTML = tls.length
+      ? tls.map((tl) => `<option value="${escapeHtml(tl.id)}">${escapeHtml(tl.name)}（${tl.nodes.length} 节点）</option>`).join('')
+      : '<option value="">（无时间线）</option>';
+  }
+  fillTlOptions();
 
   function contextFromTl(tlId: string): string {
-    const tl = ws.timelines[tlId];
+    const tl = getTimeline(tlId);
     if (!tl) return '';
     const nodes = tl.nodes.map((n) => `${n.year} · ${n.title}`).join('\n');
     const lines = (tl.storylines || []).map((l) => `${l.name}: ${l.segments.map((s) => `${s.start}→${s.end === null ? '∞' : s.end}`).join(', ')}`).join('\n');
@@ -62,7 +72,6 @@ export function renderTavern(store: Store, host: HTMLElement): void {
       const reply = await aiChat([{ role: 'user', content: instruction }], { model: 'qwen3:14b', temperature: mode === 'branch' ? 1.0 : 0.8, numPredict: 500 });
       const text = reply.text || '(空回复)';
       bubble(text, 'ai');
-      history.push({ role: 'assistant', content: text });
     } catch (e) {
       bubble('⚠️ 推演失败：' + (e instanceof Error ? e.message : String(e)), 'ai');
     } finally {

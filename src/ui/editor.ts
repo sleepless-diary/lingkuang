@@ -10,6 +10,7 @@ import { Markdown } from '@tiptap/markdown';
 import { Image } from './image-ext';
 import { Tag } from './tag-ext';
 import { parseTimeText } from './node-form';
+import { isImeEnter } from './keys';
 import { toEpoch, fromEpoch, defaultCalendar, calendarOf, timePointOf } from '../calendar';
 
 function escape(s: string): string {
@@ -69,7 +70,12 @@ function createScrubField(
     el.replaceChildren(inp);
     /* 不全选：单击进来直接落光标到末尾，立即可输入（免去"全选→取消全选"两步） */
     inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
-    inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); inp.blur(); } });
+    /* 回车提交并退出编辑；输入法组字期的回车是「上屏候选词」，不提交 */
+    inp.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Enter' || isImeEnter(ev)) return;
+      ev.preventDefault();
+      inp.blur();
+    });
     inp.addEventListener('blur', () => {
       editing = false;
       if (cfg.onInputText) { cfg.onInputText(inp.value); el.replaceChildren(label); return; }

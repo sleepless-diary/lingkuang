@@ -6,6 +6,116 @@
 > 2026-08-27 做了一轮全量审计（主进程 / 打包链路 / store / 时间线 / 编辑器 / 各工具面板），
 > 下面「本轮已修复」记录已改掉的，文末「本轮新发现（未修复）」记录还没动的。
 > 同日第二轮：继续清「底层」问题（数据保真 / 退出落盘 / 注入 / 死状态），见「第二轮已修复」。
+> 同日第三轮：继续清泄漏与拖动兜底，见「第三轮已修复」。
+> 同日第四轮：清掉一条会让**整个会话停止自动落盘**的异常链，以及 epoch/年份混用、
+> vault 回扫清空地图与实体库两条数据损失，见「第四轮已修复」。
+
+## 第四轮已修复（2026-08-27 深夜）
+
+> 本轮口径同前：**只动底层，不改用户能看到的界面/交互**。全部通过 `tsc --noEmit`、
+> `node --check`、`vite build`；关键项用真实 Electron 实例 + CDP 做了端到端验证。
+
+### 数据损失 / 崩溃（本轮重点，全是实测出来的）
+
+- [x] **`src/ui/node-form.ts` 把 epoch 秒的 `timeCursor` 当日历年 → 能把应用卡死**
+  - 位置：`renderNodeForm()` 的默认时间预填 + 旧的 `fmtCursorTime(y: number)`。
+  - 根因：`world.timeCursor` 存的是 **epoch 秒**（AGENTS.md 关键坑 2；写入侧是
+    `timeline.ts:355/388/463` 的 `setTimeCursor(store, xToTime(...))`，读取侧
+    `timeline.ts:287` 的指针渲染也按 epoch 处理——`timeline.ts:296` 的注释写明了这一点），
+    而 `fmtCursorTime` 按「小数年 + 小数部分推月日」实现 → 预填出 `9862680600` 这种十位整数。
+    用户不改直接点「确定」→ `year ≈ 9.8e9` 写进节点并落盘；随后 `timeline.ts:307-313` 的
+    `fitAll()` → `setYearTable(yLo - 50, yHi + 50)` → `buildYearTable` 既 `new Array(3e8)`
+    又逐年后推 → 卡死 / 撑爆内存。
+  - 修法：删掉小数年实现，改用与沙盘指针同一口径的历法换算（`calendarOf(tl)` +
+    `buildYearTable` 覆盖节点年份范围 + `fromEpoch`）；逐级只写「有信息」的部分
+    （正好落在年初就只给年份，不把精度从「年」悄悄抬到「日」）；年表窗口上限 4000 年。
+  - 验证：`timeCursor = 9862680600` → 表单显示 `312年7月15日9时30分`
+    （312 是闰年、196 天偏移，与独立手算逐字一致）。
+
+- [x] **`src/store/actions.ts` 的 `addNode` 逐字段白名单静默吃掉 `desc`**
+  - 根因：白名单只列 id/title/year/precision/月日时分秒/type/doc，而唯一调用点
+    `src/ui/node-form.ts` 一直在传 `desc: desc.value.trim()` → 新建节点的描述永远为空。
+  - 修法：改为 `...node` 展开 + 补默认值（`desc`/`tag`/`people`/`places`/`kind`/`causes` 一并恢复）。
+  - 验证：端到端建节点后 JSON 里 `desc=E2E DESC`。
+
+- [x] **`src/main.ts` 的 `vaultToWorldData` 每次 vault 回扫都清空地图与实体库**
+  - 位置：`src/main.ts:64-70`。
+  - 根因：重建 worldset 时只挑 `name/timelines/order/docs/timeCursor`，把 vault 里
+    **根本不存在**的字段全丢了：`maps`（地图的区域/标记/路径）、`entities` / `entityTypes`
+    （实体库）。而 vault 是源、外部 Obsidian 每改一次就回扫一次，丢完还被写回 JSON
+    → 永久丢失（实测：回扫后 `maps` 变成一张新建的空默认地图）。
+  - 修法：`{ ...baseWs, name, timelines, order, docs, timeCursor }` —— 先继承整份世界设定，
+    再用 vault 结果覆写「以 .md 为源」的部分。
+  - 验证：预置 `maps: [mKEEP, regions=1, markers=1]` + `entities: {e1}`，回扫后原样保留。
+
+- [x] **`src/ui/map.ts` 的 `curMap()` 在 `maps` 缺失时抛异常**
+  - 位置：旧写法 `const curMap = (): MapData => currentWorld(store).maps![0];`
+  - 根因：`maps` 是**可选**字段；撤销/重做与 vault 重载都是整体替换 worldsets，
+    替换后的那一帧 `maps` 可能是 `undefined` → `undefined[0]` 抛
+    `TypeError: Cannot read properties of undefined (reading '0')`。
+  - 修法：返回 `MapData | null`，`renderSvg()` 拿不到就清空这一帧、下次通知再画；
+    模板里的 `curMap().name/width/height` 加兜底。顺带给 `map.ts` 的 `mk.label` 补了 `escapeHtml`。
+
+- [x] **一个订阅者抛异常会掐死整条数据链（放大器，本轮真正的元凶）**
+  - 链路（CDP 实测）：`map.ts` 抛一次 → 异常穿出 `store.update()` → `src/main.ts:310` 那句
+    `suppressWrite = false` 永远不执行 → `suppressWrite` **永久为 true**
+    → **此后整个会话不再自动落盘**；同时 `node-form.ts` 的 `submit()` 被中断在
+    `host.innerHTML = ''` 之前（表单不清空），新建的节点既不进 vault 也不进 JSON，静默消失。
+  - 修法（两处，互为兜底）：
+    - `src/store/store.ts`：新增 `notify()`，逐个订阅者 `try/catch` + `console.error`，
+      单个视图的渲染 bug 不再中断整轮通知、也不再穿出 `update()`；
+    - `src/main.ts`：`suppressWrite = true` 后改用
+      `try { store.update(...) } finally { suppressWrite = false }`。
+  - 验证：修复后 CDP 抓 `window.onerror` 为空，表单正常清空，新节点 JSON + vault 双写。
+
+### 子代理只读审计（11 个文件）发现的其余条目
+
+- [x] **`src/ui/assoc.ts:354` 用户/LLM 文本未转义**（词条来自工具栏输入框与 LLM 输出，
+  局部 `cleanWords` 只校验长度 1-8，`<b>x</b>` 能通过；`"` 还能逃出 `title` 属性）
+  → 复用 `src/ui/html.ts` 的 `escapeHtml`。
+- [x] **`src/ui/assoc.ts` 拖动无兜底** → 抽 `endPointerGestures()` 统一收尾；注册 `pointercancel`；
+  `pointermove` 首行 `e.buttons === 0 && !isRocker` 即复位。
+  ⚠️ **`!isRocker` 是必须的**：中键轮盘本来就不按住鼠标用，一律 return 会让它「进入即退出」。
+- [x] **`src/ui/assoc.ts` 每次挂载泄漏 3 个 window 监听 + 2 个永不退场的 RAF**
+  → `bindEvents()` 返回清理函数、`mountAssocCanvas` 返回清理函数、`inspire.ts` 往上传递、
+  `src/tools/register.ts` 的 `open` **return** 这条 promise 链（旧写法没 return，
+  `registry.adopt` 永远拿不到清理函数 → 整个 dispose 机制对「灵感触发器」失效）；
+  `simRAF`/`rockerRAF` 的 tick 自检 `host.isConnected`；window `pointerup` 仅在
+  **非中键**时退出轮盘（字面实现会让中键轮盘进入即退出，属可见行为破坏）。
+  - 验证：CDP 连做 3 轮「打开灵感触发器 → 切到设置」，window 监听净增 **0**（修复前每轮 +3）。
+- [x] **`src/ui/assoc.ts:55` 的 `wordLib` 从未被填充** → 新增 `fillWordLib(lib)` 从整份词库
+  灌入全部分类，写入后 `wordLib.add(w)`。`wordLib.has(w)` 守卫从此可达：**跨分类不再重复写入**，
+  `added` 计数不再偏大（对上用户痛点「词库分类混杂」）。
+- [x] **`src/ui/shell.ts` 未转义** → 世界名页签的 `data-world` 与文本、时间线页签的 `data-tl`
+  与文本都走 `escapeHtml`（名字含 `"` 时属性被截断，`store.setActiveWorld` 判断失败静默 no-op，
+  表现是「点了没反应」）。
+- [x] **`src/ui/shell.ts` 拖动期间每帧重建整个页签栏** → 新增模块级 `timelineTabsSig`，
+  签名只由 `(id, name, count, active)` 决定，没变就跳过 `innerHTML` 重建
+  （拖动节点时 `timeline.ts` 每帧 `saveNodeDoc(..., { undo: false })` → 每帧通知）。
+  ⚠️ 遗留：`renderWorldTabs` 仍在同一订阅里每次通知重写 innerHTML（本轮按范围未改）。
+- [x] **`src/ui/tavern.ts` 闭包捕获一次性快照** → 改成 `tlList()` / `getTimeline(id)` 在使用点
+  惰性解析 `currentWorld(store)`（`undo()/redo()` 与 vault 重载都是整体替换 `store.data`，
+  构建期抓到的 `ws` 会成孤儿引用，撤销后仍拿旧数据推演）；顺手删掉从未被当输入用的死状态 `history`。
+- [x] **6 处 Enter 缺 IME 守卫** → 新增 `src/ui/keys.ts` 的 `isImeEnter(e)`，用在
+  `roleplay.ts:76`（最严重：`send()` 还会清空输入框，未上屏内容直接丢）、
+  `detail.ts:133` / `detail.ts:206`（保留 `opts.multi` 短路）、`editor.ts:75`、`node-form.ts:191`。
+- [x] **`src/ui/node-form.ts` 硬编码历法上限**（`month > 12` / `day > 31` / `hour > 23` …）
+  与可编辑历法冲突 → `parseTimeText(text, cal?)` 新增可选历法参数，上限从 `Calendar.layers`
+  的 month 层与 `Calendar.unit` 推导。**只放宽不收紧**：不传历法时与原来的公历硬编码完全一致。
+
+### 其他
+
+- [x] **桌面快捷方式指向已删除的旧 checkout**（非代码问题）
+  - 现象：`D:\Desktop\灵框.lnk` 的 target 是
+    `F:\OpenDesign\.od\projects\lingkuang-v3-ui\node_modules\electron\dist\electron.exe`，
+    而该目录已不存在 → 桌面启动的永远是旧版本 / 悬空。
+  - 修法：重新指向 `F:\Projects\lingkuang-v3\node_modules\electron\dist\electron.exe`，
+    args 与 workdir 都改成 `F:\Projects\lingkuang-v3`。
+  - 数据：两个 checkout 的 `package.json` name 同为 `lingkuang`，且 `main.js:13-14` 显式
+    `app.setName('lingkuang')` + `app.setPath('userData', appData/lingkuang)`
+    → 共用 `%APPDATA%\lingkuang`，**数据无需迁移**。
+  - ⚠️ `main.js` 现在加载 `app-dist/index.html`（打包路径）——**改完代码要先 `npx vite build`
+    再点桌面图标**。
 
 ## 第三轮已修复（2026-08-27 收尾）
 
@@ -336,15 +446,22 @@
 
 > 第二轮已修 4 条，第三轮又修掉 vault 重扫竞态——见上面「第二轮已修复」「第三轮已修复」。
 
-- [ ] **frontmatter 键名含 `-` `.` `(` 或空格的 Obsidian 属性会被静默删除**
-  - 位置：`main.js:121` 的 `line.match(/^([\w\u4e00-\u9fa5]+):\s*(.*)$/)`。
+- [x] **frontmatter 键名含 `-` `.` `(` 或空格的属性会被静默删除** → **第四轮已修**
+  - 位置：`main.js` 的 `mdToNode` 读取正则（原 `line.match(/^([\w\u4e00-\u9fa5]+):\s*(.*)$/)`）。
   - 现象：在 Obsidian 里写 `身高(cm): 170`、`所属-阵营: 甲`、`所属.阵营: 甲`、`note 1: x`，
     灵框不但读不到这些属性，下次保存还会**把它们从文件里删掉**——`mdToNode` 只把匹配上的行
     收进 `fm`，而 `nodeToMd` 会整体重写 frontmatter。属数据损失，不只是「不显示」。
-    （`()` `-` `.` 空格都不在字符类里；值侧宽松得多。）
-  - 建议：把 `:121` 的字符类放宽到「非空白、非冒号」（如 `[^\s:：]+`）。
-  - ⚠️ **修这个会让原本被丢弃的键出现在属性面板＝可见变化**，按用户
-    「不影响我表面看到的」口径**待定，需用户点头**。
+  - 用户决议（2026-08-27）：「数据管理要在灵框里面做，本质上不允许在灵框外增删属性字段」，
+    但**灵框自己写出去的键必须能读回来** —— 写入端 `nodeToMd` 的 `${k}: ${fmtProp(v)}` 对键名
+    零校验，读取端收窄就是「写完读不回」，用户在属性面板手打 `身高(cm)` 等于自毁数据。
+  - 修法：读取端改为「先试**带引号的键**（`^("(?:[^"\\]|\\.)*")\s*:\s*(.*)$`），
+    再退回**非贪婪**裸键（`^(.+?):\s*(.*)$`）」，键交给新的 `parseKey()` 去引号。
+    非贪婪是必须的：贪婪会把 `year: 312-07-15 13:30:05` 的键吃成 `year: 312-07-15 13`、值只剩 `30:05`。
+    写入端新增 `fmtKey()`：仅在键含 ASCII 冒号 / 首尾空白 / 为空时加双引号（合法 YAML，Obsidian 可读），
+    普通中文键（如 `性别`）行为不变。
+  - 验证：11 种键（`身高(cm)`、`所属-阵营`、`所属 阵营`、`性别`、`母语/方言`、`等级.战斗`、
+    `标签#1`、`a:b`、空键、首尾空白、含引号键）**全部往返成功**；`year` 时分秒回归、
+    固定字段不进 properties、`causes`、描述/正文、旧数据（手写无引号中文键）兼容 全部通过。
 
 ### 时间线
 

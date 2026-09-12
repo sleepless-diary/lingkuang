@@ -29,7 +29,9 @@ function shuffle<T>(arr: T[]): T[] {
   return arr;
 }
 
-export async function renderInspire(_store: Store, host: HTMLElement): Promise<void> {  let lib: Lib | null = null;
+/** 返回清理函数（联想画布的卸载函数），由 tools/register.ts 的 open 交回 registry：
+ *  registry.openTool 在切走工具时调用它，摘掉画布的 window 监听 + 两个 requestAnimationFrame 循环。 */
+export async function renderInspire(_store: Store, host: HTMLElement): Promise<void | (() => void)> {  let lib: Lib | null = null;
   let locks: Record<string, string> = {};
   const groupCounts: Record<number, string> = {};
   let activeCombo: Combo | null = null;
@@ -223,10 +225,10 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
   statusMsg(`${Object.keys(lib).length} 分类 · ${Object.values(lib).reduce((a, v) => a + v.length, 0)} 词条`);
   renderSaves();
   renderChar(null);
-  /* 挂载联想画布（灵感生成卡片下方） */
-  const canvasHost = host.querySelector('#insp-assoc') as HTMLElement;
-  if (canvasHost) {
-    const m = await import('./assoc');
-    m.mountAssocCanvas(canvasHost, () => '');
-  }
+  /* 挂载联想画布（灵感生成卡片下方），并把它的清理函数往上传：
+     mountAssocCanvas → 本函数 → register.ts 的 open 返回值 → registry.adopt。 */
+  const canvasHost = host.querySelector('#insp-assoc') as HTMLElement | null;
+  if (!canvasHost) return;
+  const m = await import('./assoc');
+  return m.mountAssocCanvas(canvasHost, () => '');
 }

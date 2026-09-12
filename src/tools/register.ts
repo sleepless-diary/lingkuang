@@ -18,7 +18,11 @@ export function registerAllTools(): void {
   registerTool({
     id: 'inspire', name: '灵感触发器', icon: IC.dice,
     open(host, store) {
-      if (store) import('../ui/inspire').then((m) => m.renderInspire(store, host));
+      /* 必须 return 这条 promise 链：registry.openTool 靠它的 resolve 值拿到清理函数，
+         切走工具时才能拆掉 assoc 画布的 window 监听 + 两个 RAF 循环（与下面 editor 同理）。
+         不 return（旧写法）→ adopt 永远收不到清理函数 → 每点一次工具积一份监听与永不退场的帧循环。 */
+      if (!store) return;
+      return import('../ui/inspire').then((m) => m.renderInspire(store, host));
     },
   });
   registerTool({

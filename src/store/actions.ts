@@ -19,10 +19,16 @@ export function addNode(store: Store, tlId: string, node: Partial<TimelineNode>)
   store.update((d) => {
     const tl = d.worldsets[store.activeWorld]?.timelines[tlId];
     if (!tl) return;
+    /* 先展开调用方字段、再补默认值。以前是逐字段白名单，未列出的字段被静默吃掉
+       （`desc` 就在其中——node-form 一直传 `desc`，落库时消失，面板永远空着）。 */
     tl.nodes.push({
-      id, title: node.title ?? '新节点', year: node.year ?? 0, precision: node.precision ?? 'year',
-      month: node.month, day: node.day, hour: node.hour, minute: node.minute, second: node.second,
-      type: node.type ?? 'world_event', doc: node.doc ?? '',
+      ...node,
+      id,
+      title: node.title ?? '新节点',
+      year: node.year ?? 0,
+      precision: node.precision ?? 'year',
+      type: node.type ?? 'world_event',
+      doc: node.doc ?? '',
     });
   });
   return id;

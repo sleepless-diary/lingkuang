@@ -1,6 +1,7 @@
 /** 角色扮演模块——AI 代入设定角色对话（本地 Ollama qwen3:14b 效果佳） */
 import type { Store } from '../store/store';
 import { aiChat, type ChatMsg } from './ai';
+import { isImeEnter } from './keys';
 
 export function renderRoleplay(_store: Store, host: HTMLElement): void {
   host.style.overflow = 'auto';
@@ -70,7 +71,9 @@ export function renderRoleplay(_store: Store, host: HTMLElement): void {
   });
 
   sendBtn.addEventListener('click', send);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  /* 输入法用回车「上屏候选词」，那不是发送：send() 还会顺手清空输入框，
+     不拦掉等于一边上屏一边发送，未上屏内容直接丢。 */
+  input.addEventListener('keydown', (e) => { if (e.key !== 'Enter' || isImeEnter(e)) return; send(); });
   host.querySelector('#rp-new')?.addEventListener('click', () => {
     started = false; history = []; log.innerHTML = '';
     input.placeholder = '对角色说话…';

@@ -47,7 +47,15 @@ export function renderMap(store: Store, host: HTMLElement): void {
   /* 每次用时从 store 解析当前地图，不缓存对象引用：
      undo/redo（store.ts 直接替换整个 data）与外部 vault 重载都会让缓存的引用失效，
      旧代码缓存了 map，撤销后重绘时画的仍是那个已被丢弃的旧对象。 */
-  const curMap = (): MapData => currentWorld(store).maps![0];
+  /* 每次用时从 store 解析当前地图，不缓存对象引用：
+     undo/redo（store.ts 直接替换整个 data）与外部 vault 重载都会让缓存的引用失效，
+     旧代码缓存了 map，撤销后重绘时画的仍是那个已被丢弃的旧对象。
+     ⚠️ `maps` 是**可选**字段，整体替换 worldsets 后的那一帧可能是 undefined：
+     旧写法 `maps![0]` 在这里抛 TypeError，而 store.update 是先改数据后通知，
+     异常会穿出 update 打断调用方 —— 实测过一次新建节点时：表单没被清空、
+     src/main.ts 的 suppressWrite 卡在 true（此后永久不再自动落盘，静默丢数据）。
+     现在返回 null，调用方跳过这一帧即可（下一次通知就会带上真地图）。 */
+  const curMap = (): MapData | null => currentWorld(store).maps?.[0] ?? null;
 
   let mode: Mode = 'move';
   let drawing: [number, number][] = [];
@@ -56,7 +64,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
   host.innerHTML = `
     <div style="display:flex;flex-direction:column;height:100%;">
       <div style="display:flex;gap:6px;padding:6px 10px;border-bottom:1px solid var(--border-soft);background:var(--surface-2);align-items:center;">
-        <span style="font-size:var(--text-xs);font-weight:600;color:var(--fg);">地图 · ${escapeHtml(curMap().name)}</span>
+        <span style="font-size:var(--text-xs);font-weight:600;color:var(--fg);">地图 · ${escapeHtml(curMap()?.name ?? '默认地图')}</span>
         <span style="flex:1;"></span>
         <button data-mode="region" class="map-mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">区域</button>
         <button data-mode="marker" class="map-mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">标记</button>
@@ -65,7 +73,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
         <span id="map-hint" style="font-size:var(--text-xs);color:var(--fg-2);">拖拽画区域（松开闭合）</span>
       </div>
       <div style="flex:1;position:relative;overflow:hidden;">
-        <svg id="map-svg" width="${curMap().width}" height="${curMap().height}" style="position:absolute;left:0;top:0;background:var(--surface-2);touch-action:none;"></svg>
+        <svg id="map-svg" width="${curMap()?.width ?? 900}" height="${curMap()?.height ?? 500}" style="position:absolute;left:0;top:0;background:var(--surface-2);touch-action:none;"></svg>
       </div>
     </div>`;
 
@@ -93,6 +101,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
 
   function renderSvg() {
     const m = curMap();
+    if (!m) { svg.innerHTML = ''; return; }   /* maps 瞬时缺失（worldsets 被整体替换中）→ 这一帧不画 */
     const regions = m.regions
       .map(
         (r) =>
@@ -104,7 +113,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
         (mk) =>
           `<g transform="translate(${mk.x},${mk.y})" style="cursor:pointer;">
             <circle r="6" fill="var(--accent)" stroke="var(--accent-on)" stroke-width="1"/>
-            <text y="-10" text-anchor="middle" style="font-size:10px;fill:var(--fg);">${mk.label}</text>
+            <text y="-10" text-anchor="middle" style="font-size:10px;fill:var(--fg);">${escapeHtml(mk.label)}</text>
           </g>`
       )
       .join('');

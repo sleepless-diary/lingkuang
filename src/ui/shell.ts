@@ -4,6 +4,7 @@ import { listTools, openTool, disposeCurrentTool } from '../tools/registry';
 import { registerAllTools } from '../tools/register';
 import { mountTimeline } from './timeline';
 import { renderNodeDetail } from './detail';
+import { escapeHtml } from './html';
 import { addTimeline } from '../store/actions';
 import { currentWorld } from '../store/store';
 import { renderNodeForm } from './node-form';
@@ -68,7 +69,7 @@ function renderWorldTabs(store: Store): void {
   tabs.innerHTML = worlds
     .map(
       (w) =>
-        `<button class="lk-world-tab${w === store.activeWorld ? ' is-active' : ''}" data-world="${w}">${w}</button>`
+        `<button class="lk-world-tab${w === store.activeWorld ? ' is-active' : ''}" data-world="${escapeHtml(w)}">${escapeHtml(w)}</button>`
     )
     .join('');
   tabs.querySelectorAll('.lk-world-tab').forEach((el) => {
@@ -83,6 +84,11 @@ function activeTimelineId(store: Store): string | undefined {
   if (store.activeTimeline && ws.timelines[store.activeTimeline]) return store.activeTimeline;
   return valid || Object.keys(ws.timelines)[0];
 }
+
+/* 时间线 tabs 的签名缓存（id/name/count/active）。拖动节点时 timeline.ts 每帧
+   saveNodeDoc(..., { undo: false }) → store 通知 → 这里被调一次；无条件重写
+   innerHTML 会每帧重建整个 tab 栏并重绑监听（拖动掉帧的来源）。签名没变就不动 DOM。 */
+let timelineTabsSig = '';
 
 /** 时间线 tabs（沙盘 pane-head）：切换时间线 + 新建 */
 function renderTimelineTabs(store: Store): void {
@@ -112,13 +118,18 @@ function renderTimelineTabs(store: Store): void {
       const toolHost = document.getElementById('lk-tool-host');
       if (toolHost && id) renderNodeForm(store, toolHost, id, tl.name);
     });
+    timelineTabsSig = '';   /* head 重建后 .lk-tl-tabs 是空容器，下面必须重建一次内容 */
   }
   /* 只更新 tabs 容器内容（不覆盖整个 head，保留沙盘工具 appendChild 节点） */
   if (tabs) {
+    /* 签名只由 (id, name, count, active) 决定：这四样没变就跳过重建 */
+    const sig = JSON.stringify(ids.map((id) => [id, ws.timelines[id]?.name ?? '?', ws.timelines[id]?.nodes.length ?? 0, id === active]));
+    if (sig === timelineTabsSig) return;
+    timelineTabsSig = sig;
     const tabsHtml = ids
       .map(
         (id) =>
-          `<button class="lk-tl-tab${id === active ? ' is-active' : ''}" data-tl="${id}">${ws.timelines[id]?.name ?? '?'}<span class="cnt">${ws.timelines[id]?.nodes.length ?? 0}</span></button>`
+          `<button class="lk-tl-tab${id === active ? ' is-active' : ''}" data-tl="${escapeHtml(id)}">${escapeHtml(ws.timelines[id]?.name ?? '?')}<span class="cnt">${ws.timelines[id]?.nodes.length ?? 0}</span></button>`
       )
       .join('');
     tabs.innerHTML = tabsHtml + `<button class="lk-tl-tab is-new" id="lk-tl-new" title="新建时间线">＋</button>`;

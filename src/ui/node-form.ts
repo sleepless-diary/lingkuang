@@ -1,11 +1,38 @@
 /** 新建节点表单（常驻工具）——标题 + 时间文本（支持 "312" / "312年7月"）+ 类型 */
 import type { Store } from '../store/store';
+import type { Timeline } from '../store/types';
+import type { Calendar } from '../calendar';
+import { buildYearTable, calendarOf, fromEpoch } from '../calendar';
 import { addNode } from '../store/actions';
+import { isImeEnter } from './keys';
+
+/** 公历平均年宽（365.25 天）。与 `src/ui/timeline.ts:100` 的坐标轴口径一致：
+ *  坐标轴是公历 epoch 秒，只有「epoch 秒 → 年」的粗估才用它。 */
+const SEC_PER_YEAR = 31557600;
+
+/** 历法声明的「月数 / 单月最大天数」。
+ *  `Calendar.layers` 里 `id === 'month'` 的层的 `values` 就是月长表：
+ *  多元素 = 大小月（个数即月数），单元素 = 固定层（月数未声明，按 12）；
+ *  `variants`（平年/闰年两套）取各套最大值。缺层时返回公历默认。 */
+function monthBounds(cal: Calendar): { months: number; maxDay: number } {
+  const layer = cal.layers.find((l) => l.id === 'month');
+  if (!layer) return { months: 12, maxDay: 31 };
+  const sets = [layer.values, ...Object.values(layer.variants ?? {})].filter((v) => v && v.length > 0);
+  let months = 12;
+  let maxDay = 31;
+  for (const vals of sets) {
+    if (vals.length > 1) months = Math.max(months, vals.length);
+    maxDay = Math.max(maxDay, ...vals);
+  }
+  return { months, maxDay };
+}
 
 /** 时间文本解析（精简版，照抄 legacy parseTimeText）："312" / "312年7月" / "312年7月15日" */
 /** 时间文本解析（支持任意分隔符）："312" / "312年7月" / "312-7-15" / "312.7.15.8.30.45" / "312/7/15"
- * 分隔符可以是 -.、/，年月日时分秒字面量。自动识别精度，返回结构化 年/月/日/时/分/秒（不再压成小数）。 */
-export function parseTimeText(text: string): { year: number; precision: 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second'; month?: number; day?: number; hour?: number; minute?: number; second?: number } | null {
+ * 分隔符可以是 -.、/，年月日时分秒字面量。自动识别精度，返回结构化 年/月/日/时/分/秒（不再压成小数）。
+ * `cal` = 该时间线的历法：上限随之放宽（自定义历法可能有 13+ 个月 / 40 天的月）。
+ * **只放宽不收紧**——不传历法时与原先的公历硬编码上限完全一致。 */
+export function parseTimeText(text: string, cal?: Calendar): { year: number; precision: 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second'; month?: number; day?: number; hour?: number; minute?: number; second?: number } | null {
   const t = String(text || '').trim();
   if (!t) return null;
   /* 提取所有整数（带负号：负号仅当紧邻串首或非数字字符时才算，数字间的 - 当分隔符）。
@@ -23,41 +50,60 @@ export function parseTimeText(text: string): { year: number; precision: 'year' |
   const hour = nums.length > 3 ? nums[3] : undefined;
   const minute = nums.length > 4 ? nums[4] : undefined;
   const second = nums.length > 5 ? nums[5] : undefined;
-  if (month !== undefined && (month < 1 || month > 12)) return null;
-  if (day !== undefined && (day < 1 || day > 31)) return null;
-  if (hour !== undefined && (hour < 0 || hour > 23)) return null;
-  if (minute !== undefined && (minute < 0 || minute > 59)) return null;
-  if (second !== undefined && (second < 0 || second > 59)) return null;
+  /* 上限：默认公历硬编码（12 / 31 / 24 / 60 / 60）。传入历法时只放宽——见函数注释 */
+  const mb = cal ? monthBounds(cal) : { months: 12, maxDay: 31 };
+  const maxHour = cal ? Math.max(24, cal.unit.day) : 24;
+  const maxMin = cal ? Math.max(60, cal.unit.hour) : 60;
+  const maxSec = cal ? Math.max(60, cal.unit.minute) : 60;
+  if (month !== undefined && (month < 1 || month > mb.months)) return null;
+  if (day !== undefined && (day < 1 || day > mb.maxDay)) return null;
+  if (hour !== undefined && (hour < 0 || hour >= maxHour)) return null;
+  if (minute !== undefined && (minute < 0 || minute >= maxMin)) return null;
+  if (second !== undefined && (second < 0 || second >= maxSec)) return null;
   const precision = second !== undefined ? 'second' : minute !== undefined ? 'minute' : hour !== undefined ? 'hour' : day !== undefined ? 'day' : month !== undefined ? 'month' : 'year';
   return { year, precision, month, day, hour, minute, second };
 }
 
-/** 小数年份 → 人类可读时间文本（"312" / "312年7月" / "312年7月15日" / "312年7月15日9时30分"） */
-function fmtCursorTime(y: number): string {
-  const yr = Math.floor(y + 1e-9);
-  const frac = y - yr;
-  if (frac <= 0.001) return String(yr);
-  const month = Math.floor(frac * 12) + 1;
-  const rem = (frac * 12 - (month - 1)) * 30;
-  const day = Math.floor(rem + 1e-6) + 1;
-  if (month > 12) return String(yr);
-  let s = day <= 1 ? `${yr}年${month}月` : `${yr}年${month}月${day}日`;
-  /* 时/分：由小数余量推算（整天占比 1/360，时 1/8640，分 1/518400，秒 1/31104000） */
-  const dayFrac = rem - (day - 1);
-  if (dayFrac > 0.0001) {
-    const hour = Math.floor(dayFrac * 24);
-    const hourRem = (dayFrac * 24 - hour) * 60;
-    const minute = Math.floor(hourRem + 1e-6);
-    const second = Math.floor((hourRem - minute) * 60 + 1e-6);
-    if (minute > 0 || second > 0) s += `${hour}时${minute}分`;
-  }
+/** epoch 秒 → 人类可读时间文本（"312" / "312年7月" / "312年7月15日" / "312年7月15日9时30分"）。
+ *
+ *  ⚠️ `world.timeCursor` 存的是 **epoch 秒**（AGENTS.md 关键坑 2），不是「小数年份」。
+ *  旧实现把它当年份取整，于是时间指针一动，默认时间就填成 9 位巨型整数；
+ *  直接点「确定」就把 `year ≈ 3e8` 写进节点并落盘 frontmatter，随后
+ *  `src/ui/timeline.ts:307-313 fitAll()` → `buildYearTable(cal, yLo-50, yHi+50)`
+ *  会 `new Array(3e8)` 再逐年后推 → 卡死 / 撑爆内存。
+ *  这里改为与沙盘指针同一口径：同历法、同年表、`fromEpoch` 反推（对照 `timeline.ts:71-84 epochText`）。 */
+function fmtCursorTime(cal: Calendar, tl: Timeline | undefined, epoch: number): string {
+  const ys = (tl?.nodes ?? []).map((n) => n.year ?? 0);
+  const guess = Math.floor(epoch / SEC_PER_YEAR);
+  /* 年表覆盖节点年份范围（与 fitAll 同口径），并把 epoch 所在年固定包进去；
+     窗口上限 4000 年——极端年份范围不造百万级年表 */
+  let lo = Math.min(guess - 4, ys.length ? Math.min(...ys) - 50 : guess - 4);
+  let hi = Math.max(guess + 4, ys.length ? Math.max(...ys) + 50 : guess + 4);
+  if (hi - lo > 4000) { lo = guess - 4; hi = guess + 4; }
+  const tp = fromEpoch(cal, epoch, buildYearTable(cal, lo, hi));
+  const y = tp.anchor.year;
+  const v = tp.values;
+  const mo = v['month'] ?? 1;
+  const d = v['day'] ?? 1;
+  const h = v['hour'] ?? 0;
+  const mi = v['minute'] ?? 0;
+  const se = v['second'] ?? 0;
+  const hasTime = h > 0 || mi > 0 || se > 0;
+  /* 逐级只写「有信息」的部分：正好落在年初就只给年份，别把精度从「年」悄悄抬到「日」 */
+  let s = String(y);
+  if (mo > 1 || d > 1 || hasTime) s += `年${mo}月`;
+  if (d > 1 || hasTime) s += `${d}日`;
+  if (hasTime) { s += `${h}时`; if (mi > 0 || se > 0) s += `${mi}分`; }
   return s;
 }
 
 export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tlName: string): void {
-  /* 默认时间 = 当前时间指针（world.timeCursor 小数年份）→ 人类可读文本 */
-  const cursor = store.data.worldsets[store.activeWorld]?.timeCursor;
-  const defaultTime = cursor !== null && cursor !== undefined ? fmtCursorTime(cursor) : '';
+  /* 默认时间 = 当前时间指针（world.timeCursor，epoch 秒）→ 该时间线历法下的人类可读文本 */
+  const ws = store.data.worldsets[store.activeWorld];
+  const tl = ws?.timelines[tlId];
+  const cal = calendarOf(tl ?? {});
+  const cursor = ws?.timeCursor;
+  const defaultTime = cursor !== null && cursor !== undefined ? fmtCursorTime(cal, tl, cursor) : '';
   host.innerHTML = `
     <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
       <div style="font-size:15px;font-weight:600;color:var(--fg);">添加节点 · ${tlName}</div>
@@ -106,7 +152,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
     if (!timeHint) return;
     const raw = time.value.trim();
     if (!raw) { timeHint.textContent = ''; return; }
-    const p = parseTimeText(raw);
+    const p = parseTimeText(raw, cal);
     if (!p) { timeHint.textContent = '⚠ 无法识别（支持 年月日时分秒 或任意分隔符）'; timeHint.style.color = 'var(--fg-2)'; return; }
     const precLabel = { year: '年', month: '月', day: '日', hour: '时', minute: '分', second: '秒' }[p.precision] ?? p.precision;
     timeHint.textContent = `✅ 精度：${precLabel}（内部年=${p.year}）`;
@@ -118,7 +164,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
   function submit() {
     const t = title.value.trim();
     if (!t) { showErr('标题不能为空'); title.focus(); return; }
-    const parsed = parseTimeText(time.value);
+    const parsed = parseTimeText(time.value, cal);
     if (time.value.trim() && !parsed) { showErr('时间格式：312 | 312年7月 | 312年7月15日 | 312-7-15 或 312.7.15.8.30.45（分隔符任意）'); return; }
     addNode(store, tlId, {
       title: t,
@@ -141,5 +187,6 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
   }
   host.querySelector('#nf-ok')?.addEventListener('click', submit);
   host.querySelector('#nf-cancel')?.addEventListener('click', () => (host.innerHTML = ''));
-  time.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  /* 输入法组字期的回车是「上屏候选词」，不是提交（见 src/ui/keys.ts） */
+  time.addEventListener('keydown', (e) => { if (e.key !== 'Enter' || isImeEnter(e)) return; submit(); });
 }

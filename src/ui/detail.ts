@@ -5,6 +5,7 @@ import type { TimelineNode } from '../store/types';
 import { parseTimeText } from './node-form';
 import { requestEyedrop } from './eyedrop';
 import { escapeHtml } from './html';
+import { isImeEnter } from './keys';
 import { removeNode } from '../store/actions';
 
 interface ParsedDoc {
@@ -126,7 +127,12 @@ export function renderNodeDetail(
           const p = parseTimeText(inp.value);
           if (p) { patch((n) => { n.year = p.year; n.precision = p.precision; n.month = p.month; n.day = p.day; n.hour = p.hour; n.minute = p.minute; n.second = p.second; }); }
           renderView();
-        });        inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') inp.blur(); });
+        });
+        /* 输入法回车是「上屏候选词」，不该提前提交（blur 会保存并退出编辑） */
+        inp.addEventListener('keydown', (ev) => {
+          if (ev.key !== 'Enter' || isImeEnter(ev)) return;
+          inp.blur();
+        });
       });
     }
 
@@ -195,7 +201,11 @@ export function renderNodeDetail(
       /* 点击区域外（blur）→ 保存 + 恢复只读。
          set 内部已走 patch()（store.update + onChanged），这里不再重复保存。 */
       input.addEventListener('blur', () => { opts.set(input.value); renderView(); });
-      input.addEventListener('keydown', (ev) => { if (!opts.multi && ev.key === 'Enter') input.blur(); });
+      /* 单行输入（标题）：回车提交并退出编辑；输入法组字期的回车是上屏，不算提交 */
+      input.addEventListener('keydown', (ev) => {
+        if (opts.multi || ev.key !== 'Enter' || isImeEnter(ev)) return;
+        input.blur();
+      });
     });
   }
 

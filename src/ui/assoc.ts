@@ -3,6 +3,7 @@
  * 放在灵感触发器生成卡片下方，独立画布区域
  */
 import { loadSettings } from './settings';
+import { escapeHtml } from './html';
 
 interface AssocNode {
   id: number; word: string; isRoot: boolean; parent: number | null;
@@ -16,7 +17,10 @@ interface AssocGraph { nodes: AssocNode[]; edges: AssocEdge[]; wordIndex: Record
 
 const WORLD_W = 2000, WORLD_H = 1200;
 
-export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void {
+/** 挂载联想画布。返回清理函数：摘掉全部 window 监听 + 停掉两个 requestAnimationFrame 循环。
+ *  调用方（inspire.ts → tools/register.ts 的 open）必须把它交回 registry，
+ *  否则工具切走后监听与帧循环会一直留在 window 上，每点一次工具积一份。 */
+export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () => void {
   host.style.overflow = 'hidden';
   host.innerHTML = `
     <div style="display:flex;flex-direction:column;height:100%;">
@@ -52,7 +56,18 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
 
   let assocGraph: AssocGraph | null = null;
   let focusedId = 0;
+  /* 已加载词库里的全部词（跨分类）。导出查重的唯一依据——旧代码只声明从未填充，
+     于是 `wordLib.has(w)` 恒为 false，守卫不可达；而下面只做「同分类」查重，
+     结果是已存在于别的分类的词被重复写进新分类、added 计数偏大。 */
   const wordLib = new Set<string>();
+  function fillWordLib(lib: Record<string, string[]> | null | undefined) {
+    wordLib.clear();
+    if (!lib) return;
+    Object.keys(lib).forEach((cat) => {
+      const list = lib[cat];
+      if (Array.isArray(list)) list.forEach((w) => { if (typeof w === 'string') wordLib.add(w); });
+    });
+  }
 
   /* ── 暂存词表（点「存」→ localStorage，导出时经 Ollama 归类写入词库）── */
   const STAGED_KEY = 'lingkuang-char-staged';
@@ -71,6 +86,20 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
   /* 中键「轮盘/摇杆」移动：点一下进入，按 按下点→鼠标当前 的方向持续平移 */
   let isRocker = false, joyCX = 0, joyCY = 0, joyDX = 0, joyDY = 0, rockerRAF: number | null = null;
   let dragNodeId: number | null = null, dragMoved = false, dragSX = 0, dragSY = 0, dragGroup: Set<number> | null = null, suppressClick = false;
+  let suppressClickTimer: number | null = null;   /* 卸载时要清掉，否则回调在画布销毁后才跑 */
+
+  /* 统一复位指针手势：pointerup / pointercancel / 「丢失 pointerup 的 pointermove」兜底都走这里。
+     旧实现只有 pointerup 一个出口，且全文件没有 pointercancel——
+     指针在窗口外松开、系统撤销指针、alt-tab 之后就永远停在拖动态。 */
+  function endPointerGestures(): void {
+    const wasDrag = dragMoved;
+    dragNodeId = null; dragGroup = null; isBlankPan = false;
+    stage.style.cursor = 'default';   /* 空白恢复=正常 */
+    if (wasDrag) suppressClick = true;   /* 拖拽节点 → 抑制紧随的 click */
+    dragMoved = false;
+    if (suppressClickTimer !== null) clearTimeout(suppressClickTimer);
+    suppressClickTimer = window.setTimeout(() => { suppressClick = false; suppressClickTimer = null; }, 0);   /* 无论如何都清，防止卡住 */
+  }
 
   function applyWorldTransform() {
     world.style.transform = `translate(${assocPanX}px,${assocPanY}px) scale(${assocZoom})`;
@@ -80,7 +109,8 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
   function startRockerLoop() {
     if (rockerRAF !== null) cancelAnimationFrame(rockerRAF);   /* 只取消旧帧，不动 isRocker */
     const tick = () => {
-      if (!isRocker) { stopRockerLoop(); return; }
+      /* 自检：退出轮盘状态或画布已不在文档里（工具切走）→ 停帧，不再空转 */
+      if (!isRocker || !host.isConnected) { stopRockerLoop(); return; }
       const dist = joyDX * joyDX + joyDY * joyDY;
       if (dist > 49) { /* 死区：偏移 <7px 不动，防抖 */
         const len = Math.sqrt(dist);
@@ -317,7 +347,9 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
     if (!assocGraph) return;
     let frame = 0;
     const tick = () => {
-      if (!assocGraph || !assocGraph.nodes.length) { simRAF = requestAnimationFrame(tick); return; }
+      /* 画布已不在文档里（工具切走）或图已清空 → 停帧。旧代码在无节点时还无限续帧，
+         面板关掉后这个循环也永远不会退场。 */
+      if (!host.isConnected || !assocGraph || !assocGraph.nodes.length) { stopSim(); return; }
       frame++;
       const temp = frame < 90 ? 1 : 0.22;
       const damp = frame < 90 ? 0.82 : 0.92;
@@ -351,7 +383,11 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         /* 视觉聚焦：非焦点路径的词淡化（不隐藏，保留多分支） */
         if (focusedId !== null && focusedId !== undefined && n.id !== focusedId && !isOnFocusPath(n.id)) extra += ' is-dim';
         const hidden = vis.has(n.id) ? '' : ' style="display:none"';
-        return `<span class="${cls}${extra}" data-id="${n.id}" title="${n.word}"${hidden}>${n.word}</span>`;
+        /* n.word 来自工具栏输入框与 LLM 输出（cleanWords 只校验长度，`<b>x</b>` 能通过）：
+           直接拼进 innerHTML 会变成真标签、`"` 会逃出 title 属性 → 按注入对待。
+           普通中/英词转义后与原串完全一致，渲染结果不变。 */
+        const wordHtml = escapeHtml(n.word);
+        return `<span class="${cls}${extra}" data-id="${n.id}" title="${wordHtml}"${hidden}>${wordHtml}</span>`;
       })
       .join('');
     world.querySelectorAll('.assoc__node, .assoc__root').forEach((el, i) => {
@@ -462,9 +498,11 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
 
 
   /* 移除子树（自身保留，skipSelected 跳过选中支线） */
-  /* ── 交互事件 ── */
-  function bindEvents() {
-    stage.addEventListener('pointerdown', (e) => {
+  /* ── 交互事件 ──
+     返回清理函数：window 上的 pointermove/pointerup/pointercancel/keydown 生命周期长于本视图，
+     工具切走时必须逐个 removeEventListener，否则每点一次工具就多积一份。 */
+  function bindEvents(): () => void {
+    const onStagePointerDown = (e: PointerEvent) => {
       /* 已处于轮盘模式时，再按任何鼠标键 → 先退出轮盘（本次按键继续其默认行为，如左键拖节点） */
       if (isRocker) stopRockerLoop();
       const store = (e.target as HTMLElement).closest('.store');
@@ -495,8 +533,15 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         updateRockerArrow();   /* 显示方向指示箭头 */
         startRockerLoop();
       }
-    });
-    window.addEventListener('pointermove', (e) => {
+    };
+    const onMove = (e: PointerEvent) => {
+      /* 丢失 pointerup 的兜底：没按键却收到 move，说明收尾信号丢了（在窗口外松开 / pointercancel 未派发），
+         就地复位拖动与平移——否则拖动态永远卡住。
+         ⚠ 轮盘模式本来就不按住鼠标使用，所以不能在这里一律 return。 */
+      if (e.buttons === 0 && !isRocker && (dragNodeId !== null || isBlankPan)) {
+        endPointerGestures();
+        return;
+      }
       if (dragNodeId !== null && assocGraph) {
         const dn = assocGraph.nodes[dragNodeId];
         if (!dn) { dragNodeId = null; dragGroup = null; return; }
@@ -525,21 +570,23 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         joyDY = e.clientY - joyCY;
         updateRockerArrow();   /* 方向变化 → 实时刷新箭头 */
       }
-    });
-    window.addEventListener('pointerup', () => {
-      const wasDrag = dragMoved;
-      dragNodeId = null; dragGroup = null; isBlankPan = false;
-      stage.style.cursor = 'default';   /* 空白恢复=正常 */
-      if (wasDrag) suppressClick = true;   /* 拖拽节点 → 抑制紧随的 click */
-      dragMoved = false;
-      setTimeout(() => (suppressClick = false), 0);   /* 无论如何都清，防止卡住 */
-      /* 注意：中键轮盘是「点一下进入、按其它键退出」，不在此随松开中键退出 */
-    });
-    window.addEventListener('keydown', (e) => {
+    };
+    const onUp = (e: PointerEvent) => {
+      endPointerGestures();
+      /* 注意：中键轮盘是「点一下进入、按其它键退出」，不随松开中键退出（鼠标不需按住）。
+         但松开的是别的鼠标键 —— 说明用户去点了画布外面 —— 这时退出轮盘。 */
+      if (isRocker && e.button !== 1) stopRockerLoop();
+    };
+    /* pointercancel：指针被系统接管（触控手势 / 拖出窗口 / 浏览器抢走）——之后不会再有 pointerup */
+    const onCancel = () => {
+      endPointerGestures();
+      if (isRocker) stopRockerLoop();   /* 发起轮盘的那根指针没了 → 一并退出 */
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
       /* 轮盘模式下手按任何键（除在输入框内打字）→ 退出轮盘 */
       if (isRocker && !(e.target instanceof HTMLInputElement)) stopRockerLoop();
-    });
-    stage.addEventListener('wheel', (e) => {
+    };
+    const onWheel = (e: WheelEvent) => {
       if (e.altKey) {
         e.preventDefault();
         const rect = stage.getBoundingClientRect();
@@ -554,8 +601,8 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
       /* 普通滚轮：让外层模块视图滚动（world 溢出 hidden 会吞滚轮，接管到这里） */
       const scroller = stage.closest('.lk-module-view') as HTMLElement | null;
       if (scroller) scroller.scrollTop += e.deltaY;
-    }, { passive: false });
-    stage.addEventListener('click', (e) => {
+    };
+    const onClick = (e: MouseEvent) => {
       if (suppressClick) return;   // 拖拽后的 click 抑制
       /* 点击节点 → 展开联想（思维链词自动暂存，无需「存」按钮） */
       const nodeEl = (e.target as HTMLElement).closest('.assoc__node, .assoc__root');
@@ -563,7 +610,25 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         onNodeClick(parseInt((nodeEl as HTMLElement).dataset.id!, 10));
         return;
       }
-    });
+    };
+
+    stage.addEventListener('pointerdown', onStagePointerDown);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('keydown', onKeyDown);
+    stage.addEventListener('wheel', onWheel, { passive: false });
+    stage.addEventListener('click', onClick);
+
+    return () => {
+      stage.removeEventListener('pointerdown', onStagePointerDown);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+      window.removeEventListener('keydown', onKeyDown);
+      stage.removeEventListener('wheel', onWheel);
+      stage.removeEventListener('click', onClick);
+    };
   }
 
   /* 更新导出按钮计数 + 绑定导出（Ollama 归类 → saveCharLib） */
@@ -593,12 +658,16 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         if (!res?.ok || !libRes?.ok || !libRes.data) { assocStatus('分类/词库加载失败'); throw new Error('fail'); }
         const lib = libRes.data;
         const map = res.map || {};
+        /* 刚加载的词库 = 导出查重的真相来源：填满 wordLib（跨全部分类）。
+           旧代码 wordLib 从未被填充 → `wordLib.has(w)` 恒 false → 守卫不可达；
+           加上下面只做同分类 indexOf 去重，已存在于别的分类的词会被重复写进新分类。 */
+        fillWordLib(lib);
         let added = 0, fallback = 0;
         staged.forEach((w) => {
-          if (wordLib.has(w)) return;
+          if (wordLib.has(w)) return;   /* 跨分类查重：任意分类里已有此词 → 不重复写入 */
           const cat = map[w] && lib[map[w]] ? map[w] : '主题意象';
           if (!lib[cat]) lib[cat] = [];
-          if (lib[cat].indexOf(w) === -1) { lib[cat].push(w); added++; }
+          if (lib[cat].indexOf(w) === -1) { lib[cat].push(w); wordLib.add(w); added++; }
           else if (!map[w]) fallback++;
         });
         if (!added) { assocStatus('暂存词都已在词库中'); }
@@ -637,7 +706,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
     expandNode(0);
   }
 
-  bindEvents();
+  const unbindEvents = bindEvents();
 
   /* 「回到节点群」按钮：全部节点移出屏幕时点击 → 画布回到节点群 */
   const gotoBtn = host.querySelector('#assoc-goto') as HTMLButtonElement | null;
@@ -673,4 +742,14 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
       e.stopPropagation();   /* 防止画布中键/其它按键干扰输入 */
     });
   }
+
+  /* ── 卸载清理：工具切走时由 registry 调用（inspire.ts 把本函数一路往上传）。
+     不返这个函数，window 监听与 simRAF/rockerRAF 就会每点一次工具积一份、且永不退场。 */
+  return () => {
+    unbindEvents();          /* 摘掉 3 个 window 监听 + stage 上的按下/滚轮/点击 */
+    stopSim();               /* 停力导向帧循环 */
+    stopRockerLoop();        /* 停轮盘帧循环（内部会 cancelAnimationFrame） */
+    if (suppressClickTimer !== null) { clearTimeout(suppressClickTimer); suppressClickTimer = null; }
+    delete (host as any).assocSetRoot;   /* 摘掉暴露给外部的入口，避免指向已销毁画布 */
+  };
 }

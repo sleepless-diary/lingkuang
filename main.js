@@ -96,6 +96,21 @@ function parseProp(s) {
   if (str.startsWith('"') && str.endsWith('"')) return str.slice(1, -1).replace(/\\"/g, '"');
   return str;
 }
+/* frontmatter 键：含 ASCII 冒号 / 首尾空白 / 空键时用双引号包裹（读取端 parseKey 对称去引号）。
+   写入端原本对键名零校验，若读取端收窄键字符类，灵框自己写出的 `身高(cm)` / `所属 阵营`
+   就会「写完读不回」——属性面板手打的字段下次打开静默消失，等于自毁数据。 */
+function fmtKey(k) {
+  const s = String(k);
+  return s === '' || /:/.test(s) || s !== s.trim() ? '"' + s.replace(/"/g, '\\"') + '"' : s;
+}
+/* frontmatter 键 → 原键名（与 fmtKey 对称）。
+   键用**非贪婪** `(.+?)`：`year: 312-07-15 13:30:05` 若贪婪匹配会把键吃成
+   `year: 312-07-15 13`、值只剩 `30:05`。 */
+function parseKey(s) {
+  const k = String(s).trim();
+  if (k.startsWith('"') && k.endsWith('"')) return k.slice(1, -1).replace(/\\"/g, '"');
+  return k;
+}
 
 function nodeToMd(n) {
   const meta = ['id', 'title', 'year', 'precision', 'type'].filter((k) => n[k] !== undefined && n[k] !== null)
@@ -106,7 +121,7 @@ function nodeToMd(n) {
   const props = n.properties || {};
   const propsMeta = Object.entries(props)
     .filter(([k, v]) => v !== undefined && v !== null && !['id', 'title', 'year', 'precision', 'type', 'kind', 'causes'].includes(k))
-    .map(([k, v]) => `${k}: ${fmtProp(v)}`).join('\n');
+    .map(([k, v]) => `${fmtKey(k)}: ${fmtProp(v)}`).join('\n');
   let body = '';
   body += `#描述：\n${n.desc || ''}\n`;   /* 描述独立 tag */
   if (n.doc) body += `\n#正文：\n${n.doc}\n`;   /* 正文独立 tag */
@@ -118,8 +133,14 @@ function mdToNode(text) {
     const end = rest.indexOf('\n---', 3);
     if (end !== -1) {
       rest.slice(3, end).split('\n').forEach((line) => {
-        const m = line.match(/^([\w\u4e00-\u9fa5]+):\s*(.*)$/);  /* 键支持中文（如 性别/身高） */
-        if (m) fm[m[1].trim()] = m[2].trim();
+        /* 键 = 该行冒号前的任意字符（非贪婪），交给 parseKey 去引号。
+           写入端（nodeToMd）对键名零校验，读取端若收窄（原 `[\w\u4e00-\u9fa5]+`）就会
+           「写完读不回」——用户在属性面板手打 `身高(cm)` / `所属-阵营` 会静默消失。
+           注意：灵框外（Obsidian）任意增删字段不是受支持的流程，这里只保证自家写出的键能读回。 */
+        /* 先试「带引号的键」（写入端 fmtKey 只在键含冒号/首尾空白/为空时加引号），
+           再退回非贪婪裸键。顺序不能反：反了 `"a:b": v` 会被裸键分支吃成键 `"a`。 */
+        const m = line.match(/^("(?:[^"\\]|\\.)*")\s*:\s*(.*)$/) || line.match(/^(.+?):\s*(.*)$/);
+        if (m) fm[parseKey(m[1])] = m[2].trim();
       });
       rest = rest.slice(end + 4);
     }
