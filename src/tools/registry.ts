@@ -7,6 +7,11 @@ export interface Tool {
   icon: string;                 // Lucide SVG（内联）
   desc?: string;
   placeholder?: boolean;        // true = 占位（功能未做）
+  /** 左栏分组（缺省 `'create'`）：`'create'` = 干活用的创作工具（沙盘 / 灵感 / 编辑器 / AI / 设定库…），
+   *  排在上段；`'manage'` = 低频管理项（结构体 / 回收站 / 备份 / 设置），排在下段并**贴着左栏底部**。
+   *  用户 2026-09-12 的整理要求：「设置放到左侧栏最底下」+ 干活的和管理别混着排。
+   *  只在左栏（`src/ui/shell.ts` 的 `renderToolbar`）生效，世界栏那排 `.lk-tool-btn` 不受影响。 */
+  group?: 'create' | 'manage';
   /** 打开工具。可返回清理函数（或它的 Promise，因为各工具用动态 import 懒加载）：
    *  收到的 host 是**本次打开专属的工具格**（`.lk-tool-slot`，长生命周期容器的子元素）——
    *  往它里面写就好，切走时整格连 DOM 一起摘掉，所以**晚到的渲染不会盖掉后来打开的工具**。

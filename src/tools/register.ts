@@ -46,36 +46,6 @@ export function registerAllTools(): void {
     },
   });
   registerTool({
-    id: 'settings', name: '设置', icon: IC.settings,
-    open(host, store) {
-      if (store) import('../ui/settings').then((m) => m.renderSettings(store, host));
-    },
-  });
-  registerTool({
-    id: 'trash', name: '回收站', icon: IC.trash,
-    open(host, store) {
-      /* 返回清理函数：面板内有状态提示定时器，切走工具时要清掉 */
-      if (!store) return;
-      return import('../ui/trash').then((m) => m.renderTrash(store, host));
-    },
-  });
-  registerTool({
-    id: 'backup', name: '备份管理', icon: IC.archive,
-    open(host, store) {
-      /* 返回清理函数：面板内有状态提示定时器 */
-      if (!store) return;
-      return import('../ui/backup').then((m) => m.renderBackup(store, host));
-    },
-  });
-  registerTool({
-    id: 'schema', name: '结构体管理', icon: IC.schema,
-    open(host, store) {
-      /* 返回清理函数：面板里有状态提示定时器 */
-      if (!store) return;
-      return import('../ui/schema').then((m) => m.renderSchema(store, host));
-    },
-  });
-  registerTool({
     id: 'codex', name: '设定库', icon: IC.codex,
     open(host, store) {
       /* 返回清理函数：面板有 store 订阅 + 状态提示定时器 */
@@ -84,4 +54,39 @@ export function registerAllTools(): void {
     },
   });
   /* 占位模块：素材库 / 编辑器独立入口 */  registerTool({ id: 'library', name: '素材库', icon: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>', placeholder: true });
+
+  /* ── 管理组（左栏下段，贴着底部；见 registry.ts 的 `Tool.group`）──
+     用户 2026-09-12：「设置放到左侧栏最底下」+ 干活的和管理别混着排。
+     语义上这是「配置 / 数据安全」一类，不常点，但点的时候要一眼找到：
+     结构体管理（改数据结构）→ 回收站（我删错了）→ 备份管理（数据坏了 / 回到某个时间点）→ 设置（最底）。 */
+  registerTool({
+    id: 'schema', name: '结构体管理', icon: IC.schema, group: 'manage',
+    open(host, store) {
+      /* 返回清理函数：面板里有状态提示定时器 */
+      if (!store) return;
+      return import('../ui/schema').then((m) => m.renderSchema(store, host));
+    },
+  });
+  registerTool({
+    id: 'trash', name: '回收站', icon: IC.trash, group: 'manage',
+    open(host, store) {
+      /* 返回清理函数：面板内有状态提示定时器，切走工具时要清掉 */
+      if (!store) return;
+      return import('../ui/trash').then((m) => m.renderTrash(store, host));
+    },
+  });
+  registerTool({
+    id: 'backup', name: '备份管理', icon: IC.archive, group: 'manage',
+    open(host, store) {
+      /* 返回清理函数：面板内有状态提示定时器 */
+      if (!store) return;
+      return import('../ui/backup').then((m) => m.renderBackup(store, host));
+    },
+  });
+  registerTool({
+    id: 'settings', name: '设置', icon: IC.settings, group: 'manage',
+    open(host, store) {
+      if (store) import('../ui/settings').then((m) => m.renderSettings(store, host));
+    },
+  });
 }

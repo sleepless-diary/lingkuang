@@ -178,6 +178,21 @@ body {
 .lk-tool-btn.is-active { opacity: 1; color: var(--accent); background: var(--chrome-2); }
 .lk-tool-btn.is-ph { opacity: 0.4; }
 .lk-tool-btn.is-ph:hover { opacity: 0.7; }
+/* 左栏两段（用户 2026-09-12「设置放到左侧栏最底下」）：上段创作工具、下段管理项贴底。
+   `margin-top: auto` 在 flex 列里吃掉剩余空间＝把管理组推到底部；内容超高（`overflow-y:auto`）时
+   它自动退化为 0，分隔线照样在，不会把按钮挤出可视区。 */
+.lk-tool-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+}
+.lk-tool-group.is-bottom {
+  margin-top: auto;
+  padding-top: 6px;
+  border-top: 1px solid var(--chrome-2);
+}
 .lk-pane { display: flex; flex-direction: column; min-height: 0; }
 .lk-pane-timeline { flex: 1; border-bottom: 1px solid var(--border); }
 .lk-pane-map { flex: 1; }

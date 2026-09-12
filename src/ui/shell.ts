@@ -1,6 +1,7 @@
 /** 灵框 · 壳 UI（世界栏 + 工具栏 + 沙盘）——AE 风：圆角少、工具感强 */
 import type { Store } from '../store/store';
 import { listTools, openTool, disposeCurrentTool } from '../tools/registry';
+import type { Tool } from '../tools/registry';
 import { registerAllTools } from '../tools/register';
 import { mountTimeline } from './timeline';
 import { renderNodeDetail } from './detail';
@@ -216,12 +217,18 @@ function renderToolbar(store: Store): void {
   const bar = document.getElementById('lk-toolbar');
   const toolHost = document.getElementById('lk-tool-host');
   if (!bar || !toolHost) return;
-  bar.innerHTML = listTools()
-    .map(
-      (t) =>
-        `<button class="lk-tool-btn${t.placeholder ? ' is-ph' : ''}" data-tool="${t.id}" title="${t.name}${t.placeholder ? '（占位）' : ''}">${t.icon}<span>${t.name}</span></button>`
-    )
-    .join('');
+  /* 左栏分两段（用户 2026-09-12：「设置放到左侧栏最底下」）：
+     上段＝创作工具（沙盘/灵感/编辑器/AI/设定库…，缺省组），下段＝管理项（结构体/回收站/备份/设置）
+     并**贴着底部**（CSS `.lk-tool-group.is-bottom { margin-top: auto }`）。
+     排序由这里决定、不靠注册顺序 —— 工具的登记顺序可以随实现方便，左栏长什么样归壳管。 */
+  const all = listTools();
+  const group = (g: 'create' | 'manage'): Tool[] => all.filter((t) => (t.group ?? 'create') === g);
+  const btn = (t: Tool): string =>
+    `<button class="lk-tool-btn${t.placeholder ? ' is-ph' : ''}" data-tool="${t.id}" title="${t.name}${t.placeholder ? '（占位）' : ''}">${t.icon}<span>${t.name}</span></button>`;
+  const manage = group('manage');
+  bar.innerHTML =
+    `<div class="lk-tool-group">${group('create').map(btn).join('')}</div>` +
+    (manage.length ? `<div class="lk-tool-group is-bottom">${manage.map(btn).join('')}</div>` : '');
   bar.querySelectorAll('.lk-tool-btn').forEach((el) => {
     el.addEventListener('click', () => {
       bar.querySelectorAll('.lk-tool-btn').forEach((b) => b.classList.remove('is-active'));
