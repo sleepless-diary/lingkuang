@@ -121,6 +121,14 @@
   CSS 侧 `.lk-h-smooth`。⚠️ **`height: auto` 过渡不了**（内容驱动的变化不改 specified value），
   必须量 px、临时写死、跑完还回 auto。实测逐帧采样：430 → 555 → 629 → 645 → 646（连续长上去）。
   减少动效时整段跳过。回归 `motion-switch` ★23/★23b/★24（现 **25 项**）。
+- [x] **联想画布可用性三修（2026-09-12，不属于动效、是 bug）**：用户「**画布内节点会被一块地方挡住，
+  看不全，还有把节点移出视窗时视窗不会顺着移动**」。① 画布写死 `height:100vh` 且是页面最后一块 ⇒
+  被 sticky 工具条（`top 8 / bottom 62`）压住最上面 54px；宿主 `src/ui/inspire.ts` 的 `fitAssocHeight()`
+  改成量工具条实际底边再 `calc(100vh − need)`，挂 `ResizeObserver` + `resize`。② 滚轮分支写死
+  `closest('.lk-module-view')`（那层**根本不会滚**），改用 `scrollParent()` 现找真滚动容器（`.lk-tool-slot`）。
+  ③ 拖拽算式没扣 pan（`dx = cx − dragSX − (assocPanX − dragPanX0)`）+ 新增贴边自动推视窗
+  （`PAN_EDGE 56` / `PAN_MAX_V 18` / rAF）+ `clampPanToWorld()` 夹在世界内。
+  验证：新增 `tools/e2e/assoc-canvas.cjs` **8/8**（详见 `docs/BUGS.md` 第二十轮十）。
 - [ ] **第 B 片 · 列表变化（剩下的一半）**：条目**增删**时其余项**让位**（CSS 表达不了，
   要用 Anime.js 或手写 FLIP）。⚠️ 别把错峰挂在每次 `renderList()` 上 —— 搜索框每敲一个字都会重画左列
   （左列条目那种"显式切换才播"的做法可以照 `src/ui/codex.ts` 的 `pendingEnter` 抄）。

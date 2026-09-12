@@ -30,7 +30,7 @@
 | `src/ui/shell.ts` | 壳 UI：世界栏 + 工具栏 + 沙盘 + 工具宿主 |
 | `src/ui/timeline.ts` | 世界沙盘时间线（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针） |
 | `src/ui/inspire.ts` | 灵感触发器（随机角色生成 + 词义联想入口） |
-| `src/ui/assoc.ts` | 词义联想无限画布（力导向 + 单线聚焦） |
+| `src/ui/assoc.ts` | 词义联想无限画布（力导向 + 单线聚焦 + 视窗平移/缩放 + 拖节点贴边自动推视窗）；宿主高度由 `src/ui/inspire.ts` 的 `fitAssocHeight()` 让开 sticky 工具条，滚动容器用 `scrollParent()` 现找 |
 | `src/ui/editor.ts` | 编辑器（tiptap，左侧 sidebar 时间线/实体 tab，右侧文稿编辑）。属性面板**不在这个文件里**了 —— 见 `src/ui/props-panel.ts` |
 | `src/ui/props-panel.ts` | **公共属性面板**（节点与实体共用**同一份**「改字段」实现，编辑器和设定库都调它）：`createPropsPanel({ store, host, status?, getTarget, patchTarget })` → `{ render(node, isEntity?), hide() }`；`PropsTarget` 是两边共用的身份联合类型。内含 AE 式 scrub（`createScrubField`）与历法推进的时间控件。⚠️ 面板构建后**刻意不重渲染**（避免销毁拖拽中的 scrub 控件），所以提交要走 `patchTarget`（从 store 取最新 properties 再合并） |
 | `src/ui/ai-workbench.ts` / `roleplay.ts` / `tavern.ts` | AI 工作台 / 角色扮演 / 酒馆剧情推演 |
@@ -344,6 +344,37 @@
 - Anime.js（`animejs@4.5.0`，devDependency）已装但**尚未使用**：它留给「元素被重建、却要从旧位置
   连续滑到新位置」的场景（画布节点移动 / 列表增删让位），那是 CSS transition 表达不了的
   （重建后的元素没有"旧位置"这个概念）。
+
+### 联想画布（`src/ui/assoc.ts` + 宿主 `src/ui/inspire.ts`）
+- 世界坐标固定 `WORLD_W = 2000` / `WORLD_H = 1200`；`#assoc-stage`（`flex:1; overflow:hidden`）
+  里放 `#assoc-world`（2000×1200，`transform-origin: 0 0`），视窗靠
+  `world.style.transform = translate(assocPanX, assocPanY) scale(assocZoom)` —— 即
+  **节点屏幕坐标 = 世界坐标 × zoom + pan**。
+- ⚠️ **拖拽算式必须扣掉 pan**（否则视窗一动节点就漂）：
+  `dx = cx - dragSX - (assocPanX - dragPanX0)`（`applyDrag(cx, cy)`）。
+  `dragPanX0/dragPanY0` = **按下那一刻**的 pan，`dragSX/dragSY` = 按下点。落点还要**夹在世界内**，
+  否则松手时 `forceStep()` 会把它拽回边界、看着"跳一下"。
+- **贴边自动推视窗**：`edgePush(pos, lo, hi)` 在离边缘 `PAN_EDGE = 56` 内返回 ±1 推力；
+  `ensureAutoPan()` 起 rAF、`autoPanTick()` 每帧把 pan 推 `PAN_MAX_V = 18` px；
+  `stopAutoPan()` 挂在 `endPointerGestures()` 与卸载清理上（松手/切工具/卸载都要停）。
+- ⚠️ **pan 必须夹在世界内**：`clampPanToWorld()` 夹到
+  `[min(0, 视口宽 − WORLD_W), max(0, 视口宽 − WORLD_W)]`。不夹的话 pan 会一路推到 −1311，
+  而节点早被 `forceStep()` 夹在世界右墙不动 ⇒ **节点被视窗甩在鼠标后面**（实测：夹住后停在
+  −899 = stageW 1101 − 2000）。
+- ⚠️ **滚动容器不能写死**：真正会滚的是工具格 `.lk-tool-slot`（`overflow: auto`），而
+  `#lk-module-view` 自己 `scrollHeight === clientHeight` **根本不会滚**。画布上的滚轮分支要用
+  模块级 `scrollParent(el)`（沿祖先链找第一个 `overflowY` 为 auto/scroll 且 `scrollHeight > clientHeight`
+  的祖先），写死 `closest('.lk-module-view')` 会让"鼠标停在画布上滚滚轮毫无反应"。
+- ⚠️ **画布高度要避开 sticky 工具条**（用户 2026-09-12：「节点会被一块地方挡住，看不全」）：
+  灵感触发器里那条输入行是 `position: sticky`（实测占 `top 8 … bottom 62`），而画布是页面最后一块 ⇒
+  写死 `height: 100vh` 会让画布顶部 54px 永远压在工具条底下。宿主 `src/ui/inspire.ts` 的
+  `fitAssocHeight()` 量 `need = 工具条底边 − 画布容器顶边`，再让 `#insp-assoc` 用
+  `calc(100vh − <need>px)`；挂 `ResizeObserver` 盯那条工具条 + `window resize`，清理函数里 `disconnect`。
+  兜底 CSS 写 `calc(100vh - 62px)`（JS 跑之前的首帧不能是错的）。
+  守卫：`tools/e2e/assoc-canvas.cjs`（☆1 还要求画布顶部那一圈 `elementFromPoint` 归画布而不是工具条）。
+- 测试注意：测试实例 `showInactive` ⇒ 窗口 `hidden` ⇒ **rAF 不出帧不推进**，断言"自动推视窗"前
+  必须 `forceFrames()`（`Page.captureScreenshot`）；指针事件用合成的 `PointerEvent`，
+  `pointerdown` 打在**节点元素**上（stage 靠冒泡收），`pointermove/pointerup` 打在 `window` 上。
 
 ## 5. 脚手架
 

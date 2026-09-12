@@ -52,7 +52,7 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
         <button id="insp-roll" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:6px 14px;font-size:var(--text-sm);cursor:pointer;">重新生成</button>
       </div>
       <div id="insp-result" class="lk-own-cascade" style="padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;align-content:start;"></div>
-      <div id="insp-assoc" style="height:100vh;border-top:1px solid var(--border-soft);display:flex;flex-direction:column;"></div>
+      <div id="insp-assoc" style="height:calc(100vh - 62px);border-top:1px solid var(--border-soft);display:flex;flex-direction:column;"></div>
     </div>`;
 
   const status = host.querySelector('#insp-status') as HTMLElement;
@@ -253,6 +253,32 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
      mountAssocCanvas → 本函数 → register.ts 的 open 返回值 → registry.adopt。 */
   const canvasHost = host.querySelector('#insp-assoc') as HTMLElement | null;
   if (!canvasHost) return;
+  /* 画布高度必须"躲开那条 sticky 工具条"（用户 2026-09-12：「联想画布内节点会被一块地方挡住，看不全」）。
+     实测：工具条 sticky 在视口 y=8..62（高 54px），而画布是页面最后一块、原来高 100vh ——
+     滚到底时画布顶部正好落在工具条底下，**画布最上面 54px 里的节点永远被遮住**，
+     而且画布比剩下的可视高度还高，怎么滚都看不全。
+     改成「视口高 − 工具条实测底边」：滚到底时画布从工具条下沿开始、正好铺满剩余窗口。
+     工具条会随窗口宽度换行（flex-wrap），高度不是常数 ⇒ 用 ResizeObserver 跟着量。
+     （HTML 里先写了 calc(100vh - 62px) 当兜底值，JS 跑之前也不会是 100vh。） */
+  const barEl = host.querySelector('#insp-scroll > div') as HTMLElement | null;
+  const fitAssocHeight = () => {
+    if (!barEl) return;
+    const need = Math.ceil(barEl.getBoundingClientRect().bottom - host.getBoundingClientRect().top);
+    if (need > 0) canvasHost.style.height = `calc(100vh - ${need}px)`;
+  };
+  fitAssocHeight();
+  let barRO: ResizeObserver | null = null;
+  if (barEl && typeof ResizeObserver !== 'undefined') {
+    barRO = new ResizeObserver(fitAssocHeight);
+    barRO.observe(barEl);
+  }
+  window.addEventListener('resize', fitAssocHeight);
+
   const m = await import('./assoc');
-  return m.mountAssocCanvas(canvasHost, () => '');
+  const disposeAssoc = m.mountAssocCanvas(canvasHost, () => '');
+  return () => {
+    if (barRO) barRO.disconnect();
+    window.removeEventListener('resize', fitAssocHeight);
+    if (typeof disposeAssoc === 'function') disposeAssoc();
+  };
 }

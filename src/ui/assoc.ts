@@ -1,4 +1,4 @@
-﻿/** 词义联想 · 无限画布 + 力导向节点 + 单线聚焦（完整还原 legacy）
+/** 词义联想 · 无限画布 + 力导向节点 + 单线聚焦（完整还原 legacy）
  * 点击根词 → 展开联想（Ollama/API）；节点可拖拽（组跟随）；Alt+滚轮缩放；拖拽平移
  * 放在灵感触发器生成卡片下方，独立画布区域
  */
@@ -16,6 +16,20 @@ interface AssocEdge { from: number; to: number; }
 interface AssocGraph { nodes: AssocNode[]; edges: AssocEdge[]; wordIndex: Record<string, number>; }
 
 const WORLD_W = 2000, WORLD_H = 1200;
+/* 拖节点时贴边自动推视窗（用户 2026-09-12：「把节点移出视窗时视窗不会顺着移动」）：
+   指针进到画布边缘 PAN_EDGE 以内就持续朝那个方向推；拖出画布甚至拖出窗口也算，越界越深推得越快。 */
+const PAN_EDGE = 56, PAN_MAX_V = 18;
+
+/** 沿祖先链找第一个「真的能滚」的容器（overflowY 是 auto/scroll 且 scrollHeight > clientHeight）。
+ *  别写死类名：工具宿主从 `.lk-module-view` 换成 `.lk-tool-slot` 时，写死的那份会静默失效
+ *  （滚轮在画布上毫无反应），症状还很难联想到根因。 */
+function scrollParent(el: HTMLElement | null): HTMLElement | null {
+  for (let p = el?.parentElement ?? null; p; p = p.parentElement) {
+    const oy = getComputedStyle(p).overflowY;
+    if ((oy === 'auto' || oy === 'scroll') && p.scrollHeight > p.clientHeight + 1) return p;
+  }
+  return null;
+}
 
 /** 挂载联想画布。返回清理函数：摘掉全部 window 监听 + 停掉两个 requestAnimationFrame 循环。
  *  调用方（inspire.ts → tools/register.ts 的 open）必须把它交回 registry，
@@ -87,6 +101,9 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
   let isRocker = false, joyCX = 0, joyCY = 0, joyDX = 0, joyDY = 0, rockerRAF: number | null = null;
   let dragNodeId: number | null = null, dragMoved = false, dragSX = 0, dragSY = 0, dragGroup: Set<number> | null = null, suppressClick = false;
   let suppressClickTimer: number | null = null;   /* 卸载时要清掉，否则回调在画布销毁后才跑 */
+  /* 拖节点时的贴边自动推视窗：dragPanX0/Y0 = 按下那一刻的视窗平移量（算拖拽位移时要扣掉它），
+     dragPX/PY = 指针最后位置（指针不动时靠 rAF 循环继续推），autoPanRAF = 推视窗的帧循环 */
+  let dragPanX0 = 0, dragPanY0 = 0, dragPX = 0, dragPY = 0, autoPanRAF: number | null = null;
 
   /* 统一复位指针手势：pointerup / pointercancel / 「丢失 pointerup 的 pointermove」兜底都走这里。
      旧实现只有 pointerup 一个出口，且全文件没有 pointercancel——
@@ -94,6 +111,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
   function endPointerGestures(): void {
     const wasDrag = dragMoved;
     dragNodeId = null; dragGroup = null; isBlankPan = false;
+    stopAutoPan();   /* 拖完了 → 停掉贴边推视窗的帧循环 */
     stage.style.cursor = 'default';   /* 空白恢复=正常 */
     if (wasDrag) suppressClick = true;   /* 拖拽节点 → 抑制紧随的 click */
     dragMoved = false;
@@ -104,6 +122,78 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
   function applyWorldTransform() {
     world.style.transform = `translate(${assocPanX}px,${assocPanY}px) scale(${assocZoom})`;
     updateViewportHelp();   /* 视图变换后同步「返回节点」提示 */
+  }
+
+  /* ── 拖节点：把节点摆到指针下 ──
+     关键：位移里必须**扣掉视窗自己平移过的量**（`assocPanX - dragPanX0`）。
+     不扣的话，贴边自动推视窗时节点会从鼠标底下溜走 —— 因为「指针没动」而「画布动了」时，
+     节点在世界里的坐标也该跟着变。扣掉之后：节点屏幕位置 = 世界坐标×缩放 + 平移量，
+     化简后恒等于「按下时的屏幕位置 + 指针位移」，与视窗怎么动无关（贴手、不漂）。 */
+  function applyDrag(cx: number, cy: number): void {
+    if (dragNodeId === null || !assocGraph) return;
+    const dn = assocGraph.nodes[dragNodeId];
+    if (!dn) return;
+    const dx = cx - dragSX - (assocPanX - dragPanX0);
+    const dy = cy - dragSY - (assocPanY - dragPanY0);
+    if (!dragMoved && Math.abs(dx) + Math.abs(dy) > 4) dragMoved = true;
+    if (!dragMoved) return;
+    /* 与世界边界一致地夹一下（forceStep 里的那套）：不夹的话松手瞬间会被力导向夹回来、节点"跳"一下 */
+    const w = dn.w || 70, h = dn.h || 30;
+    dn.x = Math.min(Math.max((dn as any)._dragOx + dx / assocZoom, 20), WORLD_W - 20 - w);
+    dn.y = Math.min(Math.max((dn as any)._dragOy + dy / assocZoom, 20), WORLD_H - 20 - h);
+    dn.vx = 0; dn.vy = 0;
+    world.querySelectorAll('.assoc__node, .assoc__root').forEach((el, i) => {
+      const n = assocGraph!.nodes[i];
+      if (n) (el as HTMLElement).style.transform = `translate(${n.x}px,${n.y}px)`;
+    });
+    drawEdges();
+  }
+
+  /** 指针离画布边缘多近 → 推力（+1 = 贴着左边、要往左推；-1 = 贴着右边；0 = 在中间不推）。
+   *  拖到画布外（甚至窗口外）时值为 ±1（越界越深也是 ±1），所以「拖出视窗」照样持续推。 */
+  function edgePush(pos: number, lo: number, hi: number): number {
+    const a = Math.min(1, Math.max(0, (PAN_EDGE - (pos - lo)) / PAN_EDGE));
+    const b = Math.min(1, Math.max(0, (PAN_EDGE - (hi - pos)) / PAN_EDGE));
+    return a - b;
+  }
+  function stopAutoPan(): void {
+    if (autoPanRAF !== null) { cancelAnimationFrame(autoPanRAF); autoPanRAF = null; }
+  }
+  /** 贴边推视窗时的边界：别把世界推出视口之外。
+   *  节点本来就被力导向夹在世界里（forceStep 的 20..WORLD_W-20），推过头只会剩一片空白，
+   *  而且被拖的节点会先撞到世界边界、然后被甩在鼠标后面（实测 panX 一路从 0 推到 -1311，
+   *  而节点早就贴在世界右墙上不动了 —— 看着像"节点跟丢了"）。
+   *  世界比视口大 → 允许的平移区间是 [视口宽−世界宽, 0]；比视口小 → [0, 视口宽−世界宽]。 */
+  function clampPanToWorld(): void {
+    const r = stage.getBoundingClientRect();
+    const wW = WORLD_W * assocZoom, wH = WORLD_H * assocZoom;
+    const loX = Math.min(0, r.width - wW), hiX = Math.max(0, r.width - wW);
+    const loY = Math.min(0, r.height - wH), hiY = Math.max(0, r.height - wH);
+    assocPanX = Math.max(loX, Math.min(hiX, assocPanX));
+    assocPanY = Math.max(loY, Math.min(hiY, assocPanY));
+  }
+  function autoPanTick(): void {
+    autoPanRAF = null;   /* 先清再判：下面 applyDrag 不会再启动第二个循环 */
+    if (dragNodeId === null || !dragMoved || !host.isConnected) return;
+    const r = stage.getBoundingClientRect();
+    const px = edgePush(dragPX, r.left, r.right);
+    const py = edgePush(dragPY, r.top, r.bottom);
+    if (!px && !py) return;   /* 指针回到中间 → 停帧；下次 pointermove 会再启动 */
+    const bx = assocPanX, by = assocPanY;
+    assocPanX += px * PAN_MAX_V;
+    assocPanY += py * PAN_MAX_V;
+    clampPanToWorld();
+    applyWorldTransform();
+    applyDrag(dragPX, dragPY);   /* 视窗动了 → 立刻把节点重新贴回指针（它世界坐标要跟着变） */
+    /* 已经推到世界边界（这一帧实际没动）且节点也已夹在墙上 → 收手，不再空转 */
+    if (Math.abs(assocPanX - bx) < 0.01 && Math.abs(assocPanY - by) < 0.01) return;
+    autoPanRAF = requestAnimationFrame(autoPanTick);
+  }
+  /** 指针不动时也要继续推（pointermove 不会再来），所以用 rAF 循环；已在跑就不重复起。 */
+  function ensureAutoPan(): void {
+    if (autoPanRAF === null && dragNodeId !== null && dragMoved && host.isConnected) {
+      autoPanRAF = requestAnimationFrame(autoPanTick);
+    }
   }
   /* 中键轮盘移动：每帧沿 按下点→当前鼠标 的方向持续位移 */
   function startRockerLoop() {
@@ -512,6 +602,8 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
         dragNodeId = parseInt((nodeEl as HTMLElement).dataset.id!, 10);
         dragGroup = collectTree(dragNodeId);
         dragSX = e.clientX; dragSY = e.clientY; dragMoved = false; suppressClick = false;
+        dragPanX0 = assocPanX; dragPanY0 = assocPanY;   /* 记下按下时的视窗平移量：位移要扣掉它 */
+        dragPX = e.clientX; dragPY = e.clientY;
         const dn = assocGraph.nodes[dragNodeId];
         if (dn) { (dn as any)._dragOx = dn.x; (dn as any)._dragOy = dn.y; }
         stage.style.cursor = 'grabbing';   /* 拖节点：抓手 */
@@ -545,18 +637,9 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
       if (dragNodeId !== null && assocGraph) {
         const dn = assocGraph.nodes[dragNodeId];
         if (!dn) { dragNodeId = null; dragGroup = null; return; }
-        if (!dragMoved && Math.abs(e.clientX - dragSX) + Math.abs(e.clientY - dragSY) > 4) dragMoved = true;
-        if (dragMoved) {
-          const newX = (dn as any)._dragOx + (e.clientX - dragSX) / assocZoom;
-          const newY = (dn as any)._dragOy + (e.clientY - dragSY) / assocZoom;
-          dn.x = newX; dn.y = newY;
-          dn.vx = 0; dn.vy = 0;
-          world.querySelectorAll('.assoc__node, .assoc__root').forEach((el, i) => {
-            const n = assocGraph!.nodes[i];
-            if (n) (el as HTMLElement).style.transform = `translate(${n.x}px,${n.y}px)`;
-          });
-          drawEdges();
-        }
+        dragPX = e.clientX; dragPY = e.clientY;
+        applyDrag(e.clientX, e.clientY);
+        ensureAutoPan();   /* 指针贴在边缘（或已拖出视窗）→ 持续推视窗 */
         return;
       }
       if (isBlankPan) {
@@ -598,8 +681,13 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
         applyWorldTransform();
         return;
       }
-      /* 普通滚轮：让外层模块视图滚动（world 溢出 hidden 会吞滚轮，接管到这里） */
-      const scroller = stage.closest('.lk-module-view') as HTMLElement | null;
+      /* 普通滚轮：让**真正的**滚动祖先滚动（画布 stage 是 overflow:hidden，会吞掉滚轮，接管到这里）。
+         ⚠️ 原来写死 `stage.closest('.lk-module-view')`，但工具宿主改成一格一工具之后，
+         真正在滚的是那格（`.lk-tool-slot`，inspire 给它设了 overflow:auto），
+         `#lk-module-view` 自己的 scrollHeight === clientHeight **根本不会滚**
+         ⇒ 鼠标停在画布上滚滚轮毫无反应（用户得把鼠标挪到卡片区才能滚）。
+         现在沿祖先链找第一个"overflowY 是 auto/scroll **且真的能滚**"的元素。 */
+      const scroller = scrollParent(stage);
       if (scroller) scroller.scrollTop += e.deltaY;
     };
     const onClick = (e: MouseEvent) => {
@@ -749,6 +837,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
     unbindEvents();          /* 摘掉 3 个 window 监听 + stage 上的按下/滚轮/点击 */
     stopSim();               /* 停力导向帧循环 */
     stopRockerLoop();        /* 停轮盘帧循环（内部会 cancelAnimationFrame） */
+    stopAutoPan();           /* 停贴边推视窗的帧循环 */
     if (suppressClickTimer !== null) { clearTimeout(suppressClickTimer); suppressClickTimer = null; }
     delete (host as any).assocSetRoot;   /* 摘掉暴露给外部的入口，避免指向已销毁画布 */
   };

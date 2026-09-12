@@ -314,6 +314,66 @@
 - 回归：`toolbar-groups` **4/4**、`codex-node-tab` **15/15**、`editor-props-panel` **9/9**
 - `tsc --noEmit` / `vite build` 全 exit 0
 
+### 十、灵感触发器的联想画布：被工具条挡、滚轮不生效、拖出视窗不跟着移（本轮已做）
+
+> 用户原话：「**联想画布内节点会被一块地方挡住，看不全，还有把节点移出视窗时视窗不会顺着移动**」。
+> 三件事看着无关，实测是**同一个容器的账**：画布高度写死 `100vh`、滚动容器找错了人、拖拽算式里
+> 漏了视窗平移量。
+
+**① 「挡住」= sticky 工具条压在画布最上面 54px（实测）**
+- 窗口 1180×780 ⇒ `innerHeight` **741**；`#insp-scroll > div`（输入行那条）实测
+  `position: sticky`、rect `top: 8 / bottom: 62`（高 54）。
+- 而 `#insp-assoc` 原来是 `height: 100vh`（= 741）且是页面**最后一块** ⇒ 滚到底时画布顶部正好
+  落在 y=62 以上、被工具条盖住；实测初始只有 **49~57px** 可见 ⇒ 画布最上面那一圈节点
+  **怎么滚都看不全**（用户看到的"被一块地方挡住"）。
+- **修法**：`src/ui/inspire.ts` 新增 `fitAssocHeight()` —— 量出工具条实际底边相对画布容器顶边的
+  距离 `need = Math.ceil(barEl.getBoundingClientRect().bottom - host.getBoundingClientRect().top)`，
+  再 `canvasHost.style.height = calc(100vh - <need>px)`；挂 `ResizeObserver` 盯那条工具条
+  （文字换行/按钮增减都会改它高度）+ `window resize`，返回值里一并 `disconnect`。
+  兜底样式也从 `100vh` 改成 `calc(100vh - 62px)`（JS 跑之前的首帧不能是错的）。
+- 修后实测：`barBottom 54 / stageTop 90 / stageBottom 741 / stageH 651`（≥ 视口 70%），
+  且画布顶部那一圈 `elementFromPoint` **归属画布**（`#assoc-world`）而不是工具条。
+
+**② 画布上滚滚轮毫无反应 = 滚动容器找错人**
+- 真正在滚的是 **`.lk-tool-slot`**（工具格，`overflow: auto`），而 `#lk-module-view` 自己
+  `scrollHeight === clientHeight === 741` **根本不会滚**。
+- `src/ui/assoc.ts` 的普通滚轮分支原来写死 `stage.closest('.lk-module-view')` ⇒ 拿到一个不滚的
+  元素、滚轮被吞 ⇒ 鼠标停在画布上滚不动（得挪到卡片区才能滚）。
+- **修法**：新增模块级 `function scrollParent(el)`（沿祖先链找第一个 `overflowY` 为 auto/scroll
+  且 `scrollHeight > clientHeight` 的祖先），滚轮分支改用它。
+
+**③ 拖出视窗不跟着移 + 视窗一动节点就漂 = 拖拽算式没扣平移量**
+- 原式 `dn.x = _dragOx + (e.clientX - dragSX) / assocZoom` —— 没扣 `assocPanX`，所以视窗只要动，
+  节点相对鼠标就漂。
+- **修法**（`src/ui/assoc.ts`）：常量 `PAN_EDGE = 56, PAN_MAX_V = 18`；新状态
+  `dragPanX0/dragPanY0`（按下瞬间的 pan）与 `dragPX/dragPY`（节点落点）；
+  `applyDrag(cx, cy)` 用 `dx = cx - dragSX - (assocPanX - dragPanX0)` 并**把节点夹在世界内**
+  （不夹的话松手时力导向会把它拽回边界、看着"跳一下"）；`edgePush(pos, lo, hi)` 判左右边缘
+  （±56px 内返回 ±1），`ensureAutoPan()` / `autoPanTick()` 用 rAF 每帧把 pan 推 `PAN_MAX_V * 推力`
+  像素，`stopAutoPan()` 在 `endPointerGestures()` 与卸载清理里都调。
+- `clampPanToWorld()`：新 pan 循环夹在 `[min(0, 视口宽 − 世界宽), max(0, 视口宽 − 世界宽)]`。
+  **为什么必须有**：不夹的话 panX 一路推到 **−1311**，而节点早贴在世界右墙（`forceStep` 已经把它
+  夹住）不动 ⇒ 节点被视窗甩在鼠标后面，正是用户说的"不顺着移动"的反面。
+  实测夹住后停在 **−899 = stageW 1101 − 2000**（世界宽 2000）。
+
+### 验证（十）
+
+- 新增 `tools/e2e/assoc-canvas.cjs`（**8 项**）：★1 滚到底时 `stageTop(90) ≥ barBottom(62)`、
+  `stageBottom(741) ≤ vh`、顶部那一圈 `elementFromPoint` 仍归画布、`stageH 651 ≥ vh×0.7`；
+  ★2 画布上 dispatch `WheelEvent(deltaY:260)` → 真滚动容器 `scrollTop 0 → 260`；
+  ★3 拖到右边缘「按住不放」出 3 帧 → `panX 0 → −417` 且节点仍**贴在鼠标下**（`underCursor:true`）；
+  ★3b 出 60 帧 → panX 停在 `−899`（世界右墙）不再变；★4 松手后出 8 帧**纹丝不动**；
+  ★5 反向拖到左边缘 → panX 推到 **0**（世界左墙）停住 —— 两侧都夹在世界内。
+- ⚠️ 测试前提（已写进脚本头）：测试实例是 `showInactive`（窗口 hidden）⇒ **rAF 不出帧不推进**，
+  「自动推视窗」必须 `forceFrames()`（`Page.captureScreenshot`）才走，否则看起来像"没实现"。
+  指针事件用 `new PointerEvent(...)` 合成：`pointerdown` 打在**节点元素**上（stage 的监听靠冒泡），
+  `pointermove/pointerup` 打在 `window` 上（画布挂的是 window）。
+- 视觉取证：滚到底截图，画布顶部的 8 个节点**完整可见**、工具条只在它上方，无遮挡。
+- 回归：`motion-switch` **25/25**、`codex-node-tab` **15/15**、`editor-props-panel` **9/9**、
+  `toolbar-groups` **4/4**；`tsc --noEmit` / `vite build` 全 exit 0。
+  （⚠️ `codex-node-tab` 必须在**只有一条时间线**的目录里跑：它按第一个时间线页签展开树，
+  在 `lk-motion`（两条时间线）里跑会展开到空的那条 ⇒ 2/9 假挂。）
+
 ## 第十八轮（2026-09-12）· 数据判损护栏 + 两个静默失效
 
 > **目的**：`main.js` 里那条注释早就写下了后果 —— 解析不了的 `worldbuilding.json`
