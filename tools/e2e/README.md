@@ -353,7 +353,6 @@ node tools\e2e\cold-start-evolution.cjs    # 8 项：帧还在 + 物化正确
 ```
 
 ## 铁律 11：**要断言 `.md` 的内容，必须轮询等它写下去，不能固定 sleep**
-
 `store.update` → 400ms 防抖（`src/main.ts`）→ IPC `vault:write-*` → 落盘，
 再叠上 vault watcher 回扫，实际落盘时间随机器和上一个动作浮动。
 第一版 `entity-evolution.cjs` 用 `await sleep(500)` 之后读文件，结果 ★3/★4/★7/★10c/★12b
@@ -370,3 +369,29 @@ await waitMd(MD_A, (t) => fmValue(t, '发色') === '墨黑');   // ✅
 同族提醒：**别把"动画/定时器有没有跑"混进这类断言**。判"写下去了没有"看文件；
 判"动画播了没有"看 `getAnimations()` + `animationend`（铁律 6/7）。两者用了同一句
 `sleep(500)` 的时候，挂起来会分不清是哪一边。
+
+## 真实数据副本冒烟（改完数据层之后跑一次）
+
+**用途**：合成数据全绿 ≠ 用户自己的数据能用。这一条拿**用户真实数据的副本**跑一遍：
+世界能不能加载、设定库右栏能不能画出来、**改一个字段会不会乱动别的文件**。
+实测（2026-09-13，10 条实体 / 7 个节点 / 单世界）：8/8 PASS —— 改「艾德温·霜冠」一个字段后
+**整座 vault 只有那一个 `.md` 的哈希变了**，其余 16 个文件一个没动，而且**没有凭空长出 `#演变：` 段**
+（没有帧就不该有这个段 ⇒ 老数据不会因为装了这个版本被改写）。
+
+```powershell
+$real = "$env:TEMP\lk-real-evo"
+Remove-Item $real -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $real | Out-Null
+Copy-Item "$env:APPDATA\lingkuang\worldbuilding.json" "$real\worldbuilding.json" -Force
+Copy-Item "F:\lingkuang-vault" "$real\vault" -Recurse -Force      # ← 必须复制，别指着真 vault 跑
+
+$env:LINGKUANG_TEST_DATA="$real\worldbuilding.json"
+$env:LINGKUANG_VAULT="$real\vault"
+$env:LINGKUANG_TEST_USERDATA="$real\userdata"; $env:LK_CDP_PORT="9440"
+# 起应用（同上面的 Start-Process，端口 9440）
+node tools\e2e\real-data-smoke.cjs $real    # 8 项
+```
+
+⚠️ 脚本自己会改副本里的数据（改一个字段），所以**只许对着副本跑**；
+⚠️ 它按名字找「艾德温·霜冠」与「初稿」等字样 —— 换一套真实数据时按实际情况改断言；
+⚠️ 它比对的是**整座 vault 的 MD5**，所以跑之前别在别的窗口动同一份副本。
