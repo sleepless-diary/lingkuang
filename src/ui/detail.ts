@@ -95,7 +95,7 @@ export function renderNodeDetail(
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
           <span style="font-size:var(--text-xs);color:var(--fg-2);">精度</span>
-          <select id="d-prec" title="这个节点的时间精确到哪一档（改档位会补/清对应的月日时分秒）" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:2px 5px;font-size:var(--text-xs);outline:none;cursor:pointer;">${PRECISION_ORDER.map((p) => `<option value="${p}"${(cur.precision ?? 'year') === p ? ' selected' : ''}>${PRECISION_LABELS[p]}</option>`).join('')})</select>
+          <select id="d-prec" title="这个节点的时间精确到哪一档（改档位会补/清对应的月日时分秒）" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:2px 5px;font-size:var(--text-xs);outline:none;cursor:pointer;">${PRECISION_ORDER.map((p) => `<option value="${p}"${(cur.precision ?? 'year') === p ? ' selected' : ''}>${PRECISION_LABELS[p]}</option>`).join('')}</select>
         </div>
         <div id="d-d" style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;cursor:text;min-height:18px;">${cur.desc ? mdRender(cur.desc) : '<span style="color:var(--fg-2);">(无描述)</span>'}</div>
         <div id="d-fields" style="display:flex;flex-direction:column;gap:6px;"></div>

@@ -764,9 +764,17 @@ export function mountTimeline(
     toolHost.querySelectorAll('[data-si]').forEach((el) => {
       el.addEventListener('click', () => {
         const si = parseInt((el as HTMLElement).dataset.si!, 10);
-        if (tl) {
-          const line = tl.storylines.find((l) => l.id === activeLineId);
-          if (line) line.segments.splice(si, 1);
+        /* 必须走 store.update：`tl.storylines` 是 store.data 里的**活引用**，
+           直接 splice 既不通知订阅者（段面板/自动落盘都不动）也不进撤销栈
+           —— 重启后这段「复活」，Ctrl+Z 也回不来（与建线/擦除同一个坑，
+           见 src/store/actions.ts 里那段说明）。 */
+        const tlId = activeTimelineId();
+        if (tlId) {
+          store.update((d) => {
+            const t = d.worldsets[store.activeWorld]?.timelines[tlId];
+            const line2 = t?.storylines?.find((l) => l.id === activeLineId);
+            if (line2) line2.segments.splice(si, 1);
+          });
         }
         renderSegPanel();
         render();

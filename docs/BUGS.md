@@ -15,6 +15,60 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第十二轮已修复（2026-09-12）· 年表跨度限幅 + 编辑器时间控件
+
+### ① 年表跨度限幅（补完第十一轮没修完的那条）
+- `buildYearTable(cal, min, max)` 新增 `export const YEAR_TABLE_MAX_SPAN = 20000`：跨度超限时把窗口收窄到
+  `[min, min + 20000 - 1]`。理由：表只是**加速** —— 查不到时 `yearStart` 走闭式公式仍是 O(1)、结果完全一致，
+  所以宁可收窄也不能按跨度分配。顺带 `if (max < min) max = min`。
+- 实测：跨度 1e5 / 1e6 / 1e7 / 1e8 / 2^32 → **一律 20000 项、约 0.3ms**（修复前 1e7 = 41.9ms/76MB、
+  ≥ 2^32 直接抛 RangeError）；限幅表在**窗口内外**与无表结果逐点一致。
+
+### ② 编辑器的时间 scrub（用户点名要修的那件）
+> 原来的毛病（子代理审计 + 自己复现）：`onCommit` 只拼「年/月/日」交给 `parseTimeText` → 判成「日」精度
+> → 把 `hour/minute/second` 清空，而同一个 patch 里随后的 `精度` 键又把 `precision` 覆盖回旧值
+> → 「精度写着 minute、数据里没有分」；反向「精度=年」的节点拖一格会**凭空长出**月/日
+> （`312年` → frontmatter `312-01-02`，详情面板跟着显示「312年1月2日」）；显示函数 `fmtYearDisplay`
+> 只到「时」、完全不看精度。注释写的是「反推存完整时间」，与实现不符。
+- 修法（`src/ui/editor.ts`）：
+  - 新增 `stepTarget(steps)`：按**步数**在历法上推进（年 → 年份 +steps；月 → 年月按 12 进位；
+    日/时/分/秒 → 秒上直接加）。旧写法拿 365.2425 天当「一年」，碰上 366 天的闰年（**312 年正是**）
+    **连一格都推不动** —— 年份纹丝不动。这也正是项目约定：日/月档要按真实日期推进，不能固定步长累加。
+  - 新增 `fmtPrec`：显示与写回都只到**节点精度那一级**，`format` / `inputValue` / `onCommit` 全走
+    `fmtByValue = (n) => fmtPrec(stepTarget(round((n - epoch) / stepSec)))` —— 保证「屏幕上的字」
+    与「存进去的值」永远一致。「312年」不再显示成「312年1月1日」，拖一格也不动不该有的字段。
+  - `saveFixed` 的 `精度` 分支补上「补/清 month/day/hour/minute/second」，规则与 `src/ui/detail.ts` 一致
+    （旧实现只写 `o.precision`，于是选「年」也会留着上次的月/日）。
+  - 删掉 `fmtYearDisplay`（不看精度、只到「时」）；三处换算（`toEpoch`/`fromEpoch`）补传年表（契约要求）。
+- 附带修掉控件本身的老毛病：`createScrubField` **不记自己的当前值**，滚轮每次都从**初始值**算起
+  → 「滚第二格没反应」。现在用局部 `let value` 累加（属性面板里所有数值/日期 scrub 都受益）。
+- 实测（真实 Electron + CDP）**17/17**：
+  年精度节点显示「312年」→ 滚一格 `year=313`、frontmatter `year: 313`、**没有凭空长出月/日**
+  → 滚第二格 `year=314`（累加生效）；
+  分精度节点显示「312年7月15日9时30分」→ 滚一格 `minute 30→31`，时/月/日都在、frontmatter `312-07-15 09:31`；
+  精度下拉 分→日 清掉时分、年→分 补默认值（1/1、0/0）、分→年 清空且 frontmatter 回到 `year: 314`。
+- 教训：`let` 声明顺序写错（`label.textContent = cfg.format(value)` 之后才 `let value`）会让**整个编辑器
+  工具启动即抛** `ReferenceError: Cannot access 'r' before initialization`（打包后变量被压缩成 `r`），
+  面板全空。`npx tsc --noEmit` 直接报 TS2448/TS2454 抓到了 —— 改完必须跑类型检查。
+
+### ③ 剧情线段删除不落盘（子代理顺带确证，历法范围外）
+- `src/ui/timeline.ts` 段面板的「✕」原来是 `line.segments.splice(si, 1)`，而 `line` 来自 `timeline()`
+  = `store.data` 里的**活引用** → 直接 splice 既不通知订阅者（不落盘）也不进撤销栈
+  → 重启后这段「复活」、Ctrl+Z 也回不来（`src/store/actions.ts` 的注释早已写明这个坑，此处漏改）。
+- 修法：改走 `store.update`，按 `activeTimelineId()` 在 `d.worldsets[...]` 里重新找到该剧情线再 splice。
+
+### 仍**未修**（待用户决定）
+- **frontmatter 读入侧零校验**（子代理 P2）：`main.js` 的 `dateStrToYear` 正则只限位数不限范围，
+  于是外部写进来的 `year: 312-13-01` 被照单全收 —— `fnDaysInMonth` 对 `month > 12` 返回 0，
+  而 `toEpoch` 的月份是「前 N-1 个月天数之和」→ **13 月等于多过一整年**，节点被画到 313-01-01，
+  面板却按原始字段显示「312年13月1日」；`year: 312-07-45` 同理落到 8 月。
+  而同一串粘进「＋节点」表单会被 `parseTimeText` 拒掉 —— 两套实现判定不一致。
+- **小数年被静默截断**（P3）：`main.js` 的 `Math.floor(+year + 1e-9)` 会把 `year: 312.5` 落盘成 `312`
+  （183 天消失），`-312.5` → `-313`（倒跳一年）。当前 `F:\lingkuang-vault` 里 7 个节点年份全是整数，
+  属**潜伏**而非正在发生。
+- 注释与现实不符（一行记档）：`src/calendar.ts` 的 `defaultCalendar()` 注释写「360 天 / 12 月 / 每月 30 天」、
+  `src/store/types.ts` 写「空则默认 360 天制」，而实际返回的是 `fn: 'gregorian'`（365/366 天）。
+
 ## 第十一轮已修复（2026-09-12）· 历法内核（`src/calendar.ts`）
 
 > 用户问「我们的日历系统还有 bug 吗」。做法：`src/calendar.ts` **自包含、零 import**，
@@ -33,6 +87,15 @@
 - 实测：**13/13 往返恒等**（含 `312-12-31 23:59:59`、`312-6-6 6:6:6`）。
 
 ### ② 年表构建与无表换算都是 O(|year|) → 年份多敲几个数字就冻界面
+
+> ⚠️ **同一轮内的更正**：这一条**当时没修完**。下面只换了「min 年起点」的算法，而 `buildYearTable`
+> **按 `max - min` 分配数组并逐年后推**那段原样保留，`fitAll` 传的又正是「节点年份最小到最大」的
+> **整段跨度**（`src/ui/timeline.ts` 的 `setYearTable(yLo - 50, yHi + 50)`）。当时的性能用例是
+> `buildYearTable(cal, huge, huge + 100)` —— 只有 100 年宽，形状不对，所以漏了。
+> 实测宽跨度（2026-09-12 补测）：1e6 跨度 4.3ms/7MB、1e7 跨度 **41.9ms/76MB**（线性）、
+> 跨度 ≥ 2^32 抛 `RangeError: Invalid array length`（在 rAF 回调里抛 → fit 视图永久失效）。
+> **已在「第十二轮」按 `YEAR_TABLE_MAX_SPAN = 20000` 限幅修掉。**
+
 - `buildYearTable` 算 min 年起点、`yearStart` 的回退分支、`fromEpoch` 的回退分支
   原来一律「从 0 年逐年累加 / 扣减」。
 - 实测斜率（默认公历）：年表构建 1e6 年 11ms → 1e7 年 119ms → 按同斜率 **1e10 年约 2 分钟**；

@@ -69,8 +69,19 @@ export interface YearTable {
   starts: number[];
 }
 
-/** 构建年起点累积表（前 build 到 min..max 的每年起点刻度）。用于把 toEpoch/fromEpoch 降为 O(1)。 */
+/** 年表最多这么多项。表只是**加速**：查不到时 `yearStart` 走闭式公式仍是 O(1)、结果一致，
+ *  所以跨度超限时**收窄窗口**，而不是硬撑 —— 见 `buildYearTable` 里的说明。 */
+export const YEAR_TABLE_MAX_SPAN = 20000;
+
+/** 构建年起点累积表（把 min..max 每年的起点刻度算好）。用于把 toEpoch/fromEpoch 降为 O(1)。
+ *  ★ 跨度超限时只建前 YEAR_TABLE_MAX_SPAN 年：`fitAll`（`src/ui/timeline.ts`）传的是
+ *  「节点年份最小到最大」的**整段**，世界跨度一大（手滑填了个 1e8 年，或世界观真的跨百万年）
+ *  就会按跨度分配数组并逐年后推 —— 实测跨度 1e6 = 4.3ms/7MB、1e7 = 41.9ms/76MB（线性），
+ *  按同斜率 1e8 约 400ms+/760MB、跨度 ≥ 2^32 直接抛 `RangeError: Invalid array length`
+ *  （在 rAF 回调里抛，fit 视图永久失效）。收窄后：范围内查表，范围外走闭式公式。 */
 export function buildYearTable(cal: Calendar, min: number, max: number): YearTable {
+  if (max < min) max = min;
+  if (max - min + 1 > YEAR_TABLE_MAX_SPAN) max = min + YEAR_TABLE_MAX_SPAN - 1;
   const size = max - min + 1;
   const starts = new Array<number>(size);
   const daySec = cal.unit.minute * cal.unit.hour * cal.unit.day;

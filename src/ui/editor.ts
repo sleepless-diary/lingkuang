@@ -3,7 +3,7 @@
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { saveNodeDoc, addEntity } from '../store/actions';
-import type { PropValue, TimelineNode, Entity, Timeline } from '../store/types';
+import type { PropValue, TimelineNode, Entity, Timeline, TimePrecision } from '../store/types';
 import { PRECISION_ORDER, PRECISION_LABELS } from '../store/types';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
@@ -12,7 +12,7 @@ import { Image } from './image-ext';
 import { Tag } from './tag-ext';
 import { parseTimeText } from './node-form';
 import { isImeEnter } from './keys';
-import { toEpoch, fromEpoch, defaultCalendar, calendarOf, timePointOf } from '../calendar';
+import { toEpoch, fromEpoch, buildYearTable, calendarOf, timePointOf } from '../calendar';
 
 function escape(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -22,17 +22,20 @@ function escape(s: string): string {
 function createScrubField(
   cfg: { value: number; step: number; format: (v: number) => string; onCommit: (v: number) => void; min?: number; inputValue?: (v: number) => string; parse?: (s: string) => number; onInputText?: (s: string) => void; }
 ): HTMLElement {
+  /* 控件自己记住当前值：拖动/滚轮/输入之后要累加，否则每次滚轮都从**初始值**算起 ——
+     表现为「滚第二格没反应」。属性面板里所有数值/日期 scrub 都受这个影响。 */
+  let value = cfg.value;
   const el = document.createElement('span');
   el.style.cssText = 'flex:1;min-width:0;display:flex;align-items:center;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:ew-resize;user-select:none;';
   const label = document.createElement('span');
   label.style.cssText = 'flex:1;padding:3px 6px;font-size:var(--text-xs);color:var(--fg);font-family:var(--font-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-  label.textContent = cfg.format(cfg.value);
+  label.textContent = cfg.format(value);
   el.appendChild(label);
-  let dragging = false, startX = 0, startV = cfg.value, shift = false, downX = 0, moved = false, editing = false, isDown = false;
+  let dragging = false, startX = 0, startV = value, shift = false, downX = 0, moved = false, editing = false, isDown = false;
   el.addEventListener('pointerdown', (e) => {
     if (editing) return; /* 编辑态：事件交给 input，不抢拖动/单击 */
     if (e.altKey) { startInput(); return; }
-    isDown = true; dragging = false; moved = false; downX = e.clientX; startX = e.clientX; startV = cfg.value; shift = e.shiftKey;
+    isDown = true; dragging = false; moved = false; downX = e.clientX; startX = e.clientX; startV = value; shift = e.shiftKey;
     el.setPointerCapture(e.pointerId);
   });
   el.addEventListener('pointermove', (e) => {
@@ -44,6 +47,7 @@ function createScrubField(
     const dx = e.clientX - startX;
     const s = cfg.step * (shift ? 10 : 1);
     const v = clamp(startV + Math.round(dx) * s);
+    value = v;
     cfg.onCommit(v);
     label.textContent = cfg.format(v);
   });
@@ -57,7 +61,8 @@ function createScrubField(
     e.preventDefault(); e.stopPropagation();
     const s = cfg.step * (e.shiftKey ? 10 : 1);
     const dir = e.deltaY < 0 ? 1 : -1;
-    const v = clamp(cfg.value + dir * s);
+    const v = clamp(value + dir * s);
+    value = v;
     cfg.onCommit(v);
     label.textContent = cfg.format(v);
   }, { passive: false });
@@ -65,7 +70,7 @@ function createScrubField(
   el.addEventListener('dblclick', (e) => { e.preventDefault(); startInput(); });
   function startInput() {
     const inp = document.createElement('input');
-    inp.value = cfg.inputValue ? cfg.inputValue(cfg.value) : cfg.format(cfg.value);
+    inp.value = cfg.inputValue ? cfg.inputValue(value) : cfg.format(value);
     inp.style.cssText = 'flex:1;min-width:0;background:var(--surface);border:none;outline:none;color:var(--fg);font-size:var(--text-xs);font-family:var(--font-mono);padding:3px 6px;cursor:text;';
     editing = true;
     el.replaceChildren(inp);
@@ -81,7 +86,7 @@ function createScrubField(
       editing = false;
       if (cfg.onInputText) { cfg.onInputText(inp.value); el.replaceChildren(label); return; }
       const n = cfg.parse ? cfg.parse(inp.value) : parseFloat(inp.value);
-      if (!Number.isNaN(n)) { const v = clamp(n); cfg.onCommit(v); label.textContent = cfg.format(v); }
+      if (!Number.isNaN(n)) { const v = clamp(n); value = v; cfg.onCommit(v); label.textContent = cfg.format(v); }
       el.replaceChildren(label);
     });
   }
@@ -105,18 +110,8 @@ function fmtCNDate(s: string): string {
   return m ? `${m[1]}年${Number(m[2])}月${Number(m[3])}日` : s;
 }
 
-/* 刻度 → 人性化显示（用 fromEpoch 反推，支持年月日时分）；cal 缺省用默认 360 天制 */
-function fmtYearDisplay(epoch: number, cal?: import('../calendar').Calendar): string {
-  const c = cal ?? defaultCalendar();
-  const tp = fromEpoch(c, epoch);
-  const yr = tp.anchor.year;
-  const v = tp.values;
-  let s = `${yr}年`;
-  if (v.month >= 1) s += `${v.month}月`;
-  if (v.day >= 1) s += `${v.day}日`;
-  if (v.hour) s += `${v.hour}时`;
-  return s;
-}
+/* 刻度 → 人性化显示由「时间」那一行的 fmtPrec 按节点精度生成（见 renderProps），
+   这里原先的 fmtYearDisplay 一律显示到「时」、不看精度，已删除。 */
 
 /** 按属性类型生成值控件（数值/日期 scrub、布尔 checkbox、多选一列 checkbox、文本 input），change 回调对应 PropValue。
  *  live 用于数组控件：属性面板刻意不重渲染，若按构建时的快照 v 增删，
@@ -451,7 +446,20 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
             o.year = (p?.year ?? parseFloat(v)) || 0;
             if (p) { o.precision = p.precision; o.month = p.month; o.day = p.day; o.hour = p.hour; o.minute = p.minute; o.second = p.second; }
           }
-          else if (k === '精度') o.precision = v as TimelineNode['precision'];
+          else if (k === '精度') {
+            /* 改精度必须连带补/清 month/day/hour/minute/second，规则与 src/ui/detail.ts 一致：
+               变细补默认值（月/日 → 1，时/分/秒 → 0），变粗清成 undefined。
+               否则「精度=年」的节点会留着上次的月/日 —— main.js 的 yearToDateStr 是「有才写」，
+               照样写出 `312-07-15`，于是精度与数据互相矛盾（详情面板也因此显示「312年7月15日」）。 */
+            const want = v as TimePrecision;
+            const wi = PRECISION_ORDER.indexOf(want);
+            o.precision = want;
+            o.month = wi >= 1 ? (o.month ?? 1) : undefined;
+            o.day = wi >= 2 ? (o.day ?? 1) : undefined;
+            o.hour = wi >= 3 ? (o.hour ?? 0) : undefined;
+            o.minute = wi >= 4 ? (o.minute ?? 0) : undefined;
+            o.second = wi >= 5 ? (o.second ?? 0) : undefined;
+          }
           else if (k === '类型') o.type = v as TimelineNode['type'];
           else if (k === '格式') o.kind = v || undefined;
           else if (k === '描述') o.desc = v;
@@ -482,17 +490,63 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
         const tl = targetTimeline();
         const cal = calendarOf(tl ?? {});
         const daySec = cal.unit.minute * cal.unit.hour * cal.unit.day;
-        const epoch = toEpoch(cal, timePointOf(Number(node.year ?? 0), { month: node.month, day: node.day, hour: node.hour, minute: node.minute, second: node.second }));
+        const hourSec = cal.unit.minute * cal.unit.hour;
+        const minuteSec = cal.unit.minute;
+        const prec = (node.precision ?? 'year') as TimePrecision;
+        const pi = Math.max(0, PRECISION_ORDER.indexOf(prec));
+        /* 年表照契约传上（不传会退回逐年累加；内核已改成 O(1)，传了更快）。
+           窗口取节点年附近即可 —— 拖动超出窗口也没关系，表只是加速，表外走闭式公式。 */
+        const y0 = Math.floor(Number(node.year ?? 0));
+        const table = buildYearTable(cal, y0 - 8, y0 + 8);
+        const epoch = toEpoch(cal, timePointOf(Number(node.year ?? 0), { month: node.month, day: node.day, hour: node.hour, minute: node.minute, second: node.second }), table);
+        /* 步长只用来把鼠标位移换算成「步数」（scrub 是「值 + 固定步长」的通用控件），
+           真正的推进走下面的 stepTarget，所以这里取近似值不影响精度。
+           ★ 刻度跟着**精度**走：旧写法一律按「天」，于是「年」精度的节点拖一格看不出变化，
+           却把不存在的年月日写进了只有「年」的节点（312年 → 312-01-02）。 */
+        const stepSec = pi === 0 ? Math.round(365.2425 * daySec)
+          : pi === 1 ? Math.round((365.2425 * daySec) / 12)
+            : pi === 2 ? daySec
+              : pi === 3 ? hourSec
+                : pi === 4 ? minuteSec
+                  : 1;
+        /* ★ 按「步数」在**历法**上推进，而不是在秒上累加固定步长：一年有 365/366 天，
+           固定步长必然漂移 —— 曾用 365.2425 天当「一年」，碰上 366 天的闰年（312 年正是）
+           连一格都推不动，年份纹丝不动。这也正是项目约定：日/月档要按真实日期推进。 */
+        const stepTarget = (steps: number): number => {
+          const tp0 = fromEpoch(cal, epoch, table);
+          const v0 = tp0.values;
+          if (pi === 0) return toEpoch(cal, timePointOf(tp0.anchor.year + steps, { month: v0.month, day: v0.day, hour: v0.hour, minute: v0.minute, second: v0.second }), table);
+          if (pi === 1) {
+            const mAbs = tp0.anchor.year * 12 + (v0.month - 1) + steps;
+            return toEpoch(cal, timePointOf(Math.floor(mAbs / 12), { month: ((mAbs % 12) + 12) % 12 + 1, day: v0.day, hour: v0.hour, minute: v0.minute, second: v0.second }), table);
+          }
+          const per = pi === 2 ? daySec : pi === 3 ? hourSec : pi === 4 ? minuteSec : 1;
+          return epoch + steps * per;
+        };
+        /* 显示与写回都只到**精度那一级**：
+           ① 「精度=年」的节点不再显示成「312年1月1日」；
+           ② 拖一下不会把已有的时/分/秒清掉（旧 onCommit 只拼年月日 → parseTimeText 判成「日」
+              精度 → 把 hour/minute/second 置空，而精度字段又被覆盖回旧值 → 精度与数据矛盾）。 */
+        const fmtPrec = (n: number): string => {
+          const tp = fromEpoch(cal, n, table);
+          const v = tp.values;
+          let s = `${tp.anchor.year}年`;
+          if (pi >= 1) s += `${v.month}月`;
+          if (pi >= 2) s += `${v.day}日`;
+          if (pi >= 3) s += `${v.hour}时`;
+          if (pi >= 4) s += `${v.minute}分`;
+          if (pi >= 5) s += `${v.second}秒`;
+          return s;
+        };
+        /* 控件给的原始值 → 步数 → 历法目标：显示与写回都走它，
+           保证「屏幕上的字」与「存进去的值」永远一致。 */
+        const fmtByValue = (n: number): string => fmtPrec(stepTarget(Math.round((n - epoch) / stepSec)));
         ctrl = createScrubField({
-          value: epoch, step: daySec, /* 一天一刻度 */
-          format: (n) => fmtYearDisplay(n, cal),
-          inputValue: (n) => fmtYearDisplay(n, cal), /* 输入框显示中文可读时间，parseTimeText 可解析 */
-          onCommit: (n) => { /* 拖动/滚轮：按刻度回调，反推存完整时间 */
-            const tp = fromEpoch(cal, n);
-            const s = `${tp.anchor.year}年${tp.values.month}月${tp.values.day}日`;
-            saveFixed({ 时间: s, 精度: node.precision ?? 'year' });
-          },
-          onInputText: (s) => { /* 双击/手动输入：parseTimeText 自动识别精度，同步更新完整时间 */
+          value: epoch, step: stepSec,
+          format: fmtByValue,
+          inputValue: fmtByValue, /* 输入框显示中文可读时间，parseTimeText 可解析 */
+          onCommit: (n) => saveFixed({ 时间: fmtByValue(n), 精度: prec }),
+          onInputText: (s) => { /* 手动输入：parseTimeText 自动识别精度（打字可以改精度） */
             const p = parseTimeText(s);
             if (p) {
               saveFixed({ 时间: s, 精度: p.precision });
