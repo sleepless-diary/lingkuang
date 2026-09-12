@@ -158,6 +158,43 @@ function buildPropCtrl(v: PropValue, onChange: (next: PropValue) => void, live?:
       lab.appendChild(cb); lab.appendChild(txt);
       list.appendChild(lab);
     });
+    /* 新增一项：旧实现只能勾掉已有的项 —— 而「列表」字段刚补默认值时是空数组，
+       没有任何入口能加第一项，等于这个类型没法用。 */
+    const addWrap = document.createElement('div');
+    addWrap.style.cssText = 'display:flex;gap:4px;align-items:center;';
+    const addInp = document.createElement('input');
+    addInp.placeholder = '添加一项…';
+    addInp.style.cssText = 'width:96px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:2px 5px;font-size:var(--text-xs);outline:none;';
+    const addBtn = document.createElement('button');
+    addBtn.textContent = '＋';
+    addBtn.title = '添加一项';
+    addBtn.style.cssText = 'background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:2px 8px;font-size:11px;cursor:pointer;';
+    const doAdd = (): void => {
+      const t = addInp.value.trim();
+      if (!t) return;
+      const cur = live ? live() : v;
+      const arr = Array.isArray(cur) ? cur : v;
+      if (arr.some((x) => String(x) === t)) { addInp.value = ''; return; }
+      onChange([...arr, t]);
+      addInp.value = '';
+      /* 面板刻意不整块重渲染（避免销毁正在编辑的控件），所以这里就地补一行勾选项让改动看得见 */
+      const lab = document.createElement('label');
+      lab.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:var(--text-xs);color:var(--fg);';
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = t; cb.checked = true;
+      cb.style.cssText = 'width:14px;height:14px;';
+      cb.addEventListener('change', () => {
+        const c2 = live ? live() : v;
+        const a2 = Array.isArray(c2) ? c2 : v;
+        onChange(cb.checked ? [...a2, t] : a2.filter((x) => String(x) !== t));
+      });
+      const txt2 = document.createElement('span'); txt2.textContent = t;
+      lab.appendChild(cb); lab.appendChild(txt2);
+      list.insertBefore(lab, addWrap);
+    };
+    addBtn.addEventListener('click', doAdd);
+    addInp.addEventListener('keydown', (e) => { if (e.key !== 'Enter' || isImeEnter(e)) return; e.preventDefault(); doAdd(); });
+    addWrap.appendChild(addInp); addWrap.appendChild(addBtn);
+    list.appendChild(addWrap);
     return list;
   }
   /* 文本 → 普通输入 */
@@ -278,7 +315,7 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
     if (localStorage.getItem('lingkuang-hide-auto-fix-notice') === '1') return;
     const list = (e as CustomEvent<string[]>).detail || [];
     if (!list.length) return;
-    addHint('autofix', `已自动修复：${list.join('、')} 的格式（已补回标准「#描述：」/「#正文：」标签）。格式只能在「结构体管理器」里调整，内容值随意。`, undefined, { text: '不再提示此类', onClick: () => { localStorage.setItem('lingkuang-hide-auto-fix-notice', '1'); removeHint('autofix'); } });
+    addHint('autofix', `已自动修复：${list.join('、')} 的格式（已补回标准「#描述：」/「#正文：」标签）。字段集合只能在左栏「结构体管理」里调整，内容值随意。`, undefined, { text: '不再提示此类', onClick: () => { localStorage.setItem('lingkuang-hide-auto-fix-notice', '1'); removeHint('autofix'); } });
   }) as EventListener;
   window.addEventListener('lingkuang-vault-auto-fixed', onAutoFixed);
   function findNodeById(id: string): { tlId: string; node: any } | null {
@@ -403,7 +440,7 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
     status.textContent = '已保存 ✓';
   }
   /* 属性面板（只读）：显示节点元数据 + #描述： + 已有自定义属性（结构化属性由世界沙盘管理，编辑器仅展示） */
-  function renderProps(node: { title?: string; name?: string; year?: number | string; precision?: string; type?: string; desc?: string; properties?: Record<string, PropValue>; month?: number; day?: number; hour?: number; minute?: number; second?: number } | undefined, isEntity = false) {
+  function renderProps(node: { title?: string; name?: string; year?: number | string; precision?: string; type?: string; kind?: string; desc?: string; properties?: Record<string, PropValue>; month?: number; day?: number; hour?: number; minute?: number; second?: number } | undefined, isEntity = false) {
     if (!node) { propsEl.style.display = 'none'; propsEl.innerHTML = ''; return; }
     propsEl.style.display = '';
     /* 自定义属性：可编辑（按类型控件），固定属性也用可编辑控件（年份 scrub、精度/类型下拉、标题/描述文本） */
@@ -461,7 +498,7 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
             o.second = wi >= 5 ? (o.second ?? 0) : undefined;
           }
           else if (k === '类型') o.type = v as TimelineNode['type'];
-          else if (k === '格式') o.kind = v || undefined;
+          else if (k === '种类') o.kind = v || undefined;   /* 种类=模板（决定该有哪些属性字段），也是它在 vault 里的文件夹名 */
           else if (k === '描述') o.desc = v;
         }
       });
@@ -469,6 +506,7 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
       /* 不在此重渲染面板：scrub 控件自身更新显示，避免销毁拖拽中控件 */
     };
     /* 固定属性行：年份数值 scrub、精度/类型下拉、标题/描述文本 */
+    /* 固定属性行：年份数值 scrub、精度/类型下拉、标题/描述文本、种类下拉（模板引用） */
     const fixedRows: { k: string; v: string }[] = isEntity
       ? [{ k: '名称', v: node.name ?? '' }]
       : [
@@ -476,6 +514,7 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
           { k: '时间', v: node.year !== undefined ? String(node.year) : '' },
           { k: '精度', v: node.precision ?? '' },
           { k: '类型', v: node.type ?? '' },
+          { k: '种类', v: node.kind ?? '' },
         ];
     if (!isEntity) fixedRows.push({ k: '描述', v: node.desc ?? '' });
     const addFixedRow = (appendTo: HTMLElement, k: string, v: string): void => {
@@ -562,6 +601,21 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
         sel.value = v; sel.addEventListener('change', () => {
           saveFixed({ 精度: sel.value });
           /* 改精度后重渲染面板，让时间 scrub 的显示/步进/输入跟随新精度 */
+          renderProps(targetNode());
+        });
+        ctrl = sel;
+      } else if (k === '种类') {
+        /* 种类=模板引用：选了它，属性区就按那种类的字段渲染（模板在「结构体管理」里定义）。
+           vault 里这个节点的文件夹也会跟着换（vault:write 按 kind 建目录、旧文件按 id 清掉）。 */
+        const sel = document.createElement('select');
+        sel.style.cssText = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-xs);outline:none;';
+        const kinds = Object.keys(store.data.formats ?? {});
+        (kinds.length ? kinds : ['事件']).forEach((kk) => { const o = document.createElement('option'); o.value = kk; o.textContent = kk; sel.appendChild(o); });
+        sel.value = v && kinds.includes(v) ? v : (kinds[0] ?? '事件');
+        sel.title = '种类（模板）：决定这个节点有哪些属性字段，在「结构体管理」里定义';
+        sel.addEventListener('change', () => {
+          saveFixed({ 种类: sel.value });
+          /* 换种类后属性字段集合变了，重渲染让属性区跟上 */
           renderProps(targetNode());
         });
         ctrl = sel;

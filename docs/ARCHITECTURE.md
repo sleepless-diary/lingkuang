@@ -41,10 +41,28 @@
 | `src/ui/trash.ts` | 回收站面板（`vault/.trash` 的列出 / 恢复 / 彻底清空；孤儿项需用户指定世界与格式） |
 | `src/ui/backup.ts` | 备份管理面板（世界观数据 / 角色词库的备份列表、恢复、导出、导入）。恢复要走「禁写 → 覆盖 → 重载」，见 §4 落盘保护 |
 | `src/ui/keys.ts` / `html.ts` | `isImeEnter(e)`（中文输入法回车守卫）/ `escapeHtml(s)`（外部文本进 innerHTML 前必过） |
+| `src/ui/schema.ts` | **结构体管理**面板（种类=模板：字段增删改名/排序/类型）。保存 → `formats.json` → `store.formats` → 派发 `lingkuang-formats-changed`，由 `src/main.ts` 的 `ensureAllFormatFields` 给所有节点补空值、清掉模板外的字段 |
 | `data/worldbuilding.js` | 世界观种子数据（`window.__SEED_TIMELINES__`），首次运行/无用户数据时使用 |
 | `data/character_lib.json` | 角色生成词库（58 分类，萌百来源 CC BY-NC-SA，勿商用） |
 | `design-system/` | 设计令牌（`tokens.css` 权威颜色/字体源） |
 | `docs/` | 架构 / 历法 / 编辑器对接 / 用户手册等文档 |
+
+### 种类（模板）与节点 —— 「接口 / 实现」模型
+
+用户 2026-09-12 的定位：**数据像接口一样，自带一套模版，然后自己设定内容**。落到代码上：
+
+- **种类（kind）= 模板/接口**：定义「这个种类有哪些字段」。存在 `%APPDATA%\lingkuang\formats.json`
+  （`main.js` 的 `DEFAULT_FORMATS` 是内建 5 个：角色/地点/物品/组织/事件；`formats:load/save` 读写）。
+  字段类型：`text`（短文本）/ `longtext`（长文本）/ `number`（数值）/ `boolean`（开关）/ `list`（列表，值是数组）。
+- **节点 = 模板的实现**：每个节点属于一个种类，字段值放在 `node.properties`。**节点属于哪个种类由它在
+  vault 里的文件夹名承载** —— `vault:scan` 用 `n.kind = sub.name` 回填，`vault:write` 按 `kind` 建目录
+  （因此改种类＝换文件夹，旧文件按 id 清掉）。
+- **字段集合的权威 = 模板**：`src/main.ts` 的 `ensureAllFormatFields(store)` 会
+  「给模板内的字段补空值（`number→0`/`boolean→false`/`list→[]`/其余 `''`）+ 删掉模板外的键」，
+  启动时、外部改动后、以及模板变更事件后都会跑。所以**在灵框里增删字段是唯一正道，外部手改属性会被抹平**
+  （`cssclasses`/`tags`/`aliases` 除外）。
+- **给节点指定种类**：＋节点窗口的「种类」下拉（`src/ui/node-form.ts`）、编辑器属性面板的「种类」行
+  （`src/ui/editor.ts`）。两处都走 `addNode`/`saveFixed`，最终落到 `node.kind`。
 
 ## 3. 数据模型
 

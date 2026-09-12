@@ -76,11 +76,15 @@ export interface Timeline {
 }
 
 /** 实体类型（自定义） */
-export interface EntityTypeField { id: string; name: string; type: 'text' | 'longtext' | 'number' | 'boolean'; }
+export interface EntityTypeField { id: string; name: string; type: FieldType; }
 export interface EntityType { id: string; name: string; fields: EntityTypeField[]; }
 
+/** 模板字段类型（结构体管理面板里可选的种类）——
+ *  「列表」的值是数组，编辑器按数组渲染成一列可勾选项 + 新增输入框。 */
+export type FieldType = 'text' | 'longtext' | 'number' | 'boolean' | 'list';
+
 /** 格式/结构体定义：kind → 应填字段集合（权威参考，autoFix 对照它补缺失字段） */
-export interface FormatField { name: string; type: 'text' | 'longtext' | 'number' | 'boolean'; }
+export interface FormatField { name: string; type: FieldType; }
 export interface WorldFormat { id: string; name: string; fields: FormatField[]; }
 
 /** 实体实例（本体 = 文稿 e.doc） */

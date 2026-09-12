@@ -158,7 +158,7 @@ function autoFixFieldDiffs(store: any, repairable: { id: string; title: string; 
                 if (!n.properties) n.properties = {};
                 for (const f of fmt.fields) {
                   if (n.properties[f.name] === undefined) {
-                    n.properties[f.name] = f.type === 'number' ? 0 : f.type === 'boolean' ? false : '';
+                    n.properties[f.name] = f.type === 'number' ? 0 : f.type === 'boolean' ? false : f.type === 'list' ? [] : '';
                   }
                 }
               }
@@ -215,10 +215,11 @@ function ensureAllFormatFields(store: any): void {
         } else {
           n.properties = {};
         }
-        /* 补全格式内缺失字段（值随意，格式字段保留用户填的） */
+        /* 补全格式内缺失字段（值随意，格式字段保留用户填的）。
+           'list' 必须补 []：补成 '' 会让编辑器按字符串渲染成一个空文本框。 */
         for (const f of fmt.fields) {
           if (n.properties[f.name] === undefined) {
-            n.properties[f.name] = f.type === 'number' ? 0 : f.type === 'boolean' ? false : '';
+            n.properties[f.name] = f.type === 'number' ? 0 : f.type === 'boolean' ? false : f.type === 'list' ? [] : '';
             changed = true;
           }
         }
@@ -251,6 +252,12 @@ async function main() {
   let restoreInProgress = false;
   window.addEventListener('lingkuang-restore-start', () => { restoreInProgress = true; suppressWrite = true; });
   window.addEventListener('lingkuang-restore-end', () => { restoreInProgress = false; suppressWrite = false; });
+  /* 「结构体管理」面板改了模板 → 重新对照模板给所有节点补空值 / 清掉模板外的字段，
+     并顺带触发落盘把结果写回 vault。ensureAllFormatFields 定义在本文件（模板的权威执行点），
+     所以由这里监听，而不是让面板自己去改节点数据。 */
+  window.addEventListener('lingkuang-formats-changed', () => {
+    try { ensureAllFormatFields(store); } catch (e) { console.error('[lingkuang] 模板变更后补全失败：', e); }
+  });
   async function writeAll(): Promise<void> {
     const api = (window as any).lingkuangAPI;
     if (!api) return;
@@ -315,6 +322,11 @@ async function main() {
         for (let i = 0; i < 3 && pendingWrite; i++) await writeAll();
         if (pendingWrite) return; /* 仍在写（正在连续输入）→ 放弃这轮，下个变化事件再来 */
         const vres = await api.vaultScan();
+        /* ★ 扫描期间内存里又发生了改动 → 本轮结果已过时，直接放弃（下个变化事件会再来一轮）。
+           不挡的话会用磁盘上的**旧内容**把刚做的改动盖回去 —— 实测：在「结构体管理」里删掉一个
+           模板字段（内存里已清掉值）时，若恰好有一次重扫在飞，扫描结果会把那个值「复活」。
+           这类「改动落在扫描窗口内就被回滚」对任何编辑都成立，不只是删字段。 */
+        if (pendingWrite) return;
         if (vres && vres.ok && vres.worlds) {
           /* 以当前 store 为 base：外部改 .md 只该覆盖节点，不能顺手清空循环/剧情线/历法 */
           const newData = vaultToWorldData(vres.worlds, store.data);

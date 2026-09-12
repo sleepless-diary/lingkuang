@@ -6,6 +6,7 @@ import type { Calendar } from '../calendar';
 import { buildYearTable, calendarOf, fromEpoch } from '../calendar';
 import { addNode } from '../store/actions';
 import { isImeEnter } from './keys';
+import { escapeHtml } from './html';
 
 /** 公历平均年宽（365.25 天）。与 `src/ui/timeline.ts:100` 的坐标轴口径一致：
  *  坐标轴是公历 epoch 秒，只有「epoch 秒 → 年」的粗估才用它。 */
@@ -105,6 +106,14 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
   const cal = calendarOf(tl ?? {});
   const cursor = ws?.timeCursor;
   const defaultTime = cursor !== null && cursor !== undefined ? fmtCursorTime(cal, tl, cursor) : '';
+  /* 种类（模板）：决定这个节点有哪些属性字段，也决定它在 vault 里落进哪个文件夹。
+     以前这个表单完全没有入口 → 所有节点都只能是「事件」，角色/地点/物品/组织那几套模板用不上。 */
+  const formats = store.data.formats ?? {};
+  const kindList = Object.keys(formats).length ? Object.keys(formats) : ['事件'];
+  const defKind = kindList.includes('事件') ? '事件' : kindList[0];
+  const kindOpts = kindList
+    .map((k) => `<option value="${escapeHtml(k)}"${k === defKind ? ' selected' : ''}>${escapeHtml(k)}（${(formats[k]?.fields ?? []).length} 个字段）</option>`)
+    .join('');
   host.innerHTML = `
     <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
       <div style="font-size:15px;font-weight:600;color:var(--fg);">添加节点 · ${tlName}</div>
@@ -132,6 +141,10 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
           <option value="story_event">剧情事件</option>
         </select>
       </div>
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <label style="font-size:var(--text-xs);color:var(--fg-2);">种类（决定这个节点有哪些属性字段 · 在「结构体管理」里定义）</label>
+        <select id="nf-kind" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;">${kindOpts}</select>
+      </div>
       <div style="display:flex;gap:8px;">
         <button id="nf-ok" style="flex:1;background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:7px;font-size:var(--text-sm);cursor:pointer;">确定</button>
         <button id="nf-cancel" style="flex:1;background:var(--surface-2);color:var(--fg-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px;font-size:var(--text-sm);cursor:pointer;">取消</button>
@@ -142,6 +155,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
   const title = host.querySelector('#nf-title') as HTMLInputElement;
   const time = host.querySelector('#nf-time') as HTMLInputElement;
   const type = host.querySelector('#nf-type') as HTMLSelectElement;
+  const kindSel = host.querySelector('#nf-kind') as HTMLSelectElement;
   const desc = host.querySelector('#nf-desc') as HTMLTextAreaElement;
   const docBox = host.querySelector('#nf-doc') as HTMLTextAreaElement;
   const err = host.querySelector('#nf-err') as HTMLElement;
@@ -170,6 +184,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
     addNode(store, tlId, {
       title: t,
       type: type.value as 'world_event' | 'story_event',
+      kind: kindSel?.value || undefined,   /* 种类=模板；决定它在 vault 里落进哪个文件夹 */
       year: parsed?.year ?? 0,
       precision: parsed?.precision ?? 'year',
       month: parsed?.month,

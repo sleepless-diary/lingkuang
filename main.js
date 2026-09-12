@@ -22,8 +22,12 @@ const DATA_FILE = () => process.env.LINGKUANG_TEST_DATA
   ? process.env.LINGKUANG_TEST_DATA
   : path.join(app.getPath('userData'), 'worldbuilding.json');
 const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json');
-/* 格式/结构体定义文件：kind → 应填字段集合（权威参考，autoFix 对照它补缺失字段） */
-const FORMATS_FILE = () => path.join(app.getPath('userData'), 'formats.json');
+/* 格式/结构体定义文件：kind → 应填字段集合（权威参考，autoFix 对照它补缺失字段）。
+   测试后门：设了 LINGKUANG_TEST_DATA 就把它放在**同一个临时目录**里 —— 否则跑自动化测试时
+   「结构体管理」面板会写进真实的 %APPDATA%\lingkuang\formats.json，改掉用户自己的模板。 */
+const FORMATS_FILE = () => process.env.LINGKUANG_TEST_DATA
+  ? path.join(path.dirname(process.env.LINGKUANG_TEST_DATA), 'formats.json')
+  : path.join(app.getPath('userData'), 'formats.json');
 /* vault 根目录（节点 .md 文件存储，Obsidian 可打开编辑）。测试后门 LINGKUANG_VAULT。 */
 const VAULT_DIR = () => process.env.LINGKUANG_VAULT
   ? process.env.LINGKUANG_VAULT
@@ -1008,6 +1012,9 @@ ipcMain.handle('settings:load', () => {
 });
 
 /* ── 内建默认格式定义（kind 直接对应格式；用户可在 formats.json 增改）── */
+/* 字段允许的类型（与 src/store/types.ts 的 FieldType 对齐）。
+   'list' 的值是数组，补默认值时必须给 [] 而不是 ''，否则编辑器按字符串渲染出空输入框。 */
+const FORMAT_TYPES = ['text', 'longtext', 'number', 'boolean', 'list'];
 const DEFAULT_FORMATS = {
   角色: { id: '角色', name: '角色', fields: [
     { name: '性别', type: 'text' }, { name: '种族', type: 'text' }, { name: '发色', type: 'text' },
@@ -1027,16 +1034,31 @@ const DEFAULT_FORMATS = {
   ] },
 };
 
-/* 读取格式定义：优先用户自定义 FORMATS_FILE，缺失则用内建默认 */
+/* 读取格式定义：有用户文件就以**用户文件为准**，没有才用内建默认。
+   旧实现是「内建 5 个 kind + 用户浅合并」（`merged[k] = { ...v, ...parsed[k] }`）——
+   后果是**内建种类删不掉**：用户在「结构体管理」里删了「角色」，下次读又冒出来，
+   而 formats.json 是整份写出的，本来就不需要兜底合并。
+   现在：文件存在且能解析成对象 → 直接用（只做字段级规整）；否则回退内建默认。 */
 function loadFormatsRaw() {
   try {
-    const raw = fs.readFileSync(FORMATS_FILE(), 'utf8');
-    const parsed = JSON.parse(raw);
-    /* 用户部分覆盖：缺失的 kind 用内建兜底，全部为空则全用内建 */
-    const merged = {};
-    for (const [k, v] of Object.entries(DEFAULT_FORMATS)) merged[k] = { ...v, ...(parsed && parsed[k]) };
-    if (parsed) for (const [k, v] of Object.entries(parsed)) if (!(k in DEFAULT_FORMATS)) merged[k] = v;
-    return merged;
+    const parsed = JSON.parse(fs.readFileSync(FORMATS_FILE(), 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length) {
+      const out = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        if (!v || typeof v !== 'object') continue;
+        const fields = Array.isArray(v.fields) ? v.fields : [];
+        out[k] = {
+          id: String(v.id ?? k),
+          name: String(v.name ?? k),
+          /* 只保留认识的结构，顺手过滤空字段名（手改文件写出 `{name:''}` 会让面板出现空行） */
+          fields: fields
+            .filter((f) => f && typeof f.name === 'string' && f.name.trim())
+            .map((f) => ({ name: String(f.name).trim(), type: FORMAT_TYPES.includes(f.type) ? f.type : 'text' })),
+        };
+      }
+      return out;
+    }
+    return { ...DEFAULT_FORMATS };
   } catch (e) {
     return { ...DEFAULT_FORMATS };
   }
