@@ -18,6 +18,11 @@ fs.writeFileSync(FORMATS, JSON.stringify({
 
 /* 节点 .md（frontmatter 存元数据；描述/正文各一个 tag —— 与 main.js 的 nodeToMd 同格式） */
 const dir = path.join(VAULT, WS, TL, KIND);
+/* 先清空这条时间线：`reset-entity-vault.cjs` 只清实体，**不清时间线节点目录**，
+   所以上一轮（或上一会话）留下的同 id 节点会跟本脚本播的那份**撞成两份**。
+   两份同 id 时回扫是「后来者覆盖」（scanTimelineDir），赢家随 readdir 顺序而变，
+   断言就会随机挂 —— 曾因此在 codex-node-tab 上白查一轮。播种必须给出**确定起点**。 */
+fs.rmSync(path.join(VAULT, WS, TL), { recursive: true, force: true });
 fs.mkdirSync(dir, { recursive: true });
 fs.writeFileSync(path.join(dir, '王国的建立.md'), `---
 id: n-e2e-1

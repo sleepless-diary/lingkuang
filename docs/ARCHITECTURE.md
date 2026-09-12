@@ -213,14 +213,26 @@
   - **`type` 由文件夹名承载**，与节点侧的 kind 同构：`mdToEntity` 读回 frontmatter 的 `type`，
     但 `scanEntityDir` 会用所在文件夹名覆盖它（重扫时文件夹才是权威）。
   - 节点与实体**共用 `parseFm(text)`**（frontmatter 解析只有一份，避免两处漂移）。
-  - 换类型/改名后 `writeVaultEntitySync` 要用 `entityFiles(wsName)` 在 `_设定/**` **全树**找同 id 的旧 `.md`
-    再删 —— 只清目标目录的话，旧文件会残留并被回扫捞回来（`mergeEntities` 按 id 去重是后扫到者赢，
-    旧类型反而可能胜出 ⇒ **类型改不回去**）。节点侧换 kind 目前仍有同样的残留问题。
+  - 换类型/改名后 `writeVaultEntitySync` 要清掉同 id 的旧 `.md`，否则旧文件会残留并被回扫捞回来
+    （`mergeEntities` 按 id 去重是后扫到者赢，旧类型反而可能胜出 ⇒ **类型改不回去**）。
+    规则与节点侧**同构**，见下面那条「同 id 只留一份」。
   - `src/main.ts` 的 `mergeEntities(byType, baseEntities)` 把扫描结果摊平成 `{ id: Entity }` 并带 `typeId`；
     **例外**：这个世界在 vault 里还没有 `_设定` 目录时保留 `base` 的实体，别把升级前 JSON-only 的实体整批抹掉。
   - **启动时要补写一趟实体**（`writeAllEntities()`，在 `renderShell()` 之后、`vaultWatch()` 之前）：
     `writeAll` 只由 store 订阅触发，光靠它的话「升级前就存在的实体」要等用户碰一下才会变成文件。
     只写实体不写节点 —— 节点 `.md` 可能是手写手工排版的，每次启动回写会把它们整体归一化。
+
+- **同 id 只留一份（第十九轮）**：节点的种类、实体的类型**都由文件夹名承载**，所以「换种类/换类型」
+  在磁盘上 = 把 `.md` 搬到另一个文件夹，**旧文件夹那份必须删掉**。留着的话回扫是「后来者覆盖」
+  （`scanTimelineDir` 的 `nodesById.set(n.id, n)`、`mergeEntities` 的 `out[e.id] = {...}`），
+  readdir 顺序一合适旧文件就胜出 ⇒ 用户看到的是「我改的东西自己变回去了」。
+  两个写盘函数（`dropStaleNodeFiles` / `dropStaleEntityFiles`）按**三层**清理，`kill` 一律**按 id 命中才删**：
+  ⓪ 同目录按 id（改名残留 —— 修复前就有的行为）；① 别处**同名**（换种类/换类型的残留，顺带自愈旧残留）；
+  ② 目标路径还不存在（= 搬到新位置）时全树按 id 兜底（覆盖「改名 + 换种类同时发生」）。
+  ② 只在搬到新位置那一次跑：`writeAll` 每次落盘遍历全部节点，全树解析就是 O(节点数²) 次读盘。
+  （⓪ 那份 O(N²) 是**既有**问题，方向见 `docs/BUGS.md` 第十九轮「仍在案的」。）
+- ⚠️ **测试前置必须给出确定起点**：`seed-node.cjs` 播节点前先清空这条时间线。
+  同 id 两份并存时赢家随 readdir 顺序而变，断言会假挂（曾把「目录脏」误判成代码改坏 —— 见第十九轮的 A/B）。
 
 ## 5. 脚手架
 

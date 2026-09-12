@@ -607,18 +607,66 @@ function writeDataFileSync(payload) {
   rotateBackups(DATA_FILE());
   fs.writeFileSync(DATA_FILE(), JSON.stringify(payload, null, 2), 'utf8');
 }
+/** 删掉这条时间线下**同 id 的旧节点 .md**（`keepPath` 那份留着）。
+ *
+ *  为什么非要删：节点的「种类」= 它所在的文件夹名（见 nodePath / scanTimelineDir），
+ *  所以在应用里改种类 = 把文件搬到另一个文件夹。旧文件夹里那份不走，
+ *  重扫时同 id 是**后来者覆盖**（scanTimelineDir 里 `nodesById.set(n.id, n)`），
+ *  readdir 顺序一不合适，旧文件就会把种类连同字段一起打回旧值 ——
+ *  用户看到的是「我改的东西自己变回去了」。
+ *
+ *  三层，从便宜到贵（`kill` 一律**按 id 命中才删**：id 相同即同一个节点，那份是被应用忽略的旧副本）：
+ *    ⓪ 同目录按 id：改名后的残留（旧文件还在同一个文件夹、只是换了名字）。**修复前就有的行为，保留。**
+ *    ① 别的种类文件夹里**同名**的那份：换种类的残留。只认同名、命中才读内容 ——
+ *       应用自己造的残留必定同名（换种类只换文件夹），所以这一层同时**自愈升级前就留在盘上的旧残留**。
+ *    ② `deep`（目标路径还不存在 = 搬到没住过的地方）时按 id 扫这条时间线全树：
+ *       覆盖「改名 + 换种类同时发生」（两个字段落进同一次 400ms 防抖落盘里就会这样）。
+ *  ② 只在搬到新位置那一次跑，是为了别让每次落盘都全解析一遍 ——
+ *  writeVaultNodeSync 每次自动落盘都会被调一次（渲染层 writeAll 遍历全部节点），
+ *  全树解析 = O(节点数²) 次读盘。⓪ 的代价与修复前相同（那个 O(N²) 是既有问题，见 docs/BUGS.md）。 */
+function dropStaleNodeFiles(wsName, tlName, node, keepPath, deep) {
+  const safe = (s) => String(s || '').replace(/[\\/:*?"<>|]/g, '_');
+  const tlDir = path.join(VAULT_DIR(), safe(wsName), safe(tlName));
+  const dir = path.dirname(keepPath);
+  const fileName = safe(node.title) + '.md';
+  const kill = (p) => {
+    if (path.resolve(p) === path.resolve(keepPath)) return;
+    let old = null;
+    try { old = mdToNode(fs.readFileSync(p, 'utf8')); } catch (e) { return; }   /* 读不了的旧文件忽略 */
+    if (!old || old.id !== node.id) return;
+    try { fs.rmSync(p, { force: true }); } catch (e) { /* 删不掉就算了，下次写盘再试 */ }
+  };
+  /* ⓪ 同目录（同名或改了名的旧文件） */
+  try { for (const f of fs.readdirSync(dir)) if (f.endsWith('.md')) kill(path.join(dir, f)); } catch (e) { /* 目录不在 */ }
+  /* ① 别处同名：各「种类」文件夹 + 时间线直接层（旧两层结构） */
+  const elsewhere = [path.join(tlDir, fileName)];
+  try {
+    for (const e of fs.readdirSync(tlDir, { withFileTypes: true })) {
+      if (e.isDirectory() && !e.name.startsWith('.')) elsewhere.push(path.join(tlDir, e.name, fileName));
+    }
+  } catch (e) { /* 时间线目录还不存在：没有旧文件可清 */ }
+  for (const p of elsewhere) if (fs.existsSync(p)) kill(p);
+  /* ② 搬到新位置那一次，按 id 全树兜底 */
+  if (!deep) return;
+  const walk = (d) => {
+    let ents;
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of ents) {
+      if (e.name.startsWith('.')) continue;   /* 跳过 .trash 等隐藏目录 */
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.md')) kill(p);
+    }
+  };
+  walk(tlDir);
+}
+
 function writeVaultNodeSync(wsName, tlName, node) {
-  const dir = path.dirname(nodePath(wsName, tlName, node));
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  /* 改名去重：同 id 但 title 不同的旧 .md 残留 → 删除（避免名改后文件成双） */
   const target = nodePath(wsName, tlName, node);
-  fs.readdirSync(dir).forEach((f) => {
-    if (!f.endsWith('.md') || path.join(dir, f) === target) return;
-    try {
-      const old = mdToNode(fs.readFileSync(path.join(dir, f), 'utf8'));
-      if (old.id === node.id) fs.rmSync(path.join(dir, f), { force: true });
-    } catch (e) { /* 读不了的旧文件忽略 */ }
-  });
+  const dir = path.dirname(target);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  /* 目标是新位置（改名 / 换种类 / 这个节点还没有文件）时，才需要按 id 全树找旧文件 */
+  dropStaleNodeFiles(wsName, tlName, node, target, !fs.existsSync(target));
   fs.writeFileSync(target, nodeToMd(node), 'utf8');
 }
 
@@ -638,22 +686,30 @@ function entityFiles(wsName) {
   }
   return out;
 }
-function writeVaultEntitySync(wsName, typeName, entity) {
-  const target = entityPath(wsName, typeName, entity);
-  const dir = path.dirname(target);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  /* 改名 / **换类型** 后同 id 的旧 .md 会残留 → 删掉。
-     为什么要在 `_设定/**` 全树里找、而不是像 writeVaultNodeSync 那样只看目标目录：
-     换类型时残留落在**另一个类型文件夹**里，而回扫是按 id 去重的（合并时谁后扫到谁赢，
-     readdir 顺序决定），留着就会让「类型改不回去」—— 每次回扫都从旧文件把 typeId 打回原值。
-     （节点那边换 kind 同样会残留，属既有问题，见 docs/BUGS.md 已记录。） */
+/** 删掉这个世界里**同 id 的旧实体 .md**（`keepPath` 那份留着）。理由与三层结构同 dropStaleNodeFiles
+ *  （实体侧「换类型」= 搬到另一个类型文件夹，残留会让 typeId 每次回扫被打回原值）：
+ *  ⓪ 同类型目录按 id（改名残留）；① 别的类型目录里**同名**的那份（换类型残留，也自愈旧残留）；
+ *  ② `deep`（目标路径还不存在）时 `_设定/**` 全树按 id 兜底（改名 + 换类型同时发生）。
+ *  分三层是为了别让每次落盘都全解析一遍 —— writeAll 会遍历全部实体，那就是 O(实体数²) 次读盘。 */
+function dropStaleEntityFiles(wsName, entity, keepPath, deep) {
+  const fileName = safeName(entity.name) + '.md';
+  const dir = path.dirname(keepPath);
   for (const p of entityFiles(wsName)) {
-    if (p === target) continue;
+    if (path.resolve(p) === path.resolve(keepPath)) continue;
+    /* 便宜的筛子：同目录（改名残留）或别处同名（换类型残留）才值得读内容确认 */
+    if (!deep && path.dirname(p) !== dir && path.basename(p) !== fileName) continue;
     try {
       const old = mdToEntity(fs.readFileSync(p, 'utf8'));
       if (old && old.id === entity.id) fs.rmSync(p, { force: true });
     } catch (e) { /* 读不了的旧文件忽略 */ }
   }
+}
+
+function writeVaultEntitySync(wsName, typeName, entity) {
+  const target = entityPath(wsName, typeName, entity);
+  const dir = path.dirname(target);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  dropStaleEntityFiles(wsName, entity, target, !fs.existsSync(target));
   fs.writeFileSync(target, entityToMd(entity, typeName), 'utf8');
 }
 

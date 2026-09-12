@@ -452,7 +452,10 @@ export function createPropsPanel(deps: PropsPanelDeps): PropsPanel {
         ctrl = sel;
       } else if (k === '种类') {
         /* 种类=模板引用：选了它，属性区就按那种类的字段渲染（模板在「结构体管理」里定义）。
-           vault 里这个节点的文件夹也会跟着换（vault:write 按 kind 建目录、旧文件按 id 清掉）。 */
+           vault 里这个节点的文件夹也会跟着换（vault:write 按 kind 建目录）——
+           旧文件夹那份按 id 清掉是**必须**的：两个文件夹各留一份时，重扫是同 id 后来者覆盖，
+           旧文件会把种类和字段打回旧值（= 用户说的「我改的东西自己变回去了」）。
+           规则见 main.js 的 dropStaleNodeFiles（第十九轮）。 */
         const sel = document.createElement('select');
         sel.style.cssText = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-xs);outline:none;';
         const kinds = Object.keys(store.data.formats ?? {});
