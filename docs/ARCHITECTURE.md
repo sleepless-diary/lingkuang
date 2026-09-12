@@ -97,6 +97,12 @@
 - 节点/指针/剧情框/循环定位走 `nodeEpoch`/`yearEpoch`（`toEpoch`）
 - 标尺按缩放分档（年→月→日→时→分），日/月档按公历真实日期推进（尊重大小月，不固定步长漂移）
 - 时间指针 `timeCursor` 存 epoch 秒
+- **因果线（`drawCauses`）的坐标基准取 `.tl-causes` 这个 SVG 自身的 rect**：它带 `top:34px` 偏移，
+  SVG 用户坐标原点在它自己左上角；别拿 `.tl-wrap` 的 rect 再加手调常数（曾用 `-26` / `-5`，
+  导致端点恒偏低 3px、并向内钻 5px 进圆点里，看起来"没对准"）。端点取 `.cap` 实测外缘
+  （半径现取不硬编码），垂直取圆心；弧高按跨距成比例（末端切线 ≈32° 恒定），上限取画布高度一半。
+  `.tl-causes` 未给宽高属性 → 它是 SVG 固有尺寸 300×150（`right`/`bottom` 被忽略），
+  只靠 `overflow:visible` 正常显示，坐标映射不受影响。
 
 ### 数据处理（src/store/）
 - `store.ts`：`createStore` + `subscribe`，`update(cb, opts)` 统一改数据
