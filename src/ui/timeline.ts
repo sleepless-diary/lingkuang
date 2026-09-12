@@ -235,8 +235,10 @@ export function mountTimeline(
     updateCursor();
   }
 
-  /* 因果线：从发起节点(n) 指向目标 cause(c)（用户在本节点添加 -> 箭头从本节点出发指向所选节点） */
-  /* 因果线：从发起节点(n) 指向目标 cause(c)。用节点元素真实位置（getBoundingClientRect）连到 cap 中心。
+  /* 因果线：从发起节点(n) 指向目标 cause(c)（用户在本节点添加 -> 箭头从本节点出发指向所选节点）。
+     端点取 .cap 圆点的**真实外缘**、垂直取圆点中心；坐标基准取 SVG 自身 rect（它带 top:34px 偏移）。
+     旧实现用 wrapRect + 手调常数（-26 / -5）会让端点恒偏低 3px、并向内多缩 5px 钻进圆点里，
+     相邻节点只差十几 px 时会读成"连到了旁边那个点"。
      箭头大小/线宽/不透明度随节点间距联动（缩小→变小变淡，避免挤在一起回旋/看不清） */
   function drawCauses() {
     const tl = timeline();
@@ -244,21 +246,25 @@ export function mountTimeline(
     let pathSvg = '';
     let defsSvg = '';
     let idx = 0;
-    const wrapRect = wrap.getBoundingClientRect();
-    const nodeCenter = (id: string): { x: number; y: number } | null => {
+    const svgRect = causesSvg.getBoundingClientRect();
+    const nodeCenter = (id: string): { x: number; y: number; r: number } | null => {
       const el = track.querySelector(`[data-id="${id}"]`) as HTMLElement | null;
       if (!el) return null;
-      const r = el.getBoundingClientRect();
-      return { x: r.left + r.width / 2 - wrapRect.left, y: r.top + r.height / 2 - wrapRect.top - 26 };
+      const dot = (el.querySelector('.cap') as HTMLElement | null) ?? el;
+      const r = dot.getBoundingClientRect();
+      return { x: r.left + r.width / 2 - svgRect.left, y: r.top + r.height / 2 - svgRect.top, r: r.width / 2 };
     };
     for (const n of tl?.nodes ?? []) {
       for (const cid of n.causes ?? []) {
         if (!byId.get(cid)) continue;
         const a = nodeCenter(n.id), b = nodeCenter(cid);
         if (!a || !b) continue;
+        const dx = Math.abs(b.x - a.x);
         const dir = b.x >= a.x ? 1 : -1;
-        const x1 = a.x + dir * 5, y1 = a.y - 5;
-        const x2 = b.x - dir * 5, y2 = b.y - 5;
+        /* 端点贴圆点外缘；两圆点重叠时退回固定 5px 间距，避免弧线退化成零长线段 */
+        const inset = dx >= a.r + b.r ? Math.min(a.r, b.r) : -5;
+        const x1 = a.x + dir * inset, y1 = a.y;
+        const x2 = b.x - dir * inset, y2 = b.y;
         const seg = Math.abs(x2 - x1);
         /* 控制点随间距缩放：cdx < seg/2 不回旋，高度随 seg 收敛 */
         const cdx = seg * 0.4, cdy = Math.min(26, seg * 0.25);
