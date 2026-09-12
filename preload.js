@@ -23,11 +23,15 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
   /* vault：每个节点 = 外部 .md 文件（Obsidian 可编辑，文件为源） */
   vaultScan: () => ipcRenderer.invoke('vault:scan'),
   vaultWrite: (wsName, tlName, node) => ipcRenderer.invoke('vault:write', { wsName, tlName, node }),
+  /* 删节点时把 vault 里对应 .md 移到 .trash（不删文件的话下次启动会复活） */
+  vaultDelete: (wsName, tlName, node) => ipcRenderer.invoke('vault:delete', { wsName, tlName, node }),
   vaultWatch: () => ipcRenderer.invoke('vault:watch'),
   vaultUnwatch: () => ipcRenderer.invoke('vault:unwatch'),
   onVaultChanged: (cb) => ipcRenderer.on('vault-changed', () => cb()),
   /* 读单个节点原始 .md 文本（检测 #正文： 标签缺失用） */
   readNodeText: (wsName, tlName, nodeId) => ipcRenderer.invoke('vault:readNode', { wsName, tlName, nodeId }),
   /* 导入图片到 vault assets（返回相对路径） */
-  importImage: () => ipcRenderer.invoke('vault:importImage')
+  importImage: () => ipcRenderer.invoke('vault:importImage'),
+  /* 退出前同步落盘：beforeunload 里用，异步 IPC 在窗口销毁后不保证跑完 */
+  flushSync: (payload) => ipcRenderer.sendSync('app:flush-sync', payload)
 });

@@ -1,0 +1,21 @@
+[server] 灵框 · 知识库日志查看器  v0.1.0
+[server] root   F:\knowledge-base
+  md     markdown-it
+  本机   http://localhost:7799
+[server] 手机   http://169.254.83.107:7799   <- 同一WiFi下用这个
+[server] 手机   http://192.168.1.102:7799   <- 同一WiFi下用这个
+[server] 
+--- API 测试 ---
+PASS  GET /api/health  ok=true root=F:\knowledge-base md=markdown-it
+PASS  GET /api/stats  files=519 bytes=1865144 tops=AI助手能力升级清单.md,art,assets-index.md,college,creative-inspo,daily
+PASS  GET /api/tree  topNodes=art/ college/ creative-inspo/ daily/ diary/ longterm/ projects/ reference/ tasks/ tech-notes/ user-tips/ weekly/ _pe_dump.py _pe_probe.py AI助手能力升级清单.md assets-index.md README.md reasonix-emotion.json reasonix-to-dsh-handoff.md ROUTING.md skills-index.md user-profile.md worldbuilding.md
+PASS  GET /api/recent  3 items; first=college/chemistry-course-map.md
+PASS  GET /api/file README.md  size=41636 htmlLen=40120 head=# 知识库索引  > 最后更新：2026-09-09 · 新增恐怖字体 + Pavo/33台词/Archify/Glam
+PASS  GET /api/search 记账  hits=4; first=daily/2026-09-10.md:15
+PASS  GET / (index.html)  status=200 bytes=2663 hasApp=true
+PASS  GET /style.css  status=200 type=text/css; charset=utf-8
+PASS  GET /app.js  status=200 bytes=9525
+PASS  GET /manifest.webmanifest  status=200 type=application/manifest+json; charset=utf-8
+PASS  GET /icons/icon-192.png  status=200 bytes=46473
+PASS  路径穿越防护 (../../Windows/win.ini)  blocked (bad path)
+PASS  404 未知 API  status=404

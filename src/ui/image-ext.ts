@@ -51,7 +51,10 @@ export const Image = Node.create<ImageOptions>({
   },
   renderMarkdown(node: JSONContent) {
     const attrs = (node.attrs ?? {}) as ImageAttrs;
-    const src = attrs.src ?? '';
+    /* 目标必须做 URL 转义：CommonMark/marked 在空白处截断目标，
+       `![](assets/my pic.png)` 会被解析成普通文本而不是图片 ——
+       图片在下次 setContent 时退化成字面文本并从文档里消失（Windows 截图名常带空格）。 */
+    const src = encodeURI(attrs.src ?? '');
     const alt = attrs.alt ?? '';
     const title = attrs.title ? ` "${attrs.title}"` : '';
     return `![${alt}](${src}${title})`;

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5">
+<title>灵框 · 知识库</title>
+<meta name="description" content="灵框 LingKuang 知识库日志查看器">
+<meta name="theme-color" content="#0f0f11">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="灵框KB">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ── 顶栏 ── -->
+<header class="topbar">
+  <button id="btn-drawer" class="icon-btn" aria-label="目录">☰</button>
+  <div class="crumb">
+    <button id="crumb-root" class="crumb-root">知识库</button>
+    <span id="crumb-path" class="crumb-path"></span>
+  </div>
+  <button id="btn-font" class="icon-btn" aria-label="字号">Aa</button>
+  <button id="btn-refresh" class="icon-btn" aria-label="刷新">↻</button>
+</header>
+
+<!-- ── 目录抽屉 ── -->
+<aside id="drawer" class="drawer">
+  <div class="drawer-head">
+    <span class="drawer-title">目录</span>
+    <button id="btn-drawer-close" class="icon-btn tiny" aria-label="关闭">✕</button>
+  </div>
+  <div id="tree" class="tree"></div>
+</aside>
+<div id="scrim" class="scrim"></div>
+
+<!-- ── 主区 ── -->
+<main id="main" class="main">
+
+  <!-- 最近 -->
+  <section id="view-recent" class="view">
+    <div id="stats" class="stats"></div>
+    <h2 class="section-title">最近更新</h2>
+    <div id="recent-list" class="list"><div class="loading">加载中…</div></div>
+    <h2 class="section-title">分栏</h2>
+    <div id="top-dirs" class="chips"></div>
+  </section>
+
+  <!-- 搜索 -->
+  <section id="view-search" class="view hidden">
+    <div class="searchbar">
+      <input id="q" type="search" placeholder="搜索知识库…" autocomplete="off" enterkeyhint="search">
+      <button id="btn-search" class="go">搜索</button>
+    </div>
+    <div id="search-meta" class="meta-line"></div>
+    <div id="search-list" class="list"></div>
+  </section>
+
+  <!-- 文件 -->
+  <section id="view-file" class="view hidden">
+    <article id="doc" class="doc"></article>
+  </section>
+
+</main>
+
+<!-- ── 底部导航（移动） ── -->
+<nav class="tabbar">
+  <button data-tab="recent" class="tab active"><span>◱</span>最近</button>
+  <button data-tab="drawer" class="tab"><span>≡</span>目录</button>
+  <button data-tab="search" class="tab"><span>⌕</span>搜索</button>
+</nav>
+
+<div id="toast" class="toast"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

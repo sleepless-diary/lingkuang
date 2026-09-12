@@ -1,0 +1,3583 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>灵框 LingKuang v3 — 阈限梦核</title>
+<style>
+/* ═════════════════════════════════════════════════════════════════
+ * 灵框 LingKuang v3 — 阈限梦核 (Liminal Dreamcore)
+ * tokens.css  ·  canonical compiled custom-property tokens
+ * ═════════════════════════════════════════════════════════════════ */
+:root {
+  /* ── A1-identity · surface ─────────────────────────────────── */
+  --bg:           #c5c2ba;   /* 褪色的殿堂 */
+  --surface:      #cecbc7;   /* 蒙灰玻璃 */
+  --surface-2:    #d6d3ca;   /* 内墙 */
+
+  /* ── A1-identity · foreground ──────────────────────────────── */
+  --fg:           #3a3a34;   /* 锈铅 */
+  --muted:        #9b998c;   /* 尘埃 */
+  --fg-inverse:   #e8e7df;   /* 荧光白 */
+
+  /* ── B-slot · aliases on the light theme ───────────────────── */
+  --surface-warm: #cfcec7;   /* 走廊暖壁 */
+  --fg-2:         #6b6a5f;   /* 晕影 */
+  --meta:         #7c7a6f;   /* 裂纹 */
+  --border-soft:  rgba(58,58,52,0.10);  /* 淡阈线 */
+
+  /* ── A1-identity · border ──────────────────────────────────── */
+  --border:       rgba(58,58,52,0.16);
+  --border-strong:rgba(58,58,52,0.30);
+
+  /* ── A1-identity · accent ──────────────────────────────────── */
+  --accent:       #9ec262;   /* 冷荧光绿 */
+  --accent-2:     #dfc073;   /* 后室黄 */
+
+  /* ── A1-identity · dark chrome ─────────────────────────────── */
+  --chrome:       #0f0f11;   /* 荧光框 */
+  --chrome-2:     #1a1a1d;   /* 暗房 */
+
+  /* ── A2 · accent states ────────────────────────────────────── */
+  --accent-on:      #20241c;
+  --accent-hover:   #aecf76;
+  --accent-active:  #8cb455;
+
+  /* ── A2 · semantic ─────────────────────────────────────────── */
+  --success:  #6f9e6f;   /* 苔痕绿 */
+  --warn:     #c9a24b;   /* 锈黄 */
+  --danger:   #a8603f;   /* 锈棕 */
+
+  /* ── A1-identity · typography ──────────────────────────────── */
+  --font-display: "Songti SC", "Noto Serif SC", Georgia, "Times New Roman", serif;
+  --font-body: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", "Courier New", monospace;
+
+  /* ── A1-structure · type scale ─────────────────────────────── */
+  --text-xs:   0.75rem;
+  --text-sm:   0.8438rem;
+  --text-base: 0.9375rem;
+  --text-lg:   1.125rem;
+  --text-xl:   1.375rem;
+  --text-2xl:  1.75rem;
+  --text-3xl:  2.25rem;
+  --text-4xl:  3rem;
+
+  --leading-tight:    1.25;
+  --leading-body:     1.65;
+  --tracking-display: 0.06em;
+  --tracking-eyebrow: 0.14em;
+
+  /* ── A1-structure · spacing ────────────────────────────────── */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-12: 48px;
+
+  --section-y-desktop: 56px;
+  --section-y-tablet:  40px;
+  --section-y-phone:   28px;
+
+  /* ── A2 · radius ───────────────────────────────────────────── */
+  --radius-sm:   8px;
+  --radius-md:   8px;
+  --radius-lg:   12px;
+  --radius-xl:   16px;
+  --radius-pill: 9999px;
+
+  /* ── A2 · elevation (recessed, never floating) ─────────────── */
+  --elev-flat:   none;
+  --elev-ring:   0 0 0 1px var(--border);
+  --elev-raised: inset 0 1px 2px rgba(58,58,52,0.10), 0 0 0 1px var(--border);
+  --elev-bloom:  0 0 24px rgba(158,194,98,0.28);
+
+  /* ── A2 · focus ────────────────────────────────────────────── */
+  --focus-ring: 0 0 0 3px rgba(158,194,98,0.30);
+
+  /* ── A2 · motion ───────────────────────────────────────────── */
+  --motion-fast:   180ms;
+  --motion-base:   320ms;
+  --motion-slow:   640ms;
+  --ease-standard: cubic-bezier(0.22, 0.75, 0.25, 1);
+
+  /* ── A1-structure · layout ─────────────────────────────────── */
+  --container-max: 1400px;
+  --container-gutter-desktop: 32px;
+  --container-gutter-tablet:  24px;
+  --container-gutter-phone:   16px;
+
+  /* ── C-extensions · brand-specific (lingkuang) ─────────────── */
+  --lk-sidebar-width:    220px;
+  --lk-sidebar-collapsed: 56px;
+  --lk-cell:             40px;
+  --lk-grain-opacity:    0.06;
+  --lk-scanline-gap:     4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 120ms;
+    --motion-base: 160ms;
+    --motion-slow: 200ms;
+  }
+}
+
+/* ═════════════════════════════════════════════════════════════════
+ * Base / reset
+ * ═════════════════════════════════════════════════════════════════ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+body {
+  /* VHS bloom overlay — grain strongest at edges */
+  background-image:
+    radial-gradient(90% 90% at 50% 50%, rgba(255,255,252,0.10) 0%, transparent 60%),
+    linear-gradient(to bottom, rgba(58,58,52,0.05), transparent 40%);
+}
+
+.mono-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--meta);
+}
+
+.serif {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: var(--tracking-display);
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+/* ═════════════════════════════════════════════════════════════════
+ * VHS grain + scanline atmosphere overlay (fixed above everything)
+ * ═════════════════════════════════════════════════════════════════ */
+.veil {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  pointer-events: none;
+}
+.veil__grain {
+  position: absolute;
+  inset: 0;
+  opacity: var(--lk-grain-opacity);
+  transition: opacity 1400ms var(--ease-standard);
+  mix-blend-mode: multiply;
+  background-image:
+    radial-gradient(120% 120% at 50% 20%, rgba(0,0,0,0) 55%, rgba(58,58,52,0.35) 100%);
+  animation: grain 12s steps(3) infinite;
+}
+.veil__grain::before {
+  content: "";
+  position: absolute; inset: -60%;
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      transparent 0px, transparent 2px, rgba(255,255,253,0.5) 2px, transparent 3px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(58,58,52,0.25) 0px, transparent 1px, transparent 3px,
+      rgba(58,58,52,0.18) 3px, transparent 4px
+    );
+  animation: drift 16s linear infinite;
+}
+.veil__scanlines {
+  position: absolute;
+  inset: 0;
+  opacity: 0.05;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent calc(var(--lk-scanline-gap) - 1px),
+    rgba(58,58,52,0.8) var(--lk-scanline-gap)
+  );
+}
+
+@keyframes grain {
+  0%, 100% { transform: translate(0, 0); }
+  33% { transform: translate(-1px, 1px); }
+  66% { transform: translate(1px, -1px); }
+}
+@keyframes drift {
+  0% { transform: translate3d(0, 0, 0); }
+  100% { transform: translate3d(-4%, -3%, 0); }
+}
+
+/* ═════════════════════════════════════════════════════════════════
+ * App shell — the seam + the lobby
+ * ═════════════════════════════════════════════════════════════════ */
+.app {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  transition: filter 1400ms var(--ease-standard);
+}
+
+/* ── idle un-render：停止注视时画面慢慢失焦褪色（像 CRT 待机）── */
+body.is-idle .app {
+  filter: saturate(0.55) brightness(0.965);
+}
+body.is-idle .veil__grain {
+  opacity: calc(var(--lk-grain-opacity) * 2.4);
+}
+
+/* ── The Seam · dark chrome sidebar ───────────────────────────── */
+.seam {
+  width: var(--lk-sidebar-width);
+  flex: 0 0 var(--lk-sidebar-width);
+  background: var(--chrome);
+  color: var(--fg-inverse);
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-6) var(--space-4);
+  position: relative;
+  z-index: 10;
+}
+.seam__wordmark {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: 500;
+  letter-spacing: var(--tracking-display);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: var(--space-8);
+  padding: 0 var(--space-2);
+}
+.seam__wordmark .dim { color: var(--accent); }
+
+.seam__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.seam__section {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: #5a5a5a;
+  margin: var(--space-6) var(--space-2) var(--space-2);
+}
+.seam__item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px var(--space-4);
+  border-radius: var(--radius-md);
+  color: var(--meta);
+  position: relative;
+  border: 1px solid transparent;
+  transition: background var(--motion-base) var(--ease-standard),
+              color var(--motion-base) var(--ease-standard);
+  text-align: left;
+}
+.seam__item .glyph { font-size: 15px; width: 20px; text-align: center; }
+.seam__item:hover { color: var(--fg-inverse); }
+.seam__item.is-active {
+  background: var(--chrome-2);
+  color: var(--fg-inverse);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.4);
+  border-color: var(--border-strong);
+}
+/* 1px green seam on the active item's left edge */
+.seam__item.is-active::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 20%;
+  bottom: 20%;
+  width: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(158,194,98,0.5);
+  border-radius: 2px;
+}
+
+.seam__spacer { flex: 1; }
+.seam__foot {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #5a5a5a;
+  padding: var(--space-4) var(--space-2);
+  line-height: 1.5;
+}
+.seam__foot .now { color: var(--meta); }
+.seam__icon {
+  background: transparent;
+  border: none;
+  color: #8a8a8a;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 6px 10px;
+  transition: color var(--motion-fast) ease, background var(--motion-fast) ease;
+  border-radius: var(--radius-sm);
+  align-self: flex-start;
+}
+.seam__icon:hover { color: var(--accent); background: rgba(255,255,255,0.05); }
+/* settings gear — fixed to the window's bottom-left corner, always visible */
+#settings-btn {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: 1000;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20,20,18,0.72);
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 50%;
+  color: #b0b0aa;
+  font-size: 17px;
+  cursor: pointer;
+  transition: color var(--motion-fast) ease, background var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+#settings-btn:hover { color: var(--accent); border-color: rgba(200,180,120,0.4); background: rgba(20,20,18,0.9); }
+
+/* ── UI 进出场动画：轻量淡入上浮（不用 clip-path —— 它会裁剪溢出
+   的子元素，比如二级菜单，只留下阴影边缘 = “暗线”） ── */
+@keyframes fxExpand {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fxRevealX {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: none; }
+}
+.tl__ctx, .tl__wsmenu {
+  animation: fxExpand 160ms ease-out;
+}
+.tl__ctx > *, .tl__wsmenu > * {
+  animation: fxRevealX 240ms ease-out 40ms both;
+}
+
+/* ── The Lobby · light canvas ─────────────────────────────────── */
+.lobby {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.lobby__head {
+  padding: var(--section-y-desktop) var(--container-gutter-desktop) 0;
+}
+.lobby__title { font-size: var(--text-2xl); }
+.lobby__sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--meta);
+  margin-top: 6px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.lobby__sub kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--meta);
+  background: var(--surface-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+  box-shadow: inset 0 1px 1px rgba(58,58,52,0.15);
+  text-transform: none;
+}
+/* 手势项之间的分隔线（第一个 span 除外） */
+.lobby__sub > span + span {
+  border-left: 1px solid var(--border);
+  padding-left: 10px;
+}
+
+/* search */
+.search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: var(--space-6);
+  max-width: 420px;
+  padding: 12px 16px;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-raised);
+  border: 1px solid var(--border);
+  transition: box-shadow var(--motion-base) var(--ease-standard),
+              border-color var(--motion-base) var(--ease-standard);
+}
+.search:focus-within {
+  border-color: var(--border-strong);
+  box-shadow: inset 0 1px 2px rgba(58,58,52,0.10), 0 0 0 1px var(--border-strong), var(--elev-bloom);
+}
+.search__icon { color: var(--meta); }
+.search input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  color: var(--fg);
+}
+.search input::placeholder { color: var(--meta); }
+.search kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--meta);
+  background: var(--surface-2);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 1px 1px rgba(58,58,52,0.15);
+}
+
+/* plugin grid */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-6);
+  padding: var(--space-8) var(--container-gutter-desktop) var(--space-12);
+  overflow-y: auto;
+  flex: 1;                 /* fill leftover height under the head */
+  min-height: 0;           /* allow shrinking → internal scroll appears */
+}
+.grid::-webkit-scrollbar { width: 10px; }
+.grid::-webkit-scrollbar-thumb {
+  background: var(--border-soft);
+  border-radius: 6px;
+}
+.grid::-webkit-scrollbar-track { background: transparent; }
+
+/* ── Niche-in-the-wall card ───────────────────────────────────── */
+.niche {
+  position: relative;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  box-shadow: var(--elev-raised);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  cursor: pointer;
+  animation: wake 640ms var(--ease-standard) both;
+  transition: border-color var(--motion-base) var(--ease-standard),
+              box-shadow var(--motion-base) var(--ease-standard);
+}
+.niche__cell {
+  width: var(--lk-cell);
+  height: var(--lk-cell);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  box-shadow: inset 0 1px 2px rgba(58,58,52,0.18);
+  color: var(--fg-2);
+}
+.niche__title { font-size: var(--text-base); }
+.niche__desc {
+  font-size: var(--text-sm);
+  color: var(--fg-2);
+  line-height: var(--leading-body);
+  flex: 1;
+}
+.niche__meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--meta);
+  display: flex;
+  justify-content: space-between;
+}
+/* faint green corner glow on hover — the only place green peeks */
+.niche:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--elev-raised), 0 0 0 1px var(--border-strong);
+}
+.niche:hover::after {
+  content: "";
+  position: absolute;
+  top: -1px; right: -1px;
+  width: 46px; height: 46px;
+  background: radial-gradient(circle at top right, rgba(158,194,98,0.35), transparent 75%);
+  border-top-right-radius: var(--radius-lg);
+  pointer-events: none;
+}
+
+@keyframes wake {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.niche:nth-child(1) { animation-delay: 60ms; }
+.niche:nth-child(2) { animation-delay: 120ms; }
+.niche:nth-child(3) { animation-delay: 180ms; }
+.niche:nth-child(4) { animation-delay: 240ms; }
+.niche:nth-child(5) { animation-delay: 300ms; }
+.niche:nth-child(6) { animation-delay: 360ms; }
+
+/* ── AI entry (The Hum seed) · breathing green pill ───────────── */
+.ai-entry {
+  position: relative;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: var(--space-6);
+  padding: 12px 18px;
+  background: var(--accent);
+  color: var(--accent-on);
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  font-size: var(--text-sm);
+  box-shadow: 0 0 24px rgba(158,194,98,0.28);
+  animation: breath 8s ease-in-out infinite;
+  cursor: pointer;
+  border: none;
+}
+.ai-entry .dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--accent-on);
+  opacity: 0.8;
+  box-shadow: 0 0 8px var(--accent-on);
+}
+.ai-entry .serif { font-family: var(--font-display); font-size: 15px; }
+
+@keyframes breath {
+  0%, 100% {
+    box-shadow: 0 0 12px rgba(158,194,98,0.14), 0 0 0 1px rgba(158,194,98,0.25);
+  }
+  50% {
+    box-shadow: 0 0 34px rgba(158,194,98,0.55), 0 0 0 1px rgba(158,194,98,0.5);
+  }
+}
+
+/* ── empty state ──────────────────────────────────────────────── */
+.empty {
+  text-align: center;
+  color: var(--meta);
+  padding: var(--space-12) 0;
+}
+.empty .serif { font-size: var(--text-lg); color: var(--fg-2); display: block; margin-bottom: 8px; }
+.empty p { font-size: var(--text-sm); }
+
+/* ═════════════════════════════════════════════════════════════════
+ * VIEW 2 — 世界观时间线 (Timeline) · Obsidian-style horizontal graph
+ * ═════════════════════════════════════════════════════════════════ */
+/* .btn, .icon-btn, .field are shared primitives — defined further up. */
+.timeline {
+  display: none;
+  flex-direction: column;
+  height: 100%;
+}
+.timeline.is-open { display: flex; animation: wake 640ms var(--ease-standard) both; }
+
+.tl__head {
+  padding: var(--section-y-desktop) var(--container-gutter-desktop) 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-6);
+  flex-wrap: wrap;
+}
+.tl__head-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+/* worldset button: square select-like box, distinct from pill toggles */
+.tl__head-actions #tl-worldset-btn,
+.tl__head-actions #tl-fitall {
+  border-radius: var(--radius-sm);   /* square-ish, not pill */
+  padding: 8px 16px;
+}
+.tl__head-actions #tl-worldset-btn {
+  min-width: 130px;
+  text-align: left;
+  display: inline-flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.tl__title { font-size: var(--text-2xl); }
+.tl__actions { display: flex; gap: 10px; }
+
+/* buttons */
+.btn {
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  transition: background var(--motion-base) var(--ease-standard),
+              box-shadow var(--motion-base) var(--ease-standard);
+}
+.btn--primary {
+  background: var(--accent);
+  color: var(--accent-on);
+  box-shadow: 0 0 16px rgba(158,194,98,0.2);
+}
+.btn--primary:hover { background: var(--accent-hover); }
+.btn--ghost { color: var(--meta); }
+.btn--ghost:hover { color: var(--fg); }
+.btn--danger { color: var(--danger); }
+.btn--danger:hover { color: var(--danger); box-shadow: inset 0 1px 2px rgba(168,96,63,0.18); }
+
+/* shared recessed icon button primitive */
+.icon-btn {
+  width: 32px; height: 32px;
+  border-radius: var(--radius-sm);
+  display: grid; place-items: center;
+  background: var(--surface-2);
+  color: var(--meta);
+  box-shadow: inset 0 1px 1px rgba(58,58,52,0.18);
+  font-size: 13px;
+  transition: color var(--motion-fast) ease, background var(--motion-fast) ease;
+}
+.icon-btn:hover { color: var(--fg); }
+.icon-btn.danger:hover { color: var(--danger); }
+
+/* ── Multi-timeline manager ───────────────────────────────────── */
+.tl__manager {
+  position: relative;           /* positioning context for the multi mask */
+  margin: var(--space-6) var(--container-gutter-desktop) 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-raised);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  overflow-x: auto;
+}
+/* mask: hides tabs that overshoot past the button's center to the left.
+   Shown only during the dash animation. */
+.tl__multi-mask {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;                     /* set by JS to button centre */
+  background: var(--surface);   /* blends with the manager panel */
+  pointer-events: none;
+  z-index: 5;                   /* above tabs (1), below button (10) */
+  opacity: 1;                   /* always full — visibility does the hiding */
+  visibility: hidden;
+  /* instant shutter (frame data: a fading mask let tabs show at 40-90ms) */
+  transition: none;
+}
+.tl__multi-mask.is-on {
+  visibility: visible;
+}
+.tl__manager::-webkit-scrollbar { height: 6px; }
+.tl__manager::-webkit-scrollbar-thumb { background: var(--border-soft); border-radius: 6px; }
+.tl__mgr-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--meta);
+  padding: 0 var(--space-2);
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 20;              /* always above the dash mask + button */
+}
+.tl__multi-toggle {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 10;              /* always above flying tabs */
+  padding: 10px 18px;       /* larger than tabs, so they hide behind it */
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
+  color: var(--fg-2);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: color var(--motion-fast) ease, background var(--motion-fast) ease;
+}
+.tl__multi-toggle:hover { color: var(--fg); }
+.tl__multi-toggle.is-on {
+  background: var(--accent);
+  color: var(--accent-on);
+  border-color: transparent;
+  font-weight: 600;
+}
+.tl__tab {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 1;               /* under the multi button while flying */
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
+  color: var(--fg-2);
+  border: 1px solid transparent;
+  box-shadow: inset 0 1px 1px rgba(58,58,52,0.10);
+  white-space: nowrap;      /* never wrap — shrink clips instead of growing tall */
+  user-select: none;        /* labels are buttons, not text */
+  cursor: pointer;
+  transition: color var(--motion-base) var(--ease-standard),
+              background var(--motion-base) var(--ease-standard),
+              border-color var(--motion-base) var(--ease-standard);
+}
+.tl__tab:hover { color: var(--fg); }
+.tl__tab.is-active {
+  background: var(--chrome-2);
+  color: var(--fg-inverse);
+  border-color: var(--border-strong);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.4);
+}
+/* 1px green seam on the active timeline tab — one of the ≤2 accent spots */
+.tl__tab.is-active::before {
+  content: "";
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(158,194,98,0.6);
+}
+.tl__tab .count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--meta);
+}
+.tl__tab.is-active .count { color: #8a8a8a; }
+
+/* ═══ multi-mode tab animation (from AE reference) ═══════════
+   Each tab gets --tx (dash distance), --tw (target width),
+   --delay (stagger) from JS — so any number of tabs adapts.
+   Width shrinks instead of scaleX so the pill radius stays round. */
+.tl__tabs {
+  transform-origin: left center;
+  pointer-events: none;   /* locked while animating, restored after */
+}
+.tl__tabs.is-ready { pointer-events: auto; }
+.tl__tab {
+  transform-origin: left center;
+  will-change: transform, width, opacity;
+  overflow: hidden;       /* text clipped while shrinking, keeps pill round */
+}
+/* entering multi: wind-up (0→31%) then dash left + narrow (31→100%) */
+.tl__tab.is-dashing {
+  animation: tab-dash 460ms cubic-bezier(0.5, 0, 0.75, 0) both;
+  animation-delay: var(--delay, 0ms);
+}
+@keyframes tab-dash {
+  0%   { transform: translateX(0); width: var(--tw0, auto); visibility: visible; }
+  31%  { transform: translateX(14px); width: var(--tw0, auto); }  /* wind-up right */
+  100% { transform: translateX(var(--tx, -220px)); width: var(--tw, 120px); visibility: hidden; }
+}
+/* text vanishes mid-dash (opacity to 0, per AE) */
+.tl__tab.is-dashing .tl__tab-name,
+.tl__tab.is-dashing .count {
+  animation: tab-text-fade 200ms linear both;
+  animation-delay: calc(var(--delay, 0ms) + 180ms);
+}
+@keyframes tab-text-fade {
+  to { opacity: 0; }
+}
+/* leaving multi: swing back out, no wind-up */
+.tl__tab.is-swinging {
+  animation: tab-swing 440ms cubic-bezier(0.34, 1.4, 0.64, 1) both;
+  animation-delay: var(--delay, 0ms);
+}
+@keyframes tab-swing {
+  0%   { transform: translateX(var(--tx, -220px)); width: var(--tw, 120px); opacity: 0; visibility: visible; }
+  100% { transform: translateX(0); width: var(--tw0, auto); opacity: 1; }
+}
+/* the multi button catches the dash: spring overshoot (amp .1 freq 2 decay 4) */
+.tl__multi-toggle.is-caught {
+  animation: multi-spring 460ms cubic-bezier(0.22, 0.75, 0.25, 1) both;
+}
+@keyframes multi-spring {
+  0%   { transform: scale(1); }
+  22%  { transform: scale(1.08); }    /* impact */
+  55%  { transform: scale(1.22); }    /* overshoot */
+  78%  { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+.tl__tab-del {
+  font: inherit;
+  color: inherit;
+  opacity: 0;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 12px;
+  line-height: 1;
+  transition: opacity var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.tl__tab:hover .tl__tab-del { opacity: 0.55; }
+.tl__tab .tl__tab-del:hover { opacity: 1; color: var(--danger); }
+.tl__tab-add {
+  flex: 0 0 auto;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 16px;
+  color: var(--meta);
+  background: var(--surface-2);
+  box-shadow: inset 0 1px 1px rgba(58,58,52,0.15);
+  transition: color var(--motion-fast) ease, background var(--motion-fast) ease,
+              transform var(--motion-base) var(--ease-standard),
+              opacity var(--motion-base) var(--ease-standard);
+}
+.tl__tab-add.is-hiding {
+  transform: scale(0.2);
+  opacity: 0;
+  pointer-events: none;
+}
+.tl__tab-add:hover { color: var(--fg); background: var(--surface-2); }
+
+/* ── Stage · the pannable horizontal surface ─────────────────── */
+.tl__stage {
+  position: relative;
+  flex: 1;
+  margin: var(--space-6) var(--container-gutter-desktop) var(--space-8);
+  min-height: 360px;
+  scroll-behavior: smooth;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;         /* nodes/labels are canvas elements, not text */
+  transition: opacity 180ms ease;
+}
+.tl__stage.is-fading { opacity: 0; }
+.tl__stage input, .tl__stage textarea {
+  -webkit-user-select: text;
+  user-select: text;         /* keep the loop-settings fields editable */
+}
+.tl__track {
+  position: relative;
+  height: 100%;
+  min-height: 360px;
+  transition: transform var(--motion-slow) var(--ease-standard);
+}
+.tl__track.is-panning { transition: none; }
+
+/* the horizontal laser — a line through the wall */
+.tl__axis {
+  position: absolute;
+  left: 0; right: 0;
+  top: 50%;
+  height: 3px;                 /* timeline is the thick, structural line */
+  transform: translateY(-1.5px);
+  border-radius: 2px;
+  /* fixed-px fade so zooming (huge track width) never washes the line out;
+     % would be relative to the full track and the viewport would sit in the
+     transparent band once zoomed in */
+  background: linear-gradient(to right, transparent, rgba(58,58,52,0.55) 24px, rgba(58,58,52,0.55) calc(100% - 24px), transparent);
+}
+.tl__axis::before,
+.tl__axis::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1.5px solid var(--border);
+}
+.tl__axis::before { left: 0; }
+.tl__axis::after { right: 0; }
+
+/* one lane per timeline in multi mode — lanes stack vertically, each with
+   its own axis line, all sharing the same horizontal time scale */
+.tl__lane {
+  position: absolute;
+  left: 0;
+  height: 150px;               /* roomier so fan-out labels never clip */
+  width: 100%;
+  transition: height var(--motion-base) var(--ease-standard),
+              top var(--motion-base) var(--ease-standard),
+              transform var(--motion-slow) var(--ease-standard),
+              opacity var(--motion-slow) var(--ease-standard),
+              filter var(--motion-slow) var(--ease-standard);
+}
+.tl__stage.tl-y-locked { /* single mode: vertical scrolling disabled */ }
+.tl__stage.is-multi .tl__lane + .tl__lane {
+  border-top: 1px solid var(--border);   /* divider between worlds */
+}
+.tl__lane .tl__axis {
+  height: 3px;
+  background: linear-gradient(to right, transparent, rgba(58,58,52,0.40) 24px, rgba(58,58,52,0.40) calc(100% - 24px), transparent);
+  opacity: 0.9;
+}
+.tl__lane .tl__axis::before,
+.tl__lane .tl__axis::after { display: none; }
+.tl__lane-label {
+  position: absolute;
+  left: -2px;
+  top: 4px;
+  transform: translateX(-100%);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--meta);
+  white-space: nowrap;
+  pointer-events: none;
+  padding-right: 10px;
+}
+
+/* ── 剧情范围条（AE 工作区式）────────────────────────── */
+.tl__storybar {
+  position: absolute;
+  top: 0;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  background: transparent;          /* 容器透明，色块由 seg 渲染（多段 gap 断开） */
+  pointer-events: none;
+  z-index: 3;
+}
+.tl__storybar-seg {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  border-radius: 3px;
+  background: rgba(158,194,98,0.22);
+  border: 1px solid rgba(158,194,98,0.50);
+}
+.tl__storybar.is-active .tl__storybar-seg {
+  background: rgba(158,194,98,0.40);
+  border-color: var(--accent);
+  box-shadow: 0 0 6px rgba(158,194,98,0.35);
+}
+.tl__storybar .storybar-label {
+  position: absolute;
+  left: 6px;
+  top: 1px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.tl__storybar.is-active .storybar-label { color: var(--accent-on); }
+.tl__story-select {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--chrome-2);
+  color: var(--fg-inverse);
+  border: 1px solid rgba(232,231,223,0.12);
+  border-radius: var(--radius-sm);
+  padding: 3px 6px;
+  outline: none;
+  cursor: pointer;
+}
+/* 刷子工具：拖拽选区高亮（荧光绿半透明边框，AE 工作区风格） */
+.tl__brush-sel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 40;
+  pointer-events: none;
+  background: rgba(158, 194, 98, 0.10);
+  border: 1px solid rgba(158, 194, 98, 0.55);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 0 0 1px rgba(158, 194, 98, 0.08);
+}
+/* 画线模式：已选段持久色带（track 内，随平移/缩放） */
+#tl-seg-marks { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 30; }
+.tl__seg-mark {
+  position: absolute;
+  top: 58px;
+  height: 26px;
+  border-radius: 4px;
+  background: rgba(158, 194, 98, 0.16);
+  border: 1.5px solid rgba(158, 194, 98, 0.65);
+  box-shadow: inset 0 0 0 1px rgba(158, 194, 98, 0.10);
+}
+.tl__seg-mark.is-open { border-style: dashed; }
+.tl__seg-mark.is-open::after {
+  content: '∞';
+  position: absolute;
+  right: 4px;
+  top: 2px;
+  font-size: 11px;
+  color: var(--accent);
+}
+/* 画线模式：已选段内节点高亮 */
+.tl__n.is-inline {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 8px rgba(158, 194, 98, 0.45) !important;
+}
+.tl__n.is-inline::before { background: var(--accent) !important; }
+/* 画线模式浮条（底部居中） */
+/* 剧情线聚焦：范围外区域截断遮罩（世界历史被切掉，只剩剧情范围可见） */
+#tl-range-mask {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 25;
+  pointer-events: none;
+}
+.tl__mask-side {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(110, 108, 100, 0.30);   /* 深色遮罩（暂定，颜色/透明度与 UI 总设计一起调） */
+}
+/* 时间指针：全视图的"当前时间"（已发生/未发生分界），可拖动 */
+.tl__time-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  z-index: 45;
+  pointer-events: none;
+  will-change: transform;   /* 与画布同走合成器，缓动同步 */
+}
+.tl__time-cursor-line {
+  position: absolute;
+  top: 34px;
+  bottom: 0;
+  left: -1px;
+  width: 2px;
+  background: var(--accent);
+  opacity: 0.55;
+}
+.tl__time-cursor-handle {
+  position: absolute;
+  top: 6px;
+  left: -11px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--chrome);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+  cursor: ew-resize;
+  pointer-events: auto;
+  box-shadow: 0 2px 8px rgba(15, 15, 17, 0.4);
+  user-select: none;
+}
+.tl__time-cursor-handle:hover { background: var(--chrome-2); }
+.tl__time-cursor-time {
+  position: absolute;
+  top: 30px;
+  left: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--accent);
+  background: rgba(15, 15, 17, 0.8);
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+/* 时间指针之后（未发生）的节点：半透明淡化 */
+.tl__n.is-future { opacity: 0.40; }
+.tl__n.is-future .name { opacity: 0.7; }
+.tl__line-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(30, 30, 25, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+.tl__line-bar .tl__line-count { font-weight: 600; color: var(--accent); }
+.tl__line-bar .tl__line-hint { font-size: var(--text-xs); color: var(--meta); }
+.tl__multi-toggle.is-on { background: var(--accent); color: var(--accent-on); }
+/* 剧情范围面板的吸取按钮：大按钮全宽，好点 */
+.story-pick-btn {
+  width: 100%;
+  margin: 6px 0;
+  padding: 9px 12px;
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+/* ── loop (cycle) frame for cyclic timelines ──────────────── */
+.tl__loop {
+  position: absolute;
+  top: 4px;                    /* hug the whole lane so all labels sit inside */
+  bottom: 4px;
+  border: 2px dashed rgba(158,194,98,0.75);   /* brighter dashed ring */
+  border-radius: var(--radius-lg);
+  background: rgba(158,194,98,0.08);
+  cursor: pointer;
+  transition: border-color var(--motion-base) var(--ease-standard),
+              background var(--motion-base) var(--ease-standard),
+              left 260ms var(--ease-standard),
+              width 260ms var(--ease-standard);
+}
+.tl__loop:hover,
+.tl__loop.is-active {
+  border-color: var(--accent);
+  border-style: solid;
+  background: rgba(158,194,98,0.14);
+}
+.tl__loop::before, .tl__loop::after {
+  content: "";
+  position: absolute;
+  width: 9px; height: 9px;
+  border: 2px solid var(--accent);
+  background: var(--surface);
+}
+.tl__loop::before { top: -5px; left: -5px; border-right: 0; border-bottom: 0; }
+.tl__loop::after  { bottom: -5px; right: -5px; border-left: 0; border-top: 0; }
+.tl__loop .tl__loop-badge {
+  position: absolute;
+  top: 5px;
+  left: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: #f0dfa2;
+  font-weight: 600;
+  text-transform: uppercase;
+  pointer-events: none;
+  text-shadow: none;
+  background: rgba(15,15,17,0.65);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+/* century scale — map-ruler styled under the axis */
+.tl__scale {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: 6px;
+  height: 24px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--meta);
+  letter-spacing: 0.06em;
+}
+.tl__scale .tick {
+  position: absolute;
+  bottom: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  transition: left 420ms var(--ease-standard);
+}
+/* 拖动/缩放时标尺刻度即时跟随，不缓动 */
+.tl__track.is-panning ~ .tl__scale .tick { transition: none; }
+.tl__scale .tick::before {
+  content: "";
+  width: 1px; height: 8px;
+  background: var(--border-strong);
+}
+.tl__scale .tick.is-major::before { height: 14px; background: var(--fg-2); }
+.tl__scale .tick.is-major { color: var(--fg-2); }
+
+/* ── mouse guide line: vertical crosshair down to the ruler ─── */
+.tl__cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  pointer-events: none;
+  z-index: 90;
+}
+.tl__cursor-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: rgba(58,58,52,0.35);
+}
+.tl__cursor-time {
+  position: absolute;
+  bottom: 26px;              /* just above the ruler */
+  left: 0;
+  transform: translateX(-50%);   /* centered on the guide line (the cursor) */
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--meta);
+  letter-spacing: 0.06em;
+}
+
+/* ── node marker — sits ON the axis; label fans out like sheet music ── */
+.tl__n {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 26px; height: 26px;    /* generous hit area; cap stays 14px visually */
+  margin: -13px 0 0 -13px;      /* center the 26px box on the axis WITHOUT transform,
+                                   so the wake animation cannot override positioning */
+  cursor: pointer;
+  text-align: center;
+  animation: none;              /* wake only via .is-waking (timeline switch) */
+  --lane-h: 24px;               /* vertical step per layer (sheet-music rows) */
+  z-index: 2;                   /* above loop frames so nodes stay clickable */
+  transition: left 420ms var(--ease-standard);   /* 位置缓动（序列切换 / fit） */
+}
+/* 拖动/缩放时即时跟随，不做缓动 */
+.tl__track.is-panning .tl__n { transition: none; }
+.tl__n.is-waking {
+  animation: wake 640ms var(--ease-standard) both;
+}
+/* the hovered/selected node lifts above ALL other nodes so its tooltip
+   (z-index 200 inside this stacking context) is never hidden behind a
+   neighbouring node's box */
+.tl__n:hover,
+.tl__n.is-hovered,
+.tl__n.is-featured {
+  z-index: 9999;
+}
+.tl__n .cap {
+  position: absolute;
+  left: 6px; top: 6px;          /* (26-14)/2 — keep the dot visually centered */
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 2px solid var(--border-strong);
+  box-shadow: inset 0 1px 2px rgba(58,58,52,0.2);
+  transition: border-color var(--motion-base) var(--ease-standard),
+              background var(--motion-base) var(--ease-standard),
+              transform var(--motion-fast) ease;
+}
+.tl__n:hover .cap,
+.tl__n.is-hovered .cap,
+.tl__n.is-featured .cap {
+  background: var(--accent);
+  border-color: var(--accent-hover);
+  transform: scale(1.4);
+}
+/* 循环边界节点：菱形形态；共享边界（both）叠一个后室黄圆环 */
+.tl__n.is-boundary .cap {
+  border-radius: 2px;
+  transform: rotate(45deg);
+  background: var(--surface);
+  border-color: var(--accent);
+}
+.tl__n.is-boundary:hover .cap,
+.tl__n.is-boundary.is-hovered .cap,
+.tl__n.is-boundary.is-featured .cap {
+  background: var(--accent);
+  transform: rotate(45deg) scale(1.4);
+}
+.tl__n.is-boundary.boundary-both .cap {
+  box-shadow: 0 0 0 3px var(--accent-2), inset 0 1px 2px rgba(58,58,52,0.2);
+}
+/* 循环重复段节点：实心、可交互，与第一段内容完全同步（is-loop-repeat 仅作 JS 标记，不改变样式） */
+/* 视口边缘锚点：放大到日时左右两侧钉住的最近节点（定位提示，半透明、不可点击） */
+.tl__n.is-anchor {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* name placed at lane = var(--lane) away from the axis;
+   lane 1 sits right at the axis, higher lanes fan outward */
+.tl__n .name {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  pointer-events: auto;     /* clicking a label opens its node too */
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--meta);
+  letter-spacing: 0.02em;
+  z-index: 0;               /* tooltip always floats above the label */
+  transition: color var(--motion-fast) ease,
+              transform var(--motion-base) var(--ease-standard),
+              letter-spacing var(--motion-base) var(--ease-standard);
+}
+.tl__n.is-up .name {
+  bottom: calc(50% + 14px + var(--lane-h) * (var(--lane) - 1));
+}
+.tl__n.is-dn .name {
+  top: calc(50% + 14px + var(--lane-h) * (var(--lane) - 1));
+}
+.tl__n:hover .name,
+.tl__n.is-hovered .name,
+.tl__n.is-featured .name {
+  color: var(--fg);
+  font-family: var(--font-display);   /* the serif is the memory */
+  letter-spacing: 0.04em;
+  transform: translateX(-50%) translateY(-2px);
+}
+
+/* leader line: lane 1 needs none; lane ≥ 2 draws a stem from the dot,
+   like sheet-music note stems, tying the label to its node */
+.tl__n .leader {
+  position: absolute;
+  left: 50%;
+  width: 1px;
+  background: var(--border-strong);
+  opacity: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.tl__n.is-up .leader {
+  bottom: 50%;
+  height: calc(14px + var(--lane-h) * (var(--lane) - 1) + 12px);
+}
+.tl__n.is-dn .leader {
+  top: 50%;
+  height: calc(14px + var(--lane-h) * (var(--lane) - 1) + 12px);
+}
+.tl__n[data-lane="2"].is-up .leader,
+.tl__n[data-lane="2"].is-dn .leader,
+.tl__n[data-lane="3"].is-up .leader,
+.tl__n[data-lane="3"].is-dn .leader,
+.tl__n[data-lane="4"].is-up .leader,
+.tl__n[data-lane="4"].is-dn .leader,
+.tl__n[data-lane="5"].is-up .leader,
+.tl__n[data-lane="5"].is-dn .leader,
+.tl__n[data-lane="6"].is-up .leader,
+.tl__n[data-lane="6"].is-dn .leader,
+.tl__n[data-lane="7"].is-up .leader,
+.tl__n[data-lane="7"].is-dn .leader {
+  opacity: 0.85;
+}
+
+/* hover tooltip: time ALWAYS floats above the node (mouse would cover
+   a below-node popup); pushed above the label stack when needed */
+.tl__n .tip {
+  position: absolute;
+  left: 50%;
+  /* tooltip always floats ABOVE its label, so the mouse (on the label)
+     never covers it — for up-labels it sits above the label stack */
+  bottom: calc(50% + 42px + var(--lane-h) * (var(--lane) - 1));
+  transform: translate(-50%, 6px);
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 10px;
+  background: var(--chrome-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--elev-raised);
+  transition: opacity var(--motion-fast) ease, transform var(--motion-fast) ease;
+  z-index: 9999;            /* topmost — never hidden behind anything */
+}
+.tl__n.is-dn .tip {
+  /* down-label sits BELOW the axis; the tooltip floats ABOVE that label:
+     its bottom edge hugs the label's top, expanding upward */
+  top: calc(50% + 14px + var(--lane-h) * (var(--lane) - 1) - 8px);
+  bottom: auto;
+  transform: translate(-50%, calc(-100% + 6px));
+}
+.tl__n.is-dn:hover .tip,
+.tl__n.is-dn.is-hovered .tip,
+.tl__n.is-dn.is-featured .tip {
+  transform: translate(-50%, -100%);
+}
+/* little pointer from the tooltip toward its node — always pointing down */
+.tl__n .tip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  width: 10px; height: 10px;
+  background: var(--chrome-2);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  transform: translateX(-50%) rotate(45deg);
+}
+.tl__n:hover .tip,
+.tl__n.is-hovered .tip,
+.tl__n.is-featured .tip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.tl__n .tip .tip__yr {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+}
+
+/* fluorescent corner glow on node hover — the green peeks here */
+.tl__n::before {
+  content: "";
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 0; height: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(158,194,98,0.35), transparent 70%);
+  pointer-events: none;
+  transition: width var(--motion-base) var(--ease-standard),
+              height var(--motion-base) var(--ease-standard),
+              margin var(--motion-base) var(--ease-standard),
+              opacity var(--motion-base) var(--ease-standard);
+  opacity: 0;
+}
+.tl__n:hover::before {
+  width: 64px; height: 64px;
+  margin: -32px 0 0 -32px;
+  opacity: 1;
+}
+
+/* ── detail panel · niche-in-the-wall that slides in right ───── */
+.tl__detail {
+  position: absolute;
+  top: 0; right: 0;
+  bottom: 0;
+  width: 340px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-raised);
+  padding: var(--space-6) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  transform: translateX(110%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform var(--motion-slow) var(--ease-standard),
+              opacity var(--motion-slow) var(--ease-standard);
+  overflow-y: auto;
+}
+.tl__detail::-webkit-scrollbar { width: 8px; }
+.tl__detail::-webkit-scrollbar-thumb { background: var(--border-soft); border-radius: 6px; }
+.tl__detail.is-open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+/* loop-settings mode: hide all node-detail content except the bar + loop box */
+.tl__detail.is-loop > :not(.tl__detail-bar):not(#d-loop) {
+  display: none;
+}
+.tl__detail-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.tl__detail-close {
+  width: 32px; height: 32px;
+  border-radius: var(--radius-sm);
+  display: grid; place-items: center;
+  background: var(--surface-2);
+  color: var(--meta);
+  box-shadow: inset 0 1px 1px rgba(58,58,52,0.18);
+  font-size: 16px;
+  transition: color var(--motion-fast) ease;
+}
+.tl__detail-close:hover { color: var(--danger); }
+.tl__detail-tags { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.tl__detail-time {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  margin-bottom: var(--space-3);
+}
+.tl__time-edit {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+/* 剧情线起止时间组：精度选择 + 时间编辑横排 */
+.tl__time-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.tl__time-row .tl__time-edit { flex: 1; min-width: 120px; margin-bottom: 0; }
+.tl__time-row .tl__time-prec {
+  padding: 7px 8px;
+  font-size: var(--text-sm);
+  background: var(--surface-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  cursor: pointer;
+}
+.tl__time-edit input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  font-size: var(--text-sm);
+  color: var(--fg);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 1px 2px rgba(58,58,52,0.10);
+}
+.tl__time-edit input:focus { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.tl__time-edit select {
+  padding: 7px 8px;
+  font-size: var(--text-sm);
+  color: var(--fg);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.tl__detail-title {
+  font-size: var(--text-xl);
+  line-height: var(--leading-tight);
+  cursor: text;
+  outline: none;
+  border-radius: 6px;
+  padding: 2px 4px;
+  margin-left: -4px;
+  transition: box-shadow var(--motion-fast) ease;
+}
+.tl__detail-title:hover { box-shadow: inset 0 0 0 1px var(--border); }
+.tl__detail-title:focus { box-shadow: inset 0 0 0 1px var(--accent); }
+.tl__detail-desc {
+  font-size: var(--text-sm);
+  color: var(--fg-2);
+  line-height: var(--leading-body);
+  cursor: text;
+  outline: none;
+  border-radius: 6px;
+  padding: 2px 4px;
+  margin-left: -4px;
+  transition: box-shadow var(--motion-fast) ease;
+}
+.tl__detail-desc:hover { box-shadow: inset 0 0 0 1px var(--border); }
+.tl__detail-desc:focus { box-shadow: inset 0 0 0 1px var(--accent); }
+.tl__detail-sec-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--meta);
+  margin-bottom: var(--space-2);
+}
+.tl__type-switch {
+  display: flex;
+  gap: var(--space-2);
+  padding: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 1px 2px rgba(58,58,52,0.10);
+}
+.tl__type-switch button {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--meta);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.tl__type-switch button:hover { color: var(--fg); }
+.tl__type-switch button.is-on {
+  background: var(--accent);
+  color: var(--accent-on);
+  font-weight: 600;
+}
+.tl__loop-field {
+  width: 100%;
+  padding: 7px 10px;
+  font-size: var(--text-sm);
+  color: var(--fg);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 1px 2px rgba(58,58,52,0.10);
+  margin-bottom: var(--space-3);
+}
+.tl__loop-field:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+.tl__loop-field-row { display: flex; gap: 6px; }
+.tl__loop-field-row .tl__loop-field { flex: 1; min-width: 0; }
+.tl__loop-end {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--fg-2);
+  margin-bottom: var(--space-3);
+}
+.tl__loop-hint {
+  font-size: 12px;
+  color: var(--meta);
+  line-height: 1.5;
+  margin-top: var(--space-3);
+}
+.tl__detail-chips {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.tl__chip {
+  font-size: var(--text-sm);
+  color: var(--fg-2);
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+  box-shadow: inset 0 1px 1px rgba(58,58,52,0.12);
+}
+.tl__chip-del {
+  margin-left: 8px;
+  color: var(--meta);
+  font-size: 13px;
+  line-height: 1;
+  padding: 1px 4px;
+  border-radius: 4px;
+  transition: color var(--motion-fast) ease, background var(--motion-fast) ease;
+}
+.tl__chip-del:hover { color: var(--danger); background: rgba(168,96,80,0.12); }
+.tl__linked-add {
+  width: 100%;
+}
+.tl__linked-add input {
+  width: 100%;
+  margin-top: 4px;
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--fg-2);
+  outline: none;
+  transition: border-color var(--motion-fast) ease;
+}
+.tl__linked-add input:focus { border-color: var(--accent); border-style: solid; }
+.tl__chip .role {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--meta);
+  margin-right: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.tl__detail-foot {
+  margin-top: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--meta);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: right;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-soft);
+}
+/* ── custom right-click menu ─────────────────────────────── */
+.tl__ctx {
+  position: fixed;           /* viewport coords — immune to ancestor offsets */
+  z-index: 500;
+  min-width: 170px;
+  padding: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-raised), 0 8px 24px rgba(58,58,52,0.18);
+}
+.tl__modal {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: rgba(58,58,52,0.12);   /* 极淡遮罩，不虚化画布（吸管需要看清画布） */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tl__modal-card {
+  width: 320px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-raised), 0 12px 40px rgba(58,58,52,0.25);
+  padding: var(--space-5);
+  animation: modal-in 200ms var(--ease-standard);
+}
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.tl__modal-title {
+  font-size: var(--text-lg);
+  margin-bottom: var(--space-4);
+}
+.tl__modal-body { display: flex; flex-direction: column; gap: var(--space-3); }
+.tl__modal-field label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--meta);
+  margin-bottom: 4px;
+}
+.tl__modal-field-row { display: flex; gap: var(--space-3); }
+.tl__modal-field-row .tl__modal-field { flex: 1; min-width: 0; }
+.tl__eyedrop-row { display: flex; gap: 4px; align-items: center; }
+.tl__eyedrop-row input { flex: 1; min-width: 0; }
+.tl__eyedrop {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--meta);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+.tl__eyedrop:hover, .tl__eyedrop.is-picking { color: var(--accent); border-color: var(--accent); }
+.tl__eyedrop-tip {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--chrome-2);
+  padding: 2px 6px;
+  border-radius: 4px;
+  box-shadow: var(--elev-raised);
+  white-space: nowrap;
+}
+.tl__picked-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--fg);
+}
+.tl__picked-node span { flex: 1; }
+.tl__modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+.tl__modal-hint {
+  font-size: 11px;
+  color: var(--meta);
+  margin-top: 4px;
+  opacity: 0.75;
+}
+.tl__modal-field input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+  background: transparent;
+  padding: 0;
+}
+.tl__modal-field input {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--fg);
+  outline: none;
+  box-shadow: inset 0 1px 2px rgba(58,58,52,0.10);
+}
+.tl__modal-field input:focus { border-color: var(--accent); }
+.tl__modal-field select,
+.tl__modal-field textarea {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--fg);
+  outline: none;
+  box-shadow: inset 0 1px 2px rgba(58,58,52,0.10);
+}
+.tl__modal-field select:focus,
+.tl__modal-field textarea:focus { border-color: var(--accent); }
+.tl__modal-field textarea { resize: vertical; min-height: 52px; }
+.tl__modal-message {
+  font-size: var(--text-sm);
+  color: var(--fg-2);
+  line-height: 1.7;
+}
+.tl__modal-actions .btn--danger {
+  color: var(--danger);
+  border: 1px solid rgba(168,96,80,0.35);
+  border-radius: var(--radius-sm);
+}
+.tl__modal-actions .btn--danger:hover { background: rgba(168,96,80,0.12); }
+.tl__modal-time {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.tl__modal-time .tl__modal-select { flex: 0 0 auto; width: auto; }
+.tl__modal-time input { flex: 1; min-width: 0; }
+.tl__modal-time + .tl__modal-time { margin-top: 6px; }
+.tl__modal-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+  min-height: 0;
+}
+.tl__modal-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--fg-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-pill);
+  padding: 3px 8px;
+}
+.tl__modal-tag button {
+  color: var(--meta);
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 3px;
+}
+.tl__modal-tag button:hover { color: var(--danger); }
+.tl__worldset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.tl__worldset-list button {
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--fg);
+  transition: background var(--motion-fast) ease;
+}
+.tl__worldset-list button:hover { background: var(--surface-2); }
+.tl__worldset-list button.is-active { background: var(--accent); color: var(--accent-on); }
+/* ── worldset dropdown (body-level, fixed) ─────────────────── */
+.tl__wsmenu {
+  position: fixed;
+  z-index: 900;
+  min-width: 220px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-raised), 0 10px 28px rgba(58,58,52,0.22);
+}
+.tl__wsmenu-head {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--meta);
+  padding: 4px 10px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 4px;
+}
+.tl__wsmenu-list { display: flex; flex-direction: column; }
+.tl__wsmenu-list button {
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--fg);
+  border-radius: 6px;
+}
+.tl__wsmenu-list button:hover { background: var(--surface-2); }
+.tl__wsmenu-list button.is-active { background: var(--accent); color: var(--accent-on); }
+.tl__wsmenu-new {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-soft);
+}
+.tl__wsmenu-new input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--fg);
+  outline: none;
+}
+.tl__wsmenu-new button {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--accent-on);
+  background: var(--accent);
+  border-radius: 6px;
+}
+.tl__wsmenu-new button:hover { background: var(--accent-hover); }
+.tl__modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+.tl__ctx button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--fg);
+  border-radius: 6px;
+  transition: background var(--motion-fast) ease;
+}
+.tl__ctx button:hover { background: var(--surface-2); }
+.tl__ctx button.is-danger { color: var(--danger); }
+.tl__ctx button.is-danger:hover { background: rgba(168,96,80,0.12); }
+/* ── submenu (worldset) ────────────────────────────────────── */
+.tl__ctx-sub { position: relative; }
+.tl__ctx-sub > button { display: flex; justify-content: space-between; align-items: center; }
+.tl__ctx-submenu {
+  position: absolute;
+  left: 100%;              /* flush against the parent menu — one panel */
+  top: -5px;
+  z-index: 600;            /* above the parent menu's own layer */
+  min-width: 220px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-raised), 0 8px 24px rgba(58,58,52,0.18);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  /* open by :hover alone — corner-to-full clip-path sweep + fade.
+     A transition (not a one-shot animation), so no JS re-trigger. */
+  clip-path: inset(0 100% 100% 0);
+  transition: clip-path 200ms var(--ease-standard),
+              opacity 160ms ease,
+              visibility 0s 200ms;
+}
+/* 右键菜单 + 世界集下拉：同样逐条浮现 */
+.tl__ctx > *:nth-child(1), .tl__ws-drop-list > *:nth-child(1) { animation-delay: 40ms; }
+.tl__ctx > *:nth-child(2), .tl__ws-drop-list > *:nth-child(2) { animation-delay: 70ms; }
+.tl__ctx > *:nth-child(3), .tl__ws-drop-list > *:nth-child(3) { animation-delay: 100ms; }
+.tl__ctx > *:nth-child(4), .tl__ws-drop-list > *:nth-child(4) { animation-delay: 130ms; }
+.tl__ctx > *:nth-child(5), .tl__ws-drop-list > *:nth-child(5) { animation-delay: 160ms; }
+.tl__ctx > *:nth-child(6), .tl__ws-drop-list > *:nth-child(6) { animation-delay: 190ms; }
+.tl__ctx > *:nth-child(7), .tl__ws-drop-list > *:nth-child(7) { animation-delay: 220ms; }
+.tl__ctx > *:nth-child(8), .tl__ws-drop-list > *:nth-child(8) { animation-delay: 250ms; }
+.tl__ctx > *:nth-child(9), .tl__ws-drop-list > *:nth-child(9) { animation-delay: 280ms; }
+.tl__ctx > *:nth-child(10), .tl__ws-drop-list > *:nth-child(10) { animation-delay: 310ms; }
+/* invisible bridge: keeps :hover alive while crossing from the parent
+   item into the submenu (they're flush, but a 1px seam can drop hover) */
+.tl__ctx-sub::after {
+  content: "";
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 8px;
+  height: calc(100% + 16px);
+}
+/* submenu flipped to the LEFT when the menu sits near the window's right
+   edge (otherwise it spills past the viewport and looks like a sliver) */
+.tl__ctx-sub.is-flip .tl__ctx-submenu {
+  left: auto;
+  right: 100%;
+}
+.tl__ctx-sub.is-flip::after {
+  right: auto;
+  left: -8px;
+}
+.tl__ctx-sub:hover .tl__ctx-submenu,
+.tl__ctx-sub.is-open .tl__ctx-submenu {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  clip-path: inset(0 0 0 0);
+  transition: clip-path 200ms var(--ease-standard),
+              opacity 160ms ease,
+              visibility 0s;
+}
+.tl__ctx-sub-list { display: flex; flex-direction: column; }
+.tl__ctx-sub-list button {
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--fg);
+  border-radius: 6px;
+}
+.tl__ctx-sub-list button:hover { background: var(--surface-2); }
+.tl__ctx-sub-list button.is-active { background: var(--accent); color: var(--accent-on); }
+.tl__ctx-sub-new {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border-soft);
+}
+.tl__ctx-sub-new input {
+  flex: 1;
+  min-width: 110px;        /* roomy — 220px submenu - button - padding */
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--fg);
+  outline: none;
+}
+.tl__ctx-sub-new input:focus { border-color: var(--accent); }
+.tl__ctx-sub-new button {
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--fg-inverse);
+  background: var(--accent);
+  border-radius: 6px;
+}
+.tl__ctx-sub-new button:hover { background: var(--accent-hover); }
+.tl__del {
+  display: inline-block;
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--danger);
+  border: 1px solid rgba(168,96,80,0.35);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  background: transparent;
+  transition: background var(--motion-fast) ease;
+}
+.tl__loop-merge {
+  display: inline-block;
+  margin-right: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: #7a5e2b;
+  border: 1px solid rgba(122,94,43,0.55);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  background: transparent;
+  cursor: pointer;
+  transition: background var(--motion-fast) ease;
+}
+.tl__loop-merge:hover { background: rgba(223,192,115,0.12); }
+.tl__del:hover { background: rgba(168,96,80,0.12); }
+
+/* ── empty state inside the stage ────────────────────────────── */
+.tl__empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  color: var(--meta);
+}
+.tl__empty .serif { font-size: var(--text-lg); color: var(--fg-2); display: block; margin-bottom: 8px; }
+.tl__empty p { font-size: var(--text-sm); }
+
+/* add-node form (recessed, appears under the head) */
+.tl__form {
+  margin: var(--space-6) var(--container-gutter-desktop) 0;
+  padding: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-raised);
+  display: none;             /* JS toggles flex via openForm/closeForm */
+  flex-direction: column;
+  gap: var(--space-3);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-8px);
+  transition: opacity 320ms var(--ease-standard),
+              transform 320ms var(--ease-standard),
+              visibility 0s linear 320ms;
+  pointer-events: none;
+}
+.tl__form.is-open {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition: opacity 320ms var(--ease-standard),
+              transform 320ms var(--ease-standard),
+              visibility 0s;
+  pointer-events: auto;
+}
+.tl__row { display: flex; gap: var(--space-4); flex-wrap: wrap; }
+.field { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.field label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; color: var(--meta); text-transform: uppercase; }
+.field input, .field textarea {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--fg);
+  box-shadow: inset 0 1px 2px rgba(58,58,52,0.08);
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--motion-base) var(--ease-standard), box-shadow var(--motion-base) var(--ease-standard);
+}
+.field input:focus, .field textarea:focus {
+  border-color: var(--border-strong);
+  box-shadow: inset 0 1px 2px rgba(58,58,52,0.08), var(--focus-ring);
+}
+.field--year { flex: 0 0 120px; }
+.field--type { flex: 0 0 160px; }
+.field select {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--fg);
+  box-shadow: inset 0 1px 2px rgba(58,58,52,0.08);
+  outline: none;
+}
+
+/* ═════════════════════════════════════════════════════════════════
+ * VIEW 3 — AI 聊天 (The Hum) — floating dark chrome window
+ * ═════════════════════════════════════════════════════════════════ */
+.hum-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: none;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 40px;
+  pointer-events: none;
+}
+.hum-wrap.is-open { display: flex; }
+
+.hum {
+  /* slightly askew from the grid — a doorway ajar */
+  transform: rotate(-0.4deg);
+  width: min(720px, calc(100vw - 64px));
+  max-height: 80vh;
+  background: var(--chrome-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.4);
+  color: var(--fg-inverse);
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+  animation: breathe-in 640ms var(--ease-standard) both;
+  background-image:
+    linear-gradient(to bottom, rgba(255,255,255,0.02), transparent 40%),
+    radial-gradient(120% 40% at 50% 0%, rgba(158,194,98,0.06), transparent 70%);
+}
+@keyframes breathe-in {
+  from { opacity: 0; transform: rotate(-0.4deg) translateY(16px); }
+  to   { opacity: 1; transform: rotate(-0.4deg) translateY(0); }
+}
+
+.hum__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(232,231,223,0.08);
+}
+.hum__avatar {
+  width: 30px; height: 30px;
+  border-radius: var(--radius-sm);
+  background: var(--chrome);
+  display: grid; place-items: center;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.6);
+}
+/* 后室黄 serif "灵" — the AI seed, breathing on 8s */
+.hum__avatar .glyph {
+  font-family: var(--font-display);
+  font-size: 17px;
+  color: var(--accent);
+  text-shadow: 0 0 12px rgba(223,192,115,0.6);
+  animation: breath-avatar 8s ease-in-out infinite;
+}
+@keyframes breath-avatar {
+  0%, 100% { text-shadow: 0 0 6px rgba(223,192,115,0.3); }
+  50% { text-shadow: 0 0 18px rgba(223,192,115,0.85); }
+}
+.hum__who { font-family: var(--font-display); font-size: var(--text-base); letter-spacing: 0.04em; }
+.hum__state {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #5a5a5a;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.hum__state .live-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  animation: pulse-dot 3s ease-in-out infinite;
+}
+@keyframes pulse-dot { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+.hum__close { margin-left: auto; }
+.hum__close .icon-btn { background: transparent; color: #5a5a5a; box-shadow: none; }
+.hum__close .icon-btn:hover { color: var(--danger); }
+
+.hum__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.hum__body::-webkit-scrollbar { width: 8px; }
+.hum__body::-webkit-scrollbar-thumb { background: rgba(232,231,223,0.1); border-radius: 6px; }
+
+.msg {
+  display: flex;
+  gap: 12px;
+  max-width: 88%;
+  animation: wake 640ms var(--ease-standard) both;
+}
+.msg__avatar {
+  flex: 0 0 26px;
+  width: 26px; height: 26px;
+  border-radius: var(--radius-sm);
+  background: var(--chrome);
+  display: grid; place-items: center;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.6);
+}
+.msg__avatar .glyph {
+  font-family: var(--font-display);
+  font-size: 14px;
+  color: var(--accent);
+}
+.msg__bubble {
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--leading-body);
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.25);
+  border: 1px solid rgba(0,0,0,0.3);
+}
+/* the living edge — 1px green-tint left border on AI messages */
+.msg--ai .msg__bubble {
+  border-left: 2px solid var(--accent);
+}
+.msg__time {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--meta);
+  margin-top: 6px;
+}
+.msg__btns { display: flex; gap: 8px; margin-top: 14px; }
+.msg__btns .btn { padding: 8px 14px; }
+
+/* user message — the one moment of real presence */
+.msg--user {
+  margin-left: auto;
+  flex-direction: row-reverse;
+}
+.msg--user .msg__bubble {
+  background: var(--accent);
+  color: var(--accent-on);
+  border: none;
+  box-shadow: 0 0 16px rgba(158,194,98,0.2);
+}
+.msg--user .msg__time { text-align: right; }
+
+.hum__composer {
+  display: flex;
+  gap: 10px;
+  padding: 14px 18px;
+  border-top: 1px solid rgba(232,231,223,0.08);
+  position: relative;
+}
+.hum__composer input {
+  flex: 1;
+  background: var(--chrome);
+  border: 1px solid rgba(232,231,223,0.1);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--fg-inverse);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.5);
+  outline: none;
+  transition: border-color var(--motion-base) var(--ease-standard), box-shadow var(--motion-base) var(--ease-standard);
+}
+.hum__composer input::placeholder { color: #5a5a5a; }
+.hum__composer input:focus {
+  border-color: rgba(158,194,98,0.5);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.5), var(--focus-ring);
+}
+.hum__send {
+  width: 44px; height: 44px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--accent-on);
+  font-size: 18px;
+  box-shadow: 0 0 18px rgba(158,194,98,0.25);
+  animation: breath 8s ease-in-out infinite;
+  transition: background var(--motion-base) var(--ease-standard);
+}
+.hum__send:hover { background: var(--accent-hover); }
+
+.hum__foot {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #5a5a5a;
+  text-align: center;
+  padding: 8px;
+  border-top: 1px solid rgba(232,231,223,0.04);
+}
+
+/* ═════════════════════════════════════════════════════════════════
+ * views
+ * ═════════════════════════════════════════════════════════════════ */
+.view { display: block; width: 100%; height: 100%; }
+.view.lobby { display: flex; }   /* lobby views stay flex-column despite .view */
+
+/* ═════════════════════════════════════════════════════════════════
+ * Markdown editor
+ * ═════════════════════════════════════════════════════════════════ */
+.editor {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  margin: var(--space-6) var(--container-gutter-desktop) var(--space-8);
+  gap: var(--space-4);
+}
+.editor__side {
+  flex: 0 0 200px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-raised);
+  overflow: hidden;
+}
+.editor__side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-soft);
+}
+.editor__new {
+  width: 26px; height: 26px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--meta);
+  box-shadow: inset 0 1px 1px rgba(58,58,52,0.15);
+  transition: color var(--motion-fast) ease, background var(--motion-fast) ease;
+}
+.editor__new:hover { color: var(--fg); }
+.editor__files { flex: 1; overflow-y: auto; padding: var(--space-2); }
+.editor__file {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background var(--motion-fast) ease;
+}
+.editor__file:hover { background: var(--surface-2); }
+.editor__file.is-active { background: var(--accent); color: var(--accent-on); }
+/* 文件树：文件夹标题 */
+.editor__folder {
+  padding: 6px 10px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--meta);
+  letter-spacing: 0.04em;
+}
+.editor__folder-root {
+  font-size: 12px;
+  color: var(--fg);
+  padding-top: 2px;
+  margin-bottom: 4px;
+}
+.editor__folder-tl {
+  padding-left: 14px;
+  margin-top: 2px;
+}
+.editor__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-raised);
+  overflow: hidden;
+}
+.editor__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-soft);
+}
+.editor__title {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  color: var(--fg);
+}
+.editor__bar-right { display: flex; align-items: center; gap: var(--space-3); }
+.editor__saved {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--success);
+  letter-spacing: 0.08em;
+}
+.editor__saved.is-dirty { color: var(--warn); }
+.editor__split {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.editor__input, .editor__preview {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-5);
+  font-size: var(--text-sm);
+  line-height: 1.75;
+}
+.editor__input {
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  font-family: var(--font-mono);
+  color: var(--fg);
+  border-right: 1px solid var(--border-soft);
+}
+.editor__preview {
+  font-family: var(--font-body);
+  color: var(--fg);
+}
+.editor__preview h1, .editor__preview h2, .editor__preview h3 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: var(--tracking-display);
+  margin: 1em 0 0.4em;
+}
+.editor__preview h1 { font-size: var(--text-2xl); }
+.editor__preview h2 { font-size: var(--text-xl); }
+.editor__preview h3 { font-size: var(--text-lg); }
+.editor__preview p { margin: 0.5em 0; }
+.editor__preview ul, .editor__preview ol { padding-left: 1.6em; margin: 0.5em 0; }
+.editor__preview code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--surface-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.editor__preview pre {
+  background: var(--surface-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+.editor__preview pre code { background: none; padding: 0; }
+.editor__preview blockquote {
+  border-left: 3px solid var(--accent-2);
+  padding-left: var(--space-3);
+  margin: 0.6em 0;
+  color: var(--meta);
+}
+.editor__preview a { color: var(--accent); }
+.editor__preview hr { border: none; border-top: 1px solid var(--border-strong); margin: 1.2em 0; }
+.editor__preview strong { color: var(--fg); font-weight: 600; }
+.editor__preview table { border-collapse: collapse; margin: 0.6em 0; }
+.editor__preview th, .editor__preview td { border: 1px solid var(--border); padding: 4px 10px; }
+.view[data-hidden="1"] { display: none; }
+
+/* ═════════════════════════════════════════════════════════════════
+ * Random character generator
+ * ═════════════════════════════════════════════════════════════════ */
+.char {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.char input, .char textarea, .char select { user-select: text; -webkit-user-select: text; }
+.char__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-6) var(--container-gutter-desktop) 0;
+}
+.char__status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--meta);
+}
+.char__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: var(--space-4);
+  align-content: start;
+  padding: var(--space-5) var(--container-gutter-desktop) var(--space-5);
+  border-bottom: 1px solid var(--border-soft);
+}
+.char__grid::-webkit-scrollbar { width: 10px; }
+.char__grid::-webkit-scrollbar-thumb { background: var(--border-soft); border-radius: 6px; }
+.char__grid::-webkit-scrollbar-track { background: transparent; }
+.char__card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-raised);
+  padding: var(--space-4);
+  animation: wake 480ms var(--ease-standard) both;
+}
+.char__card h3 {
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  letter-spacing: var(--tracking-display);
+  color: var(--fg);
+  margin: 0 0 var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+.char__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 5px 0;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.char__key {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--accent-on);
+  background: var(--accent);
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+.char__val { color: var(--fg); }
+.char__empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: var(--meta);
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  padding: var(--space-12) 0;
+}
+.char__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.char__save-name {
+  width: 140px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 9px 12px;
+  font-size: var(--text-sm);
+  color: var(--fg);
+  outline: none;
+  transition: border-color var(--motion-fast) ease;
+}
+.char__save-name:focus { border-color: var(--accent); }
+.char__save-name::placeholder { color: var(--meta); }
+.char__saves {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--container-gutter-desktop) 0;
+  min-height: 0;
+}
+.char__save-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: background var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.char__save-chip:hover { background: var(--surface-2); color: var(--fg); }
+.char__save-chip .chip-x {
+  color: var(--meta);
+  font-size: 11px;
+  padding: 0 2px;
+}
+.char__save-chip .chip-x:hover { color: var(--danger); }
+.char__card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+.char__card-head h3 {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+.char__count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--surface-2);
+  color: var(--fg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  outline: none;
+  cursor: pointer;
+}
+.char__row { position: relative; padding-right: 30px; }
+.char__lock {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--meta);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  cursor: pointer;
+  transition: all var(--motion-fast) ease;
+  line-height: 1;
+}
+.char__lock:hover { color: var(--fg); border-color: var(--border-strong); }
+.char__row.is-locked .char__lock {
+  background: var(--accent);
+  color: var(--accent-on);
+  border-color: var(--accent);
+}
+.char__row.is-locked .char__key { background: var(--chrome); color: var(--fg-inverse); }
+.char__row.is-locked .char__val { color: var(--fg); font-weight: 500; }
+
+/* ═════════════════════════════════════════════════════════════════
+ * Word association dialog（词义联想）
+ * ═════════════════════════════════════════════════════════════════ */
+.assoc { max-width: 580px; }
+.assoc__query {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.assoc__query input {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 9px 12px;
+  font-size: var(--text-sm);
+  color: var(--fg);
+  outline: none;
+  transition: border-color var(--motion-fast) ease;
+}
+.assoc__query input:focus { border-color: var(--accent); }
+.assoc__query input::placeholder { color: var(--meta); }
+.assoc__status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--meta);
+  min-height: 16px;
+  margin-bottom: var(--space-3);
+}
+.assoc__note { font-size: 11px; color: var(--meta); margin-top: var(--space-3); }
+
+/* ── 联想图：无限画布（拖拽平移 + 滚轮缩放，力导向节点）── */
+.char__assoc {
+  flex: 0 0 auto;
+  height: 85vh;
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+}
+.assoc__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--container-gutter-desktop) var(--space-3);
+  flex-wrap: wrap;
+}
+.assoc__head input {
+  width: 200px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 7px 12px;
+  font-size: var(--text-sm);
+  color: var(--fg);
+  outline: none;
+  transition: border-color var(--motion-fast) ease;
+}
+.assoc__head input:focus { border-color: var(--accent); }
+.assoc__head input::placeholder { color: var(--meta); }
+.assoc__status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--meta);
+  flex: 1;
+  min-width: 200px;
+}
+.assoc__stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  margin: 0 var(--container-gutter-desktop) var(--space-5);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  background: rgba(206,203,199,0.35);
+}
+.assoc__stage.is-panning { cursor: grabbing; }
+.assoc__world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.assoc__lines {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.assoc__root {
+  position: absolute;
+  left: 0;
+  top: 0;
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  background: var(--chrome);
+  color: var(--fg-inverse);
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  border: 1px solid var(--chrome);
+  cursor: pointer;
+  will-change: transform;
+  transition: border-color var(--motion-fast) ease;
+}
+.assoc__root:hover { border-color: var(--accent); }
+.assoc__node {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px 5px 16px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--fg);
+  border: 1px solid var(--border-soft);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  will-change: transform;
+  transition: border-color var(--motion-fast) ease, background var(--motion-fast) ease;
+}
+.assoc__node:active, .assoc__root:active { cursor: grabbing; }
+.assoc__node::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: translateY(-50%);
+}
+.assoc__node:hover { border-color: var(--accent); }
+.assoc__node.is-new {
+  background: transparent;
+  border: 1px dashed var(--fg-2);
+  color: var(--fg-2);
+}
+.assoc__node.is-new::before { background: var(--danger); }
+.assoc__node.is-new:hover { border-color: var(--accent); color: var(--fg); }
+.assoc__node .store {
+  font-size: 11px;
+  padding: 3px 10px;
+  margin: -3px -8px -3px 6px;
+  border-left: 1px solid var(--border-strong);
+  color: var(--meta);
+  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+}
+.assoc__node .store:hover { color: var(--accent); }
+.assoc__node.is-staged {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--accent-on);
+}
+.assoc__node.is-staged::before { background: var(--accent-on); }
+.assoc__node.is-staged .store {
+  color: var(--accent-on);
+  border-left-color: rgba(32,36,28,0.35);
+}
+/* 已展开节点：圆点实心加深 + 边框提亮 */
+.assoc__node.is-expanded { border-color: rgba(158,194,98,0.45); }
+.assoc__node.is-expanded::before {
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(158,194,98,0.7);
+}
+.assoc__root.is-expanded { border-color: var(--accent); }
+/* 当前聚焦节点：accent 发光边框 */
+.assoc__node.is-focus, .assoc__root.is-focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 10px rgba(158,194,98,0.35), inset 0 0 0 1px rgba(158,194,98,0.25);
+}
+.assoc__node.is-focus::before {
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(158,194,98,0.9);
+}
+/* 选中的保留支线：accent 描边 + 圆点发光（与已暂存实底区分） */
+.assoc__node.is-selected {
+  background: var(--surface-2);
+  border-color: var(--accent);
+  color: var(--fg);
+  box-shadow: 0 0 8px rgba(158,194,98,0.25);
+}
+.assoc__node.is-selected::before {
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(158,194,98,0.8);
+}
+.assoc__root.is-selected { border-color: var(--accent); box-shadow: 0 0 8px rgba(158,194,98,0.25); }
+
+/* reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .veil__grain, .veil__grain::before, .ai-entry, .hum__avatar .glyph,
+  .hum__state .live-dot, .hum__send {
+    animation: none !important;
+  }
+  .niche, .tl__n, .hum { animation-duration: 120ms; }
+  .tl__track, .tl__detail, .tl__stage { transition-duration: 200ms; }
+  .tl__stage { scroll-behavior: auto; }
+  body.is-idle .app { filter: none; }                /* no idle fade */
+  body.is-idle .veil__grain { opacity: var(--lk-grain-opacity); }
+}
+</style>
+</head>
+<body>
+
+<!-- VHS atmosphere -->
+<div class="veil" aria-hidden="true">
+  <div class="veil__grain"></div>
+  <div class="veil__scanlines"></div>
+</div>
+
+<div class="app">
+
+  <!-- ══ THE SEAM · sidebar ══════════════════════════════════ -->
+  <aside class="seam">
+    <div class="seam__wordmark">灵框 <span class="dim">v3</span></div>
+    <nav class="seam__nav">
+      <div class="seam__section">大厅</div>
+      <button class="seam__item is-active" data-nav="lobby">
+        <span class="glyph">◈</span><span>工具</span>
+      </button>
+
+      <div class="seam__section">插件</div>
+      <button class="seam__item" data-nav="timeline">
+        <span class="glyph">◉</span><span>世界观</span>
+      </button>
+      <button class="seam__item" data-nav="editor">
+        <span class="glyph">口</span><span>编辑器</span>
+      </button>
+      <button class="seam__item" data-nav="char">
+        <span class="glyph">♟</span><span>灵感触发器</span>
+      </button>
+      <button class="seam__item" data-nav="lobby">
+        <span class="glyph">⚙</span><span>系统</span>
+      </button>
+
+      <div class="seam__spacer"></div>
+      <div class="seam__foot">
+        <div id="clock" class="now">--:--:--</div>
+        <div>阈值空间 · 常驻</div>
+      </div>
+    </nav>
+  </aside>
+
+  <!-- ══ THE LOBBY ═══════════════════════════════════════════ -->
+  <main class="lobby view" id="view-lobby">
+    <div class="lobby__head">
+      <h1 class="lobby__title serif">大厅</h1>
+      <div class="lobby__sub">The Seam → The Lobby</div>
+
+      <div class="search">
+        <span class="search__icon">⌕</span>
+        <input type="text" placeholder="在这些空房间里找点什么…" />
+        <kbd>⌘K</kbd>
+      </div>
+
+      <button class="ai-entry" data-open-hum>
+        <span class="dot"></span>
+        <span class="serif">呼 唤 AI</span>
+      </button>
+    </div>
+
+    <div class="grid" id="grid">
+      <!-- 大厅卡片由 registerTool 插件注册表自动渲染 -->
+    </div>
+  </main>
+
+  <!-- ══ VIEW 2 · TIMELINE ═══════════════════════════════════ -->
+  <main class="lobby view" id="view-timeline" data-hidden="1">
+    <div class="timeline is-open">
+      <div class="tl__head">
+        <div>
+          <h1 class="tl__title serif">世界沙盘</h1>
+          <div class="lobby__sub">
+            <span>拖拽平移</span>
+            <span><kbd>滚轮</kbd> 横移</span>
+            <span><kbd>Alt</kbd>+<kbd>滚轮</kbd> 缩放</span>
+            <span><kbd>Alt</kbd>+右键拖 快速缩放</span>
+            <span>右键 菜单</span>
+          </div>
+        </div>
+        <div class="tl__head-actions">
+          <button class="tl__multi-toggle" id="tl-worldset-btn"></button>
+          <button class="tl__multi-toggle" id="tl-fitall" title="全览当前世界观">全览</button>
+        </div>
+      </div>
+
+      <!-- multi-timeline manager -->
+      <div class="tl__manager" id="tl-manager">
+        <button class="tl__multi-toggle" id="tl-nonlinear" title="事件序列视图（节点等距排列）">序列</button>
+        <button class="tl__multi-toggle" id="tl-multi" title="并列显示所有时间线">并列</button>
+        <button class="tl__multi-toggle" id="tl-story-btn" title="聚焦剧情线 / 显示世界历史">剧情</button>
+        <button class="tl__multi-toggle" id="tl-entity-btn" title="实体：角色/地点/物品等设定对象（类型可自定义）">实体</button>
+        <button class="tl__multi-toggle" id="tl-map-btn" title="地图：标记地点/势力/时间关联">地图</button>
+        <button class="tl__multi-toggle" id="tl-brush-btn" title="画线模式：拖拽框选节点累积成剧情线">画线</button>
+        <select class="tl__story-select" id="tl-story-select" style="display:none"></select>
+        <div class="tl__multi-mask" id="tl-multi-mask"></div>
+        <div id="tl-tabs" class="tl__tabs is-ready" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap"></div>
+        <button class="tl__tab-add" id="tl-tab-add" title="新建时间线">＋</button>
+      </div>
+
+      <!-- horizontal stage -->
+      <div class="tl__stage" id="tl-stage">
+        <div class="tl__time-cursor" id="tl-time-cursor" style="display:none">
+          <div class="tl__time-cursor-handle">▾</div>
+          <div class="tl__time-cursor-line"></div>
+          <div class="tl__time-cursor-time"></div>
+        </div>
+        <div id="tl-range-mask" style="display:none"><div class="tl__mask-side"></div><div class="tl__mask-side"></div></div>
+        <div class="tl__line-bar" id="tl-line-bar" style="display:none">
+          <span class="tl__line-count" id="tl-line-count">已选 0 段</span>
+          <span class="tl__line-hint">拖拽刷选加段 / 橡皮擦擦出 gap · Enter 完成 · Esc 取消</span>
+          <button class="btn btn--ghost" id="tl-eraser-btn" style="padding:6px 12px;font-size:var(--text-xs);">橡皮擦</button>
+          <button class="btn btn--ghost" id="tl-line-cancel" style="padding:6px 12px;font-size:var(--text-xs);">取消</button>
+          <button class="btn btn--primary" id="tl-line-done" style="padding:6px 14px;font-size:var(--text-xs);">完成</button>
+        </div>
+        <div class="tl__track" id="tl-track">
+          <div id="tl-nodes"></div>
+          <div id="tl-seg-marks"></div>
+          <div class="tl__empty" id="tl-empty" style="display:none">
+            <div>
+              <span class="serif">这里暂时空着</span>
+              <p>你走后，灯会开多久？</p>
+            </div>
+          </div>
+        </div>
+        <div class="tl__scale" id="tl-scale"></div>
+        <div class="tl__cursor" id="tl-cursor" style="display:none">
+          <div class="tl__cursor-line"></div>
+          <div class="tl__cursor-time"></div>
+        </div>
+        <!-- detail panel slides in from the right -->
+        <aside class="tl__detail" id="tl-detail" aria-hidden="true">
+          <div class="tl__detail-bar">
+            <div class="tl__detail-tags" id="d-tags"></div>
+            <button class="tl__detail-close" id="d-close" title="收起">×</button>
+          </div>
+          <div class="tl__detail-time" id="d-time"></div>
+          <!-- 时间编辑已归入文稿（#时间：312年7月），面板只读显示 -->
+          <div class="tl__detail-sec-title">时间</div>
+          <div class="tl__time-edit" style="display:none;">
+            <select id="d-precision">
+              <option value="year">年</option>
+              <option value="month">月</option>
+              <option value="day">日</option>
+              <option value="hour">时</option>
+              <option value="minute">分</option>
+            </select>
+          </div>
+          <div class="tl__time-edit" style="display:none;">
+            <input type="text" id="d-year" placeholder="年" />
+            <input type="number" id="d-month" placeholder="月" min="1" max="12" />
+            <input type="number" id="d-day" placeholder="日" min="1" max="30" />
+          </div>
+          <div class="tl__time-edit" style="display:none;">
+            <input type="number" id="d-hour" placeholder="时" min="0" max="23" />
+            <input type="number" id="d-minute" placeholder="分" min="0" max="59" />
+          </div>
+          <h3 class="tl__detail-title serif" id="d-title"></h3>
+          <p class="tl__detail-desc" id="d-desc"></p>
+          <div class="tl__detail-sec-title">归类</div>
+          <div class="tl__type-switch" id="d-type">
+            <button data-type="event" class="is-on">世界事件</button>
+            <button data-type="plot">剧情 / 人物</button>
+          </div>
+          <!-- 文稿本体（Obsidian 式：字段 = 独立卡片可快捷编辑；原文稿编辑在底部） -->
+          <div class="tl__detail-sec-title">文稿</div>
+          <div class="tl__detail-chips" id="d-doc-fields" style="flex-direction:column;align-items:stretch;gap:6px;"></div>
+          <div class="tl__detail-desc" id="d-doc-body" style="white-space:pre-wrap;font-size:var(--text-sm);color:var(--fg-2);"></div>
+          <div id="d-doc-edit" style="display:none;margin-top:6px;"></div>
+          <button class="btn btn--ghost" id="d-doc-btn" style="width:100%;margin-top:6px;font-size:var(--text-xs);padding:6px;">✎ 编辑原文稿</button>
+          <div>
+            <div class="tl__detail-sec-title">关联人物</div>
+            <div class="tl__detail-chips" id="d-people"></div>
+          </div>
+          <div>
+            <div class="tl__detail-sec-title">关联地点</div>
+            <div class="tl__detail-chips" id="d-places"></div>
+          </div>
+          <!-- 角色档案（剧情/人物节点：初稿 + 演变） -->
+          <div id="d-profile" style="display:none">
+            <div class="tl__detail-sec-title">角色档案 · 初稿</div>
+            <div class="tl__detail-chips" id="d-profile-list"></div>
+            <button class="tl__eyedrop" id="d-profile-add" style="width:100%;margin-top:6px;">＋ 添加特征</button>
+            <div class="tl__detail-sec-title" style="margin-top:var(--space-3);">角色演变</div>
+            <div class="tl__detail-chips" id="d-evolution" style="flex-direction:column;align-items:stretch;gap:2px;"></div>
+          </div>
+          <!-- 事件影响（世界事件节点：影响哪些角色的哪些方面） -->
+          <div id="d-impacts" style="display:none">
+            <div class="tl__detail-sec-title">角色影响</div>
+            <div class="tl__detail-chips" id="d-impacts-list"></div>
+            <button class="tl__eyedrop" id="d-impacts-add" style="width:100%;margin-top:6px;">＋ 标记角色影响</button>
+          </div>
+          <div class="tl__detail-foot" id="d-foot"></div>
+          <!-- loop settings (shown when a loop frame is clicked) -->
+          <div id="d-loop" style="display:none">
+            <h3 class="tl__detail-title serif" id="d-loop-title"></h3>
+            <div class="tl__detail-sec-title">循环名</div>
+            <input class="tl__loop-field" type="text" id="d-loop-name" />
+            <div class="tl__detail-sec-title">循环次数</div>
+            <input class="tl__loop-field" type="number" id="d-loop-count" min="1" />
+            <div class="tl__detail-sec-title">起始节点</div>
+            <div class="tl__loop-field-row">
+              <input class="tl__loop-field" type="text" id="d-loop-start-title" placeholder="标题" />
+              <input class="tl__loop-field" type="text" id="d-loop-start-year" placeholder="年" />
+            </div>
+            <div class="tl__detail-sec-title">结束节点</div>
+            <div class="tl__loop-field-row">
+              <input class="tl__loop-field" type="text" id="d-loop-end-title" placeholder="标题" />
+              <input class="tl__loop-field" type="text" id="d-loop-end-year" placeholder="年" />
+            </div>
+            <button class="tl__loop-merge" id="d-loop-prev" style="display:none">← 上一轮回</button>
+            <button class="tl__loop-merge" id="d-loop-next" style="display:none">下一轮回 →</button>
+            <button class="tl__del" id="d-loop-delete">删除此循环</button>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </main>
+
+  <!-- ══ VIEW 3 · EDITOR ═══════════════════════════════════ -->
+  <main class="lobby view" id="view-editor" data-hidden="1">
+    <div class="editor">
+      <div class="editor__side">
+        <div class="editor__side-head">
+          <span class="mono-eyebrow">文稿</span>
+          <button class="editor__new" id="ed-new" title="新建文稿">＋</button>
+        </div>
+        <div class="editor__files" id="ed-files"></div>
+      </div>
+      <div class="editor__main">
+        <div class="editor__bar">
+          <input class="editor__title" id="ed-title" placeholder="未命名文稿" />
+          <div class="editor__bar-right">
+            <span class="editor__saved" id="ed-saved">已保存</span>
+            <button class="btn btn--ghost" id="ed-export">导出</button>
+          </div>
+        </div>
+        <div class="editor__split">
+          <textarea class="editor__input" id="ed-input" spellcheck="false" placeholder="# 开始写点什么…&#10;&#10;支持 Markdown 语法"></textarea>
+          <div class="editor__preview" id="ed-preview"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ══ VIEW 4 · CHARACTER GENERATOR ══════════════════════ -->
+  <main class="lobby view" id="view-char" data-hidden="1">
+    <div class="char">
+      <div class="lobby__head">
+        <h1 class="lobby__title serif">随机角色</h1>
+        <div class="lobby__sub">
+          <span>从词库的角落里抽一张脸</span>
+          <span>外貌 / 性格 / 身世 全随机</span>
+        </div>
+      </div>
+      <div class="char__bar">
+        <div class="char__status" id="char-status">词库加载中…</div>
+        <div class="char__actions">
+          <input class="char__save-name" id="char-save-name" placeholder="角色名字" />
+          <button class="btn btn--ghost" id="char-save" title="保存当前组合">保存</button>
+          <button class="btn btn--primary" id="char-roll">随机生成</button>
+        </div>
+      </div>
+      <div class="char__saves" id="char-saves"></div>
+      <div class="char__grid" id="char-result"></div>
+      <div class="char__assoc">
+        <div class="assoc__head">
+          <span class="mono-eyebrow">联想图</span>
+          <input type="text" id="assoc-input" placeholder="输入词，点联想开始" />
+          <button class="btn btn--ghost" id="assoc-go">联想</button>
+          <div class="assoc__status" id="assoc-status">虚线 = 未入库可「存」· 实线 = 已在词库 · 点节点展开/选中</div>
+          <button class="btn btn--ghost" id="assoc-export" title="把暂存词写入词库（Ollama 自动分类）">导出暂存词</button>
+        </div>
+        <div class="assoc__stage" id="assoc-tree">
+          <div class="assoc__world" id="assoc-world">
+            <svg class="assoc__lines"></svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+</div>
+
+<!-- ══ THE HUM · floating AI panel ═══════════════════════════ -->
+<div class="hum-wrap" id="hum-wrap">
+  <div class="hum" id="hum">
+    <div class="hum__bar">
+      <div class="hum__avatar"><span class="glyph">灵</span></div>
+      <div>
+        <div class="hum__who">灵 · 阈限之声</div>
+        <div class="hum__state"><span class="live-dot"></span>呼吸中 · 空调循环 8s</div>
+      </div>
+      <button class="hum__close" data-close-hum><span class="icon-btn">×</span></button>
+    </div>
+
+    <div class="hum__body" id="hum-body">
+      <div class="msg msg--ai">
+        <div class="msg__avatar"><span class="glyph">灵</span></div>
+        <div>
+          <div class="msg__bubble">我在。</div>
+          <div class="msg__time">你已经安静了很久。我把灯开着。</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hum__composer">
+      <input type="text" id="hum-input" placeholder="跟它说点什么…" />
+      <button class="hum__send" id="hum-send">▲</button>
+    </div>
+    <div class="hum__foot">the hum · 一直在这里，等你想起</div>
+  </div>
+</div>
+
+<!-- custom right-click menu (shift+right-click = browser menu).
+     Lives directly under <body>: no container can ever offset it.
+     Items are rendered from CTX_ITEMS config in lingkuang.js. -->
+<div class="tl__ctx" id="tl-ctx" style="display:none"></div>
+
+<!-- worldset dropdown lives in the manager bar (top right) -->
+
+
+<!-- loop creation dialog：创建循环并顺便创建起始/结束边界节点 -->
+<div class="tl__modal" id="tl-loop-modal" style="display:none">
+  <div class="tl__modal-card">
+    <div class="tl__modal-title serif" id="loop-modal-title">循环</div>
+    <div class="tl__modal-body">
+      <div class="tl__modal-field">
+        <label>循环名</label>
+        <input type="text" id="loop-modal-name" placeholder="如 梦魇轮回" />
+      </div>
+      <div class="tl__detail-sec-title">起始节点</div>
+      <div class="tl__picked-node" id="loop-start-picked" style="display:none">
+        <span id="loop-start-picked-name"></span>
+        <button class="tl__eyedrop" id="loop-start-unpick" title="取消吸取，改回新建">×</button>
+      </div>
+      <div id="loop-start-fields">
+        <div class="tl__modal-field">
+          <label>标题</label>
+          <input type="text" id="loop-start-title" placeholder="如 周期起始" />
+        </div>
+        <div class="tl__modal-field-row">
+          <div class="tl__modal-field">
+            <label>年份</label>
+            <div class="tl__eyedrop-row">
+              <input type="text" id="loop-modal-start" placeholder="如 672" />
+              <button class="tl__eyedrop" id="loop-pick-start" title="吸管：吸取起始节点或时间">◉</button>
+            </div>
+          </div>
+        </div>
+        <div class="tl__modal-field">
+          <label>描述</label>
+          <input type="text" id="loop-start-desc" placeholder="可选" />
+        </div>
+      </div>
+      <div class="tl__detail-sec-title">结束节点</div>
+      <div class="tl__picked-node" id="loop-end-picked" style="display:none">
+        <span id="loop-end-picked-name"></span>
+        <button class="tl__eyedrop" id="loop-end-unpick" title="取消吸取，改回新建">×</button>
+      </div>
+      <div id="loop-end-fields">
+        <div class="tl__modal-field">
+          <label>标题</label>
+          <input type="text" id="loop-end-title" placeholder="如 周期结束" />
+        </div>
+        <div class="tl__modal-field-row">
+          <div class="tl__modal-field">
+            <label>年份</label>
+            <div class="tl__eyedrop-row">
+              <input type="text" id="loop-modal-end" placeholder="如 1264" />
+              <button class="tl__eyedrop" id="loop-pick-end" title="吸管：吸取结束节点或时间">◉</button>
+            </div>
+          </div>
+        </div>
+        <div class="tl__modal-field">
+          <label>描述</label>
+          <input type="text" id="loop-end-desc" placeholder="可选" />
+        </div>
+      </div>
+      <p class="tl__loop-hint" id="loop-modal-error" style="display:none; color: var(--danger);"></p>
+    </div>
+    <div class="tl__modal-actions">
+      <button class="btn btn--ghost" id="loop-modal-cancel">关闭</button>
+      <button class="btn btn--primary" id="loop-modal-ok">新建循环</button>
+    </div>
+  </div>
+</div>
+
+<!-- generic confirm dialog (replaces window.confirm — same style) -->
+<div class="tl__modal" id="tl-confirm-modal" style="display:none">
+  <div class="tl__modal-card">
+    <div class="tl__modal-title serif" id="confirm-modal-title">确认</div>
+    <div class="tl__modal-body">
+      <p class="tl__modal-message" id="confirm-modal-message"></p>
+    </div>
+    <div class="tl__modal-actions">
+      <button class="btn btn--ghost" id="confirm-modal-cancel">取消</button>
+      <button class="btn btn--danger" id="confirm-modal-ok">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- story-line dialog：创建剧情线（刷选累积节点 → 命名） -->
+<div class="tl__modal" id="story-modal" style="display:none">
+  <div class="tl__modal-card">
+    <div class="tl__modal-title serif" id="story-modal-title">剧情线</div>
+    <div class="tl__modal-body">
+      <div class="tl__modal-field">
+        <label>剧情线名</label>
+        <input type="text" id="story-modal-name" placeholder="如 主角线 / 女主线" />
+      </div>
+      <div class="tl__detail-sec-title">时间段（gap 期间与线无关）</div>
+      <div class="tl__detail-chips" id="story-seg-list" style="flex-direction:column;align-items:stretch;gap:4px;"></div>
+      <p class="tl__loop-hint">段由画线刷选累积；每段靠近节点自动吸附到精确时刻</p>
+      <p class="tl__loop-hint" id="story-modal-error" style="display:none; color: var(--danger);"></p>
+    </div>
+    <div class="tl__modal-actions">
+      <button class="btn btn--ghost" id="story-modal-cancel">关闭</button>
+      <button class="btn btn--primary" id="story-modal-ok">创建剧情线</button>
+    </div>
+  </div>
+</div>
+
+<!-- 实体管理（独立实体系统：类型可自定义，实体=实例） -->
+<div class="tl__modal" id="entity-modal" style="display:none">
+  <div class="tl__modal-card" style="width:560px;">
+    <div class="tl__modal-title serif" id="entity-modal-title">实体</div>
+    <div class="tl__modal-body">
+      <div class="tl__modal-field" style="display:flex;gap:8px;align-items:center;">
+        <select id="entity-type-select" style="flex:1;padding:7px 8px;font-size:var(--text-sm);background:var(--surface-2);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-sm);outline:none;"></select>
+        <button class="btn btn--ghost" id="entity-type-add" style="padding:6px 10px;font-size:var(--text-xs);">＋类型</button>
+        <button class="btn btn--ghost" id="entity-type-edit" style="padding:6px 10px;font-size:var(--text-xs);">编辑类型</button>
+      </div>
+      <div class="tl__detail-sec-title">实体列表</div>
+      <div class="tl__detail-chips" id="entity-list" style="flex-direction:column;align-items:stretch;gap:4px;"></div>
+      <button class="btn btn--ghost" id="entity-add" style="width:100%;margin-top:6px;">＋ 新建实体</button>
+      <div id="entity-form" style="display:none;margin-top:10px;"></div>
+      <p class="tl__loop-hint" id="entity-error" style="display:none;color:var(--danger);"></p>
+    </div>
+    <div class="tl__modal-actions">
+      <button class="btn btn--ghost" id="entity-modal-close">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 实体类型编辑（自定义数据结构：字段增删，text/longtext） -->
+<div class="tl__modal" id="entity-type-modal" style="display:none">
+  <div class="tl__modal-card" style="width:440px;">
+    <div class="tl__modal-title serif">编辑类型</div>
+    <div class="tl__modal-body">
+      <div class="tl__modal-field">
+        <label>类型名</label>
+        <input type="text" id="entity-type-name" />
+      </div>
+      <div class="tl__detail-sec-title">字段</div>
+      <div id="entity-type-fields"></div>
+      <button class="btn btn--ghost" id="entity-type-field-add" style="width:100%;margin-top:6px;">＋ 添加字段</button>
+      <p class="tl__loop-hint">字段决定实体的数据结构（类型=模板，实体=实例）</p>
+    </div>
+    <div class="tl__modal-actions">
+      <button class="btn btn--ghost" id="entity-type-cancel">取消</button>
+      <button class="btn btn--primary" id="entity-type-ok">保存类型</button>
+    </div>
+  </div>
+</div>
+
+<!-- new-worldline dialog -->
+<div class="tl__modal" id="tl-newline-modal" style="display:none">
+  <div class="tl__modal-card">
+    <div class="tl__modal-title serif">新建世界线</div>
+    <div class="tl__modal-body">
+      <div class="tl__modal-field">
+        <label>世界线名称</label>
+        <input type="text" id="newline-modal-name" placeholder="新世界线" />
+      </div>
+    </div>
+    <div class="tl__modal-actions">
+      <button class="btn btn--ghost" id="newline-modal-cancel">取消</button>
+      <button class="btn btn--primary" id="newline-modal-ok">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- add-node dialog -->
+<div class="tl__modal" id="tl-node-modal" style="display:none">
+  <div class="tl__modal-card">
+    <div class="tl__modal-title serif" id="node-modal-title">添加节点</div>
+    <div class="tl__modal-body">
+      <div class="tl__modal-field">
+        <label>时间</label>
+        <div class="tl__modal-time">
+          <select id="node-modal-precision" class="tl__modal-select">
+            <option value="day" selected>精确到日</option>
+            <option value="hour">精确到时</option>
+            <option value="minute">精确到分</option>
+            <option value="month">精确到月</option>
+            <option value="year">仅年份</option>
+          </select>
+        </div>
+        <div class="tl__modal-time">
+          <input type="number" id="node-modal-year" placeholder="年，如 1832" />
+          <input type="number" id="node-modal-month" placeholder="月" min="1" max="12" />
+          <input type="number" id="node-modal-day" placeholder="日" min="1" max="31" />
+        </div>
+        <div class="tl__modal-time">
+          <input type="number" id="node-modal-hour" placeholder="时" min="0" max="23" />
+          <input type="number" id="node-modal-minute" placeholder="分" min="0" max="59" />
+        </div>
+      </div>
+      <div class="tl__modal-field">
+        <label>类型</label>
+        <select id="node-modal-type" class="tl__modal-select">
+          <option value="event">世界事件</option>
+          <option value="plot">剧情 / 人物</option>
+          <option value="year">年代锚点</option>
+        </select>
+      </div>
+      <div class="tl__modal-field" id="node-modal-target-wrap" style="display:none">
+        <label>目标时间线</label>
+        <select id="node-modal-target" class="tl__modal-select"></select>
+      </div>
+      <div class="tl__modal-field">
+        <label>标题</label>
+        <input type="text" id="node-modal-title-input" placeholder="一件值得记住的事" />
+      </div>
+      <div class="tl__modal-field">
+        <label>描述</label>
+        <textarea id="node-modal-desc" rows="2" class="tl__modal-textarea" placeholder="那天的光是什么样的？"></textarea>
+      </div>
+      <div class="tl__modal-field">
+        <label>关联人物（回车添加，可多个）</label>
+        <input type="text" id="node-modal-people" placeholder="输入人物名后回车" />
+        <div class="tl__modal-tags" id="node-modal-people-tags"></div>
+      </div>
+      <div class="tl__modal-field">
+        <label>关联地点（回车添加，可多个）</label>
+        <input type="text" id="node-modal-places" placeholder="输入地名后回车" />
+        <div class="tl__modal-tags" id="node-modal-places-tags"></div>
+      </div>
+    </div>
+    <div class="tl__modal-actions">
+      <button class="btn btn--ghost" id="node-modal-cancel">取消</button>
+      <button class="btn btn--primary" id="node-modal-ok">存入</button>
+    </div>
+  </div>
+</div>
+
+<!-- settings dialog -->
+<div class="tl__modal" id="settings-modal" style="display:none">
+  <div class="tl__modal-card">
+    <div class="tl__modal-title serif">设置</div>
+    <div class="tl__modal-body">
+      <div class="tl__modal-field">
+        <label>横向/纵向缓动速度 <span id="set-glide-val"></span></label>
+        <input type="range" id="set-glide" min="0.03" max="0.35" step="0.01" />
+        <div class="tl__modal-hint">滚轮/键盘平移的滑动速度（越大越快）</div>
+      </div>
+      <div class="tl__modal-field">
+        <label>缩放灵敏度 <span id="set-sens-val"></span></label>
+        <input type="range" id="set-sens" min="0.4" max="2.5" step="0.1" />
+        <div class="tl__modal-hint">Alt+滚轮 / Alt+右键拖拽的缩放响应</div>
+      </div>
+      <div class="tl__modal-field">
+        <label>标尺刻度密度 <span id="set-ruler-val"></span></label>
+        <input type="range" id="set-ruler" min="0.6" max="1.8" step="0.1" />
+        <div class="tl__modal-hint">标尺刻度间距（越大越疏）</div>
+      </div>
+      <div class="tl__modal-field">
+        <label>添加节点的默认精度</label>
+        <select id="set-precision" class="tl__modal-select">
+          <option value="day">精确到日</option>
+          <option value="hour">精确到时</option>
+          <option value="minute">精确到分</option>
+          <option value="month">精确到月</option>
+          <option value="year">仅年份</option>
+        </select>
+      </div>
+      <div class="tl__modal-field">
+        <label>序列模式默认间距 <span id="set-seq-val"></span></label>
+        <input type="range" id="set-seq" min="32" max="300" step="4" />
+        <div class="tl__modal-hint">序列（等距）视图的节点间距 px</div>
+      </div>
+      <div class="tl__modal-field">
+        <label>界面动画时长 <span id="set-anim-val"></span></label>
+        <input type="range" id="set-anim" min="100" max="1000" step="20" />
+        <div class="tl__modal-hint">标签收起/展开等界面过渡（毫秒）</div>
+      </div>
+      <div class="tl__modal-field" style="margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border-soft);">
+        <label>联想引擎</label>
+        <select id="set-ai-mode" class="tl__modal-select">
+          <option value="ollama">本地 Ollama（免费 · 需自部署）</option>
+          <option value="api">OpenAI 兼容 API（按量付费）</option>
+        </select>
+        <div class="tl__modal-hint">本地：安装 Ollama 并拉取模型（默认 qwen2.5:7b）；API：填写下方 Base URL / Key / 模型</div>
+      </div>
+      <div class="tl__modal-field">
+        <label>API Base URL</label>
+        <input type="text" id="set-ai-url" placeholder="https://api.openai.com/v1" />
+      </div>
+      <div class="tl__modal-field">
+        <label>API Key</label>
+        <input type="password" id="set-ai-key" placeholder="sk-..." />
+      </div>
+      <div class="tl__modal-field">
+        <label>模型名</label>
+        <input type="text" id="set-ai-model" placeholder="qwen2.5:7b / gpt-4o-mini" />
+      </div>
+      <div class="tl__modal-hint">⚠️ 免责声明：灵框本体免费开源。AI 联想功能是可选能力——本地部署（自付电费）或第三方 API（费用由提供商收取），均与灵框无关。</div>
+    </div>
+    <div class="tl__modal-foot">
+      <button class="btn btn--ghost" id="settings-modal-reset">恢复默认</button>
+      <button class="btn btn--primary" id="settings-modal-close">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- settings gear — pinned to the window's bottom-left corner -->
+<button id="settings-btn" title="设置">⚙</button>
+
+<script src="data/worldbuilding.js"></script>
+<script src="lingkuang.js"></script>
+
+<!-- eyedrop tip：吸管模式下跟随鼠标的小字提示 -->
+<div class="tl__eyedrop-tip" id="eyedrop-tip" style="display:none"></div>
+
+<!-- worldset dropdown — lives directly under <body> so the manager's
+     overflow can never clip it -->
+<div class="tl__wsmenu" id="tl-ws-dropmenu" style="display:none">
+  <div class="tl__wsmenu-head">切换世界观</div>
+  <div class="tl__wsmenu-list" id="tl-ws-drop-list"></div>
+  <div class="tl__wsmenu-new">
+    <input type="text" id="tl-ws-drop-name" placeholder="新世界观名称" />
+    <button id="tl-ws-drop-create">创建</button>
+  </div>
+</div>
+
+</body>
+</html>

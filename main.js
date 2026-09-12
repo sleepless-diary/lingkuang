@@ -32,23 +32,46 @@ const VAULT_DIR = () => process.env.LINGKUANG_VAULT
 let mainWin = null;
 
 /* ── vault 序列化：TimelineNode <-> .md（YAML frontmatter + #字段：值 正文，无 yaml 依赖）── */
-/* 小数年份 ↔ YYYY-MM-DD（存储层互转；内部计算仍用小数值）。年可负/超大（Obsidian 日期待受限于标准公元年，否则退化为字符串但仍可读） */
+/* 小数年份 ↔ YYYY[-MM[-DD[ HH[:MM[:SS]]]]]（存储层互转；内部计算仍用小数值）。年可负/超大（Obsidian 日期待受限于标准公元年，否则退化为字符串但仍可读）
+   每一级都是「有才写」：precision 为 year 的节点只写 `year: 312`。旧实现一律补 -01-01，
+   读回来凭空多出 month/day，详情面板的「312年」就显示成了「312年1月1日」。 */
 function yearToDateStr(n) {
   const year = n.year;
   if (year === undefined || year === null || Number.isNaN(+year)) return '';
   const yr = Math.floor(+year + 1e-9);
-  const month = n.month || 1;
-  const day = n.day || 1;
   const pad = (x) => String(Math.abs(x)).padStart(2, '0');
   const sign = yr < 0 ? '-' : '';
-  return `${sign}${Math.abs(yr)}-${pad(month)}-${pad(day)}`;
+  let s = `${sign}${Math.abs(yr)}`;
+  const hasMonth = n.month !== undefined && n.month !== null;
+  const hasDay = n.day !== undefined && n.day !== null;
+  if (hasMonth || hasDay) {
+    s += `-${pad(hasMonth ? n.month : 1)}`;
+    if (hasDay) s += `-${pad(n.day)}`;
+  }
+  /* 时/分/秒：precision 为 hour/minute/second 的节点才写 */
+  if (n.hour !== undefined && n.hour !== null) {
+    let t = pad(n.hour);
+    if (n.minute !== undefined && n.minute !== null) {
+      t += ':' + pad(n.minute);
+      if (n.second !== undefined && n.second !== null) t += ':' + pad(n.second);
+    }
+    s += ' ' + t;
+  }
+  return s;
 }
-/* 解析 frontmatter year 字符串（"312" / "312-07-15"）→ {year, month, day}，未拆出时 month/day 缺省 */
+/* 解析 frontmatter year 字符串（"312" / "312-07" / "312-07-15" / "312-07-15 13:30:05"）→ 已拆出的部件，缺省的不出现 */
 function dateStrToYear(str) {
-  const m = /^(-?\d+)-(\d{1,2})-(\d{1,2})$/.exec(String(str).trim());
-  if (!m) return { year: parseFloat(str) || 0 };
-  const yr = +m[1], month = +m[2], day = +m[3];
-  return { year: yr, month, day };
+  const s = String(str).trim();
+  const m = /^(-?\d+)(?:-(\d{1,2})(?:-(\d{1,2}))?)?(?:[ T](\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?)?$/.exec(s);
+  if (!m) return { year: parseFloat(s) || 0 };   /* "312.5" 之类的小数年份：整串交给 parseFloat */
+  const out = { year: +m[1] };
+  if (m[2] !== undefined) out.month = +m[2];
+  if (m[3] !== undefined) out.day = +m[3];
+  if (m[4] !== undefined) {
+    out.hour = +m[4];
+    if (m[5] !== undefined) { out.minute = +m[5]; if (m[6] !== undefined) out.second = +m[6]; }
+  }
+  return out;
 }
 
 /* frontmatter 属性值 → YAML 字符串（Obsidian 兼容：数值/布尔/列表/日期格式） */
@@ -90,7 +113,7 @@ function nodeToMd(n) {
   return `---\n${meta}${causesLine ? '\n' + causesLine : ''}${propsMeta ? '\n' + propsMeta : ''}\n---\n${body}`.replace(/\r\n/g, '\n');
 }
 function mdToNode(text) {
-  let fm = {}, rest = String(text || '');
+  let fm = {}, rest = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   if (rest.startsWith('---')) {
     const end = rest.indexOf('\n---', 3);
     if (end !== -1) {
@@ -103,7 +126,12 @@ function mdToNode(text) {
   }
   const node = {};
   ['id', 'title', 'precision', 'type'].forEach((k) => { if (fm[k] !== undefined) node[k] = fm[k]; });
-  if (fm.year !== undefined) { const dt = dateStrToYear(fm.year); node.year = dt.year; if (dt.month !== undefined) node.month = dt.month; if (dt.day !== undefined) node.day = dt.day; }
+  if (fm.year !== undefined) {
+    const dt = dateStrToYear(fm.year);
+    node.year = dt.year;
+    /* month/day/hour/minute/second 都藏在 year 字符串里（year: 312-07-15 13:30:05），缺省的部件不补 */
+    ['month', 'day', 'hour', 'minute', 'second'].forEach((k) => { if (dt[k] !== undefined) node[k] = dt[k]; });
+  }
   /* 因果线：causes 存目标节点 id 数组（Obsidian 行内数组格式 [id1, id2]） */
   if (fm.causes !== undefined) { const c = parseProp(fm.causes); node.causes = Array.isArray(c) ? c.map(String) : []; }
   /* 自定义笔记属性：frontmatter 里非固定 key 的任意键值 → properties（Obsidian 加的能读回） */
@@ -111,21 +139,34 @@ function mdToNode(text) {
   const props = {};
   Object.entries(fm).forEach(([k, v]) => { if (!FIXED.includes(k) && v !== undefined && v !== null) props[k] = parseProp(v); });
   if (Object.keys(props).length) node.properties = props;
-  /* 解析：#字段：值 行（desc 单独，值到第一个空行为止）；空行后的自由正文收集为 doc */
+  /* 解析：#字段：值 行（描述/正文 为结构标记）；空行后的自由正文收集为 doc。
+     三条护栏，都是为了避免「本应用自己写出的文件再读回来就损坏」：
+     1) ``` / ~~~ 围栏内的 #xxx： 一律当内容，不当标记；
+     2) 已出现过的结构标记（描述/正文）再出现时算内容 —— 否则正文里写一行
+        `#描述：xx` 会被当成真的描述标记，把正文顶进描述、正文被截断；
+     3) 描述/正文 值内的空行是内容（markdown 段落靠空行分隔），不当字段终止符。
+     未知 `#字段：` 行沿用旧行为（空行终止），保持手写 .md 的既有解释不变。 */
   const allLines = rest.split('\n');
   let desc = '', docParts = [];
   let cur = null, buf = [];
   let hadBodyTag = false;
+  let inFence = false;
+  const KNOWN_TAGS = ['描述', '正文'];
+  const seenTags = new Set();
   const flush = () => { if (cur) { const v = buf.join('\n').trim(); if (cur === '描述') desc = v; else if (cur === '正文') docParts.push(v); else docParts.push(`#${cur}：\n${v}`); } };
-  allLines.forEach((line, i) => {
-    const m = line.match(/^#([^：:]+)[：:]\s*(.*)$/);
-    if (m) { if (m[1].trim() === '正文') hadBodyTag = true; flush(); cur = m[1].trim(); buf = [m[2]]; return; }
-    if (cur !== null) {
-      if (line.trim() === '') { flush(); cur = null; buf = []; }   /* 空行结束当前字段值 */
-      else buf.push(line);
-    } else if (line.trim()) {
-      docParts.push(line);   /* 字段外的自由正文行 → 正文 */
+  allLines.forEach((line) => {
+    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+    const m = inFence ? null : line.match(/^#([^：:]+)[：:]\s*(.*)$/);
+    const tag = m ? m[1].trim() : '';
+    const isRepeatMarker = !!tag && KNOWN_TAGS.includes(tag) && seenTags.has(tag);
+    if (m && !isRepeatMarker) {
+      if (tag === '正文') hadBodyTag = true;
+      if (KNOWN_TAGS.includes(tag)) seenTags.add(tag);
+      flush(); cur = tag; buf = [m[2]]; return;
     }
+    if (cur === null) { if (line.trim()) docParts.push(line); return; }   /* 字段外的自由正文行 → 正文 */
+    if (line.trim() === '' && !KNOWN_TAGS.includes(cur)) { flush(); cur = null; buf = []; return; }
+    buf.push(line);   /* 已识别的 描述/正文：空行也是内容，保留段落分隔 */
   });
   flush();
   if (desc) node.desc = desc;
@@ -147,10 +188,10 @@ function cleanupStaleVaultFiles() {
     const root = VAULT_DIR();
     if (!fs.existsSync(root)) return;
     for (const ws of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!ws.isDirectory()) continue;
+      if (!ws.isDirectory() || ws.name.startsWith('.')) continue;   /* 跳过 .trash 等隐藏目录 */
       const wsDir = path.join(root, ws.name);
       for (const tl of fs.readdirSync(wsDir, { withFileTypes: true })) {
-        if (!tl.isDirectory()) continue;
+        if (!tl.isDirectory() || tl.name.startsWith('.')) continue;
         const tlDir = path.join(wsDir, tl.name);
         /* 收集类型文件夹内所有节点 id，及其所在文件 */
         const idsInKinds = new Set();
@@ -212,7 +253,7 @@ function createWindow() {
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    win.loadFile(path.join(__dirname, 'dist', 'index.html'));
+    win.loadFile(path.join(__dirname, 'app-dist', 'index.html'));
   }
   /* F12 toggles DevTools — handy for dragging/eyeballing element positions
      (menu bar was removed, so the default accelerator is gone) */
@@ -235,21 +276,43 @@ ipcMain.handle('data:load', () => {
   }
 });
 
+/* ── 落盘实现（同步版，供 IPC 与退出前 flush 共用）──────────────
+   退出前的 flush 走 ipcRenderer.sendSync，必须同步写完再返回：
+   异步 IPC 在 beforeunload 之后不保证跑得完，编辑器里没失焦的内容
+   和 400ms 防抖还没触发的 store 变化都会随窗口一起消失。 */
+function writeDataFileSync(payload) {
+  const dir = path.dirname(DATA_FILE());
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  /* 自动备份：写前把现有文件轮换备份，保留 3 份（防误操作/崩溃丢数据） */
+  const backup = (n) => DATA_FILE().replace(/\.json$/, `.backup-${n}.json`);
+  if (fs.existsSync(DATA_FILE())) {
+    /* 轮换：3→2, 2→1, 1→0；当前内容备份到 -1 */
+    if (fs.existsSync(backup(2))) fs.rmSync(backup(2), { force: true });
+    if (fs.existsSync(backup(1))) fs.copyFileSync(backup(1), backup(2));
+    if (fs.existsSync(backup(0))) fs.copyFileSync(backup(0), backup(1));
+    fs.copyFileSync(DATA_FILE(), backup(0));
+  }
+  fs.writeFileSync(DATA_FILE(), JSON.stringify(payload, null, 2), 'utf8');
+}
+function writeVaultNodeSync(wsName, tlName, node) {
+  const dir = path.dirname(nodePath(wsName, tlName, node));
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  /* 改名去重：同 id 但 title 不同的旧 .md 残留 → 删除（避免名改后文件成双） */
+  const target = nodePath(wsName, tlName, node);
+  fs.readdirSync(dir).forEach((f) => {
+    if (!f.endsWith('.md') || path.join(dir, f) === target) return;
+    try {
+      const old = mdToNode(fs.readFileSync(path.join(dir, f), 'utf8'));
+      if (old.id === node.id) fs.rmSync(path.join(dir, f), { force: true });
+    } catch (e) { /* 读不了的旧文件忽略 */ }
+  });
+  fs.writeFileSync(target, nodeToMd(node), 'utf8');
+}
+
 /* ── IPC: write the worldbuilding data file ────────────────── */
 ipcMain.handle('data:save', (e, payload) => {
   try {
-    const dir = path.dirname(DATA_FILE());
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    /* 自动备份：写前把现有文件轮换备份，保留 3 份（防误操作/崩溃丢数据） */
-    const backup = (n) => DATA_FILE().replace(/\.json$/, `.backup-${n}.json`);
-    if (fs.existsSync(DATA_FILE())) {
-      /* 轮换：3→2, 2→1, 1→0；当前内容备份到 -1 */
-      if (fs.existsSync(backup(2))) fs.rmSync(backup(2), { force: true });
-      if (fs.existsSync(backup(1))) fs.copyFileSync(backup(1), backup(2));
-      if (fs.existsSync(backup(0))) fs.copyFileSync(backup(0), backup(1));
-      fs.copyFileSync(DATA_FILE(), backup(0));
-    }
-    fs.writeFileSync(DATA_FILE(), JSON.stringify(payload, null, 2), 'utf8');
+    writeDataFileSync(payload);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: String(err) };
@@ -263,11 +326,11 @@ ipcMain.handle('vault:scan', () => {
     if (!fs.existsSync(root)) return { ok: true, worlds: [] };
     const worlds = {};
     for (const ws of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!ws.isDirectory()) continue;
+      if (!ws.isDirectory() || ws.name.startsWith('.')) continue;   /* .trash 等隐藏目录不是世界观 */
       const wsDir = path.join(root, ws.name);
       const tls = {};
       for (const tl of fs.readdirSync(wsDir, { withFileTypes: true })) {
-        if (!tl.isDirectory()) continue;
+        if (!tl.isDirectory() || tl.name.startsWith('.')) continue;
         const tlDir = path.join(wsDir, tl.name);
         /* 按 id 去重：先收直连 .md（旧两层，默认事件），再收类型文件夹内（优先覆盖，即优先文件夹版） */
         const nodesById = new Map();
@@ -279,7 +342,7 @@ ipcMain.handle('vault:scan', () => {
         }
         /* 类型文件夹层：每个 sub（如 事件/角色/地点）是一个格式文件夹，kind = 文件夹名；同 id 覆盖直连版 */
         for (const sub of fs.readdirSync(tlDir, { withFileTypes: true })) {
-          if (!sub.isDirectory()) continue;
+          if (!sub.isDirectory() || sub.name.startsWith('.')) continue;
           const subDir = path.join(tlDir, sub.name);
           for (const f of fs.readdirSync(subDir)) {
             if (!f.endsWith('.md')) continue;
@@ -333,22 +396,68 @@ ipcMain.handle('vault:readNode', (e, { wsName, tlName, nodeId }) => {
 /* ── IPC: 写入单个节点 .md（frontmatter + 正文）── */
 ipcMain.handle('vault:write', (e, { wsName, tlName, node }) => {
   try {
-    const dir = path.dirname(nodePath(wsName, tlName, node));
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    /* 改名去重：同 id 但 title 不同的旧 .md 残留 → 删除（避免名改后文件成双） */
-    const target = nodePath(wsName, tlName, node);
-    fs.readdirSync(dir).forEach((f) => {
-      if (!f.endsWith('.md') || path.join(dir, f) === target) return;
-      try {
-        const old = mdToNode(fs.readFileSync(path.join(dir, f), 'utf8'));
-        if (old.id === node.id) fs.rmSync(path.join(dir, f), { force: true });
-      } catch (e) { /* 读不了的旧文件忽略 */ }
-    });
-    fs.writeFileSync(target, nodeToMd(node), 'utf8');
+    writeVaultNodeSync(wsName, tlName, node);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
+});
+
+/* ── IPC: 删除节点的 .md（移到 vault/.trash/，可人工恢复）──
+   为什么必须删文件：.md 是「文件为源」，store 里删掉节点但文件还在的话，
+   下次启动 vault 扫描会把它读回来 —— 节点复活。
+   为什么不真删：误删不可逆，且灵框没有回收站。.trash 是隐藏目录，
+   vault:scan 会跳过（否则会被当成一个叫「.trash」的世界观）。
+   按 id 在时间线目录下递归找，而不是用 nodePath 直接算：
+   title 改过或 kind 换过文件夹时，算出来的路径已经不是文件实际所在位置。 */
+ipcMain.handle('vault:delete', (e, { wsName, tlName, node }) => {
+  try {
+    if (!node || !node.id) return { ok: false, error: 'missing node id' };
+    const safe = (s) => String(s || '').replace(/[\\/:*?"<>|]/g, '_');
+    const tlDir = path.join(VAULT_DIR(), safe(wsName), safe(tlName));
+    const found = [];
+    const collect = (dir) => {
+      if (!fs.existsSync(dir)) return;
+      for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, ent.name);
+        if (ent.isDirectory()) { collect(p); continue; }
+        if (!ent.name.endsWith('.md')) continue;
+        try {
+          const n = mdToNode(fs.readFileSync(p, 'utf8'));
+          if (n && n.id === node.id) found.push(p);
+        } catch (err) { /* 读不了的跳过 */ }
+      }
+    };
+    collect(tlDir);
+    if (!found.length) return { ok: true, moved: 0 };   /* 从没落过盘，也算删成功 */
+    const trash = path.join(VAULT_DIR(), '.trash');
+    if (!fs.existsSync(trash)) fs.mkdirSync(trash, { recursive: true });
+    const stamp = Date.now();
+    found.forEach((p, i) => fs.renameSync(p, path.join(trash, `${stamp}-${i}-${path.basename(p)}`)));
+    return { ok: true, moved: found.length };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/* ── IPC: 退出前同步落盘（渲染进程在 beforeunload 里 sendSync）──
+   payload = { data?: WorldData, nodes?: [{wsName, tlName, node}] }
+   同步通道，主进程写完才让渲染进程继续销毁。 */
+ipcMain.on('app:flush-sync', (e, payload) => {
+  const out = { ok: true, wrote: 0, failed: 0 };
+  try {
+    if (payload && payload.data) {
+      try { writeDataFileSync(payload.data); out.wrote++; } catch (err) { out.failed++; out.error = String(err); }
+    }
+    for (const it of (payload && payload.nodes) || []) {
+      try { writeVaultNodeSync(it.wsName, it.tlName, it.node); out.wrote++; } catch (err) { out.failed++; out.error = String(err); }
+    }
+  } catch (err) {
+    out.ok = false;
+    out.error = String(err);
+  }
+  if (out.failed) out.ok = false;
+  e.returnValue = out;
 });
 
 /* ── IPC: 导入图片到 vault assets（弹文件框 → 复制到 VAULT_DIR/assets → 返回相对路径，供 markdown `![alt](path)`）── */
@@ -364,8 +473,10 @@ ipcMain.handle('vault:importImage', async () => {
     const ext = path.extname(src).toLowerCase();
     const assetsDir = path.join(VAULT_DIR(), 'assets');
     if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true });
-    /* 唯一文件名：时间戳+原文件名，避免跨节点同名覆盖 */
-    const base = path.basename(src, ext).replace(/[\\/:*?"<>|]/g, '_');
+    /* 唯一文件名：时间戳+原文件名，避免跨节点同名覆盖。
+       空白也换成下划线：markdown 图片目标在空白处会被截断，
+       `![](assets/1_my pic.png)` 会退化成普通文本（Windows 截图名常带空格）。 */
+    const base = path.basename(src, ext).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
     const name = `${Date.now()}_${base}${ext}`;
     const dst = path.join(assetsDir, name);
     fs.copyFileSync(src, dst);
@@ -402,11 +513,19 @@ ipcMain.handle('vault:unwatch', () => {
   return { ok: true };
 });
 
-/* ── IPC: read the character lib (bundled resource, project dir) ─ */
-const LIB_FILE = () => path.join(__dirname, 'data', 'character_lib.json');
+/* ── IPC: read the character lib ───────────────────────────── */
+/* 词库有两个位置：
+   - LIB_SEED：随包分发的只读种子（__dirname/data/character_lib.json）。
+   - LIB_FILE：用户可写副本（userData/character_lib.json）。
+   打包后 __dirname 位于 app.asar 内部，asar 是只读归档，往里写会失败；
+   而项目约定「数据写 %APPDATA%\lingkuang\，不写项目目录」。所以读优先用户副本、
+   缺失时回落到种子，写一律写用户副本。 */
+const LIB_SEED = () => path.join(__dirname, 'data', 'character_lib.json');
+const LIB_FILE = () => path.join(app.getPath('userData'), 'character_lib.json');
 ipcMain.handle('lib:load', () => {
   try {
-    const raw = fs.readFileSync(LIB_FILE(), 'utf8');
+    const f = fs.existsSync(LIB_FILE()) ? LIB_FILE() : LIB_SEED();
+    const raw = fs.readFileSync(f, 'utf8');
     return { ok: true, data: JSON.parse(raw) };
   } catch (e) {
     return { ok: false, error: e.code || String(e) };
@@ -560,7 +679,7 @@ ipcMain.handle('ai:associate', async (e, word) => {
   }
 });
 
-/* ── IPC: write character lib（暂存词导出）────────────── */
+/* ── IPC: write character lib（暂存词导出，写 userData 副本）────── */
 ipcMain.handle('lib:save', (e, data) => {
   try {
     const dir = path.dirname(LIB_FILE());
@@ -574,13 +693,17 @@ ipcMain.handle('lib:save', (e, data) => {
 
 /* ── IPC: batch classify words via local Ollama（暂存词分类）── */
 const CLASSIFY_PROMPT = `你是角色设定词库管理员。词库分类如下（分类名：示例）：
-发色：黑发｜发型：双马尾｜瞳色：蓝瞳｜肤色：白皮肤｜角：恶魔角｜瞳：三白眼｜耳：兽耳｜尾：猫尾｜翅：羽翼｜其他身体特征：伤疤、獠牙、鳞片｜上衣：衬衫｜下装：短裙｜连体衣：连衣裙｜套装：水手服｜鞋：靴子｜袜：过膝袜｜内衣：文胸｜特殊服装：女仆装、婚纱｜武器：剑、枪｜法器：法杖｜道具：钥匙、怀表、门锁、路灯｜随身物：扇子、钱包｜坐骑：马、龙｜头饰：发箍、王冠｜面饰：面纱｜颈饰：项链｜肩饰：披肩｜臂饰：臂环｜手饰：戒指｜腰饰：腰带｜腿饰：腿环｜脚链：脚铃｜背部装饰：披风｜发饰：发夹｜眼镜：圆框眼镜｜表层性格：开朗、冷淡｜深层性格：腹黑｜癖好：收集癖｜恐惧：恐高｜执念：复仇｜气质：高贵、神秘｜职业：剑士、医生｜种族：人类、精灵｜身份地位：王子、流浪者｜背景经历：孤儿｜秘密：隐藏身份｜目标：征服世界｜能力：飞行、读心｜弱点：怕火｜关系：师徒、宿敌｜主题意象：月亮、锁链、囚牢、铁窗、庭院｜代表色：红色、金色｜名字含义：寓意光明｜服装：哥特风、和风｜食物：苹果｜气味：花香｜体型：娇小｜萌属性：傲娇、天然呆
+发色：黑发｜发型：双马尾｜瞳色：蓝瞳｜肤色：白皮肤｜角：恶魔角｜瞳：三白眼｜耳：兽耳｜尾：猫尾｜翅：羽翼｜其他身体特征：伤疤、獠牙、鳞片｜上衣：衬衫｜下装：短裙｜连体衣：连衣裙｜套装：水手服｜鞋：靴子｜袜：过膝袜｜内衣：文胸｜特殊服装：女仆装、婚纱｜武器：剑、枪｜法器：法杖｜道具：钥匙、怀表、门锁、路灯｜随身物：扇子、钱包｜坐骑：马、龙｜头饰：发箍、王冠｜面饰：面纱｜颈饰：项链｜肩饰：披肩｜臂饰：臂环｜手饰：戒指｜腰饰：腰带｜腿饰：腿环｜脚链：脚铃｜背部装饰：披风｜发饰：发夹｜眼镜：圆框眼镜｜表层性格：开朗、冷淡｜深层性格：腹黑｜癖好：收集癖｜恐惧：恐高｜执念：复仇｜气质：高贵、神秘｜职业：剑士、医生｜种族：人类、精灵｜身份地位：王子、流浪者｜背景经历：孤儿｜秘密：隐藏身份｜目标：征服世界｜能力：飞行、读心｜弱点：怕火｜关系：师徒、宿敌｜主题意象：月亮、锁链、囚牢、铁窗、庭院｜代表色：红色、金色｜名字含义：寓意光明｜服装：哥特风、和风｜食物：苹果｜气味：花香｜体型：娇小｜萌属性：傲娇、天然呆｜声响：噼啪作响、铃声、沙沙（拟声与声音）｜抽象概念：根本、因果、宿命（非实体的抽象名词）｜自然意象：月光、雪花、晚霞（自然景物、气象、时光）
 
 请把下列每个词条归类到其中最合适的 1 个分类。严格规则：
 1. 只能从上面分类名里选，禁止发明新分类
 2. 词条以某分类名结尾时优先归该类（四角裤→下装）
-3. 抽象/意象类词（囚牢、铁窗、庭院、月光这类有画面感但不是实体物品的）归「主题意象」
-4. 「其他身体特征」只放身体部位相关词条（伤疤、獠牙、鳞片、触手），普通物品严禁放进去
+3. 联想词优先归类：
+   - 拟声词/声音（噼啪作响、掌声、歌声、铃声、脚步声、呼啸）→「声响」
+   - 抽象的、看不见具体形象的名词（根本、因果、宿命、边界、循环）→「抽象概念」
+   - 自然景物/气象/时光（月亮、雪花、晚霞、雾气、寒冷的风、湖泊、水晶）→「自然意象」
+   - 其他有画面感但不是具体物品的意象（囚牢、铁窗、庭院、符纸焦痕）→「主题意象」
+4. 「其他身体特征」只放身体部位相关词条（伤疤、獠牙、鳞片、触手）；「上衣/下装/连体衣/套装/鞋/袜/内衣/特殊服装/装备/法器/道具/随身物/武器」与一切物品类分类严禁放入抽象词、意象词、声响词或非该类的实体
 5. 输出格式：每行一个「词条: 分类」，词条原文照抄，不要序号、不要解释
 
 词条：
@@ -591,7 +714,8 @@ ipcMain.handle('ai:classify', async (e, words) => {
   const list = words.slice(0, 60);
   try {
     const text = await aiChat([{ role: 'user', content: CLASSIFY_PROMPT + list.join('\n') }], 0.1, 2000);
-    const validCats = CLASSIFY_PROMPT.match(/[\u4e00-\u9fff]+(?=：)/g) || [];
+    const validCats = (CLASSIFY_PROMPT.split('\n')[1].match(/[\u4e00-\u9fff]+(?=：)/g) || [])
+      .filter((c) => c !== '分类名');
     const map = {};
     text.split('\n').forEach(line => {
       const m = line.trim().match(/^(.+?)[:：]\s*(.+)$/);

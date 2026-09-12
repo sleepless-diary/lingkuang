@@ -3,10 +3,11 @@
  */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
-import { getTimeline, setTimeCursor, saveNodeDoc } from '../store/actions';
+import { getTimeline, setTimeCursor, saveNodeDoc, addLoop, setLoopCount, removeLoop, copyNode, removeNode } from '../store/actions';
 import type { Timeline, TimelineNode, Storyline, Loop } from '../store/types';
 import { renderNodeForm } from './node-form';
 import { isEyedropActive, pick } from './eyedrop';
+import { escapeHtml } from './html';
 import { toEpoch, fromEpoch, calendarOf, timePointOf, buildYearTable } from '../calendar';
 import type { Calendar, YearTable } from '../calendar';
 
@@ -154,7 +155,7 @@ export function mountTimeline(
        确保刻度落在整齐的整单位上，不跳过、不落中间 */
     let start: number;
     {
-      const tp = fromEpoch(cal(), s0);
+      const tp = fromEpoch(cal(), s0, getYearTable());
       let y = tp.anchor.year, mo = tp.values.month, d = tp.values.day, h = tp.values.hour, mi = tp.values.minute;
       switch (unit) {
         case '年': mo = 1; d = 1; h = 0; mi = 0; break;   /* 对齐到整年 1月1日 */
@@ -178,7 +179,13 @@ export function mountTimeline(
       } else if (unit === '月') {
         const stepMonths = Math.max(1, Math.round(stepSec / (SEC_PER_YEAR / 12)));
         const tp0 = fromEpoch(cal(), start, getYearTable());
-        s = toEpoch(cal(), timePointOf(tp0.anchor.year, { month: tp0.values.month + i * stepMonths, day: 1 }), getYearTable());
+        /* 月序号会跨年（7 月 + i 个月会超过 12）。必须拆成「进位到年 + 取模到月」：
+           直接把 month=13/14/… 交给 timePointOf，daysInMonth 对 >12 的月返回 0，
+           这些刻度的 epoch 全部等于年初 → 几十个「1月」标签叠在同一个 x 上。 */
+        const mAbs = tp0.values.month + i * stepMonths;      /* 1-based 连续月序号 */
+        const addYears = Math.floor((mAbs - 1) / 12);
+        const month = ((mAbs - 1) % 12) + 1;
+        s = toEpoch(cal(), timePointOf(tp0.anchor.year + addYears, { month, day: 1 }), getYearTable());
       } else {
         s = start + i * stepSec;
       }
@@ -272,7 +279,7 @@ export function mountTimeline(
   function nodeHtml(n: TimelineNode, x: number, sel: boolean): string {
     const typeCls = n.type === 'story_event' ? ' is-story' : n.type === 'world_event' ? ' is-world' : '';
     return `<div class="tl__n${sel ? ' is-sel' : ''}${typeCls}" data-id="${n.id}" style="left:${x}px;">
-      <div class="cap"></div><div class="tl__name">${n.title}</div>
+      <div class="cap"></div><div class="tl__name">${escapeHtml(n.title)}</div>
     </div>`;
   }
   function updateCursor() {
@@ -324,6 +331,10 @@ export function mountTimeline(
   let nodeDragMoved = false;
 
   wrap.addEventListener('pointerdown', (e) => {
+    /* 只响应左键：pointerdown 对任意按键都触发，不判断的话
+       右键按住节点轻微一拖就会逐帧改写年份（并落盘），而右键菜单照样弹出；
+       空白处右键也会顺带把时间指针挪到点击位置。 */
+    if (e.button !== 0) return;
     if (typeof brushing !== 'undefined' && brushing) return;   /* 笔刷模式：交给笔刷分支 */
     const nodeEl = (e.target as HTMLElement).closest('.tl__n') as HTMLElement | null;
     if (nodeEl) {
@@ -344,6 +355,13 @@ export function mountTimeline(
     setTimeCursor(store, xToTime(e.clientX - rect.left));
   });
   window.addEventListener('pointermove', (e) => {
+    /* 指针键已经松了却没收到 pointerup（指针取消 / 在窗口外松手 / 切窗）：
+       先结算拖动。旧实现只在 pointerup 里清状态，一次丢失的 pointerup 就让节点
+       永远跟着鼠标走，而且每帧都把 n.year 写回盘（saveNodeDoc）。 */
+    if (e.buttons === 0) {
+      if (nodeDragId || dragging || cursorDrag) endDrag();
+      return;
+    }
     const rect = wrap.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     if (nodeDragId) {
@@ -353,7 +371,7 @@ export function mountTimeline(
         const n = tl?.nodes.find((x) => x.id === nodeDragId);
         if (n) {
           const e = xToTime(mx);                       /* 鼠标位置 → epoch 秒 */
-          n.year = fromEpoch(cal(), e).anchor.year;    /* 反推存年（精确到年） */
+          n.year = fromEpoch(cal(), e, getYearTable()).anchor.year;    /* 反推存年（精确到年）；拖动热路径必须带年表，否则 O(年数) */
           render();
           saveNodeDoc(store, tl!.id, n.id, n.doc ?? '', { undo: false });   // 拖动中间态不进撤销
         }
@@ -370,6 +388,15 @@ export function mountTimeline(
       setTimeCursor(store, xToTime(mx));
     }
   });
+  /* 统一结算拖动：pointerup / pointercancel / 窗口失焦 都走这里 */
+  function endDrag(): void {
+    nodeDragId = null;
+    nodeDragMoved = false;
+    dragging = false;
+    cursorDrag = false;
+    /* 吸管模式下光标是 copy，不要一律打回 default */
+    wrap.style.cursor = wrap.classList.contains('lk-eyedrop') ? 'copy' : 'default';
+  }
   window.addEventListener('pointerup', () => {
     const wasNodeClick = nodeDragId && !nodeDragMoved;
     if (wasNodeClick && nodeDragId) {
@@ -382,16 +409,13 @@ export function mountTimeline(
         if (onSelect) onSelect(n);
       }
     }
-    nodeDragId = null;
-    nodeDragMoved = false;
-    dragging = false;
-    cursorDrag = false;
-    wrap.style.cursor = 'default';
-    if (cursorDrag) { /* 已在 pointerup 前松开 */ }
+    endDrag();
   });
+  /* pointercancel：指针被系统接管（触控手势 / 拖出窗口 / 浏览器抢走）——之后不会再有 pointerup */
+  window.addEventListener('pointercancel', endDrag);
   window.addEventListener('keydown', (e) => { if (e.code === 'Space' && !spaceDown) spaceDown = true; });
   window.addEventListener('keyup', (e) => { if (e.code === 'Space') spaceDown = false; });
-  window.addEventListener('blur', () => { spaceDown = false; });
+  window.addEventListener('blur', () => { spaceDown = false; endDrag(); });
 
   /* 滚轮：普通=左右平移（横向滚动），Alt=缩放（照抄 legacy scrollPan） */
   wrap.addEventListener(
@@ -434,10 +458,12 @@ export function mountTimeline(
   });
   window.addEventListener('pointermove', (e) => {
     if (!handleDrag) return;
+    if (e.buttons === 0) { handleDrag = false; return; }   /* 丢失 pointerup 时兜底 */
     const rect = wrap.getBoundingClientRect();
     setTimeCursor(store, xToTime(e.clientX - rect.left));
   });
   window.addEventListener('pointerup', () => { handleDrag = false; });
+  window.addEventListener('pointercancel', () => { handleDrag = false; });
 
   store.subscribe(() => render());
   render();
@@ -456,9 +482,19 @@ export function mountTimeline(
     'position:absolute;top:34px;bottom:0;z-index:4;pointer-events:none;background:rgba(158,194,98,.10);border:1px solid rgba(158,194,98,.55);display:none;';
   wrap.appendChild(brushSel);
 
+  /* 开放段（end === null）延伸到的上限：取最大节点年；没有节点时退回段起点 */
+  function openEndYear(fallback: number): number {
+    const ys = (timeline()?.nodes ?? []).map((n) => n.year ?? 0);
+    return ys.length ? Math.max(...ys) : fallback;
+  }
+
   function linesOf(): Storyline[] {
     const tl = timeline();
-    return (tl && Array.isArray(tl.storylines) ? tl.storylines : []) as Storyline[];
+    const arr = tl && Array.isArray(tl.storylines) ? tl.storylines : [];
+    /* 单条线也要补 segments（legacy 数据可能是 startYear/endYear 或 nodeIds 形态）。
+       缺 segments 时 inLine() 会抛 TypeError，而 render() 每次 store 更新都会走到那里
+       → 整个沙盘从此不再刷新。这里统一补成空数组，线仍可见、可继续编辑。 */
+    return arr.map((l) => ({ ...l, segments: Array.isArray(l.segments) ? l.segments : [] }));
   }
   function activeLine(): Storyline | undefined {
     return linesOf().find((l) => l.id === activeLineId);
@@ -466,7 +502,7 @@ export function mountTimeline(
   function inLine(t: number): boolean {
     const ln = activeLine();
     if (!ln) return false;
-    return ln.segments.some((s) => (s.end === null ? t >= s.start : t >= s.start && t <= s.end));
+    return ln.segments.some((s) => (s.end === null || s.end === undefined ? t >= s.start : t >= s.start && t <= s.end));
   }
 
   function renderStoryUI() {
@@ -475,7 +511,7 @@ export function mountTimeline(
     const active = activeLineId && lines.some((l) => l.id === activeLineId) ? activeLineId : lines[0]?.id ?? null;
     if (active !== activeLineId) activeLineId = active;
     const lineOpts = lines
-      .map((l) => `<option value="${l.id}"${l.id === activeLineId ? ' selected' : ''}>${l.name}</option>`)
+      .map((l) => `<option value="${escapeHtml(l.id)}"${l.id === activeLineId ? ' selected' : ''}>${escapeHtml(l.name)}</option>`)
       .join('');
     const existing = TL_HEAD.querySelector('#lk-story-ui');
     if (existing) existing.remove();
@@ -486,6 +522,7 @@ export function mountTimeline(
       <select class="lk-tl-tab" id="lk-line-sel" style="font-size:11px;background:none;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--fg);padding:2px 4px;" ${lines.length ? '' : 'disabled'}>
         <option value="">— 世界历史 —</option>${lineOpts}</select>
       <button class="lk-tl-tab is-new" id="lk-line-new" title="新建剧情线">＋线</button>
+      <button class="lk-tl-tab" id="lk-brush" title="笔刷：在时间线上框选时间段（按住 Alt 拖 = 擦除）" style="font-size:11px;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--fg);padding:2px 6px;cursor:pointer;background:${brushing ? 'rgba(158,194,98,.2)' : 'none'};">笔刷</button>
       ${pendingSegs.length ? `<span class="cnt" style="font-size:10px;color:var(--accent);">已选 ${pendingSegs.length} 段</span>` : ''}`;
     /* 固定槽位：story-ui 恒在最前（笔刷/线），extras 恒在最后（循环/非线性），不因重建互换 */
     const tools = TL_HEAD.querySelector('#lk-tools');
@@ -506,11 +543,17 @@ export function mountTimeline(
     ui.querySelector('#lk-line-new')?.addEventListener('click', () => {
       if (pendingSegs.length === 0) { brushing = true; renderStoryUI(); return; }
       const id = 'sl' + Date.now();
-      const tl = timeline();
-      if (!tl) return;
-      if (!tl.storylines) tl.storylines = [];
-      const name = `剧情线 ${tl.storylines.length + 1}`;
-      tl.storylines.push({ id, name, segments: pendingSegs.slice() });
+      const tlId = activeTimelineId();
+      if (!tlId) return;
+      const segs = pendingSegs.slice();
+      /* 走 store.update：直接 push 进 tl.storylines（那是 store.data 里的活引用）
+         既不通知订阅者（tab 计数等视图停在旧值），也不进撤销栈，更不会触发落盘 */
+      store.update((d) => {
+        const tl2 = d.worldsets[store.activeWorld]?.timelines[tlId];
+        if (!tl2) return;
+        if (!tl2.storylines) tl2.storylines = [];
+        tl2.storylines.push({ id, name: `剧情线 ${tl2.storylines.length + 1}`, segments: segs });
+      });
       pendingSegs = [];
       activeLineId = id;
       brushing = false;
@@ -520,7 +563,10 @@ export function mountTimeline(
     });
   }
 
-  function brushYearFromVx(vx: number): number { return xToTime(vx); }
+  /* 刷选结果统一为「年」——与 segments 的既有语义、yearEpoch()、inLine() 一致。
+     xToTime() 出的是 epoch 秒（见上面坐标换算），直接存会让 yearEpoch(9.6e9)
+     落进 toEpoch 的「按年累加」回退分支 → 主线程跑 ~10¹⁰ 次循环，建剧情线即卡死。 */
+  function brushYearFromVx(vx: number): number { return xToTime(vx) / SEC_PER_YEAR; }
   function clearBrushSel() { brushSel.style.display = 'none'; brushSel.style.left = '0'; brushSel.style.width = '0'; }
   function setBrushSel(vx0: number, vx1: number) {
     brushSel.style.display = '';
@@ -554,8 +600,14 @@ export function mountTimeline(
   });
   window.addEventListener('pointermove', (e) => {
     if (!brushDrag) return;
+    if (e.buttons === 0) { brushDrag = false; clearBrushSel(); return; }   /* 丢失 pointerup 时兜底 */
     brushLastX = e.clientX - wrap.getBoundingClientRect().left;
     setBrushSel(brushStartX, brushLastX);
+  });
+  window.addEventListener('pointercancel', () => {
+    if (!brushDrag) return;
+    brushDrag = false;
+    clearBrushSel();   /* 手势被取消：不落段，只撤掉框选高亮 */
   });
   window.addEventListener('pointerup', () => {
     if (!brushDrag) return;
@@ -565,13 +617,18 @@ export function mountTimeline(
     clearBrushSel();
     if (hi - lo <= 0.01) return;
     if (brushErase) {
-      /* 擦除：对聚焦线已存段 或 未命名累积段做差集 */
-      const tl = timeline();
-      if (activeLineId && tl) {
-        const ln = tl.storylines.find((l) => l.id === activeLineId);
-        if (ln) ln.segments = eraseRange(ln.segments, Math.round(lo * 10) / 10, Math.round(hi * 10) / 10);
+      /* 擦除：对聚焦线已存段 或 未命名累积段做差集。
+         下面粒度 0.1 是「年」——brushYearFromVx 现在回年，与 segments 语义一致。 */
+      const tlId = activeTimelineId();
+      const e0 = Math.round(lo * 10) / 10, e1 = Math.round(hi * 10) / 10;
+      if (activeLineId && tlId) {
+        const lineId = activeLineId;
+        store.update((d) => {
+          const ln2 = d.worldsets[store.activeWorld]?.timelines[tlId]?.storylines?.find((l) => l.id === lineId);
+          if (ln2) ln2.segments = eraseRange(Array.isArray(ln2.segments) ? ln2.segments : [], e0, e1);
+        });
       } else {
-        pendingSegs = eraseRange(pendingSegs, Math.round(lo * 10) / 10, Math.round(hi * 10) / 10);
+        pendingSegs = eraseRange(pendingSegs, e0, e1);
       }
     } else {
       pendingSegs.push({ start: Math.round(lo * 10) / 10, end: Math.round(hi * 10) / 10 });
@@ -591,12 +648,12 @@ export function mountTimeline(
       wrap.appendChild(mask);
     }
     mask.innerHTML = '';
-    if (storyMode === 'focus' && ln) {
+    /* segments 为空时 Math.min()/Math.max() 返回 ±Infinity，yearEpoch(Infinity) 会让
+       toEpoch 的按年累加变成真·死循环 —— 必须先判空 */
+    if (storyMode === 'focus' && ln && ln.segments.length) {
       /* 范围外盖灰 */
       const lo = Math.min(...ln.segments.map((s) => s.start));
-      const hi = ln.segments.some((s) => s.end === null)
-        ? Math.max(...ln.segments.map((s) => (s.end === null ? -Infinity : s.end)), ...ln.segments.filter((s) => s.end === null).map(() => (timeline()?.nodes.map((n) => n.year).reduce((a, b) => Math.max(a, b), -Infinity) ?? 0)))
-        : Math.max(...ln.segments.map((s) => s.end!));
+      const hi = Math.max(...ln.segments.map((s) => (s.end === null || s.end === undefined ? openEndYear(s.start) : s.end)));
       const xLo = timeToX(yearEpoch(lo)), xHi = timeToX(yearEpoch(hi));
       const w = wrap.clientWidth;
       if (xLo > 0) mask.innerHTML += `<div style="position:absolute;top:0;bottom:0;left:0;width:${xLo}px;background:rgba(110,108,100,.3);"></div>`;
@@ -613,7 +670,7 @@ export function mountTimeline(
     if (ln) {
       ln.segments.forEach((s) => {
         const x0 = timeToX(yearEpoch(s.start));
-        const x1 = s.end === null ? timeToX(yearEpoch(Math.max(...(timeline()?.nodes.map((n) => n.year) ?? [s.start])))) : timeToX(yearEpoch(s.end));
+        const x1 = timeToX(yearEpoch(s.end === null || s.end === undefined ? openEndYear(s.start) : s.end));
         bar.innerHTML += `<div class="tl__storybar-seg" style="left:${x0}px;width:${Math.max(2, x1 - x0)}px;"></div>`;
       });
     }
@@ -656,7 +713,7 @@ export function mountTimeline(
     if (!ln) { toolHost.innerHTML = ''; return; }
     toolHost.innerHTML = `
       <div style="padding:12px 14px;display:flex;flex-direction:column;gap:8px;">
-        <div style="font-size:15px;font-weight:600;color:var(--fg);">${ln.name}</div>
+        <div style="font-size:15px;font-weight:600;color:var(--fg);">${escapeHtml(ln.name)}</div>
         <div style="font-size:var(--text-xs);color:var(--fg-2);">${ln.segments.length} 段 · 笔刷框选加段，Alt+框选擦除</div>
         <div style="display:flex;flex-direction:column;gap:4px;">
           ${ln.segments.map((s, i) => `<div style="display:flex;align-items:center;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 8px;font-size:var(--text-xs);color:var(--fg);">
@@ -715,14 +772,14 @@ export function mountTimeline(
       const r = loopRange(L);
       if (!r) return;
       const x0 = timeToX(yearEpoch(r.lo)), x1 = timeToX(yearEpoch(r.hi));
-      frames.innerHTML += `<div class="tl__loop" data-loop-id="${L.id}" style="left:${x0}px;width:${Math.max(2, x1 - x0)}px;" title="${L.name}（${L.count} 次）"><span class="tl__loop-badge">${L.count}×</span></div>`;
+      frames.innerHTML += `<div class="tl__loop" data-loop-id="${escapeHtml(L.id)}" style="left:${x0}px;width:${Math.max(2, x1 - x0)}px;" title="${escapeHtml(L.name)}（${L.count} 次）"><span class="tl__loop-badge">${L.count}×</span></div>`;
       /* 幽灵节点：范围内节点复制 count-1 次，偏移 span */
       if (L.count > 1) {
         const inner = tl.nodes.filter((n) => n.year >= r.lo && n.year <= r.hi);
         for (let c = 1; c < L.count; c++) {
           inner.forEach((n) => {
             const x = timeToX(yearEpoch(n.year + c * r.span));
-            frames!.innerHTML += `<div class="tl__ghost" style="left:${x}px;"><div class="cap"></div><div class="tl__name">${n.title}²</div></div>`;
+            frames!.innerHTML += `<div class="tl__ghost" style="left:${x}px;"><div class="cap"></div><div class="tl__name">${escapeHtml(n.title)}²</div></div>`;
           });
         }
       }
@@ -746,7 +803,7 @@ export function mountTimeline(
     const r = loopRange(L);
     toolHost.innerHTML = `
       <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
-        <div style="font-size:15px;font-weight:600;color:var(--fg);">循环 · ${L.name}</div>
+        <div style="font-size:15px;font-weight:600;color:var(--fg);">循环 · ${escapeHtml(L.name)}</div>
         <div style="font-size:var(--text-xs);color:var(--fg-2);">${r ? `${r.lo}年 → ${r.hi}年（跨度 ${r.span} 年）` : '起终节点缺失'}</div>
         <div style="display:flex;align-items:center;gap:8px;">
           <span style="font-size:var(--text-xs);color:var(--fg-2);">循环次数</span>
@@ -758,19 +815,21 @@ export function mountTimeline(
         <div style="font-size:var(--text-xs);color:var(--fg-2);">提示：双击时间线上的循环框打开此面板</div>
       </div>`;
     toolHost.querySelector('#lp-minus')?.addEventListener('click', () => {
-      if (!L) return;
-      L.count = Math.max(1, (L.count ?? 1) - 1);
+      const tid = activeTimelineId();
+      if (!L || !tid) return;
+      setLoopCount(store, tid, L.id, Math.max(1, (L.count ?? 1) - 1));
       renderLoopPanel(); renderLoops();
     });
     toolHost.querySelector('#lp-plus')?.addEventListener('click', () => {
-      if (!L) return;
-      L.count = Math.min(20, (L.count ?? 1) + 1);
+      const tid = activeTimelineId();
+      if (!L || !tid) return;
+      setLoopCount(store, tid, L.id, Math.min(20, (L.count ?? 1) + 1));
       renderLoopPanel(); renderLoops();
     });
     toolHost.querySelector('#lp-del')?.addEventListener('click', () => {
-      const tl = timeline();
-      if (!tl || !L) return;
-      tl.loops = (tl.loops || []).filter((x) => x.id !== L.id);
+      const tid = activeTimelineId();
+      if (!tid || !L) return;
+      removeLoop(store, tid, L.id);
       loopPanelId = null;
       toolHost.innerHTML = '';
       renderLoops();
@@ -796,11 +855,11 @@ export function mountTimeline(
       const toolHost = document.getElementById('lk-tool-host');
       if (!toolHost) return;
       const opts = tl.nodes
-        .map((n) => `<option value="${n.id}">${n.year} · ${n.title}</option>`)
+        .map((n) => `<option value="${escapeHtml(n.id)}">${n.year} · ${escapeHtml(n.title)}</option>`)
         .join('');
       toolHost.innerHTML = `
         <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
-          <div style="font-size:15px;font-weight:600;color:var(--fg);">新建循环 · ${tl.name}</div>
+          <div style="font-size:15px;font-weight:600;color:var(--fg);">新建循环 · ${escapeHtml(tl.name)}</div>
           <div style="display:flex;flex-direction:column;gap:4px;">
             <label style="font-size:var(--text-xs);color:var(--fg-2);">名称</label>
             <input id="lp-name" type="text" placeholder="潮汐轮回" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;"/>
@@ -819,14 +878,13 @@ export function mountTimeline(
           </div>
         </div>`;
       toolHost.querySelector('#lp-ok')?.addEventListener('click', () => {
+        const tid = activeTimelineId();
+        if (!tid) return;
         const name = (toolHost.querySelector('#lp-name') as HTMLInputElement).value.trim() || `循环 ${loopsOf().length + 1}`;
         const startId = (toolHost.querySelector('#lp-start') as HTMLSelectElement).value;
         const endId = (toolHost.querySelector('#lp-end') as HTMLSelectElement).value;
         if (!startId || !endId) return;
-        const tl2 = timeline();
-        if (!tl2) return;
-        if (!tl2.loops) tl2.loops = [];
-        tl2.loops.push({ id: 'lp' + Date.now(), name, startId, endId, count: 2 });
+        addLoop(store, tid, { name, startId, endId, count: 2 });
         toolHost.innerHTML = '';
         renderLoops();
       });
@@ -872,7 +930,9 @@ export function mountTimeline(
   /* render 统一入口：非线性 > 剧情线聚焦 > 常规 */
   const baseRender = render;
   render = function () {
-    if (nonlinearMode) { renderNonlinear(); renderLoops(); renderStoryOverlay(); return; }
+    /* 非线性分支也要重画因果线：节点已按序列重排，若只 return，
+       causesSvg 里留着上一帧线性布局的箭头，指向空白处 */
+    if (nonlinearMode) { renderNonlinear(); renderLoops(); renderStoryOverlay(); drawCauses(); return; }
     baseRender();
     renderLoops();
   };
@@ -896,16 +956,12 @@ export function mountTimeline(
             if (n && onSelect) onSelect(n);
           }],
           ['复制节点', () => {
-            const tl = timeline();
-            const n = tl?.nodes.find((x) => x.id === nodeId);
-            if (tl && n) {
-              tl.nodes.push({ ...n, id: 'n' + Date.now(), title: n.title + ' 副本' });
-              render();
-            }
+            const tid = activeTimelineId();
+            if (tid && nodeId) { copyNode(store, tid, nodeId); render(); }
           }],
           ['删除节点', () => {
-            const tl = timeline();
-            if (tl) { tl.nodes = tl.nodes.filter((x) => x.id !== nodeId); render(); }
+            const tid = activeTimelineId();
+            if (tid && nodeId) { removeNode(store, tid, nodeId); render(); }
           }],
         ]
       : [

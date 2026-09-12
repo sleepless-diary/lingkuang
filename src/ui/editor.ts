@@ -1,9 +1,9 @@
-﻿/** 编辑器模块——文稿编辑（时间线节点 + 实体，Obsidian 式 #字段：值）：
+/** 编辑器模块——文稿编辑（时间线节点 + 实体，Obsidian 式 #字段：值）：
  * 左侧 sidebar（时间线 tab：时间线→节点；实体 tab：类型→实体），右侧编辑 doc（失焦保存） */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { saveNodeDoc, addEntity } from '../store/actions';
-import type { PropValue } from '../store/types';
+import type { PropValue, TimelineNode, Entity, Timeline } from '../store/types';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from '@tiptap/markdown';
@@ -111,8 +111,10 @@ function fmtYearDisplay(epoch: number, cal?: import('../calendar').Calendar): st
   return s;
 }
 
-/** 按属性类型生成值控件（数值/日期 scrub、布尔 checkbox、多选一列 checkbox、文本 input），change 回调对应 PropValue */
-function buildPropCtrl(v: PropValue, onChange: (next: PropValue) => void): HTMLElement {
+/** 按属性类型生成值控件（数值/日期 scrub、布尔 checkbox、多选一列 checkbox、文本 input），change 回调对应 PropValue。
+ *  live 用于数组控件：属性面板刻意不重渲染，若按构建时的快照 v 增删，
+ *  连点两项时第二项会把第一项算回来（取消勾选 A → 存 [B,C]，再取消 B → 由旧 v 算出 [A,C]，A 复活）。 */
+function buildPropCtrl(v: PropValue, onChange: (next: PropValue) => void, live?: () => PropValue): HTMLElement {
   /* 数值 → 拖拽 + 滚轮 scrub */
   if (typeof v === 'number') {
     return createScrubField({ value: v, step: 1, format: (n) => String(n), onCommit: (n) => onChange(n) });
@@ -145,8 +147,10 @@ function buildPropCtrl(v: PropValue, onChange: (next: PropValue) => void): HTMLE
       cb.style.cssText = 'width:14px;height:14px;';
       const txt = document.createElement('span'); txt.textContent = String(item);
       cb.addEventListener('change', () => {
-        /* 取消勾选 = 从列表移除该项 */
-        const next = cb.checked ? [...v, item] : v.filter((x) => String(x) !== String(item));
+        /* 取消勾选 = 从列表移除该项。基于「最新值」算，而不是构建时的快照 */
+        const cur = live ? live() : v;
+        const arr = Array.isArray(cur) ? cur : v;
+        const next = cb.checked ? [...arr, item] : arr.filter((x) => String(x) !== String(item));
         onChange(next);
       });
       lab.appendChild(cb); lab.appendChild(txt);
@@ -163,7 +167,7 @@ function buildPropCtrl(v: PropValue, onChange: (next: PropValue) => void): HTMLE
 }
 
 
-export function renderEditor(store: Store, host: HTMLElement): void {
+export function renderEditor(store: Store, host: HTMLElement): () => void {
   host.style.overflow = 'hidden';
   host.innerHTML = `
     <div style="display:flex;height:100%;">
@@ -243,8 +247,10 @@ export function renderEditor(store: Store, host: HTMLElement): void {
       /* 其他情况不隐藏：提示条全局常驻，切节点/正常节点都不清，方便看到哪个文件出问题 */
     } catch (e) { /* 读取失败不打扰 */ }
   }
-  /* 监听外部（Obsidian）对节点字段的增删 → 显示提示框 */
-  window.addEventListener('lingkuang-vault-field-changed', ((e: Event) => {
+  /* 监听外部（Obsidian）对节点字段的增删 → 显示提示框。
+     两个 window 监听都留了具名引用：切走工具时要 removeEventListener，
+     否则每进一次编辑器就多积一对永久监听（它们持有本函数整个作用域）。 */
+  const onVaultFields = ((e: Event) => {
     const list = (e as CustomEvent<{ id: string; title: string; diffs: string[]; oldDesc?: string }[]>).detail || [];
     if (!list.length) return;
     list.forEach((it) => {
@@ -263,14 +269,16 @@ export function renderEditor(store: Store, host: HTMLElement): void {
         addHint('external', `【${it.title || '该节点'}】检测到不支持的字段变更：${it.diffs.join('、')}。 请在灵框内的「结构体管理」中修改，Obsidian 端不支持直接增删属性/描述/正文。`);
       }
     });
-  }) as EventListener);
+  }) as EventListener;
+  window.addEventListener('lingkuang-vault-field-changed', onVaultFields);
   /* 自动修复通知（已修好，告知 + 可选以后不再提示） */
-  window.addEventListener('lingkuang-vault-auto-fixed', ((e: Event) => {
+  const onAutoFixed = ((e: Event) => {
     if (localStorage.getItem('lingkuang-hide-auto-fix-notice') === '1') return;
     const list = (e as CustomEvent<string[]>).detail || [];
     if (!list.length) return;
     addHint('autofix', `已自动修复：${list.join('、')} 的格式（已补回标准「#描述：」/「#正文：」标签）。格式只能在「结构体管理器」里调整，内容值随意。`, undefined, { text: '不再提示此类', onClick: () => { localStorage.setItem('lingkuang-hide-auto-fix-notice', '1'); removeHint('autofix'); } });
-  }) as EventListener);
+  }) as EventListener;
+  window.addEventListener('lingkuang-vault-auto-fixed', onAutoFixed);
   function findNodeById(id: string): { tlId: string; node: any } | null {
     for (const ws of Object.values(store.data.worldsets)) {
       for (const tlId of (ws.order ?? [])) {
@@ -310,27 +318,101 @@ export function renderEditor(store: Store, host: HTMLElement): void {
     element: docBox, extensions: [StarterKit, Markdown, Image, Tag], contentType: 'markdown', content: '',
   });
   function getDocMd(): string {
-    /* 清理 tiptap 序列化的孤立 &nbsp; 空行（保留真实内容，去掉纯占位空行） */
-    return (editor.getMarkdown() || '').replace(/(^|\n)(\s*&nbsp;\s*)+\n?/g, '\n').replace(/^\n+/, '');
+    /* 清理 tiptap 序列化的孤立 &nbsp; 空行（保留真实内容，去掉纯占位空行）。
+       旧写法 /(^|\n)(\s*&nbsp;\s*)+\n?/g 里的 \s 会吃掉换行且是贪婪的，
+       于是 "A\n\n&nbsp;\n\nB"（A 和 B 是两个段落）被压成 "A\nB" —— 段落分隔丢了。
+       改成：只认「整行除 &nbsp; 外只有空格制表符」的占位行，删掉它并保留两侧换行，
+       再把 3 个以上连续换行折回 markdown 里等价的两个（空段落本来就是段落分隔符）。 */
+    return (editor.getMarkdown() || '')
+      .replace(/(^|\n)[ \t]*(?:&nbsp;[ \t]*)+(?=\n|$)/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/^\n+/, '');
   }
   function setDoc(md: string): void {
     editor.commands.setContent(md || '', { contentType: 'markdown' });
+  }
+
+  /* ── 当前编辑目标 ──────────────────────────────────────────────
+     target 绑定「文档框里现在装的是谁的内容」，并且带 world。它修掉两个坑：
+     1) 旧实现按 tab + currentNodeId/currentEntityId 决定存到哪，而 setTab 既不重载
+        文档也不清 id → 「节点 → 实体 tab → 回时间线 tab → 点空白」blur 时会把实体的
+        正文写进节点正文（用户一个字都没改）；
+     2) 侧栏遍历所有世界，保存却一律走 store.activeWorld → 编辑非活动世界的节点被
+        静默丢弃（`if (n)` 直接 no-op），状态栏还显示「已保存 ✓」。 */
+  type Target =
+    | { kind: 'node'; world: string; tlId: string; nodeId: string }
+    | { kind: 'entity'; world: string; entityId: string };
+  let target: Target | null = null;
+  /* 每个 tab 各记住上次打开的文档，切回来能恢复（且 target 与文档框内容始终一致） */
+  const lastTarget: Record<'tl' | 'entity', Target | null> = { tl: null, entity: null };
+
+  function targetNode(): TimelineNode | undefined {
+    const t = target;
+    if (!t || t.kind !== 'node') return undefined;
+    return store.data.worldsets[t.world]?.timelines[t.tlId]?.nodes.find((x) => x.id === t.nodeId);
+  }
+  function targetEntity(): Entity | undefined {
+    const t = target;
+    if (!t || t.kind !== 'entity') return undefined;
+    return store.data.worldsets[t.world]?.entities?.[t.entityId];
+  }
+  function targetTimeline(): Timeline | undefined {
+    const t = target;
+    if (!t || t.kind !== 'node') return undefined;
+    return store.data.worldsets[t.world]?.timelines[t.tlId];
+  }
+  /** 就地改 target 指向的对象（走 store.update，用 target 自己的 world） */
+  function patchTarget(fn: (o: TimelineNode | Entity) => void): void {
+    const t = target;
+    if (!t) return;
+    store.update((d) => {
+      const ws = d.worldsets[t.world];
+      if (!ws) return;
+      if (t.kind === 'node') {
+        const n = ws.timelines[t.tlId]?.nodes.find((x) => x.id === t.nodeId);
+        if (n) fn(n);
+      } else {
+        const e = ws.entities?.[t.entityId];
+        if (e) fn(e);
+      }
+    });
+  }
+  function docOf(t: Target): string {
+    const ws = store.data.worldsets[t.world];
+    if (!ws) return '';
+    return t.kind === 'node'
+      ? ws.timelines[t.tlId]?.nodes.find((x) => x.id === t.nodeId)?.doc ?? ''
+      : ws.entities?.[t.entityId]?.doc ?? '';
+  }
+  function titleOf(t: Target): string {
+    const ws = store.data.worldsets[t.world];
+    if (!ws) return '';
+    return t.kind === 'node'
+      ? ws.timelines[t.tlId]?.nodes.find((x) => x.id === t.nodeId)?.title ?? ''
+      : ws.entities?.[t.entityId]?.name ?? '';
+  }
+  /** 把文档框内容落盘到 target（没有 target 就不写，避免把 A 的内容写给 B） */
+  function flushDoc(): void {
+    const t = target;
+    if (!t) return;
+    const md = getDocMd();
+    if (t.kind === 'node') saveNodeDoc(store, t.tlId, t.nodeId, md, { world: t.world });
+    else store.update((d) => { const e = d.worldsets[t.world]?.entities?.[t.entityId]; if (e) e.doc = md; });
+    status.textContent = '已保存 ✓';
   }
   /* 属性面板（只读）：显示节点元数据 + #描述： + 已有自定义属性（结构化属性由世界沙盘管理，编辑器仅展示） */
   function renderProps(node: { title?: string; name?: string; year?: number | string; precision?: string; type?: string; desc?: string; properties?: Record<string, PropValue>; month?: number; day?: number; hour?: number; minute?: number; second?: number } | undefined, isEntity = false) {
     if (!node) { propsEl.style.display = 'none'; propsEl.innerHTML = ''; return; }
     propsEl.style.display = '';
     /* 自定义属性：可编辑（按类型控件），固定属性也用可编辑控件（年份 scrub、精度/类型下拉、标题/描述文本） */
+    /* 面板构建后刻意不重渲染（避免销毁拖拽中的 scrub 控件），所以每次提交都要从 store
+       取最新 properties 再合并——用构建时的 props 快照会让「改第二项」把「改第一项」覆盖回去 */
+    const liveProps = (): Record<string, PropValue> => {
+      const o = targetNode() ?? targetEntity();
+      return o && o.properties ? o.properties : {};
+    };
     const saveProp = (next: Record<string, PropValue>) => {
-      store.update((d) => {
-        if (tab === 'tl' && currentTlId && currentNodeId) {
-          const n = d.worldsets[store.activeWorld]?.timelines[currentTlId]?.nodes.find((x) => x.id === currentNodeId);
-          if (n) n.properties = next;
-        } else if (tab === 'entity' && currentEntityId) {
-          const e = d.worldsets[store.activeWorld]?.entities?.[currentEntityId];
-          if (e) e.properties = next;
-        }
-      });
+      patchTarget((o) => { o.properties = next; });
       status.textContent = '已保存 ✓';
       /* 不在此重渲染面板：scrub 控件自身更新显示，避免销毁拖拽中控件 */
     };
@@ -341,34 +423,31 @@ export function renderEditor(store: Store, host: HTMLElement): void {
       keyEl.style.cssText = 'flex-shrink:0;width:80px;font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
       keyEl.textContent = k;
       row.appendChild(keyEl);
-      row.appendChild(buildPropCtrl(v, (nv) => saveProp({ ...props, [k]: nv })));
+      row.appendChild(buildPropCtrl(v, (nv) => saveProp({ ...liveProps(), [k]: nv }), () => liveProps()[k]));
       const del = document.createElement('button'); del.textContent = '×'; del.title = '删除属性';
       del.style.cssText = 'flex-shrink:0;width:18px;height:18px;background:none;border:none;color:var(--fg-2);cursor:pointer;font-size:14px;';
-      del.addEventListener('click', () => { const np = { ...props }; delete np[k]; saveProp(np); renderProps(node, isEntity); });
+      del.addEventListener('click', () => { const np = { ...liveProps() }; delete np[k]; saveProp(np); renderProps(node, isEntity); });
       row.appendChild(del);
       appendTo.appendChild(row);
     };
     /* 固定属性也改成可编辑：标题/描述文本、年份数值 scrub、精度/类型下拉；保存写回 node 字段 */
     const saveFixed = (patch: Record<string, string>) => {
-      store.update((d) => {
-        if (tab === 'tl' && currentTlId && currentNodeId) {
-          const n = d.worldsets[store.activeWorld]?.timelines[currentTlId]?.nodes.find((x) => x.id === currentNodeId);
-          if (!n) return;
-          for (const [k, v] of Object.entries(patch)) {
-            if (k === '标题') n.title = v;
-            else if (k === '时间') {
-              const p = parseTimeText(v);
-              n.year = (p?.year ?? parseFloat(v)) || 0;
-              if (p) { n.precision = p.precision; n.month = p.month; n.day = p.day; n.hour = p.hour; n.minute = p.minute; n.second = p.second; }
-            }
-            else if (k === '精度') n.precision = v as any;
-            else if (k === '类型') n.type = v as any;
-            else if (k === '格式') n.kind = v || undefined;
-            else if (k === '描述') n.desc = v;
+      patchTarget((o) => {
+        if ('name' in o) {   /* 实体：只有名称可改 */
+          if (patch['名称'] !== undefined) o.name = patch['名称'];
+          return;
+        }
+        for (const [k, v] of Object.entries(patch)) {
+          if (k === '标题') o.title = v;
+          else if (k === '时间') {
+            const p = parseTimeText(v);
+            o.year = (p?.year ?? parseFloat(v)) || 0;
+            if (p) { o.precision = p.precision; o.month = p.month; o.day = p.day; o.hour = p.hour; o.minute = p.minute; o.second = p.second; }
           }
-        } else if (tab === 'entity' && currentEntityId) {
-          const e = d.worldsets[store.activeWorld]?.entities?.[currentEntityId];
-          if (e && patch['名称'] !== undefined) e.name = patch['名称'];
+          else if (k === '精度') o.precision = v as TimelineNode['precision'];
+          else if (k === '类型') o.type = v as TimelineNode['type'];
+          else if (k === '格式') o.kind = v || undefined;
+          else if (k === '描述') o.desc = v;
         }
       });
       status.textContent = '已保存 ✓';
@@ -393,7 +472,7 @@ export function renderEditor(store: Store, host: HTMLElement): void {
       row.appendChild(keyEl);
       let ctrl: HTMLElement;
       if (k === '时间') {
-        const tl = store.data.worldsets[store.activeWorld]?.timelines[currentTlId];
+        const tl = targetTimeline();
         const cal = calendarOf(tl ?? {});
         const daySec = cal.unit.minute * cal.unit.hour * cal.unit.day;
         const epoch = toEpoch(cal, timePointOf(Number(node.year ?? 0), { month: node.month, day: node.day, hour: node.hour, minute: node.minute, second: node.second }));
@@ -410,8 +489,7 @@ export function renderEditor(store: Store, host: HTMLElement): void {
             const p = parseTimeText(s);
             if (p) {
               saveFixed({ 时间: s, 精度: p.precision });
-              const n = store.data.worldsets[store.activeWorld]?.timelines[currentTlId]?.nodes.find((x) => x.id === currentNodeId);
-              renderProps(n ?? undefined);
+              renderProps(targetNode());
             }
           },
         });
@@ -422,8 +500,7 @@ export function renderEditor(store: Store, host: HTMLElement): void {
         sel.value = v; sel.addEventListener('change', () => {
           saveFixed({ 精度: sel.value });
           /* 改精度后重渲染面板，让时间 scrub 的显示/步进/输入跟随新精度 */
-          const n = store.data.worldsets[store.activeWorld]?.timelines[currentTlId]?.nodes.find((x) => x.id === currentNodeId);
-          renderProps(n ?? undefined);
+          renderProps(targetNode());
         });
         ctrl = sel;
       } else if (k === '类型') {
@@ -480,9 +557,16 @@ export function renderEditor(store: Store, host: HTMLElement): void {
   const expandedKinds = new Set<string>();   /* key = ws::tl::kind */
 
   function setTab(t: 'tl' | 'entity') {
+    if (t !== tab) flushDoc();   /* 切换前先把正在编辑的内容落盘，别丢改动 */
     tab = t;
     tabTl.style.background = t === 'tl' ? 'rgba(158,194,98,.15)' : 'none';
     tabEntity.style.background = t === 'entity' ? 'rgba(158,194,98,.15)' : 'none';
+    /* 恢复该 tab 上次打开的文档。关键：target 必须与文档框内容严格一致——
+       旧实现只切 tab 不重载文档也不清 id，文档框里留着上一个 tab 的内容，
+       而 blur 按新 tab 的 id 保存 → 节点正文被实体正文覆盖。 */
+    target = lastTarget[t];
+    setDoc(target ? docOf(target) : '');
+    if (target) titleEl.textContent = titleOf(target);
     renderSidebar();
   }
 
@@ -579,6 +663,8 @@ export function renderEditor(store: Store, host: HTMLElement): void {
             const tl = (el as HTMLElement).dataset.tl!;
             const id = (el as HTMLElement).dataset.path!;
             currentTlId = tl; currentNodeId = id;
+            target = { kind: 'node', world: w, tlId: tl, nodeId: id };
+            lastTarget.tl = target;
             const node = store.data.worldsets[w]?.timelines[tl]?.nodes.find((x) => x.id === id);
             setDoc(node?.doc ?? '');
             renderProps(node ?? undefined);
@@ -606,6 +692,8 @@ export function renderEditor(store: Store, host: HTMLElement): void {
       const typeId = Object.keys(types)[0] ?? 'default';
       const id = addEntity(store, { typeId, name: '新实体' });
       currentEntityId = id;
+      target = { kind: 'entity', world: store.activeWorld, entityId: id };
+      lastTarget.entity = target;
       const e = currentWorld(store).entities?.[id];
       setDoc(e?.doc ?? '');
       renderProps(e ?? undefined, true);
@@ -654,6 +742,8 @@ export function renderEditor(store: Store, host: HTMLElement): void {
           renderSidebar();
         } else if (kind === 'entity') {
           currentEntityId = path;
+          target = { kind: 'entity', world: store.activeWorld, entityId: path };
+          lastTarget.entity = target;
           const e = currentWorld(store).entities?.[path];
           setDoc(e?.doc ?? '');
           renderProps(e ?? undefined, true);
@@ -666,20 +756,11 @@ export function renderEditor(store: Store, host: HTMLElement): void {
     el.appendChild(frag);
   }
 
-  /* 失焦保存：tiptap blur 时写回 markdown（vault 仍存 Obsidian markdown） */
-  editor.on('blur', () => {
-    const md = getDocMd();
-    if (tab === 'tl' && currentNodeId && currentTlId) {
-      saveNodeDoc(store, currentTlId, currentNodeId, md);
-      status.textContent = '已保存 ✓';
-    } else if (tab === 'entity' && currentEntityId) {
-      store.update((d) => {
-        const e = d.worldsets[store.activeWorld]?.entities?.[currentEntityId];
-        if (e) e.doc = md;
-      });
-      status.textContent = '已保存 ✓';
-    }
-  });
+  /* 失焦保存：tiptap blur 时写回 markdown（vault 仍存 Obsidian markdown）。
+     一律按 target 存——target 是「文档框里现在装的那份文档」的身份（含 world），
+     与当前 tab / 当前活动世界无关，所以既不会串文档，也不会在编辑非活动世界的
+     节点时静默丢弃（后者旧实现还会照样显示「已保存 ✓」）。 */
+  editor.on('blur', () => { if (target) flushDoc(); });
 
   tabTl.addEventListener('click', () => setTab('tl'));
   tabEntity.addEventListener('click', () => setTab('entity'));
@@ -701,6 +782,16 @@ export function renderEditor(store: Store, host: HTMLElement): void {
       status.textContent = String(res?.error ?? '插入图片失败');
     }
   });
-  store.subscribe(() => renderSidebar());
+  const unsubSidebar = store.subscribe(() => renderSidebar());
   setTab('tl');
+  /* 切走工具时的清理：先把未落的编辑交出去，再拆掉编辑器/订阅/全局监听。
+     旧实现只由 registry.openTool 清 host.innerHTML，tiptap 实例、两个 window
+     监听和 store 订阅都留在内存里，每点一次「编辑器」多积一份。 */
+  return () => {
+    if (target) flushDoc();
+    unsubSidebar();
+    window.removeEventListener('lingkuang-vault-field-changed', onVaultFields);
+    window.removeEventListener('lingkuang-vault-auto-fixed', onAutoFixed);
+    editor.destroy();
+  };
 }

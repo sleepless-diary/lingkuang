@@ -4,6 +4,8 @@ import { currentWorld } from '../store/store';
 import type { TimelineNode } from '../store/types';
 import { parseTimeText } from './node-form';
 import { requestEyedrop } from './eyedrop';
+import { escapeHtml } from './html';
+import { removeNode } from '../store/actions';
 
 interface ParsedDoc {
   fields: { k: string; v: string }[];
@@ -39,6 +41,13 @@ export function fmtNodeTime(n: TimelineNode): string {
   return str;
 }
 
+/* 同一时刻只保留一个详情面板订阅。
+   host（#lk-tool-host）是长生命周期容器、不会卸载：每次点节点都会重新调用
+   renderNodeDetail。旧写法只靠 `!host.isConnected` 退订，而 host 永远连着，
+   于是每点一个节点就永久多一个订阅——各自还持有当时那个 node 闭包，并且会在
+   切到别的工具后把别人的面板覆盖掉。 */
+let detailUnsub: (() => void) | null = null;
+
 export function renderNodeDetail(
   store: Store,
   host: HTMLElement,
@@ -51,14 +60,21 @@ export function renderNodeDetail(
     return store.data.worldsets[store.activeWorld]?.timelines[tlId ?? '']?.nodes.find((x) => x.id === node.id);
   }
 
-  function save() {
-    /* 通过 tlId+id 在 store 里找最新节点（node 引用可能因外部重载失效），同步所有字段再保存 */
+  /* 把编辑作用到 store 里的「最新」节点上。
+     不能沿用「改闭包里的 node，再把所有字段整体拷回 store」的写法：外部改动
+     （Obsidian 编辑 vault / 编辑器重载）会用新的 worldsets 替换 store 数据，
+     闭包里的 node 随即成为孤儿对象，整体拷贝会把别人的改动整片覆盖回旧值
+     ——表现为「改一处，别处悄悄回滚」，且旧值会被写回 vault。 */
+  function patch(fn: (n: TimelineNode) => void) {
     store.update((d) => {
       const n = d.worldsets[store.activeWorld]?.timelines[tlId ?? '']?.nodes.find((x) => x.id === node.id);
-      if (n) { n.title = node.title; n.type = node.type; n.desc = node.desc; n.doc = node.doc; n.year = node.year; n.precision = node.precision; n.month = node.month; n.day = node.day; n.hour = node.hour; n.minute = node.minute; n.second = node.second; n.causes = node.causes; }
+      if (n) fn(n);
     });
     if (onChanged) onChanged();
   }
+
+  /** 读值一律走这里：外部重载后闭包里的 node 已失效 */
+  const latest = (): TimelineNode => freshNode() ?? node;
 
   function renderView() {
     const cur = freshNode() ?? node;   /* 用最新节点渲染（Obsidian 改动后显示最新值） */
@@ -67,7 +83,7 @@ export function renderNodeDetail(
     host.innerHTML = `
       <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;user-select:none;" id="d-view">
         <div style="display:flex;align-items:baseline;gap:8px;">
-          <span id="d-t" style="font-size:15px;font-weight:600;color:var(--fg);cursor:text;">${cur.title}</span>
+          <span id="d-t" style="font-size:15px;font-weight:600;color:var(--fg);cursor:text;">${escapeHtml(cur.title)}</span>
           <span id="d-tm" style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);cursor:text;">${timeText}</span>
           <button id="d-del" style="margin-left:auto;background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;align-self:baseline;">删除</button>
         </div>
@@ -81,17 +97,19 @@ export function renderNodeDetail(
       </div>`;
 
     /* 分区就地编辑：点哪块 → 那块变输入框；blur（点击区域外）→ 保存恢复 */
-    inlineEdit(host, '#d-t', { multi: false, get: () => node.title, set: (v) => { node.title = v.trim(); } });
-    inlineEdit(host, '#d-d', { multi: true, get: () => node.desc || '', set: (v) => { node.desc = v.trim() || undefined; } });
-    inlineEdit(host, '#d-b', { multi: true, get: () => node.doc || '', set: (v) => { node.doc = v; } });
+    inlineEdit(host, '#d-t', { multi: false, get: () => latest().title, set: (v) => patch((n) => { n.title = v.trim(); }) });
+    inlineEdit(host, '#d-d', { multi: true, get: () => latest().desc || '', set: (v) => patch((n) => { n.desc = v.trim() || undefined; }) });
+    /* 正文编辑用原始 doc（含 `#字段：值` 行），字段行由上方字段区负责展示 */
+    inlineEdit(host, '#d-b', { multi: true, get: () => latest().doc || '', set: (v) => patch((n) => { n.doc = v; }) });
 
     host.querySelector('#d-ty')?.addEventListener('click', () => {
       const sel = document.createElement('select');
-      sel.innerHTML = `<option value="world_event"${node.type === 'world_event' ? ' selected' : ''}>世界事件</option><option value="story_event"${node.type === 'story_event' ? ' selected' : ''}>剧情事件</option>`;
+      const t0 = latest().type;
+      sel.innerHTML = `<option value="world_event"${t0 === 'world_event' ? ' selected' : ''}>世界事件</option><option value="story_event"${t0 === 'story_event' ? ' selected' : ''}>剧情事件</option>`;
       const slot = host.querySelector('#d-ty') as HTMLElement;
       slot.replaceWith(sel);
       sel.focus();
-      sel.addEventListener('change', () => { node.type = sel.value as 'world_event' | 'story_event'; save(); renderView(); });
+      sel.addEventListener('change', () => { patch((n) => { n.type = sel.value as 'world_event' | 'story_event'; }); renderView(); });
     });
 
     /* 时间块：点击 → 输入框（parseTimeText），blur 保存 */
@@ -106,7 +124,7 @@ export function renderNodeDetail(
         inp.focus(); inp.select();
         inp.addEventListener('blur', () => {
           const p = parseTimeText(inp.value);
-          if (p) { node.year = p.year; node.precision = p.precision; node.month = p.month; node.day = p.day; node.hour = p.hour; node.minute = p.minute; node.second = p.second; save(); }
+          if (p) { patch((n) => { n.year = p.year; n.precision = p.precision; n.month = p.month; n.day = p.day; n.hour = p.hour; n.minute = p.minute; n.second = p.second; }); }
           renderView();
         });        inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') inp.blur(); });
       });
@@ -114,11 +132,12 @@ export function renderNodeDetail(
 
     host.querySelector('#d-del')?.addEventListener('click', () => {
       if (!tlId) return;
-      store.update((d) => {
-        const tl = d.worldsets[store.activeWorld]?.timelines[tlId];
-        if (tl) tl.nodes = tl.nodes.filter((x) => x.id !== node.id);
-      });
+      /* 走 removeNode：它同时会把 vault 里对应的 .md 移进 .trash。
+         旧写法在这里自己 filter 一遍，绕过了动作层 → 文件残留 → 节点下次启动复活。 */
+      removeNode(store, tlId, node.id);
       host.innerHTML = '';
+      detailUnsub?.();
+      detailUnsub = null;
       if (onChanged) onChanged();
     });
 
@@ -135,7 +154,7 @@ export function renderNodeDetail(
     const nameOf = (id: string) => all.find((x: TimelineNode) => x.id === id)?.title ?? id;
     box.innerHTML = `<div style="font-size:11px;font-weight:600;color:var(--fg-2);">因果</div>` +
       `<div style="display:flex;flex-wrap:wrap;gap:4px;">` +
-      ((node.causes ?? []).map((id) =>
+      ((latest().causes ?? []).map((id) =>
         `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:2px 8px;font-size:var(--text-xs);color:var(--fg);">
           <span style="color:var(--accent);">◈</span>${escapeHtml(nameOf(id))}
           <button data-cid="${escapeHtml(id)}" style="border:none;background:none;color:var(--fg-2);cursor:pointer;font-size:12px;line-height:1;">×</button>
@@ -146,16 +165,16 @@ export function renderNodeDetail(
     box.querySelectorAll('[data-cid]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = (btn as HTMLElement).dataset.cid!;
-        node.causes = (node.causes ?? []).filter((x) => x !== id);
-        save(); renderView();
+        patch((n) => { n.causes = (n.causes ?? []).filter((x) => x !== id); });
+        renderView();
       });
     });
     box.querySelector('#d-causes-add')?.addEventListener('click', () => {
       const slot = box.querySelector('#d-causes-add') as HTMLElement;
       slot.textContent = '点取时间线节点… Esc 取消';
       requestEyedrop((id) => {
-        node.causes = [...(node.causes ?? []), id];
-        save(); renderView();
+        patch((n) => { n.causes = [...(n.causes ?? []), id]; });
+        renderView();
       });
     });
   }
@@ -173,16 +192,19 @@ export function renderNodeDetail(
       el.replaceWith(input);
       input.focus();
       input.select();
-      /* 点击区域外（blur）→ 保存 + 恢复只读 */
-      input.addEventListener('blur', () => { opts.set(input.value); save(); renderView(); });
+      /* 点击区域外（blur）→ 保存 + 恢复只读。
+         set 内部已走 patch()（store.update + onChanged），这里不再重复保存。 */
+      input.addEventListener('blur', () => { opts.set(input.value); renderView(); });
       input.addEventListener('keydown', (ev) => { if (!opts.multi && ev.key === 'Enter') input.blur(); });
     });
   }
 
   renderView();
   /* 外部 vault 改动 → store 更新 → 面板自动重绘最新值（编辑中不干扰） */
-  const unsub = store.subscribe(() => {
-    if (!host.isConnected) { unsub(); return; }
+  detailUnsub?.();
+  detailUnsub = store.subscribe(() => {
+    /* #d-view 只由本面板产出：容器被别的工具接管 / 面板已卸载 → 自行退订 */
+    if (!host.isConnected || !host.querySelector('#d-view')) { detailUnsub?.(); detailUnsub = null; return; }
     if (host.querySelector('input, textarea, select')) return;   /* 编辑中不重绘 */
     renderView();
   });
@@ -221,8 +243,4 @@ export function mdRender(src: string): string {
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/`(.+?)`/g, '<code style="background:var(--surface-2);padding:0 4px;border-radius:2px;font-family:var(--font-mono);font-size:12px;">$1</code>')
     .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" style="color:var(--accent);text-decoration:underline;">$1</a>');
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

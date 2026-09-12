@@ -22,15 +22,26 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
     <div style="display:flex;flex-direction:column;height:100%;">
       <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--border-soft);background:var(--surface-2);">
         <span style="font-size:var(--text-xs);font-weight:600;color:var(--fg);">词义联想</span>
+        <input id="assoc-input" placeholder="输入词，回车联想…" style="width:110px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 8px;font-size:11px;outline:none;" />
         <span id="assoc-status" style="font-size:11px;color:var(--fg-2);font-family:var(--font-mono);">点词条展开联想</span>
         <span style="flex:1;"></span>
         <button id="assoc-export" title="把暂存词经 Ollama 归类写入词库" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:3px 10px;font-size:11px;cursor:pointer;">导出暂存词（<span id="assoc-staged-cnt">0</span>）</button>
-        <span style="font-size:10px;color:var(--fg-2);">拖动节点 · 空白平移 · Alt+滚轮缩放 · 点词条展开</span>
+        <span style="font-size:10px;color:var(--fg-2);">左键拖节点/拖空白 · 中键轮盘移动 · Alt+滚轮缩放</span>
       </div>
       <div id="assoc-stage" style="flex:1;position:relative;overflow:hidden;cursor:default;background:var(--surface);">
         <div id="assoc-world" style="position:absolute;top:0;left:0;width:${WORLD_W}px;height:${WORLD_H}px;transform-origin:0 0;">
           <svg class="assoc__lines" style="position:absolute;top:0;left:0;width:${WORLD_W}px;height:${WORLD_H}px;pointer-events:none;"></svg>
         </div>
+        <!-- 轮盘方向指示箭头（锚定在屏幕，画布平移/缩放不带动它） -->
+        <svg id="assoc-rocker-arrow" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;display:none;">
+          <line id="assoc-rocker-line" stroke="var(--accent)" stroke-width="2" stroke-dasharray="4 3"></line>
+          <polygon id="assoc-rocker-head" fill="var(--accent)"></polygon>
+          <circle id="assoc-rocker-ctr" r="3" fill="var(--accent)"></circle>
+        </svg>
+        <!-- 节点全移出屏幕时的「返回」指示（可点击回到节点群） -->
+        <button id="assoc-goto" title="回到节点" style="position:absolute;display:none;align-items:center;gap:6px;padding:6px 12px;border:none;border-radius:var(--radius-sm);background:var(--accent);color:var(--accent-on);font-size:12px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.25);z-index:6;white-space:nowrap;">
+          <span id="assoc-goto-arrow">◀</span>回到节点群
+        </button>
       </div>
     </div>`;
 
@@ -55,11 +66,125 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
 
   /* ── 平移 + 缩放 ── */
   let assocPanX = 0, assocPanY = 0, assocZoom = 1;
-  let isPanning = false, panSX = 0, panSY = 0, panOX = 0, panOY = 0;
+  /* 左键拖空白 → 跟手平移画布 */
+  let isBlankPan = false, panSX = 0, panSY = 0, panOX = 0, panOY = 0;
+  /* 中键「轮盘/摇杆」移动：点一下进入，按 按下点→鼠标当前 的方向持续平移 */
+  let isRocker = false, joyCX = 0, joyCY = 0, joyDX = 0, joyDY = 0, rockerRAF: number | null = null;
   let dragNodeId: number | null = null, dragMoved = false, dragSX = 0, dragSY = 0, dragGroup: Set<number> | null = null, suppressClick = false;
 
   function applyWorldTransform() {
     world.style.transform = `translate(${assocPanX}px,${assocPanY}px) scale(${assocZoom})`;
+    updateViewportHelp();   /* 视图变换后同步「返回节点」提示 */
+  }
+  /* 中键轮盘移动：每帧沿 按下点→当前鼠标 的方向持续位移 */
+  function startRockerLoop() {
+    if (rockerRAF !== null) cancelAnimationFrame(rockerRAF);   /* 只取消旧帧，不动 isRocker */
+    const tick = () => {
+      if (!isRocker) { stopRockerLoop(); return; }
+      const dist = joyDX * joyDX + joyDY * joyDY;
+      if (dist > 49) { /* 死区：偏移 <7px 不动，防抖 */
+        const len = Math.sqrt(dist);
+        const speed = Math.min(len * 0.015, 6);   /* 偏移越大越快，封顶 6px/帧；斜率减半 → 低速区更宽更易精细 */
+        /* 画布朝「按下点→鼠标」方向移动（所见即所得：箭头指向哪，内容就往哪滚） */
+        assocPanX -= (joyDX / len) * speed;
+        assocPanY -= (joyDY / len) * speed;
+        applyWorldTransform();
+      }
+      rockerRAF = requestAnimationFrame(tick);
+    };
+    rockerRAF = requestAnimationFrame(tick);
+  }
+  function stopRockerLoop() {
+    if (rockerRAF !== null) { cancelAnimationFrame(rockerRAF); rockerRAF = null; }
+    isRocker = false;
+    if (stage) stage.style.cursor = 'default';   /* 退出轮盘 → 恢复光标 */
+    hideRockerArrow();   /* 退出轮盘 → 隐藏方向箭头 */
+  }
+
+  /* ── 轮盘方向指示箭头（锚定屏幕坐标，画布平移/缩放不带动）── */
+  function updateRockerArrow() {
+    const svg = host.querySelector('#assoc-rocker-arrow') as SVGSVGElement | null;
+    const line = svg?.querySelector('#assoc-rocker-line') as SVGLineElement | null;
+    const head = svg?.querySelector('#assoc-rocker-head') as SVGPolygonElement | null;
+    const ctr = svg?.querySelector('#assoc-rocker-ctr') as SVGCircleElement | null;
+    if (!svg || !line || !head || !ctr) return;
+    svg.style.display = 'block';
+    const rect = stage.getBoundingClientRect();
+    const cx = joyCX - rect.left, cy = joyCY - rect.top;
+    ctr.setAttribute('cx', String(cx)); ctr.setAttribute('cy', String(cy));
+    const dist = joyDX * joyDX + joyDY * joyDY;
+    if (dist < 49) {   /* 死区内：只画中心点 */
+      line.setAttribute('x1', String(cx)); line.setAttribute('y1', String(cy));
+      line.setAttribute('x2', String(cx)); line.setAttribute('y2', String(cy));
+      head.setAttribute('points', '');
+      return;
+    }
+    const len = Math.sqrt(dist);
+    /* 箭头长度反映「实际移动速度」（speed = len*0.015 封顶6）：速度越大箭头越长，直观体现当前速度档 */
+    const speed = Math.min(len * 0.015, 6);
+    const L = Math.max(16, (speed / 6) * 240);   /* 最低16px可见，满速240px */
+    const nx = joyDX / len, ny = joyDY / len;
+    const x2 = cx + nx * L, y2 = cy + ny * L;
+    line.setAttribute('x1', String(cx)); line.setAttribute('y1', String(cy));
+    line.setAttribute('x2', String(x2)); line.setAttribute('y2', String(y2));
+    /* 三角箭头 */
+    const ah = 10, aw = 6;
+    const bx1 = x2 - nx * ah + ny * aw, by1 = y2 - ny * ah - nx * aw;
+    const bx2 = x2 - nx * ah - ny * aw, by2 = y2 - ny * ah + nx * aw;
+    head.setAttribute('points', `${x2},${y2} ${bx1},${by1} ${bx2},${by2}`);
+  }
+  function hideRockerArrow() {
+    const s = host.querySelector('#assoc-rocker-arrow');
+    if (s) (s as HTMLElement).style.display = 'none';
+  }
+
+  /* ── 节点全移出屏幕时：屏幕边缘方向箭头 + 「回到节点群」按钮 ── */
+  function updateViewportHelp() {
+    const btn = host.querySelector('#assoc-goto') as HTMLButtonElement | null;
+    const arrowEl = host.querySelector('#assoc-goto-arrow') as HTMLSpanElement | null;
+    if (!btn || !assocGraph || !assocGraph.nodes.length) { if (btn) btn.style.display = 'none'; return; }
+    const W = stage.clientWidth, H = stage.clientHeight;
+    if (W === 0 || H === 0) return;
+    /* CSS transform: translate(t) scale(s) → 节点屏幕坐标 = p*s + t */
+    const z = assocZoom, px = assocPanX, py = assocPanY;
+    let anyVisible = false, cxp = 0, cyp = 0, cnt = 0;
+    assocGraph.nodes.forEach((n) => {
+      const sx = n.x * z + px, sy = n.y * z + py;
+      cxp += sx; cyp += sy; cnt++;
+      if (sx >= 0 && sx <= W && sy >= 0 && sy <= H) anyVisible = true;
+    });
+    if (anyVisible) { btn.style.display = 'none'; return; }   /* 还有节点在屏内 → 不需要提示 */
+    /* 全部移出 → 显示，定位在质心方向对应的屏幕边缘 */
+    cxp /= cnt; cyp /= cnt;
+    /* 质心相对 stage 中心的方向占比 */
+    const dx = cxp - W / 2, dy = cyp - H / 2;
+    const adx = Math.abs(dx), ady = Math.abs(dy);
+    let posX: number, posY: number, arrow: string;
+    if (adx >= ady) {   /* 横向为主：箭头放左/右边缘 */
+      posX = dx >= 0 ? W - 24 : 12; posY = H / 2;
+      arrow = dx >= 0 ? '◀' : '▶';
+    } else {            /* 纵向为主：放上/下边缘 */
+      posX = W / 2; posY = dy >= 0 ? H - 24 : 12;
+      arrow = dy >= 0 ? '▲' : '▼';
+    }
+    btn.style.display = 'flex';
+    btn.style.left = (posX - btn.offsetWidth / 2) + 'px';
+    btn.style.top = (posY - btn.offsetHeight / 2) + 'px';
+    if (arrowEl) arrowEl.textContent = arrow;
+  }
+  /* 回到节点群：把节点质心平移到画布中心 */
+  function recenterToNodes() {
+    if (!assocGraph || !assocGraph.nodes.length) return;
+    const W = stage.clientWidth, H = stage.clientHeight;
+    if (W === 0 || H === 0) return;
+    const z = assocZoom;
+    let cx = 0, cy = 0, cnt = 0;
+    assocGraph.nodes.forEach((n) => { cx += n.x; cy += n.y; cnt++; });
+    cx /= cnt; cy /= cnt;
+    assocPanX = W / 2 - cx * z;
+    assocPanY = H / 2 - cy * z;
+    applyWorldTransform();
+    updateViewportHelp();
   }
   function assocStatus(m: string) { status.textContent = m; }
 
@@ -204,6 +329,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         if (n) (el as HTMLElement).style.transform = `translate(${n.x}px,${n.y}px)`;
       });
       drawEdges();
+      updateViewportHelp();   /* 节点移动时同步「返回节点」提示 */
       simRAF = requestAnimationFrame(tick);
     };
     simRAF = requestAnimationFrame(tick);
@@ -339,10 +465,12 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
   /* ── 交互事件 ── */
   function bindEvents() {
     stage.addEventListener('pointerdown', (e) => {
+      /* 已处于轮盘模式时，再按任何鼠标键 → 先退出轮盘（本次按键继续其默认行为，如左键拖节点） */
+      if (isRocker) stopRockerLoop();
       const store = (e.target as HTMLElement).closest('.store');
       if (store) { /* 暂存交给 click */ return; }
       const nodeEl = (e.target as HTMLElement).closest('.assoc__node, .assoc__root');
-      if (nodeEl && assocGraph) {
+      if (nodeEl && assocGraph && e.button === 0) {
         dragNodeId = parseInt((nodeEl as HTMLElement).dataset.id!, 10);
         dragGroup = collectTree(dragNodeId);
         dragSX = e.clientX; dragSY = e.clientY; dragMoved = false; suppressClick = false;
@@ -351,8 +479,22 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         stage.style.cursor = 'grabbing';   /* 拖节点：抓手 */
         return;
       }
-      isPanning = true; panSX = e.clientX; panSY = e.clientY; panOX = assocPanX; panOY = assocPanY;
-      stage.style.cursor = 'grabbing';
+      /* 左键点空白 → 跟手平移画布 */
+      if (e.button === 0) {
+        isBlankPan = true; panSX = e.clientX; panSY = e.clientY; panOX = assocPanX; panOY = assocPanY;
+        stage.style.cursor = 'grabbing';   /* 空白平移：抓手 */
+        return;
+      }
+      /* 中键（button 1）按下 → 「轮盘/摇杆」模式：点一下进入，之后向 中心→鼠标 方向持续平移 */
+      if (e.button === 1) {
+        e.preventDefault();   /* 阻止浏览器中键自动滚动 */
+        joyCX = e.clientX; joyCY = e.clientY;
+        joyDX = 0; joyDY = 0;
+        isRocker = true;
+        stage.style.cursor = 'crosshair';   /* 轮盘用十字准星，不用抓手（鼠标不需按住拖动） */
+        updateRockerArrow();   /* 显示方向指示箭头 */
+        startRockerLoop();
+      }
     });
     window.addEventListener('pointermove', (e) => {
       if (dragNodeId !== null && assocGraph) {
@@ -372,19 +514,30 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
         }
         return;
       }
-      if (isPanning) {
-        assocPanX = panOX + (e.clientX - panSX);
+      if (isBlankPan) {
+        assocPanX = panOX + (e.clientX - panSX);   /* 左键拖空白：跟手平移 */
         assocPanY = panOY + (e.clientY - panSY);
         applyWorldTransform();
+      }
+      if (isRocker) {
+        e.preventDefault();   /* 轮盘模式：阻止浏览器中键自动滚动 */
+        joyDX = e.clientX - joyCX;   /* 中心 → 当前鼠标 的偏移向量 */
+        joyDY = e.clientY - joyCY;
+        updateRockerArrow();   /* 方向变化 → 实时刷新箭头 */
       }
     });
     window.addEventListener('pointerup', () => {
       const wasDrag = dragMoved;
-      dragNodeId = null; dragGroup = null; isPanning = false;
+      dragNodeId = null; dragGroup = null; isBlankPan = false;
       stage.style.cursor = 'default';   /* 空白恢复=正常 */
       if (wasDrag) suppressClick = true;   /* 拖拽节点 → 抑制紧随的 click */
       dragMoved = false;
       setTimeout(() => (suppressClick = false), 0);   /* 无论如何都清，防止卡住 */
+      /* 注意：中键轮盘是「点一下进入、按其它键退出」，不在此随松开中键退出 */
+    });
+    window.addEventListener('keydown', (e) => {
+      /* 轮盘模式下手按任何键（除在输入框内打字）→ 退出轮盘 */
+      if (isRocker && !(e.target instanceof HTMLInputElement)) stopRockerLoop();
     });
     stage.addEventListener('wheel', (e) => {
       if (e.altKey) {
@@ -414,9 +567,15 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
   }
 
   /* 更新导出按钮计数 + 绑定导出（Ollama 归类 → saveCharLib） */
+  /* 重建导出按钮完整内容（含 #assoc-staged-cnt span），保证计数 span 永远存在 */
+  function renderExportBtn() {
+    if (!exportBtn) return;
+    exportBtn.innerHTML = '导出暂存词（<span id="assoc-staged-cnt">' + staged.length + '</span>）';
+  }
   function updateStagedCnt() {
     const cnt = host.querySelector('#assoc-staged-cnt') as HTMLElement | null;
     if (cnt) cnt.textContent = String(staged.length);
+    else renderExportBtn();   /* span 被误删时（如临时「分类中…」）重建，避免计数丢失 */
   }
   const exportBtn = host.querySelector('#assoc-export') as HTMLButtonElement | null;
   if (exportBtn) {
@@ -453,8 +612,10 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
       } catch (err) {
         assocStatus('导出失败：' + (err instanceof Error ? err.message : String(err)));
       } finally {
+        /* 恢复按钮：用 renderExportBtn() 重建含 #assoc-staged-cnt span 的完整内容。
+           不能用 textContent 覆盖，否则内嵌 span 被删、计数之后无法更新 */
         exportBtn.disabled = false;
-        exportBtn.textContent = '导出暂存词（' + staged.length + '）';
+        renderExportBtn();
       }
     });
   }
@@ -477,6 +638,15 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
   }
 
   bindEvents();
+
+  /* 「回到节点群」按钮：全部节点移出屏幕时点击 → 画布回到节点群 */
+  const gotoBtn = host.querySelector('#assoc-goto') as HTMLButtonElement | null;
+  if (gotoBtn) {
+    gotoBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      recenterToNodes();
+    });
+  }
   /* 外部提供根词时初始化 */
   const root = getWord();
   if (root) initFromRoot(root);
@@ -487,4 +657,20 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): void
     if (assocGraph && assocGraph.nodes[0] && assocGraph.nodes[0].word === w) { onNodeClick(0); return; }
     initFromRoot(w);
   };
+
+  /* 工具栏输入框：回车 → 以输入词开始联想 */
+  const input = host.querySelector('#assoc-input') as HTMLInputElement | null;
+  if (input) {
+    const go = () => {
+      const w = input.value.trim();
+      if (!w) { assocStatus('请先输入一个词'); return; }
+      input.blur();
+      assocStatus(`由「${w}」开始联想`);
+      (host as any).assocSetRoot(w);
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') go();
+      e.stopPropagation();   /* 防止画布中键/其它按键干扰输入 */
+    });
+  }
 }

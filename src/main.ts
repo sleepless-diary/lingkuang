@@ -1,41 +1,73 @@
 /** 灵框 · 入口（Vite） */
 import createStore, { emptyData } from './store/store';
 import { renderShell } from './ui/shell';
+import { disposeCurrentTool } from './tools/registry';
 import './style.css';
 
 /** 数据加载：优先 vault(.md 文件为源)；无 vault 则回退 JSON/空数据 */
 async function loadData() {
   const api = (window as any).lingkuangAPI;
-  /* ① vault 为源：扫描 .md 文件生成 store 数据 */
+  /* ⓪ 先读 JSON 兜底数据：.md 只承载节点，循环/剧情线/历法/时间指针/世界笔记
+     只存在于 JSON 里。下面 vaultToWorldData 要用它回填——不回填的话，
+     「vault 为源」每次启动都会把这些字段清空（启用 vault 后建的循环/剧情线活不过一次重启）。 */
+  let jsonData: any = null;
+  if (api && api.loadData) {
+    try {
+      const res = await api.loadData();
+      if (res && res.ok && res.data) jsonData = res.data;
+    } catch (e) { /* JSON 读失败就只靠 vault */ }
+  }
+  /* ① vault 为源：扫描 .md 文件生成 store 数据（节点以文件为准，其余字段从 JSON 回填） */
   if (api && api.vaultScan) {
     try {
       const vres = await api.vaultScan();
       if (vres && vres.ok && vres.worlds) {
-        const data = vaultToWorldData(vres.worlds);
+        const data = vaultToWorldData(vres.worlds, jsonData);
         if (Object.keys(data.worldsets).length) return data;
       }
     } catch (e) { /* vault 失败则回退 */ }
   }
   /* ② 回退 JSON（旧数据/首次） */
-  if (api && api.loadData) {
-    const res = await api.loadData();
-    if (res && res.ok && res.data) return res.data;
-  }
+  if (jsonData) return jsonData;
   return emptyData();
 }
 
-/** vault 扫描结果 {世界观:{时间线:[节点]}} → WorldData */
-function vaultToWorldData(worlds: Record<string, Record<string, any[]>>) {
+/** vault 扫描结果 {世界观:{时间线:[节点]}} → WorldData。
+ *  `base` = 现有数据（启动时来自 JSON 缓存，重载时来自 store），用于回填 .md 表达不了的字段：
+ *  loops / storylines / calendar / absOffset / docs / timeCursor。
+ *  只在「vault 里确实存在这条时间线/这个世界」时回填——vault 里没有的一律不复活，
+ *  否则外部删掉整个文件夹后，旧数据会把整批节点一起带回来。 */
+function vaultToWorldData(
+  worlds: Record<string, Record<string, any[]>>,
+  base?: { worldsets?: Record<string, any> } | null,
+) {
   const worldsets: Record<string, any> = {};
   for (const [wsName, tls] of Object.entries(worlds || {})) {
+    const baseWs = base?.worldsets?.[wsName];
     const timelines: Record<string, any> = {};
     const order: string[] = [];
     for (const [tlName, nodes] of Object.entries(tls || {})) {
       const id = 'tl-' + tlName;
-      timelines[id] = { id, name: tlName, absOffset: 0, nodes, loops: [], storylines: [] };
+      const prev = baseWs?.timelines?.[id];
+      timelines[id] = {
+        id,
+        name: tlName,
+        absOffset: prev?.absOffset ?? 0,
+        nodes,
+        loops: Array.isArray(prev?.loops) ? prev.loops : [],
+        storylines: Array.isArray(prev?.storylines) ? prev.storylines : [],
+        /* 自定义历法只存在 JSON 里，丢了就等于世界观的时间体系被重置 */
+        ...(prev?.calendar ? { calendar: prev.calendar } : {}),
+      };
       order.push(id);
     }
-    worldsets[wsName] = { name: wsName, timelines, order, docs: {}, timeCursor: null };
+    worldsets[wsName] = {
+      name: wsName,
+      timelines,
+      order,
+      docs: baseWs?.docs ?? {},
+      timeCursor: baseWs?.timeCursor ?? null,
+    };
   }
   return { worldsets };
 }
@@ -205,27 +237,50 @@ async function main() {
   /* 自动落盘：任何 store 变化 → 防抖 400ms → 写 vault(.md 为源) + JSON 缓存 */
   let saveTimer: number | undefined;
   let suppressWrite = false;   /* 外部 vault 改动重载时设为 true，避免写回造成循环 */
-  store.subscribe(() => {
-    if (suppressWrite) return;
-    window.clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(async () => {
-      const api = (window as any).lingkuangAPI;
-      if (!api) return;
-      /* ① 写 vault：遍历所有节点 → 各自 .md 文件 */
-      if (api.vaultWrite) {
-        for (const [wsName, ws] of Object.entries(store.data.worldsets)) {
-          for (const tlId of (ws.order ?? [])) {
-            const tl = ws.timelines[tlId];
-            if (!tl) continue;
-            for (const node of tl.nodes) {
-              try { await api.vaultWrite(wsName, tl.name, node); } catch (e) { /* 单节点失败忽略 */ }
-            }
+  let pendingWrite = false;    /* 有改动还没落盘（退出前要同步补写） */
+  async function writeAll(): Promise<void> {
+    const api = (window as any).lingkuangAPI;
+    if (!api) return;
+    pendingWrite = false;   /* 置前：期间再有改动，订阅会重新置 true 并重新排程 */
+    /* ① 写 vault：遍历所有节点 → 各自 .md 文件 */
+    if (api.vaultWrite) {
+      for (const [wsName, ws] of Object.entries(store.data.worldsets)) {
+        for (const tlId of (ws.order ?? [])) {
+          const tl = ws.timelines[tlId];
+          if (!tl) continue;
+          for (const node of tl.nodes) {
+            try { await api.vaultWrite(wsName, tl.name, node); } catch (e) { /* 单节点失败忽略 */ }
           }
         }
       }
-      /* ② 写 JSON 缓存（保留旧流程，作备份；formats 由独立 formats.json 管，不写进这里） */
-      if (api.saveData) { const { formats: _fmt, ...rest } = store.data; api.saveData(rest); }
-    }, 400);
+    }
+    /* ② 写 JSON 缓存（保留旧流程，作备份；formats 由独立 formats.json 管，不写进这里） */
+    if (api.saveData) { const { formats: _fmt, ...rest } = store.data; api.saveData(rest); }
+  }
+  store.subscribe(() => {
+    if (suppressWrite) return;
+    pendingWrite = true;
+    window.clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => { void writeAll(); }, 400);
+  });
+  /* 退出前落盘：先让当前工具把未提交的编辑交给 store（编辑器只在 tiptap blur 时提交，
+     光标还在正文里就关窗口的话，那些字连 store 都没进），再同步写盘。 */
+  window.addEventListener('beforeunload', () => {
+    try { disposeCurrentTool(); } catch (e) { /* 清理失败不挡退出 */ }
+    if (!pendingWrite) return;
+    window.clearTimeout(saveTimer);
+    const api = (window as any).lingkuangAPI;
+    if (!api?.flushSync) return;
+    const nodes: { wsName: string; tlName: string; node: unknown }[] = [];
+    for (const [wsName, ws] of Object.entries(store.data.worldsets)) {
+      for (const tlId of (ws.order ?? [])) {
+        const tl = ws.timelines[tlId];
+        if (!tl) continue;
+        for (const node of tl.nodes) nodes.push({ wsName, tlName: tl.name, node });
+      }
+    }
+    const { formats: _fmt, ...rest } = store.data;
+    try { api.flushSync({ data: rest, nodes }); pendingWrite = false; } catch (e) { /* 下一次启动还有 JSON 备份 */ }
   });
   /* 在落盘订阅注册后才补全，确保 store.update 能触发落盘写回 .md（type/precision/kind + 格式字段） */
   ensureAllFormatFields(store);
@@ -240,7 +295,8 @@ async function main() {
       try {
         const vres = await api.vaultScan();
         if (vres && vres.ok && vres.worlds) {
-          const newData = vaultToWorldData(vres.worlds);
+          /* 以当前 store 为 base：外部改 .md 只该覆盖节点，不能顺手清空循环/剧情线/历法 */
+          const newData = vaultToWorldData(vres.worlds, store.data);
           /* 检测外部对节点字段的增删（属性/描述/正文），对比重载前的 store 与扫描结果 */
           const diffs = nodeFieldDiff(store.data, newData);
           suppressWrite = true;

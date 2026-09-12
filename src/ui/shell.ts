@@ -1,6 +1,6 @@
 /** 灵框 · 壳 UI（世界栏 + 工具栏 + 沙盘）——AE 风：圆角少、工具感强 */
 import type { Store } from '../store/store';
-import { listTools, openTool } from '../tools/registry';
+import { listTools, openTool, disposeCurrentTool } from '../tools/registry';
 import { registerAllTools } from '../tools/register';
 import { mountTimeline } from './timeline';
 import { renderNodeDetail } from './detail';
@@ -149,6 +149,9 @@ function renderToolbar(store: Store): void {
       const right = document.querySelector('.lk-right') as HTMLElement | null;
       if (id === 'sandbox') {
         /* 世界沙盘：恢复沙盘视图（隐藏模块，恢复右区 + tool-host） */
+        /* 这条分支不走 openTool，得自己结算上一个工具的清理函数：
+           否则「编辑器 → 世界沙盘」会把 tiptap 实例 + 订阅 + 全局监听留在后台。 */
+        disposeCurrentTool();
         if (moduleView) { moduleView.style.display = 'none'; moduleView.innerHTML = ''; }
         if (toolHost) { toolHost.style.display = ''; toolHost.innerHTML = ''; }
         if (right) right.style.display = '';

@@ -33,6 +33,12 @@
 - [x] 词义联想图（力导向、单线聚焦、选中支线保留、AI 双模式）
 - [x] Markdown 编辑器（双栏预览）、MCP server（查询世界观）
 - [x] 打包发布（NSIS 安装版 + 便携版 + CI 自动发版）
+  - 注（2026-08-27 更正）：这一项此前是**假通过**。渲染层的 vite `outDir` 与 electron-builder 的
+    `directories.output` 同为 `dist`，而 electron-builder 会把自己 output 目录从 app files 里强制排除，
+    所以打出来的包里从来没有渲染层（装完必然白屏），`npm run dist` 也不跑 `vite build`、CI 同样没有构建步骤。
+    已修：vite 输出改到 `app-dist`、`files` 加 `app-dist/**/*`、`dist`/`pack` 脚本先跑 `vite build`。
+    重打包实测 asar 内含 `\app-dist\index.html` 与 9 个资源（`electron-builder --dir` + 列 asar 验证）。
+    详见 `docs/BUGS.md` 的「本轮已修复」首条。
 
 ## 近期（P1 · 核心体验，按序）
 

@@ -2,6 +2,7 @@
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { aiChat, type ChatMsg } from './ai';
+import { escapeHtml } from './html';
 
 export function renderTavern(store: Store, host: HTMLElement): void {
   host.style.overflow = 'auto';
@@ -30,7 +31,7 @@ export function renderTavern(store: Store, host: HTMLElement): void {
   const ws = currentWorld(store);
   const tls = (ws.order ?? []).filter((id) => ws.timelines[id]).map((id) => ws.timelines[id]);
   sel.innerHTML = tls.length
-    ? tls.map((tl) => `<option value="${tl.id}">${tl.name}（${tl.nodes.length} 节点）</option>`).join('')
+    ? tls.map((tl) => `<option value="${escapeHtml(tl.id)}">${escapeHtml(tl.name)}（${tl.nodes.length} 节点）</option>`).join('')
     : '<option value="">（无时间线）</option>';
 
   function contextFromTl(tlId: string): string {

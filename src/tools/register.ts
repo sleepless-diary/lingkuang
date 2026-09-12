@@ -24,7 +24,10 @@ export function registerAllTools(): void {
   registerTool({
     id: 'editor', name: '编辑器', icon: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
     open(host, store) {
-      if (store) import('../ui/editor').then((m) => m.renderEditor(store, host));
+      /* 返回 Promise<清理函数>：registry.openTool 会在切走时调用它，
+         拆掉 tiptap 实例 + window 监听 + store 订阅（否则每点一次积一份）。 */
+      if (!store) return;
+      return import('../ui/editor').then((m) => m.renderEditor(store, host));
     },
   });
   registerTool({

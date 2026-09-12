@@ -6,7 +6,10 @@ export interface Tool {
   icon: string;                 // Lucide SVG（内联）
   desc?: string;
   placeholder?: boolean;        // true = 占位（功能未做）
-  open?: (host: HTMLElement, store?: Store) => void;
+  /** 打开工具。可返回清理函数（或它的 Promise，因为各工具用动态 import 懒加载）：
+   *  host 是长生命周期容器（#lk-tool-host），切走时只清 innerHTML 不会销毁 tiptap 实例、
+   *  window 监听和 store 订阅——不清就会每点一次工具多积一份。 */
+  open?: (host: HTMLElement, store?: Store) => void | (() => void) | Promise<void | (() => void)>;
 }
 
 const tools = new Map<string, Tool>();
@@ -19,12 +22,36 @@ export function listTools(): Tool[] {
   return [...tools.values()];
 }
 
+/** 当前工具的清理函数；以及打开序号（动态 import 是异步的，用它丢弃过期回调） */
+let disposeCurrent: (() => void) | null = null;
+let openSeq = 0;
+
 export function openTool(id: string, host: HTMLElement, store?: Store): void {
   const tool = tools.get(id);
   if (!tool) return;
+  disposeCurrent?.();
+  disposeCurrent = null;
   host.innerHTML = '';
-  if (tool.open) tool.open(host, store);
-  else renderPlaceholder(host, tool);
+  const seq = ++openSeq;
+  const ret = tool.open ? tool.open(host, store) : (renderPlaceholder(host, tool), undefined);
+  const adopt = (d: void | (() => void)) => {
+    if (typeof d !== 'function') return;
+    /* 期间又切走了：立刻就地清理，不接管 */
+    if (seq !== openSeq) { d(); return; }
+    disposeCurrent = d;
+  };
+  if (ret && typeof (ret as Promise<void | (() => void)>).then === 'function') {
+    (ret as Promise<void | (() => void)>).then(adopt).catch(() => { /* 加载失败由工具自己提示 */ });
+  } else {
+    adopt(ret as void | (() => void));
+  }
+}
+
+/** 立即跑掉当前工具的清理函数（退出前 flush 之类需要先结算时用） */
+export function disposeCurrentTool(): void {
+  disposeCurrent?.();
+  disposeCurrent = null;
+  openSeq++;   /* 让还在飞的动态 import 回调作废 */
 }
 function renderPlaceholder(host: HTMLElement, tool: Tool): void {
   host.innerHTML = `

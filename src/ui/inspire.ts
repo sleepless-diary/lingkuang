@@ -7,16 +7,18 @@ type Combo = Record<string, Record<string, string>>;
 
 const CHAR_GROUPS: Group[] = [
   { t: '外貌', keys: ['发色', '发型', '瞳色', '肤色'], n: 4 },
-  { t: '身体特征', keys: ['角', '瞳', '耳', '尾', '翅', '其他身体特征'], n: 2 },
-  { t: '服装', keys: ['上衣', '下装', '连体衣', '套装'], n: 2 },
-  { t: '穿戴', keys: ['鞋', '袜', '眼镜'], n: 2 },
-  { t: '饰品', keys: ['头饰', '颈饰', '臂饰', '腰饰', '手饰', '脚链', '肩饰', '面饰'], n: 2 },
-  { t: '装备', keys: ['武器', '法器', '道具', '随身物'], n: 1 },
-  { t: '内在', keys: ['表层性格', '深层性格'], n: 2 },
-  { t: '身份', keys: ['气质', '职业', '种族'], n: 2 },
-  { t: '背景', keys: ['背景经历', '秘密', '目标', '执念'], n: 1 },
-  { t: '能力', keys: ['能力', '弱点'], n: 1 },
-  { t: '关系/主题', keys: ['关系', '主题意象', '代表色'], n: 1 },
+  { t: '身体特征', keys: ['角', '瞳', '耳', '尾', '翅', '其他身体特征'], n: 4 },
+  { t: '服装', keys: ['上衣', '下装', '连体衣', '套装'], n: 4 },
+  { t: '穿戴', keys: ['鞋', '袜', '内衣', '腿饰', '眼镜'], n: 4 },
+  { t: '饰品', keys: ['头饰', '颈饰', '臂饰', '腰饰', '手饰', '脚链', '肩饰', '面饰', '背部装饰', '发饰'], n: 4 },
+  { t: '装备', keys: ['武器', '法器', '道具', '随身物', '特殊服装', '坐骑'], n: 4 },
+  { t: '内在', keys: ['表层性格', '深层性格', '癖好'], n: 3 },
+  { t: '身份', keys: ['气质', '职业', '种族', '身份地位', '名字含义'], n: 4 },
+  { t: '背景', keys: ['背景经历', '秘密', '目标', '执念', '恐惧'], n: 4 },
+  { t: '能力', keys: ['能力', '弱点'], n: 2 },
+  { t: '关系/主题', keys: ['关系', '主题意象', '代表色'], n: 3 },
+  { t: '格调', keys: ['服装', '食物', '气味', '体型', '萌属性'], n: 4 },
+  { t: '意象触发', keys: ['声响', '抽象概念', '自然意象'], n: 3 },
 ];
 
 function shuffle<T>(arr: T[]): T[] {
@@ -76,13 +78,13 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
   }
   function currentCount(g: Group, gi: number): number {
     const v = groupCounts[gi];
-    if (v === 'rand') return 1 + Math.floor(Math.random() * Math.min(4, g.keys.length));
+    if (v === undefined || v === 'rand') return 1 + Math.floor(Math.random() * Math.min(4, g.keys.length));
     const n = parseInt(v ?? '', 10);
     return isNaN(n) ? g.n : n;
   }
   function countOptions(g: Group, current?: string): string {
     const max = Math.min(4, g.keys.length);
-    const cur = current || String(g.n);
+    const cur = current || 'rand';
     let o = `<option value="rand"${cur === 'rand' ? ' selected' : ''}>随机</option>`;
     for (let i = 1; i <= max; i++) o += `<option value="${i}"${cur === String(i) ? ' selected' : ''}>${i}</option>`;
     return o;
@@ -148,11 +150,15 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
 
   function collectCombo(): Combo {
     const combo: Combo = {};
-    result.querySelectorAll('.insp-card').forEach((card, gi) => {
+    /* 选择器必须与 renderChar 里真正用的卡片类一致（.tool-card，见 src/style.css）。
+       历史上这里写的是 .insp-card，全项目不存在该类 → 永远匹配 0 个卡片 → 存进去全是空组合。 */
+    result.querySelectorAll('.tool-card').forEach((card, gi) => {
       const g = CHAR_GROUPS[gi];
+      if (!g) return;
       const m: Record<string, string> = {};
       card.querySelectorAll('.insp-row').forEach((row) => {
-        m[(row as HTMLElement).dataset.key!] = row.querySelector('.insp-val')?.textContent ?? '';
+        const k = (row as HTMLElement).dataset.key;
+        if (k) m[k] = row.querySelector('.insp-val')?.textContent ?? '';
       });
       combo[g.t] = m;
     });
@@ -160,12 +166,27 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
   }
 
   function renderSaves() {
+    /* 「加载」与「删除」必须是两个独立控件。
+       历史实现把两者塞进同一个按钮，再靠 textContent 是否含 ✕ 判断意图，
+       而 chip 文案恒为「组合 N ✕」→ 点任何一次都走删除分支，加载分支永远不可达。 */
     savesBox.innerHTML = saves.length
-      ? saves.map((_c, i) => `<button data-si="${i}" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:10px;padding:2px 8px;cursor:pointer;">组合 ${i + 1} ✕</button>`).join('')      : '';
+      ? saves.map((_c, i) => `<span style="display:inline-flex;align-items:stretch;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;">
+          <button data-si="${i}" title="加载组合 ${i + 1}" style="background:none;border:none;color:var(--fg);font-size:10px;padding:2px 7px;cursor:pointer;">组合 ${i + 1}</button>
+          <button data-del="${i}" title="删除组合 ${i + 1}" style="background:none;border:none;border-left:1px solid var(--border);color:var(--fg-2);font-size:10px;padding:2px 6px;cursor:pointer;">✕</button>
+        </span>`).join('')
+      : '';
+    savesBox.querySelectorAll('[data-del]').forEach((el) => {
+      el.addEventListener('click', () => {
+        saves.splice(parseInt((el as HTMLElement).dataset.del!, 10), 1);
+        persistSaves();
+        renderSaves();
+        statusMsg('已删除组合');
+      });
+    });
     savesBox.querySelectorAll('[data-si]').forEach((el) => {
       el.addEventListener('click', () => {
         const si = parseInt((el as HTMLElement).dataset.si!, 10);
-        if ((el as HTMLElement).textContent?.includes('✕')) { saves.splice(si, 1); persistSaves(); renderSaves(); return; }
+        if (!saves[si]) return;
         activeCombo = saves[si];
         renderChar(activeCombo);
         statusMsg(`已加载组合 ${si + 1}`);
