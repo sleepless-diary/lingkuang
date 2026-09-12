@@ -4,6 +4,7 @@ import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { saveNodeDoc, addEntity } from '../store/actions';
 import type { PropValue, TimelineNode, Entity, Timeline } from '../store/types';
+import { PRECISION_ORDER, PRECISION_LABELS } from '../store/types';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from '@tiptap/markdown';
@@ -502,7 +503,8 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
       } else if (k === '精度') {
         const sel = document.createElement('select');
         sel.style.cssText = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-xs);outline:none;';
-        ['year', 'month', 'day', 'hour', 'minute', 'second'].forEach((p) => { const o = document.createElement('option'); o.value = p; o.textContent = p; sel.appendChild(o); });
+        /* 选项文字用中文（渲染层是全中文界面，之前直接显示 year/month/day… 很突兀） */
+        PRECISION_ORDER.forEach((p) => { const o = document.createElement('option'); o.value = p; o.textContent = PRECISION_LABELS[p]; sel.appendChild(o); });
         sel.value = v; sel.addEventListener('change', () => {
           saveFixed({ 精度: sel.value });
           /* 改精度后重渲染面板，让时间 scrub 的显示/步进/输入跟随新精度 */

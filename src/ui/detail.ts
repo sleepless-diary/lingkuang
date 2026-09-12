@@ -1,7 +1,8 @@
 /** 节点详情面板（TS 版）——分区就地编辑：点哪块编辑哪块，点区域外 blur 自动保存 */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
-import type { TimelineNode } from '../store/types';
+import type { TimelineNode, TimePrecision } from '../store/types';
+import { PRECISION_ORDER, PRECISION_LABELS } from '../store/types';
 import { parseTimeText } from './node-form';
 import { requestEyedrop } from './eyedrop';
 import { escapeHtml } from './html';
@@ -57,6 +58,8 @@ export function renderNodeDetail(
   tlId?: string,
   onChanged?: () => void
 ): void {
+  /** 时间部件名（月/日/时/分/秒）——精度下拉按档位决定显示哪几个 */
+  type PartKey = 'month' | 'day' | 'hour' | 'minute' | 'second';
   /* 重新从 store 取最新节点（外部 vault 重载后传入引用会失效） */
   function freshNode(): TimelineNode | undefined {
     return store.data.worldsets[store.activeWorld]?.timelines[tlId ?? '']?.nodes.find((x) => x.id === node.id);
@@ -92,6 +95,11 @@ export function renderNodeDetail(
         <div style="display:flex;gap:4px;flex-wrap:wrap;">
           <span id="d-ty" style="font-size:10px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;cursor:pointer;">${cur.type === 'story_event' ? '剧情事件' : cur.type === 'world_event' ? '世界事件' : cur.type === 'loop-boundary' ? '循环边界' : '节点'}</span>
         </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          <span style="font-size:var(--text-xs);color:var(--fg-2);">精度</span>
+          <select id="d-prec" title="这个节点的时间精确到哪一档（改档位会补/清对应的月日时分秒）" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:2px 5px;font-size:var(--text-xs);outline:none;cursor:pointer;">${PRECISION_ORDER.map((p) => `<option value="${p}"${(cur.precision ?? 'year') === p ? ' selected' : ''}>${PRECISION_LABELS[p]}</option>`).join('')}</select>
+          <span id="d-parts" style="display:flex;gap:4px;align-items:center;"></span>
+        </div>
         <div id="d-d" style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;cursor:text;min-height:18px;">${cur.desc ? mdRender(cur.desc) : '<span style="color:var(--fg-2);">(无描述)</span>'}</div>
         <div id="d-fields" style="display:flex;flex-direction:column;gap:6px;"></div>
         <div id="d-causes" style="display:flex;flex-direction:column;gap:4px;border-top:1px dashed var(--border-soft);padding-top:6px;"></div>
@@ -112,6 +120,68 @@ export function renderNodeDetail(
       slot.replaceWith(sel);
       sel.focus();
       sel.addEventListener('change', () => { patch((n) => { n.type = sel.value as 'world_event' | 'story_event'; }); renderView(); });
+    });
+
+    /* ── 时间精度：下拉选档 + 只显示该档需要的部件（照 legacy 的行为）──
+       legacy（lingkuang.js:1971-2041）是「年份输入 + 精度下拉 + 月/日/时/分 按档位出现」，
+       v3 重写时只留下了「点时间直接打字、精度从文字里推断」，把选择这一动作丢了。
+       这里把它补回来，并与打字共存：打字（parseTimeText）也会改精度，重渲染后下拉自动跟随。 */
+    const precSel = host.querySelector('#d-prec') as HTMLSelectElement | null;
+    const partsEl = host.querySelector('#d-parts') as HTMLElement | null;
+    if (partsEl) {
+      const idx = PRECISION_ORDER.indexOf((cur.precision ?? 'year') as TimePrecision);
+      const parts: { key: PartKey; label: string; v?: number }[] = [
+        { key: 'month', label: '月', v: cur.month },
+        { key: 'day', label: '日', v: cur.day },
+        { key: 'hour', label: '时', v: cur.hour },
+        { key: 'minute', label: '分', v: cur.minute },
+        { key: 'second', label: '秒', v: cur.second },
+      ];
+      /* 精度 = 年（大多数节点）时一个部件框都不出现，面板不会变高 */
+      partsEl.innerHTML = parts
+        .filter((_, i) => idx >= i + 1)
+        .map((p) => `<input data-part="${p.key}" type="number" value="${p.v ?? ''}" title="${p.label}" style="width:46px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:2px 4px;font-size:var(--text-xs);font-family:var(--font-mono);outline:none;user-select:text;"/><span style="font-size:10px;color:var(--fg-2);">${p.label}</span>`)
+        .join('');
+      partsEl.querySelectorAll<HTMLInputElement>('input[data-part]').forEach((inp) => {
+        const commit = () => {
+          const key = inp.dataset.part as PartKey;
+          const raw = inp.value.trim();
+          const num = raw === '' ? NaN : parseInt(raw, 10);
+          const val = Number.isFinite(num) ? num : undefined;
+          patch((n) => {
+            /* 时分秒的 0 是合法值：这里不能写 `parseInt(...) || undefined`（会把 0 清掉） */
+            if (key === 'month') n.month = val;
+            else if (key === 'day') n.day = val;
+            else if (key === 'hour') n.hour = val;
+            else if (key === 'minute') n.minute = val;
+            else n.second = val;
+          });
+          /* 只刷新那行时间文字，不整块重渲染 —— 否则在几个部件框之间 Tab 切换会被打断 */
+          const tm = host.querySelector('#d-tm');
+          const nc = freshNode();
+          if (tm && nc) tm.textContent = parseDoc(nc.doc).timeText ?? fmtNodeTime(nc);
+        };
+        inp.addEventListener('change', commit);
+        inp.addEventListener('blur', commit);
+        inp.addEventListener('keydown', (ev) => { if (ev.key !== 'Enter' || isImeEnter(ev)) return; inp.blur(); });
+      });
+    }
+    precSel?.addEventListener('change', () => {
+      const want = precSel.value as TimePrecision;
+      const wi = PRECISION_ORDER.indexOf(want);
+      patch((n) => {
+        n.precision = want;
+        /* 变细：缺的部件补默认值（月/日 → 1，时/分/秒 → 0）。不补的话落盘那边是「有才写」，
+           会出现「有日没月」这种不完整时间。
+           变粗：更细的部件清成 undefined —— 只有这样 `main.js` 的 yearToDateStr 才真的
+           只写年份，不会把「312年」写成「312年1月1日」（第二轮修过的老 bug）。 */
+        n.month = wi >= 1 ? (n.month ?? 1) : undefined;
+        n.day = wi >= 2 ? (n.day ?? 1) : undefined;
+        n.hour = wi >= 3 ? (n.hour ?? 0) : undefined;
+        n.minute = wi >= 4 ? (n.minute ?? 0) : undefined;
+        n.second = wi >= 5 ? (n.second ?? 0) : undefined;
+      });
+      renderView();
     });
 
     /* 时间块：点击 → 输入框（parseTimeText），blur 保存 */

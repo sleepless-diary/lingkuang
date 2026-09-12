@@ -1,6 +1,7 @@
 /** 新建节点表单（常驻工具）——标题 + 时间文本（支持 "312" / "312年7月"）+ 类型 */
 import type { Store } from '../store/store';
 import type { Timeline } from '../store/types';
+import { PRECISION_LABELS } from '../store/types';
 import type { Calendar } from '../calendar';
 import { buildYearTable, calendarOf, fromEpoch } from '../calendar';
 import { addNode } from '../store/actions';
@@ -154,7 +155,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
     if (!raw) { timeHint.textContent = ''; return; }
     const p = parseTimeText(raw, cal);
     if (!p) { timeHint.textContent = '⚠ 无法识别（支持 年月日时分秒 或任意分隔符）'; timeHint.style.color = 'var(--fg-2)'; return; }
-    const precLabel = { year: '年', month: '月', day: '日', hour: '时', minute: '分', second: '秒' }[p.precision] ?? p.precision;
+    const precLabel = PRECISION_LABELS[p.precision] ?? p.precision;
     timeHint.textContent = `✅ 精度：${precLabel}（内部年=${p.year}）`;
     timeHint.style.color = 'var(--accent)';
   }

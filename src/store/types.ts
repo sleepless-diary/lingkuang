@@ -6,6 +6,22 @@ export type PropValue = string | number | boolean | (string | number)[];
 /** 时间精度 */
 export type TimePrecision = 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second';
 
+/** 从粗到细的精度顺序（下拉顺序；也用于判断「哪一档更细」）。
+    改精度时按它补/清 month/day/hour/minute/second —— 落盘那边 `yearToDateStr`
+    是「有才写」（`main.js`：`n.month !== undefined && n.month !== null` 才写月），
+    所以清成 `undefined` 就真的只写年份，不会凭空多出 `-01-01`。 */
+export const PRECISION_ORDER: TimePrecision[] = ['year', 'month', 'day', 'hour', 'minute', 'second'];
+
+/** 精度的中文标签（界面上只用这一份，避免各处各写一套映射） */
+export const PRECISION_LABELS: Record<TimePrecision, string> = {
+  year: '年',
+  month: '月',
+  day: '日',
+  hour: '时',
+  minute: '分',
+  second: '秒',
+};
+
 /** 时间线节点：本体 = 文稿（doc） */
 export interface TimelineNode {
   id: string;
