@@ -1,5 +1,6 @@
 /** 灵感触发器——随机角色生成（词库 58 分类；照抄 legacy 生成/锁定/组数逻辑）+ 词义联想画布 */
 import type { Store } from '../store/store';
+import { cascadeIn } from './motion';
 
 interface Group { t: string; keys: string[]; n: number; }
 type Lib = Record<string, string[]>;
@@ -50,7 +51,7 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
         <button id="insp-save" style="background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 12px;font-size:var(--text-sm);cursor:pointer;">保存组合</button>
         <button id="insp-roll" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:6px 14px;font-size:var(--text-sm);cursor:pointer;">重新生成</button>
       </div>
-      <div id="insp-result" style="padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;align-content:start;"></div>
+      <div id="insp-result" class="lk-own-cascade" style="padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;align-content:start;"></div>
       <div id="insp-assoc" style="height:100vh;border-top:1px solid var(--border-soft);display:flex;flex-direction:column;"></div>
     </div>`;
 
@@ -109,6 +110,15 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
         ${rows}</div>`;
     }).join('');
     bindEvents();
+    /* 卡片自己这一层错峰（用户 2026-09-12：「卡片也是一样的，错分入场」）。
+       卡片（= CHAR_GROUPS 的 13 组，各一张 .tool-card）在**块里面**，registry 那趟顶层错峰
+       只到「标题栏 / 卡片区 / 联想画布」三块，盖不到卡片 ⇒ 得在这儿再挂一级。
+       步长 50ms、封顶 720ms：13 张正好排成 120→720ms 的阶梯（不封顶的话后面几张会挤在一起同时冒出来）。
+       #insp-result 带 .lk-own-cascade ⇒ 它自己**不整块淡入**（整块半透明会又把卡片错峰洗掉，
+       就是用户报过的"闪一下 + 没错开"），由每张卡自己浮现。
+       触发时机：打开工具（:227）、点「重新生成」（:201）、点「组合 N」加载（:193）—— 都是显式动作；
+       锁定与改词条数按既有设计**不重建卡片**（见 :134 / :148 两处注释），所以不会重播。 */
+    cascadeIn(result, 50, 720, 120);
   }
 
   /* ── 语义联想（Ollama，设置里配引擎）── */

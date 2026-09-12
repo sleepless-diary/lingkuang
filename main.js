@@ -13,6 +13,14 @@ const fs = require('fs');
 try { app.setName('lingkuang'); } catch (e) { /* 偶发时序 bug，setPath 保证路径 */ }
 try { app.setPath('userData', path.join(app.getPath('appData'), 'lingkuang')); } catch (e) {}
 
+/* 测试后门（与下面 LINGKUANG_TEST_DATA 同一族）：LINGKUANG_TEST_USERDATA=<目录> 把 userData
+   （localStorage / settings.json / 词库副本）也一并隔离。**为什么必须有**：用户常常正开着正式应用，
+   而两个实例共用一份 Chromium profile（Local Storage 是 LevelDB）会互相踩；更糟的是下面的单实例锁
+   会让测试实例抢不到锁自杀，还顺手触发正式实例的 `second-instance` —— 把用户正在用的窗口关掉重开。 */
+try {
+  if (process.env.LINGKUANG_TEST_USERDATA) app.setPath('userData', process.env.LINGKUANG_TEST_USERDATA);
+} catch (e) { /* 拿不到就退回正式目录，测试脚本会因脏起点而失败（可见，不会静默） */ }
+
 /* remove the application menu entirely — Alt must NOT summon a menu bar */
 Menu.setApplicationMenu(null);
 
@@ -1536,8 +1544,10 @@ ipcMain.handle('ai:classify', async (e, words) => {
   }
 });
 
-/* 单实例：第二次启动时关掉旧窗口，重新开一个（避免多窗口叠加） */
-const gotLock = app.requestSingleInstanceLock();
+/* 单实例：第二次启动时关掉旧窗口，重新开一个（避免多窗口叠加）。
+   ⚠️ 测试实例（已用 LINGKUANG_TEST_USERDATA 隔离了数据目录）**不参与**这把锁：
+   否则它抢不到锁会自杀，而正式实例收到 second-instance 会把用户正在用的窗口销毁重建。 */
+const gotLock = process.env.LINGKUANG_TEST_USERDATA ? true : app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {

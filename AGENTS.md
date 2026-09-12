@@ -30,6 +30,9 @@
 
 - 环境变量 `LINGKUANG_TEST_DATA=<文件路径>` → 数据读写走该文件，不碰 `%APPDATA%\lingkuang\worldbuilding.json`
 - 环境变量 `LINGKUANG_VAULT=<目录>` → vault 指向该目录（配合上一条，测试完全不碰真实数据）
+- 环境变量 `LINGKUANG_TEST_USERDATA=<目录>` → **userData 也隔离**（localStorage / settings.json / 词库副本）。
+  且它存在时测试实例**不参与单实例锁** —— 否则用户正开着正式应用时，测试实例抢不到锁会自杀，
+  而正式实例收到 `second-instance` 会把**用户正在用的窗口**关掉重建（＝起个测试实例就打断用户）
 - 环境变量 `LINGKUANG_TEST_WINDOW_POS="1920,0"` → 窗口开在指定位置（多屏时开在副屏做验证，主屏不受扰）
 - 环境变量 `LINGKUANG_TEST_WINDOW_SIZE="1180,780"` → 指定窗口尺寸
 - 环境变量 `LINGKUANG_TEST_WINDOW_NOFOCUS=1` → 不抢焦点（`showInactive`）

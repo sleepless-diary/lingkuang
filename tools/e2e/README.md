@@ -2,8 +2,13 @@
 
 跑的是**真的应用**（`app-dist/` 里的渲染层 + `main.js`），用 Chrome DevTools Protocol
 驱动界面、读真实 DOM，再对**磁盘上的 vault 文件**做断言。不碰真实数据 —— 全靠
-`LINGKUANG_TEST_DATA` / `LINGKUANG_VAULT` 两个后门把读写重定向到临时目录
+`LINGKUANG_TEST_DATA` / `LINGKUANG_VAULT` / `LINGKUANG_TEST_USERDATA` 三个后门把读写重定向到临时目录
 （真实数据在 `%APPDATA%\lingkuang\`，见 `AGENTS.md`）。
+
+⚠️ **`LINGKUANG_TEST_USERDATA` 不是可有可无的**（2026-09-12 加）：用户常常**正开着正式应用**，
+而 `main.js` 有单实例锁 —— 不带它起测试实例，测试实例会抢不到锁自杀，**并且正式实例收到
+`second-instance` 会把用户正在用的窗口 destroy + 重建**（＝起个测试实例就把用户的窗口搞没了）。
+带上它之后 userData 也隔离（localStorage / settings.json / 词库副本各一份），两个实例还能并行跑。
 
 ## 跑一次（PowerShell）
 
@@ -14,6 +19,7 @@ npx vite build                                  # 改了 src/ 必须先构建，
 # 1) 干净前置：清空测试世界的实体 + 删掉 vault 的 _设定 / .trash
 $env:LINGKUANG_TEST_DATA="C:\Users\<你>\AppData\Local\Temp\lk-evault2\worldbuilding.json"
 $env:LINGKUANG_VAULT="C:\Users\<你>\AppData\Local\Temp\lk-evault2\vault"
+$env:LINGKUANG_TEST_USERDATA="C:\Users\<你>\AppData\Local\Temp\lk-evault2\userdata"   # 别省
 node tools\e2e\reset-entity-vault.cjs
 
 # 2) 起测试实例（用 Start-Process，别用 Node 的 child_process 捕获输出 —— 管道 stdio 会被沙箱拦成 spawn EPERM）
@@ -26,7 +32,11 @@ Start-Sleep -Seconds 3
 node tools\e2e\entity-vault.cjs                  # 17 项，退出码 0 = 全过
 
 # 4) 冷启动复验（重启后状态还在不在）
-Get-Process electron | Where-Object { $_.Path -like "*lingkuang-v3*" } | Stop-Process -Force
+# ⚠️ **别**用 `Get-Process electron | Where-Object { $_.Path -like '*lingkuang-v3*' } | Stop-Process`
+#    —— 那会连用户正开着的正式应用一起杀掉。按**调试端口**挑（只杀自己起的那个）：
+Get-CimInstance Win32_Process -Filter "Name='electron.exe'" |
+  Where-Object { $_.CommandLine -like '*remote-debugging-port=9334*' -or $_.CommandLine -like '*lk-evault2*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 Start-Sleep -Seconds 2
 Start-Process -FilePath "F:\Projects\lingkuang-v3\node_modules\electron\dist\electron.exe" `
   -ArgumentList @("F:\Projects\lingkuang-v3","--remote-debugging-port=9334")
@@ -77,7 +87,7 @@ cwd 与环境变量不跨调用保留 —— 环境变量要和命令写在同�
 | `data-corrupt-guard.cjs` | 判损护栏 16 项：截断文件启动后**原文件逐字节未被覆盖** + 副本隔离 + 重读过（`attempts>1`）+ `data:save` 被拒且标明 `locked` + 壳级横幅两条出口 + 点「继续用新数据」解锁并自愈 + 中途补全的文件被重读捞回 |
 | `data-load-clean.cjs` | 误报守卫 6 项：**干净**数据启动时护栏一步都不该动（`attempts===1`、无横幅、无副本、写盘照常） |
 | `seed-motion.cjs` | 前置：给动效套件造确定起点 —— **两条时间线**（页签错峰至少要两个 tab，**第二条故意 0 节点、vault 里没有目录**，顺带守着「空时间线不被 vault 重建抹掉」那条修复）+ 各一个节点 + 一个实体。独立目录（`%TEMP%\lk-motion`），免得给别的套件留下额外时间线 |
-| `motion-switch.cjs` | 动效（切换类）**18 项**：切工具/开面板/回沙盘/页签错峰/弹窗/设定库换页签 —— ① **参数**（`getAnimations()` 的 name + 时长 + 延迟 + `playState`，在点击的同一个同步块里读）② **真的在跑**（出**一帧**后要 `animationend`，见铁律 6）③ **终态不残留**（`finish()` 后 opacity=1 / transform=none）④ **容器不许播**（★2/★7/★9：整块淡入是"闪一下"的来源）⑤ **错峰自收手**（★6：类与行内延迟都清掉，否则重渲染会重播）⑥ **减少动效降级**（★15：`lk-fade`/200ms、错峰延迟全 0，含行内值）⑦ **竞态守卫**（★17：同 tick 连点两个工具，终态必须是后点的那个）+ 功能回归（★16 点第二个时间线页签真的切过去了）。⚠️ 断言**不依赖墙钟**，原因见铁律 6/7 |
+| `motion-switch.cjs` | 动效（切换类）**22 项**：切工具/开面板/回沙盘/页签错峰/弹窗/设定库换页签/**灵感触发器卡片** —— ① **参数**（`getAnimations()` 的 name + 时长 + 延迟 + `playState`，在点击的同一个同步块里读）② **真的在跑**（出**一帧**后要 `animationend`，见铁律 6）③ **终态不残留**（`finish()` 后 opacity=1 / transform=none）④ **容器不许播**（★2/★7/★9：整块淡入是"闪一下"的来源）⑤ **错峰自收手**（★6：类与行内延迟都清掉，否则重渲染会重播）⑥ **减少动效降级**（★15/★21：`lk-fade`/200ms、错峰延迟全 0，含行内值）⑦ **竞态守卫**（★17：同 tick 连点两个工具，终态必须是后点的那个）⑧ **块里面的元素也要错峰**（★18 卡片排 `120…720ms` 阶梯 + 卡片区自己不整块淡入、★19「重新生成」重播、★20 锁定不重建卡片）+ 功能回归（★16 点第二个时间线页签真的切过去了）。⚠️ 断言**不依赖墙钟**，原因见铁律 6/7 |
 | `seed-empty-timeline.cjs` | 前置：三条时间线 —— 主线(1 节点)、**支线(0 节点，故意不建目录)**、副线(1 节点)；vault 里只有主线与副线的目录 |
 | `timeline-persist.cjs` | 空时间线不该被 vault 重建抹掉 8 项：启动后三条页签都在 → 空时间线能选中 → 点＋新建（直接建、默认名「新时间线」）→ **落盘后空时间线还在文件里** → 回扫后仍在 → **外部删掉主线目录后主线消失且不复活** → 副线与两条空时间线都没被牵连 |
 | `cold-start-empty-timeline.cjs` | 重启复验 3 项（承接 `timeline-persist.cjs` 的收尾状态）：两条空时间线仍在、被外部删目录的主线不复活、盘上文件与界面一致 |
@@ -144,10 +154,11 @@ node tools\e2e\data-load-clean.cjs           # 6 项：attempts===1 / 无横幅 
 ```powershell
 $env:LINGKUANG_TEST_DATA="C:\Users\<你>\AppData\Local\Temp\lk-motion\worldbuilding.json"
 $env:LINGKUANG_VAULT="C:\Users\<你>\AppData\Local\Temp\lk-motion\vault"
+$env:LINGKUANG_TEST_USERDATA="C:\Users\<你>\AppData\Local\Temp\lk-motion\userdata"
 
 node tools\e2e\seed-motion.cjs                # 2 条时间线（各 1 节点）+ 1 个实体
 # 起应用（同上面的 Start-Process）
-node tools\e2e\motion-switch.cjs              # 18 项
+node tools\e2e\motion-switch.cjs              # 22 项
 ```
 
 ⚠️ 这套件**必须在 `no-preference` 下跑**，脚本自己会先 `Emulation.setEmulatedMedia` 钉死环境
@@ -166,8 +177,11 @@ node tools\e2e\motion-switch.cjs              # 18 项
 
 正确姿势（`motion-switch.cjs` 就是这么写的）：
 1. **参数**：在点击的**同一个同步块**里读 `getAnimations()` 的 name / 时长 / 延迟 / `playState`；
-2. **真的会动**：`Page.captureScreenshot`（jpeg quality 10）出**一帧**，然后要 **`animationend` 事件**
-   （脚本开头挂 `window.__ends` 全局监听）—— 动画播到结尾才会触发，帧被吞掉或动画从未启动都不会来。
+2. **真的会动**：`Page.captureScreenshot`（jpeg quality 10）**连打 5-6 帧**（`motion-switch.cjs` 的
+   `forceFrames()`），然后要 **`animationend` 事件**（脚本开头挂 `window.__ends` 全局监听）——
+   动画播到结尾才会触发，帧被吞掉或动画从未启动都不会来。
+   ⚠️ **只打一帧是不够的**：实测单张 `captureScreenshot` 之后 `__ends` 仍是空数组（隐藏页面要连续
+   几帧才走完动画生命周期）—— ★4 就是因此随机挂过一次，已改成连打；
    ⚠️ **别用 `currentTime > 0` 当证据**：实测这一帧往往**直接把动画推到结尾**（读完是"已播完"、类也
    被清了，见下条铁律 7），中途态根本抓不到（早期版本就是这么随机挂的）；
 3. **终态**：`el.getAnimations().forEach(a => a.finish())` 把动画推到结尾，再读计算样式

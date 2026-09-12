@@ -66,10 +66,18 @@ export function staggerIn(container: HTMLElement | null): void {
  *  现在改成容器保持不透明、由里面的块依次浮现。
  *
  *  `step` 每块间隔；`maxDelay` 封顶（块多时不让最后一块等到天荒地老）；`start` 用于二级错峰
- *  （比如列表要等它所在的那一大块先浮现）。 */
+ *  （比如列表要等它所在的那一大块先浮现）。
+ *
+ *  ⚠️ 带 `.lk-own-cascade` 的子项会被**跳过**：那是"自己会给子级错峰"的容器
+ *  （灵感触发器的卡片区 `#insp-result`）。父级若还给它整块淡入，就是把用户报过的那个病
+ *  （整块半透明 ⇒ 洗白 + 里面每个元素自己的错峰被盖住）下沉一层。CSS 侧对应的
+ *  `.lk-enter-stagger > .lk-own-cascade { animation: none }` 才是真正压住动画的那一条，
+ *  这里过滤只是为了不给它写无用的行内延迟、以及不让它当"最后一块"（它没有动画，
+ *  animationend 永远不会来，会白白等到兜底定时器）。 */
 export function cascadeIn(container: HTMLElement | null, step = 100, maxDelay = 500, start = 0): void {
   if (!container) return;
-  const kids = Array.from(container.children) as HTMLElement[];
+  const kids = (Array.from(container.children) as HTMLElement[])
+    .filter((el) => !el.classList.contains('lk-own-cascade'));
   if (!kids.length) return;
   /* 减少动效：错峰整个关掉（DESIGN.md:159）。**必须在这里判**，不能只靠 CSS 的降级块 ——
      本函数给子项写的是**行内** animation-delay，行内值优先级高于媒体查询里的规则，

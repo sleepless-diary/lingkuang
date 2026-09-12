@@ -152,8 +152,10 @@ async function main() {
   /* ★4 真的在动：这个环境里 CSS 动画不自己推进（见文件头），而且**出一帧就可能把它直接推到
      结尾**（实测：截图后 currentTime 已是"播完"、类也被清），所以不赌"读到中间态"。
      改成要 animationend 事件：动画真的播到结尾才会触发；帧被吞掉、动画从未启动都不会来。
+     ⚠️ **只打一帧是不够的**（实测：单张 `Page.captureScreenshot` 后 `__ends` 仍然是空的 —— 隐藏页面
+     要连续几帧才走完动画生命周期），所以按铁律 6 的姿势用 `forceFrames()` 连打。
      顺便这一条也证明了错峰收手是**靠动画播完**触发的，不是靠那个 2500ms 兜底定时器。 */
-  await send('Page.captureScreenshot', { format: 'jpeg', quality: 10 });
+  await forceFrames(6);
   await sleep(200);
   const ends = await ev(`window.__ends`);
   check('★4 出一帧后入场动画真的播完了（收到 lk-wake 的 animationend，目标是工具的一级块）',
@@ -264,12 +266,65 @@ async function main() {
       && Array.isArray(a8) && a8.length >= 3 && a8.every((x) => x[0]?.name === 'lk-fade' && x[0]?.dur === 200 && x[0]?.delay === 0)
       && delays2.length === 2 && delays2.every((d) => d === 0) && (t2 || []).every((x) => x[0]?.name === 'lk-fade'),
     { reduced, tool: a8, tabs: t2 });
+
+  /* 卡片级错峰也必须自己吃降级：cascadeIn 写的是**行内**延迟，媒体查询压不住（motion.ts 里那条注释） */
+  await ev(`document.querySelector('[data-tool="inspire"]').click(); true`);
+  await waitFor(`document.querySelectorAll('#insp-result > .tool-card').length >= 5`);
+  const cardsR = await childAnims('#insp-result');
+  check('★21 减少动效：卡片错峰同样归零（lk-fade/200ms、延迟全 0 —— 含行内延迟）',
+    Array.isArray(cardsR) && cardsR.length >= 5
+      && cardsR.every((c) => c[0]?.name === 'lk-fade' && c[0]?.dur === 200 && c[0]?.delay === 0),
+    cardsR?.slice(0, 3));
+  /* ⚠️ 这一块把主区切到了灵感触发器，而下一节 ★16 的前提是「沙盘可见」⇒ 必须切回去。
+     （第一版就漏了这一步，★16 直接挂在 sandboxVisible=false 上。） */
+  await ev(`document.querySelector('[data-tool="sandbox"]').click(); true`);
+  await sleep(400);
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
 
   /* ── ⑧ 回归：动效没有把功能弄坏（页签真的切走了） ── */
   const activeTl = await ev(`document.querySelector('.lk-tl-tabs > .lk-tl-tab.is-active')?.textContent`);
   const sandboxVisible = await ev(`document.querySelector('#lk-sandbox').style.display !== 'none' && document.querySelector('#lk-module-view').style.display === 'none'`);
   check('★16 回归：点第二个时间线页签真的切过去了，沙盘仍然可见', String(activeTl ?? '').includes('支线') && sandboxVisible, { activeTl, sandboxVisible });
+
+  /* ── ⑩ 卡片级错峰（灵感触发器）：块**里面**的元素也要一个个出来 ──
+     用户的问法：「卡片算同一个元素吗」—— **不算**：卡片在块里面，registry 那趟顶层错峰只到
+     「标题栏 / 卡片区 / 联想画布」三块，13 张卡（CHAR_GROUPS 13 组）原本跟着卡片区一起整块出来。
+     现在卡片区带 `.lk-own-cascade`（父级**不许**给它整块淡入 —— 又是"洗白 + 错峰被盖"那个病，
+     只是下沉一层），由 renderChar 里的 `cascadeIn(卡片区, 50ms, 封顶 720, 起 120)` 给每张卡排阶梯。
+     注意 ★18 里父级那三块的延迟是 0 / 100，**跳过的不占序号**（卡片区被跳过 ⇒ 画布仍是 100ms）。 */
+  await ev(`document.querySelector('[data-tool="inspire"]').click(); true`);
+  const cardsOk = await waitFor(`document.querySelectorAll('#insp-result > .tool-card').length >= 5
+    && !!document.querySelector('#insp-scroll')?.classList.contains('lk-enter-stagger')`);
+  const cards = await childAnims('#insp-result');
+  const gridSelf = await anims('#insp-result');
+  const blocks10 = await childAnims('#insp-scroll');
+  check('★18 灵感触发器的卡片逐个错峰入场（lk-wake/640ms、阶梯 120·170·220…），卡片区自己不整块淡入',
+    cardsOk && Array.isArray(cards) && cards.length >= 5
+      && cards.every((c, i) => c[0]?.name === 'lk-wake' && c[0]?.dur === 640 && c[0]?.delay === Math.min(120 + i * 50, 720))
+      && Array.isArray(gridSelf) && gridSelf.length === 0
+      && Array.isArray(blocks10) && blocks10.length === 3 && blocks10[1]?.length === 0
+      && blocks10[0]?.[0]?.delay === 0 && blocks10[2]?.[0]?.delay === 100,
+    { cardsOk, n: cards?.length, head: cards?.slice(0, 4), gridSelf, blocks10 });
+
+  /* ★19 显式动作才播：点「重新生成」= 卡片重洗 ⇒ 再错峰一次（renderChar 是同步的，同一块里读） */
+  const rollCards = await clickChildAnims(`document.querySelector('#insp-roll').click();`, '#insp-result');
+  check('★19 点「重新生成」：卡片重洗后**再错峰一次**（每张仍 lk-wake / running / 阶梯不变）',
+    Array.isArray(rollCards) && rollCards.length >= 5
+      && rollCards.every((c, i) => c[0]?.name === 'lk-wake' && c[0]?.state === 'running' && c[0]?.delay === Math.min(120 + i * 50, 720)),
+    rollCards?.slice(0, 3));
+
+  /* ★20 锁定词条**不重建**卡片（既有设计：只改颜色/高亮）⇒ 元素身份不变 = 不会重播错峰。
+     localStorage 里的锁会跨次运行留下，所以断言写的是"高亮状态**变了**"，不假定初始方向。 */
+  const lockRes = await ev(`(() => {
+    const before = document.querySelector('#insp-result > .tool-card');
+    if (!before) return null;
+    const row = before.querySelector('.insp-lock').closest('.insp-row');
+    const bg0 = row.style.background;
+    before.querySelector('.insp-lock').click();
+    return { sameEl: before === document.querySelector('#insp-result > .tool-card'), bgChanged: row.style.background !== bg0 };
+  })()`);
+  check('★20 锁定条目：卡片不重建（元素身份不变 ⇒ 不重播），行高亮照常切换',
+    lockRes && lockRes.sameEl === true && lockRes.bgChanged === true, lockRes);
 
   /* ── ⑨ 竞态守卫：慢工具不许在切走之后把新工具盖掉 ──
      工具是「先渲染进**自己那一格**（`.lk-tool-slot`）、再把清理函数交回来」，所以**未缓存**的
@@ -289,7 +344,7 @@ async function main() {
     race && race.cxRoot === true && race.active === 'codex' && race.slots === 1 && race.first === 'lk-tool-slot', race);
 
   const errs = await ev(`window.__errs`);
-  check('18 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
+  check('★22 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 
   const n = results.filter(Boolean).length;
   console.log(`\n==== ${n}/${results.length} PASS ====`);

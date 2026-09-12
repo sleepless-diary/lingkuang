@@ -623,6 +623,11 @@ body {
 .lk-enter-stagger > *:nth-child(4) { animation-delay: 300ms; }
 .lk-enter-stagger > *:nth-child(5) { animation-delay: 400ms; }
 .lk-enter-stagger > *:nth-child(n+6) { animation-delay: 500ms; }
+/* 自带子级错峰的容器（灵感触发器的卡片区 #insp-result）：**父级不许给它整块淡入**。
+   整块 opacity 会把里面每一张卡自己的错峰洗掉 —— 与前面「openTool 不再 enter(host)」同一个理由，
+   只是下沉一层。cascadeIn() 在 JS 侧跳过它的行内延迟，动画由这一条压掉。
+   特异性 (0,2,0) 高于上面的 `> *` 与降级块里的 `> *:nth-child(n)`，所以减少动效下同样不播。 */
+.lk-enter-stagger > .lk-own-cascade { animation: none; }
 /* 减少动效：错峰归零 + 入场降级为纯淡入（DESIGN.md:159）。
    选择器要与上面同特异性（`> *:nth-child(n)` 对 `> *:nth-child(2)`）并且**排在后面**才压得住。 */
 @media (prefers-reduced-motion: reduce) {
