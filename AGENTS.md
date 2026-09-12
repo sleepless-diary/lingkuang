@@ -29,6 +29,14 @@
 ## 测试后门
 
 - 环境变量 `LINGKUANG_TEST_DATA=<文件路径>` → 数据读写走该文件，不碰 `%APPDATA%\lingkuang\worldbuilding.json`
+- 环境变量 `LINGKUANG_VAULT=<目录>` → vault 指向该目录（配合上一条，测试完全不碰真实数据）
+- 环境变量 `LINGKUANG_TEST_WINDOW_POS="1920,0"` → 窗口开在指定位置（多屏时开在副屏做验证，主屏不受扰）
+- 环境变量 `LINGKUANG_TEST_WINDOW_SIZE="1180,780"` → 指定窗口尺寸
+- 环境变量 `LINGKUANG_TEST_WINDOW_NOFOCUS=1` → 不抢焦点（`showInactive`）
+- 自动化验证走 CDP：`Start-Process electron.exe -ArgumentList @($proj,'--remote-debugging-port=9333')`
+  ——用 `Start-Process` 起进程，**别用 Node 的 `child_process` 捕获输出**（管道 stdio 会被沙箱拦成
+  `spawn EPERM`）；再用 Node 内置 `fetch` + 内置 `WebSocket` 连 `webSocketDebuggerUrl`，
+  做 `Runtime.evaluate` 取 DOM 实测值 / `Page.captureScreenshot` 截图。
 
 ## 风格约定
 

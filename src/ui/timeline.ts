@@ -246,6 +246,10 @@ export function mountTimeline(
     let pathSvg = '';
     let defsSvg = '';
     let idx = 0;
+    /* 弧线形状系数：末端切线角度 = atan(CURVE_DY / CURVE_DX) ≈ 32°，与跨距无关，
+       也是端点贴圆点边缘时用的到达角（两者必须同源，否则贴边方向与弧线切线不连续） */
+    const CURVE_DX = 0.4, CURVE_DY = 0.25;
+    const RIM_ANGLE = Math.atan2(CURVE_DY, CURVE_DX);
     const svgRect = causesSvg.getBoundingClientRect();
     const nodeCenter = (id: string): { x: number; y: number; r: number } | null => {
       const el = track.querySelector(`[data-id="${id}"]`) as HTMLElement | null;
@@ -259,18 +263,25 @@ export function mountTimeline(
         if (!byId.get(cid)) continue;
         const a = nodeCenter(n.id), b = nodeCenter(cid);
         if (!a || !b) continue;
-        const dx = Math.abs(b.x - a.x);
         const dir = b.x >= a.x ? 1 : -1;
-        /* 端点贴圆点外缘；两圆点重叠时退回固定 5px 间距，避免弧线退化成零长线段 */
-        const inset = dx >= a.r + b.r ? Math.min(a.r, b.r) : -5;
-        const x1 = a.x + dir * inset, y1 = a.y;
-        const x2 = b.x - dir * inset, y2 = b.y;
-        const seg = Math.abs(x2 - x1);
-        /* 控制点随间距缩放：cdx < seg/2 不回旋。cdy 按跨距成比例（幂等于末端切线角度
-           = cdy/cdx ≈ 32° 恒定），端点因此始终以可见角度接近圆点——旧版把 cdy clamp 在
+        /* 端点落在圆点边缘、且**沿弧线自身的到达方向**（θ≈32°），而不是取水平极点：
+           两个节点都落在轴线上，取水平极点会让尖端正好压在轴线上，看起来"连在线上"而不是
+           连在节点上。沿切线方向贴边后，尖端落在圆周上、比圆心高 r·sinθ，明显离开轴线。
+           两圆点重叠到贴边量互相越过时，退回水平极点 + 2px 间距，避免弧线自交/退化。 */
+        const cth = Math.cos(RIM_ANGLE), sth = Math.sin(RIM_ANGLE);
+        let x1 = a.x + dir * a.r * cth, y1 = a.y - a.r * sth;
+        let x2 = b.x - dir * b.r * cth, y2 = b.y - b.r * sth;
+        let seg = Math.abs(x2 - x1);
+        if ((x2 - x1) * dir <= 0) {
+          x1 = a.x + dir * 2; y1 = a.y;
+          x2 = b.x - dir * 2; y2 = b.y;
+          seg = Math.abs(x2 - x1);
+        }
+        /* 控制点随间距缩放：cdx < seg/2 不回旋。cdy 按跨距成比例（于是末端切线角度
+           = cdy/cdx = RIM_ANGLE 恒定），端点因此始终以可见角度接近圆点——旧版把 cdy clamp 在
            绝对值 26px，跨距 >104px 后弧高就固定不变，缩放越大弧线越平、末端贴着轴线滑过去，
            看起来像没接到点上。上限取画布高度一半，避免跨距极大时弧线冲出画布 */
-        const cdx = seg * 0.4, cdy = Math.min(seg * 0.25, track.clientHeight * 0.5);
+        const cdx = seg * CURVE_DX, cdy = Math.min(seg * CURVE_DY, track.clientHeight * 0.5);
         /* 联动：箭头/线宽/不透明度随间距 */
         const mSize = Math.max(3, Math.min(6, seg * 0.04));      /* 箭头大小（调细为 1/3） */
         const width = Math.max(0.8, Math.min(1.6, seg * 0.006));  /* 线宽（更细） */

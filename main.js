@@ -256,9 +256,21 @@ function cleanupStaleVaultFiles() {
 }
 
 function createWindow() {
+  /* 测试后门（与 LINGKUANG_TEST_DATA 同性质，只认环境变量、不影响正常启动）：
+     LINGKUANG_TEST_WINDOW_POS="1920,0"  把窗口开在指定屏幕/位置（如在副屏做验证，主屏不受扰）
+     LINGKUANG_TEST_WINDOW_SIZE="1100,700" 指定窗口尺寸
+     LINGKUANG_TEST_WINDOW_NOFOCUS=1       不抢焦点（showInactive，主屏看视频时不被切走） */
+  const parsePair = (s) => String(s || '').split(',').map((v) => parseInt(v, 10));
+  const pos = parsePair(process.env.LINGKUANG_TEST_WINDOW_POS);
+  const size = parsePair(process.env.LINGKUANG_TEST_WINDOW_SIZE);
+  const hasPos = pos.length === 2 && pos.every(Number.isFinite);
+  const hasSize = size.length === 2 && size.every(Number.isFinite);
+  const noFocus = !!process.env.LINGKUANG_TEST_WINDOW_NOFOCUS;
   const win = new BrowserWindow({
-    width: 1440,
-    height: 900,
+    width: hasSize ? size[0] : 1440,
+    height: hasSize ? size[1] : 900,
+    ...(hasPos ? { x: pos[0], y: pos[1] } : {}),
+    ...(noFocus ? { show: false } : {}),
     minWidth: 960,
     minHeight: 600,
     backgroundColor: '#c5c2ba',
@@ -271,6 +283,7 @@ function createWindow() {
     }
   });
   mainWin = win;
+  if (noFocus) win.showInactive();
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
