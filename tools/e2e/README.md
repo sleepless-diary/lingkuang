@@ -55,6 +55,10 @@ cwd 与环境变量不跨调用保留 —— 环境变量要和命令写在同�
 | `reset-entity-vault.cjs` | 前置清理：测试世界实体清空 + 删 `_设定` / `.trash`（不清理的话上一轮残留会被回扫捞回来） |
 | `seed-json-only-entity.cjs` | 前置：造「升级前就存在的 JSON-only 实体」（实体只在 JSON 里，vault 里没有 `_设定`） |
 | `startup-materialize-entity.cjs` | 启动补写：不点任何东西，实体应当自己写成文件（`writeAll` 只在有改动时才跑，靠启动这一趟兜底） |
+| `seed-node.cjs` | 前置：给测试世界播一个时间线节点（含种类模板 `formats.json`）+ 一条**有正文的实体**（用来测跨页签不串文档） |
+| `codex-node-tab.cjs` | 设定库「时间线节点」页签：四级树 → 公共属性面板固定行 → 改描述/正文落到节点的 `.md` → 搜索 → 跨页签不串文档 |
+| `editor-props-panel.cjs` | 编辑器侧的共享面板守卫：固定行齐全、时间是 scrub、描述是 textarea、**提交后面板不重建**（元素身份不变） |
+| `codex-switch-target.cjs` | 不变量：换条目不能把上一条的正文写进下一条（按 `.md` 文件断言正文归属；走「不失焦就切」的危险路径） |
 
 启动补写那条单独跑一次：
 
@@ -62,4 +66,17 @@ cwd 与环境变量不跨调用保留 —— 环境变量要和命令写在同�
 node tools\e2e\seed-json-only-entity.cjs     # 播种 JSON-only 实体
 # 起应用（同上面的 Start-Process）
 node tools\e2e\startup-materialize-entity.cjs
+```
+
+设定库工作台那两条（节点页签 + 编辑器共享面板）跑一次：
+
+```powershell
+node tools\e2e\reset-entity-vault.cjs
+node tools\e2e\seed-node.cjs                 # 播节点 + 种类模板 + 一条有正文的实体
+# 起应用（同上面的 Start-Process）
+node tools\e2e\codex-node-tab.cjs            # 15 项
+node tools\e2e\editor-props-panel.cjs        # 9 项（同一个实例直接接着跑即可）
+
+# 另一轮：换条目串不串正文（先 reset，不用 seed）
+node tools\e2e\codex-switch-target.cjs       # 7 项
 ```

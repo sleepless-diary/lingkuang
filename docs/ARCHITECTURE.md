@@ -31,7 +31,8 @@
 | `src/ui/timeline.ts` | 世界沙盘时间线（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针） |
 | `src/ui/inspire.ts` | 灵感触发器（随机角色生成 + 词义联想入口） |
 | `src/ui/assoc.ts` | 词义联想无限画布（力导向 + 单线聚焦） |
-| `src/ui/editor.ts` | 编辑器（tiptap，左侧 sidebar 时间线/实体 tab，右侧文稿编辑） |
+| `src/ui/editor.ts` | 编辑器（tiptap，左侧 sidebar 时间线/实体 tab，右侧文稿编辑）。属性面板**不在这个文件里**了 —— 见 `src/ui/props-panel.ts` |
+| `src/ui/props-panel.ts` | **公共属性面板**（节点与实体共用**同一份**「改字段」实现，编辑器和设定库都调它）：`createPropsPanel({ store, host, status?, getTarget, patchTarget })` → `{ render(node, isEntity?), hide() }`；`PropsTarget` 是两边共用的身份联合类型。内含 AE 式 scrub（`createScrubField`）与历法推进的时间控件。⚠️ 面板构建后**刻意不重渲染**（避免销毁拖拽中的 scrub 控件），所以提交要走 `patchTarget`（从 store 取最新 properties 再合并） |
 | `src/ui/ai-workbench.ts` / `roleplay.ts` / `tavern.ts` | AI 工作台 / 角色扮演 / 酒馆剧情推演 |
 | `src/ui/map.ts` | 手绘矢量地图（区域 + 标记） |
 | `src/ui/detail.ts` / `node-form.ts` | 节点详情 / 新建节点表单（详情面板里的「模板字段」区按节点种类渲染该种类的结构化字段，直接可填） |
@@ -42,7 +43,7 @@
 | `src/ui/backup.ts` | 备份管理面板（世界观数据 / 角色词库的备份列表、恢复、导出、导入）。恢复要走「禁写 → 覆盖 → 重载」，见 §4 落盘保护 |
 | `src/ui/keys.ts` / `html.ts` | `isImeEnter(e)`（中文输入法回车守卫）/ `escapeHtml(s)`（外部文本进 innerHTML 前必过） |
 | `src/ui/schema.ts` | **结构体管理**面板（两个分区：**节点种类** / **实体类型**）。保存 → 节点种类写 `formats`（`formats.json`）或实体类型写 `worldsets[active].entityTypes` → 派发 `lingkuang-formats-changed`，由 `src/main.ts` 的 `ensureAllFormatFields` / `ensureEntityLayer` 补空值、清模板外的字段 |
-| `src/ui/codex.ts` | **设定库**面板（实体档案：类型筛选 + 实体列表 + 档案卡 + **正文真编辑器**）。字段用 `src/ui/fields.ts` 的公共控件、正文用 `src/ui/doc-editor.ts` |
+| `src/ui/codex.ts` | **设定库 = 工作台**（合并方案 A 第 3 步）：左列「实体」/「时间线节点」双页签 + 搜索框（节点是 世界→时间线→种类→节点 四级树，搜索时摊平成列表）、中栏档案字段、右栏正文编辑器。节点中栏用 `src/ui/props-panel.ts`（与编辑器同一份）、实体用 `src/ui/fields.ts`、正文用 `src/ui/doc-editor.ts`。⚠️ 换条目必须走 `switchTarget()`（先 flush 再改选择），正文写回**创建时捕获的目标** |
 | `src/ui/fields.ts` | 模板字段控件的**公共渲染**（`fieldRow(field, value, onChange, labelWidth)` / `parseFieldInput` / `formatFieldValue`），按模板声明的类型决定形态。约定：只在 `change`（失焦/回车）提交 |
 | `src/ui/doc-editor.ts` | 极简文稿编辑器（tiptap，与 `editor.ts` 同一套扩展）：`createDocEditor(el, onFlush)` → `{ setDoc, getDoc, flush, dispose }`。⚠️ 切条目必须 flush 再 dispose |
 | `src/store/entities.ts` | 实体层基础：`BUILTIN_ENTITY_TYPES`（角色/地点/物品/组织/种族）、`ensureEntityTypes`（世界没有类型时**播种一次**）、`ensureEntityFields`（按类型补字段）、`entityTypeOf` |
