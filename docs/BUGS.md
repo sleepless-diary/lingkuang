@@ -37,7 +37,7 @@
   （与 `removeNode` 同理：只从 store 删、不清文件的话，下次重扫会把它从文件里拉回来）；
   `applyTrashRestore` 加 `kind === 'entity'` 分支。
 
-### 本轮修掉的 4 条缺陷（都是这一刀自己带出来的）
+### 本轮修掉的 5 条缺陷（都是这一刀自己带出来的）
 1. **`src/main.ts` 实体写盘循环嵌错了层**：循环被嵌在「世界循环」内部 ⇒ W 个世界把全世界的实体各写一遍
    = **W² 次 IPC 写盘 + W² 轮 vault 监听回调**。已挪到世界循环**之外**。
 2. **换类型后旧 `.md` 残留，类型改不回去**：`writeVaultEntitySync` 原来只清**目标目录**里同 id 的旧文件，
@@ -49,6 +49,12 @@
    但 entry 只写 `kind/relPath/trashName/ts/title/world/timeline/nodeId` ⇒ 恢复时 `rec.type` 取不到。
    已补登记 `type` / `entityId`，`kind` 注释改为 `node | timeline | world | entity`。
 4. **`src/ui/trash.ts:42 KIND_LABEL` 缺 `entity`** ⇒ 回收站里实体项显示成 raw 值「entity」。已补「实体」。
+5. **升级前就存在的实体永远不会变成文件**：`writeAll` 只由 store 订阅触发（改动后 400ms 防抖），
+   所以启动后不碰任何东西时，`_设定/` 根本不会被创建 —— 而这条链路的目的正是「实体在 Obsidian 里
+   看得到」，用户升级后打开应用只会觉得「没生效」。（真实数据上实测复现：实体在设定库里，
+   vault 里却没有 `_设定/`。）已抽出 `writeAllEntities()` 并在 `renderShell()` 之后、
+   `vaultWatch()` 之前补跑一次 —— **只写实体、不写节点**（节点 `.md` 可能是手写手工排版的，
+   每次启动回写会把它们整体归一化；放在 `vaultWatch()` 之前也是为了让自家写盘不被当成「外部改动」）。
 
 ### 实测（真实 Electron + CDP 9334，`LINGKUANG_TEST_DATA` / `LINGKUANG_VAULT` 隔离真实数据）**17/17 PASS**
 建实体 → 改名字/填字段/写正文 → `_设定/角色/银发少女.md`（frontmatter 的 id/name/type/字段齐全 + `#正文：`）→
@@ -56,6 +62,11 @@
 旧目录清空、再触发一轮回扫类型**仍是「地点」** → 删除后文件进回收站、重扫**不复活** →
 回收站里显示中文「实体」→ 恢复后文件回原位、实体回 store、正文还在 → 全程无未捕获异常。
 另做**冷启动**复验：重启后实体类型仍是「地点」、文件仍在 `_设定/地点/`。
+启动补写单独一个用例（`tools/e2e/startup-materialize-entity.cjs`，先 `seed-json-only-entity.cjs` 播种）
+**6/6 PASS**：造一个只在 JSON 里、vault 里没有 `_设定` 的实体 → 启动后**不点任何东西**它自己写出文件 →
+字段值与正文都搬进文件 → 回扫不弹「外部改动」也不把类型打回 → 文件不会写成第二份。
+并在**真实数据**上验了一遍（`%APPDATA%\lingkuang\worldbuilding.json` + `F:\lingkuang-vault`，先整份备份）：
+启动后实体补写成 `_设定/角色/新实体.md`、7 个节点 `.md` 一个没少、无未捕获异常、无提示噪音。
 
 > **排查教训（重要，别重犯）**：验证「外部改 .md 有没有生效」**必须读活 UI**，不能读 `worldbuilding.json`
 > —— 回扫路径按设计 `suppressWrite = true`，**只进内存不回写 JSON**（文件为源，JSON 只是缓存，

@@ -197,6 +197,9 @@
     旧类型反而可能胜出 ⇒ **类型改不回去**）。节点侧换 kind 目前仍有同样的残留问题。
   - `src/main.ts` 的 `mergeEntities(byType, baseEntities)` 把扫描结果摊平成 `{ id: Entity }` 并带 `typeId`；
     **例外**：这个世界在 vault 里还没有 `_设定` 目录时保留 `base` 的实体，别把升级前 JSON-only 的实体整批抹掉。
+  - **启动时要补写一趟实体**（`writeAllEntities()`，在 `renderShell()` 之后、`vaultWatch()` 之前）：
+    `writeAll` 只由 store 订阅触发，光靠它的话「升级前就存在的实体」要等用户碰一下才会变成文件。
+    只写实体不写节点 —— 节点 `.md` 可能是手写手工排版的，每次启动回写会把它们整体归一化。
 
 ## 5. 脚手架
 

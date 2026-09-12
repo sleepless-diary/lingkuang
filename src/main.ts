@@ -293,6 +293,18 @@ async function main() {
   window.addEventListener('lingkuang-formats-changed', () => {
     try { ensureAllFormatFields(store); ensureEntityLayer(store); } catch (e) { console.error('[lingkuang] 模板变更后补全失败：', e); }
   });
+  /** 把所有世界的实体写成 vault 的 .md（`<世界>/_设定/<类型id>/<名字>.md`），Obsidian 才能看/改。
+   *  ⚠️ 循环必须在**世界循环之外**（不能塞进上面写节点的那个循环里）：否则每个世界都会把
+   *  全世界的实体各写一遍 —— W 个世界 = W² 次 IPC 写盘 + W² 轮 vault 监听回调，多世界时明显卡。 */
+  async function writeAllEntities(): Promise<void> {
+    const api = (window as any).lingkuangAPI;
+    if (!api?.vaultWriteEntity) return;
+    for (const [wsName, ws] of Object.entries(store.data.worldsets)) {
+      for (const e of Object.values((ws.entities ?? {}))) {
+        try { await api.vaultWriteEntity(wsName, (e as any).typeId, e); } catch (err) { /* 单实体失败忽略 */ }
+      }
+    }
+  }
   async function writeAll(): Promise<void> {
     const api = (window as any).lingkuangAPI;
     if (!api) return;
@@ -309,16 +321,7 @@ async function main() {
         }
       }
     }
-    /* 实体也写 .md（<世界>/_设定/<类型id>/<名字>.md）—— 文件放在这里，Obsidian 才能看/改。
-       ⚠️ 这一趟必须在**世界循环之外**：放进循环里会让每个世界都把全世界的实体各写一遍
-       （W 个世界 = W² 次 IPC 写盘 + W² 轮 vault 监听回调），10 个世界时自动落盘会明显卡。 */
-    if (api.vaultWriteEntity) {
-      for (const [wsName, ws] of Object.entries(store.data.worldsets)) {
-        for (const e of Object.values((ws.entities ?? {}))) {
-          try { await api.vaultWriteEntity(wsName, (e as any).typeId, e); } catch (err) { /* 单实体失败忽略 */ }
-        }
-      }
-    }
+    await writeAllEntities();
     /* ② 写 JSON 缓存（保留旧流程，作备份；formats 由独立 formats.json 管，不写进这里） */
     if (api.saveData) { const { formats: _fmt, ...rest } = store.data; api.saveData(rest); }
   }
@@ -360,6 +363,13 @@ async function main() {
   ensureEntityLayer(store);
   const host = document.getElementById('app')!;
   renderShell(store, host);
+
+  /* 启动时补写一遍实体（**只写实体、不写节点**）：writeAll 只在「store 有改动」时才触发，
+     于是升级前就存在的 JSON-only 实体要等用户碰它一下才会变成文件 —— 而这条链路的目的
+     正是「实体在 Obsidian 里看得到」，首次启动就该看得到。
+     不写节点是有意的：节点 .md 可能是手写/手工排版的，每次启动回写会把它们整体归一化一遍。
+     放在 vaultWatch() 之前，免得我们自己的写盘刚布下 watcher 就被它当成「外部改动」。 */
+  void writeAllEntities();
 
   /* 同步刷新：监听外部 Obsidian 改 vault .md → 重新 scan → 替换 store（文件为源，不写回） */
   const api = (window as any).lingkuangAPI;

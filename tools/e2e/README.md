@@ -53,3 +53,13 @@ cwd 与环境变量不跨调用保留 —— 环境变量要和命令写在同�
 | `entity-vault.cjs` | 实体（设定库）落 vault `.md` 的全链路：落盘 → `_设定` 不算时间线 → 外部改字段/正文回扫 → 换类型不残留旧文件且回扫不被打回 → 删除进回收站不复活 → 回收站恢复回 store 与原位 |
 | `cold-start-entity-vault.cjs` | 重启后实体类型与文件位置是否保持（换类型那条缺陷的最终症状） |
 | `reset-entity-vault.cjs` | 前置清理：测试世界实体清空 + 删 `_设定` / `.trash`（不清理的话上一轮残留会被回扫捞回来） |
+| `seed-json-only-entity.cjs` | 前置：造「升级前就存在的 JSON-only 实体」（实体只在 JSON 里，vault 里没有 `_设定`） |
+| `startup-materialize-entity.cjs` | 启动补写：不点任何东西，实体应当自己写成文件（`writeAll` 只在有改动时才跑，靠启动这一趟兜底） |
+
+启动补写那条单独跑一次：
+
+```powershell
+node tools\e2e\seed-json-only-entity.cjs     # 播种 JSON-only 实体
+# 起应用（同上面的 Start-Process）
+node tools\e2e\startup-materialize-entity.cjs
+```
