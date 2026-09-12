@@ -76,8 +76,11 @@ cwd 与环境变量不跨调用保留 —— 环境变量要和命令写在同�
 | `seed-corrupt-data.cjs` | 前置：造出「截断的 `worldbuilding.json` + 空 vault」（= `docs/BUGS.md` 记的那条数据损失场景；**空 vault 是关键**，否则 vault 会兜住） |
 | `data-corrupt-guard.cjs` | 判损护栏 16 项：截断文件启动后**原文件逐字节未被覆盖** + 副本隔离 + 重读过（`attempts>1`）+ `data:save` 被拒且标明 `locked` + 壳级横幅两条出口 + 点「继续用新数据」解锁并自愈 + 中途补全的文件被重读捞回 |
 | `data-load-clean.cjs` | 误报守卫 6 项：**干净**数据启动时护栏一步都不该动（`attempts===1`、无横幅、无副本、写盘照常） |
-| `seed-motion.cjs` | 前置：给动效套件造确定起点 —— **两条时间线**（页签错峰至少要两个 tab）+ 各一个节点 + 一个实体。独立目录（`%TEMP%\lk-motion`），免得给别的套件留下额外时间线 |
-| `motion-switch.cjs` | 动效（切换类）13 项：切工具/开面板/回沙盘/页签错峰/弹窗 各自**读 `getAnimations()` 断言动画真在跑**（animationName + 时长 + `playState`，在点击的同一个同步块里读）+ 收尾不残留（opacity=1 / transform=none）+ **减少动效降级**（`Emulation.setEmulatedMedia` 翻 `prefers-reduced-motion`：时长降到 160ms、动画名降级 `lk-fade`、错峰延迟全 0）+ 功能回归（点第二个时间线页签真的切过去了） |
+| `seed-motion.cjs` | 前置：给动效套件造确定起点 —— **两条时间线**（页签错峰至少要两个 tab，**第二条故意 0 节点、vault 里没有目录**，顺带守着「空时间线不被 vault 重建抹掉」那条修复）+ 各一个节点 + 一个实体。独立目录（`%TEMP%\lk-motion`），免得给别的套件留下额外时间线 |
+| `motion-switch.cjs` | 动效（切换类）14 项：切工具/开面板/回沙盘/页签错峰/弹窗/设定库换页签 各自**读 `getAnimations()` 断言动画真在跑**（name + 时长 + 延迟 + `playState`，在点击的同一个同步块里读）→ **强制出帧验推进**（`currentTime > 0`）→ **`finish()` 验终态不残留**（opacity=1 / transform=none）+ **减少动效降级**（`Emulation.setEmulatedMedia` 翻 `prefers-reduced-motion`：入场 200ms、动画名降级 `lk-fade`、错峰延迟全 0）+ 功能回归（点第二个时间线页签真的切过去了）。⚠️ 断言**不依赖墙钟**，原因见铁律 6 |
+| `seed-empty-timeline.cjs` | 前置：三条时间线 —— 主线(1 节点)、**支线(0 节点，故意不建目录)**、副线(1 节点)；vault 里只有主线与副线的目录 |
+| `timeline-persist.cjs` | 空时间线不该被 vault 重建抹掉 8 项：启动后三条页签都在 → 空时间线能选中 → 点＋新建（直接建、默认名「新时间线」）→ **落盘后空时间线还在文件里** → 回扫后仍在 → **外部删掉主线目录后主线消失且不复活** → 副线与两条空时间线都没被牵连 |
+| `cold-start-empty-timeline.cjs` | 重启复验 3 项（承接 `timeline-persist.cjs` 的收尾状态）：两条空时间线仍在、被外部删目录的主线不复活、盘上文件与界面一致 |
 
 启动补写那条单独跑一次：
 
@@ -144,11 +147,44 @@ $env:LINGKUANG_VAULT="C:\Users\<你>\AppData\Local\Temp\lk-motion\vault"
 
 node tools\e2e\seed-motion.cjs                # 2 条时间线（各 1 节点）+ 1 个实体
 # 起应用（同上面的 Start-Process）
-node tools\e2e\motion-switch.cjs              # 13 项
+node tools\e2e\motion-switch.cjs              # 14 项
 ```
 
 ⚠️ 这套件**必须在 `no-preference` 下跑**，脚本自己会先 `Emulation.setEmulatedMedia` 钉死环境
-（系统的「减少动效」偏好会让令牌降级、时长全变 160ms），★11 再翻成 `reduce` 验降级。
+（系统的「减少动效」偏好会让令牌降级、时长全变），★12 再翻成 `reduce` 验降级。
+
+## 铁律 6：**隐藏窗口里 CSS 动画不推进** —— 动效断言不能靠墙钟
+
+测试实例用 `LINGKUANG_TEST_WINDOW_NOFOCUS=1`（`showInactive`）起，渲染进程的
+`document.visibilityState` 是 **`hidden`**。此时 CSS 动画**不会推进**：
+`getAnimations()` 里 `playState` 是 `running`，但 `currentTime` 永远是 0、`getComputedStyle` 停在
+动画起点（opacity 0 / translateY 8px）。实测采样 2.4 秒 12 次，`currentTime` 纹丝不动。
+
+后果：「点一下 → `sleep(700)` → 断言 opacity=1」这种写法**天然不可靠** —— 绝大多数时候红，
+偶尔被某个操作（比如 `Page.captureScreenshot`）强制出帧推进了动画，就变成绿 ⇒ 随机挂。
+（本次就是这样：同一套件两次跑，同一个断言一次 `opacity: 1`、一次 `opacity: 0`。）
+
+正确姿势（`motion-switch.cjs` 就是这么写的）：
+1. **参数**：在点击的**同一个同步块**里读 `getAnimations()` 的 name / 时长 / 延迟 / `playState`；
+2. **真的会动**：`Page.captureScreenshot`（jpeg quality 10 即可）连打几帧，再看 `currentTime > 0`
+   —— 这一步才证明"动画在跑"，只读 `playState` 证明不了；
+3. **终态**：`el.getAnimations().forEach(a => a.finish())` 把动画推到结尾，再读计算样式
+   （必须回到 `opacity: 1` + `transform: none`）。这比"等一会儿"更确定，而且正好覆盖
+   「动画停在起点/中途」这类真缺陷。
+
+## 空时间线那条（数据损失修复的守卫）
+
+```powershell
+$env:LINGKUANG_TEST_DATA="C:\Users\<你>\AppData\Local\Temp\lk-tl\worldbuilding.json"
+$env:LINGKUANG_VAULT="C:\Users\<你>\AppData\Local\Temp\lk-tl\vault"
+
+node tools\e2e\seed-empty-timeline.cjs         # 主线(1 节点) / 支线(0 节点，无目录) / 副线(1 节点)
+# 起应用
+node tools\e2e\timeline-persist.cjs            # 8 项（最后会从外部删掉主线的目录）
+
+# 重启应用
+node tools\e2e\cold-start-empty-timeline.cjs   # 3 项：空时间线仍在、被外部删掉的主线不复活
+```
 
 ## 铁律 5：**别把播种脚本接进 `Select-Object -First N`**
 

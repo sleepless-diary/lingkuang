@@ -27,6 +27,9 @@
   --motion-fast: 180ms;
   --motion-base: 320ms;
   --motion-slow: 640ms;
+  /* 入场时长单列一档：设计系统只给了 base(320)/slow(640)，而 DESIGN.md:157 的 Waking fade 用的正是
+     640ms。用户 2026-09-12 的体感反馈是「稍微慢一点」，故取两者之间（480ms）：比 640 轻、比 320 稳。 */
+  --motion-enter: 480ms;
   --ease-standard: cubic-bezier(0.22, 0.75, 0.25, 1);
   --border-strong: #6f6d66;
   --radius-pill: 999px;
@@ -593,22 +596,31 @@ body {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.lk-enter { animation: lk-wake var(--motion-base) var(--ease-standard) both; }
-.lk-fade-in { animation: lk-fade var(--motion-base) var(--ease-standard) both; }
-.lk-reveal-x { animation: lk-reveal-x var(--motion-base) var(--ease-standard) both; }
-.lk-pop-in { animation: lk-pop var(--motion-base) var(--ease-standard) both; }
+.lk-enter { animation: lk-wake var(--motion-enter) var(--ease-standard) both; }
+.lk-fade-in { animation: lk-fade var(--motion-enter) var(--ease-standard) both; }
+.lk-reveal-x { animation: lk-reveal-x var(--motion-enter) var(--ease-standard) both; }
+.lk-pop-in { animation: lk-pop var(--motion-enter) var(--ease-standard) both; }
 /* 弹层遮罩比卡片快：遮罩是 chrome，卡片才是内容 */
 .lk-overlay-in { animation: lk-fade var(--motion-fast) linear both; }
-/* 错峰容器：类留在容器上，新插入的子项自动获得入场（延迟由 motion.ts 注入 --lk-delay） */
-.lk-enter-stagger > * {
-  animation: lk-wake var(--motion-base) var(--ease-standard) both;
-  animation-delay: var(--lk-delay, 0ms);
-}
-/* 减少动效：错峰归零 + 入场降级为纯淡入（DESIGN.md:159）。行内 --lk-delay 由 motion.ts 跳过注入。 */
+/* 错峰容器：类留在容器上，子项一个个依次浮现。
+   延迟**不靠 JS 注入**，而是按子项序号写在这儿 —— 因为工具是动态 import 的，子项常常在
+   JS 调 staggerIn 之后才被建出来，遍历当时不存在的元素是注入不进去的；按序号给则天然覆盖后插入的项。
+   第 8 项之后不再增加（长列表错峰无上限会让最后一项等一两秒，看着像卡了）。 */
+.lk-enter-stagger > * { animation: lk-wake var(--motion-enter) var(--ease-standard) both; }
+.lk-enter-stagger > *:nth-child(1) { animation-delay: 0ms; }
+.lk-enter-stagger > *:nth-child(2) { animation-delay: 80ms; }
+.lk-enter-stagger > *:nth-child(3) { animation-delay: 160ms; }
+.lk-enter-stagger > *:nth-child(4) { animation-delay: 240ms; }
+.lk-enter-stagger > *:nth-child(5) { animation-delay: 320ms; }
+.lk-enter-stagger > *:nth-child(6) { animation-delay: 400ms; }
+.lk-enter-stagger > *:nth-child(7) { animation-delay: 480ms; }
+.lk-enter-stagger > *:nth-child(n+8) { animation-delay: 560ms; }
+/* 减少动效：错峰归零 + 入场降级为纯淡入（DESIGN.md:159）。
+   选择器要与上面同特异性（`> *:nth-child(n)` 对 `> *:nth-child(2)`）并且**排在后面**才压得住。 */
 @media (prefers-reduced-motion: reduce) {
   /* 令牌降级：与 design-system/tokens.css:139-145 同值（本文件不 import tokens.css，复写一份） */
-  :root { --motion-fast: 120ms; --motion-base: 160ms; --motion-slow: 200ms; }
-  .lk-enter-stagger > * { animation-delay: 0ms; }
+  :root { --motion-fast: 120ms; --motion-base: 160ms; --motion-slow: 200ms; --motion-enter: 200ms; }
+  .lk-enter-stagger > *:nth-child(n) { animation-delay: 0ms; }
   .lk-enter, .lk-enter-stagger > *, .lk-pop-in, .lk-reveal-x { animation-name: lk-fade; }
 }
 

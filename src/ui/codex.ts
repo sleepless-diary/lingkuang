@@ -24,7 +24,7 @@ import { escapeHtml } from './html';
 import { fieldRow } from './fields';
 import { createDocEditor, type DocEditor } from './doc-editor';
 import { createPropsPanel, type PropsPanel } from './props-panel';
-import { enter } from './motion';
+import { staggerIn } from './motion';
 
 const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;font-family:inherit;user-select:text;';
 
@@ -234,11 +234,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
 
     renderList();
 
-    /* 切换才播入场（见 pendingEnter 的说明）。动画挂在 #cx-root 上：它是这一整块内容的外框，
-       换条目/换页签时淡入上浮一次；store 订阅触发的重建不播，避免改个字段就整块闪一下。 */
+    /* 切换才播入场（见 pendingEnter 的说明）。挂在 #cx-root 上，但用**错峰**而不是整块淡入：
+       标题行 → 页签行 → 三栏主体 → 提示行依次浮现（延迟按序号由 CSS 给），
+       换条目/换页签时看得出"换了一块"，而 store 订阅触发的重建仍然不播，避免改个字段就闪。 */
     if (pendingEnter) {
       pendingEnter = false;
-      enter(host.querySelector<HTMLElement>('#cx-root'));
+      staggerIn(host.querySelector<HTMLElement>('#cx-root'));
     }
 
     /* ── 事件 ── */

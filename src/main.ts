@@ -142,8 +142,24 @@ function vaultToWorldData(
         /* 自定义历法只存在 JSON 里，丢了就等于世界观的时间体系被重置 */
         ...(prev?.calendar ? { calendar: prev.calendar } : {}),
       };
-      order.push(id);
     }
+    /* **空时间线必须保留**：vault 里「一条时间线 = 一个目录」，而还没放节点的时间线**没有目录**
+       ⇒ 上面那趟按 vault 重建会把它整条丢掉。症状：新建一条时间线，重启（或任何一次 vault 回扫）
+       后它从界面上消失；而时间线级的 `absOffset` / `loops` / `storylines` / `calendar` **只有 JSON
+       一份**（重建时靠 `prev?.` 从 base 抄回来），所以它的循环与剧情线会一起消失，紧接着被
+       `writeAll` 写成永久丢失（实测：播两条时间线、其中一条 0 节点 → 起应用后页签栏只剩一条）。
+       判据与上面 `entities` 的例外同构，但**不能**只看「扫不到目录」，否则外部删目录会"删不掉"：
+         · base 里该时间线**本身就是 0 节点** ⇒ 纯 JSON 容器，保留；
+         · base 里有节点却扫不到目录 ⇒ 用户从外部（Obsidian）删了整个目录 ⇒ 继续按「文件为源」丢掉。 */
+    for (const [id, prev] of Object.entries(baseWs?.timelines ?? {}) as [string, any][]) {
+      if (timelines[id] || (prev?.nodes?.length ?? 0) > 0) continue;
+      timelines[id] = prev;
+    }
+    /* 页签次序以 base 的 `order` 为准（原来直接用 vault 的 readdir 顺序，重启后次序可能变，
+       而保留下来的空时间线也必须留在它原来的位置上）；vault 里新出现的目录（用户在 Obsidian
+       新建的）追加在后面，base 里已经删掉的自动落掉。 */
+    const ordered = ((baseWs?.order ?? []) as string[]).filter((id) => timelines[id]);
+    order.push(...ordered, ...Object.keys(timelines).filter((id) => !ordered.includes(id)));
     /* 先继承 base（JSON 缓存）里的整份世界设定，再用 vault 结果覆写「以 .md 为源」的部分。
        以前只挑 name/timelines/order/docs/timeCursor 重建，把 vault 里**根本不存在**的字段
        全丢了：`maps`（地图的区域/标记/路径）、`entities` / `entityTypes`（实体库）。

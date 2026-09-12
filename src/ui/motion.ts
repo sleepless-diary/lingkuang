@@ -19,14 +19,17 @@
  *       类名没变化时引擎不会重新开始。
  */
 
-/** 用户是否要求减少动效（系统「减少动态效果」/ 无动画偏好）。 */
+/** 用户是否要求减少动效（系统「减少动态效果」/ 无动画偏好）。
+ *  注意：CSS 侧的降级（时长缩短、错峰归零、动画名降级为纯淡入）由 `src/style.css`「动效层」的
+ *  `@media (prefers-reduced-motion: reduce)` 负责，**JS 侧不需要自己判断**。
+ *  留着这个函数是给 JS 驱动的动画用（画布节点移动 / 列表让位那两片要引 Anime.js，媒体查询管不到）。 */
 export function motionReduced(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-/** 重放一次入场动画。默认 `lk-enter` = 淡入 + 上浮 8px（DESIGN.md:157 的 Waking fade），时长 `--motion-base`。
- *  大容器（整个沙盘那种）建议传 `'lk-fade-in'`：只淡入不加 transform —— transform 会让该元素
- *  成为 fixed 子元素的包含块（弹层/右键菜单虽是临时元素，也没必要冒这个险）。 */
+/** 重放一次入场动画。默认 `lk-enter` = 淡入 + 上浮 8px（DESIGN.md:157 的 Waking fade），
+ *  时长 `--motion-enter`。大容器（整个沙盘那种）建议传 `'lk-fade-in'`：只淡入不加 transform
+ *  —— transform 会让该元素成为 fixed 子元素的包含块。 */
 export function enter(el: HTMLElement | null, cls = 'lk-enter'): void {
   if (!el) return;
   el.classList.remove(cls);
@@ -34,22 +37,17 @@ export function enter(el: HTMLElement | null, cls = 'lk-enter'): void {
   el.classList.add(cls);
 }
 
-/** 给容器的子项注入错峰延迟（`--lk-delay`），并挂上 `lk-enter-stagger` 让它们获得入场动画。
+/** 让容器的子项**错峰**入场（每项依次晚一点浮现）。
  *
- *  `sel` 默认直接子项。`step` 是每项间隔（DESIGN.md:157 用 ~40ms），`cap` 是错峰上限
- *  —— 长列表错峰无上限会让最后一项等一两秒（列表越长越像卡了）。
+ *  延迟不在这里算，而是由 CSS 按子项序号给（`.lk-enter-stagger > *:nth-child(n)`，见 style.css）——
+ *  这样有两个好处：① 工具是动态 import 的，子项常常在**这个函数之后**才被建出来，按序号给的延迟
+ *  对新插入的项同样生效（JS 遍历当时不存在的元素是注入不进去的）；② 节奏只有一处可调。
  *
- *  为什么先摘类再重排再加类：延迟是**行内** `--lk-delay`，而子项动画由父类的后代选择器定义。
- *  只改行内值对**已经在跑**的动画无效（动画早已按旧延迟启动）；摘掉父类会让子项动画失效，
- *  重排后再加回来就是全新一次启动，新延迟才生效。 */
-export function staggerIn(container: HTMLElement | null, sel = ':scope > *', step = 40, cap = 12): void {
+ *  先摘类再重排再加类：子项动画由父类的后代选择器定义，摘掉父类＝子项动画失效，重排后加回来
+ *  就是全新一次启动（只加类不会重播）。 */
+export function staggerIn(container: HTMLElement | null): void {
   if (!container) return;
-  const items = Array.from(container.querySelectorAll<HTMLElement>(sel));
   container.classList.remove('lk-enter-stagger');
-  if (!motionReduced()) {
-    /* 减少动效：错峰关掉（延迟是行内值，tokens.css 的媒体查询压不住行内） */
-    items.forEach((el, i) => el.style.setProperty('--lk-delay', `${Math.min(i, cap) * step}ms`));
-  }
   void container.offsetWidth;
   container.classList.add('lk-enter-stagger');
 }

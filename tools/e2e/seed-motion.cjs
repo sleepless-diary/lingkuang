@@ -33,10 +33,10 @@ const data = {
       name: WS,
       timelines: {
         'tl-main': tl('tl-main', '主线', [node('n-motion-1', '王国的建立', 312)]),
-        /* 第二条时间线也放一个节点：**空时间线在 vault 里没有目录**，回扫重建会把它丢掉
-           （vaultToWorldData 只按 vault 目录重建 timelines —— 已单独记档，见 docs/BUGS.md）。
-           动效套件要的是「两个页签」，不该被那条缺陷影响，所以两边都给节点。 */
-        'tl-side': tl('tl-side', '支线', [node('n-motion-2', '雪夜的告别', 315)]),
+        /* 第二条**故意留空**（0 节点）：页签错峰要两个 tab，同时它顺带守着「空时间线不会被
+           vault 重建抹掉」那条修复 —— 空时间线在 vault 里没有目录，一旦回归，本套件的 ★6
+           （要求两个页签）会立刻挂。见 docs/BUGS.md 第二十轮之四。 */
+        'tl-side': tl('tl-side', '支线', []),
       },
       order: ['tl-main', 'tl-side'],
       docs: {},

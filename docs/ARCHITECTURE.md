@@ -223,6 +223,16 @@
     `writeAll` 只由 store 订阅触发，光靠它的话「升级前就存在的实体」要等用户碰一下才会变成文件。
     只写实体不写节点 —— 节点 `.md` 可能是手写手工排版的，每次启动回写会把它们整体归一化。
 
+- **空时间线是纯 JSON 容器（第二十轮）**：vault 里「一条时间线 = 一个目录」，所以
+  `vaultToWorldData` 按 vault 重建 `timelines` 时会丢掉**还没放节点**的时间线（它没有目录）——
+  症状：新建一条时间线，重启或任何一次回扫后它从界面消失；而时间线级的 `absOffset` / `loops` /
+  `storylines` / `calendar` **只有 JSON 一份**（重建时靠 `prev?.` 从 base 抄回来），随之一并消失，
+  紧接着被 `writeAll` 写成永久丢失。**例外判据**（与实体那条同构，但**不能**只看"扫不到"）：
+  `base` 里该时间线**本身就是 0 节点** ⇒ 保留（纯 JSON 容器）；`base` 里有节点却扫不到目录
+  ⇒ 用户从外部删了整个目录 ⇒ 继续按「文件为源」丢掉（反过来会让外部删除"删不掉"、文件被写回来）。
+  页签次序也改为以 `base.order` 为准（原来直接用 vault 的 readdir 顺序，重启后次序可能变，
+  而且保留下来的空时间线必须留在原位）。
+
 - **同 id 只留一份（第十九轮）**：节点的种类、实体的类型**都由文件夹名承载**，所以「换种类/换类型」
   在磁盘上 = 把 `.md` 搬到另一个文件夹，**旧文件夹那份必须删掉**。留着的话回扫是「后来者覆盖」
   （`scanTimelineDir` 的 `nodesById.set(n.id, n)`、`mergeEntities` 的 `out[e.id] = {...}`），
@@ -239,22 +249,27 @@
   同 id 两份并存时赢家随 readdir 顺序而变，断言会假挂（曾把「目录脏」误判成代码改坏 —— 见第十九轮的 A/B）。
 
 ### 动效（`src/ui/motion.ts` + `src/style.css` 末尾「动效层」）
-- **规格源**：`design-system/DESIGN.md` 第 7 节（慢、呼吸感、不 snappy）+ `design-system/tokens.css`
-  第 115-145 行（`--motion-fast 180ms` / `--motion-base 320ms` / `--motion-slow 640ms` /
-  `--ease-standard` + reduced-motion 降级块）。
+- 令牌：`--motion-fast 180ms`（hover / 选中变色，点一下要立刻有反馈）/ `--motion-base 320ms` /
+  `--motion-slow 640ms` / **`--motion-enter 480ms`（入场专用）** / `--ease-standard`。
+  设计系统只给了 base 与 slow，而 `DESIGN.md:157` 的 Waking fade 用的正是 640ms；用户 2026-09-12
+  的体感反馈是「**稍微慢一点，元素弹出要错分一点点时间**」⇒ 入场取两者之间的 480ms，错峰 80ms/项。
   ⚠️ `src/style.css` **不 import tokens.css**，所以它自己那份令牌必须与设计系统同值 ——
   本轮之前是 fast `100ms` / base `160ms`（比设计系统快一倍，正落在 DESIGN.md:182 禁止的
   "snappy developer tool" 档），已对齐；降级块也在 style.css 里复写了一份。
 - **两个 API**：`enter(el, cls = 'lk-enter')` 重放一次入场（摘类 → 强制重排 → 加类；只加类不重播）；
-  `staggerIn(container, sel = ':scope > *', step = 40, cap = 12)` 给子项注入 `--lk-delay`
-  （减少动效时**跳过注入** —— 延迟是行内值，媒体查询压不住它，只能 JS 侧不写）。
+  `staggerIn(container)` 让子项**错峰**入场 —— 延迟**不在 JS 里算**，而是 CSS 按子项序号给
+  （`.lk-enter-stagger > *:nth-child(n)`，80ms/项、第 8 项封顶）：工具是动态 import 的，
+  子项常常在这个函数之后才建出来，JS 遍历当时不存在的元素是注入不进去的；按序号给则天然覆盖。
+  改节奏只改 `src/style.css` 一处。
 - **挂点**：切工具/开面板 = `src/tools/registry.ts` 的 `openTool()`（唯一入口，覆盖工具栏点击与快捷键）；
   回沙盘 = `src/ui/shell.ts`（用 `lk-fade-in`，**不带 transform** —— transform 会让容器变成
   fixed 子元素的包含块）；时间线/世界页签 = `src/ui/shell.ts`（签名没变就早退，拖动不会重放）；
   弹窗 = `src/ui/confirm.ts`（遮罩 `--motion-fast` + 卡片 `--motion-base`，**只入场不退场**：
   退场要等 animationend 才能 resolve，破坏性操作的 Promise 不该为观感延迟）；
   设定库换条目/换页签 = `src/ui/codex.ts`（`pendingEnter` 标志：只有显式切换播，store 订阅触发的
-  重建不播，否则改一个字段整块面板块淡入一次）；详情面板 = `src/ui/detail.ts`（只在首次 `renderView`）；
+  重建不播，否则改一个字段整块面板块淡入一次；这里用 `staggerIn` 让标题行/页签行/三栏主体依次浮现）；
+  ⚠️ **不要**在 `openTool` 里给 host 挂常驻的错峰类：工具每次重渲染（codex 就是 `host.innerHTML = …`
+  整块重来）都会让新建出来的子项重播一遍，等于改个字段闪一下。详情面板 = `src/ui/detail.ts`（只在首次 `renderView`）；
   新建节点表单 = `src/ui/node-form.ts`；壳级横幅 = `src/ui/alert.ts`。
 - ⚠️ **纪律**：入场动画只挂显式切换 —— `src/ui/timeline.ts` 每次 store 通知都整体重渲染，
   给它挂「挂载即动画」会在拖动节点时不停重放（`docs/ROADMAP.md` 的硬约束）。

@@ -98,7 +98,10 @@
   （`enter` / `staggerIn`）+ `src/style.css` 末尾「动效层」（4 个 keyframes + 错峰容器 + reduced 降级）。
   顺带把 `src/style.css` 的动效令牌对齐设计系统（原来是 fast 100ms / base 160ms，比 DESIGN.md 第 7 节
   快一倍，落在被明令禁止的 snappy 档）。挂点与纪律见 `ARCHITECTURE.md`「动效（src/ui/motion.ts…）」。
-  验证：`tools/e2e/motion-switch.cjs` 13/13（读 `getAnimations()` 断言真的在跑 + 收尾不残留 + reduced 降级）。
+  验证：`tools/e2e/motion-switch.cjs` 14/14（读 `getAnimations()` 断言真的在跑 + 终态不残留 + reduced 降级）。
+  **时值经用户体感调过一轮**（2026-09-12「稍微慢一点、元素弹出再错开一点」）：入场 `--motion-enter: 480ms`、
+  错峰 80ms/项；并发现测试环境的一条事实（窗口 showInactive ⇒ 渲染进程 hidden ⇒ 动画不推进），
+  断言改为「参数 + 强制出帧验推进 + `finish()` 验终态」，与墙钟无关。
 - [ ] **第 B 片 · 列表变化**：条目增删/搜索过滤时的错峰浮现与**其余项让位**（后者 CSS 表达不了，
   要用 Anime.js 或手写 FLIP）。⚠️ 别把错峰挂在每次 `renderList()` 上 —— 搜索框每敲一个字都会重画左列。
 - [ ] **第 C 片 · 画布**：时间线节点移动 / 循环框 / 剧情线。⚠️ 撞 `src/ui/timeline.ts` 的

@@ -120,9 +120,9 @@ function renderWorldTabs(store: Store): void {
       }).then((okDel) => { if (okDel) removeWorld(store, name); });
     });
   });
-  /* 页签错峰入场（DESIGN.md:157 的 staggered ~40ms）。只在这个分支里调：签名没变就早退了，
-     拖动节点时不会重放。新页签插进已带 lk-enter-stagger 的容器会自动获得动画。 */
-  staggerIn(tabs, '.lk-world-tab', 40);
+  /* 页签错峰入场。只在这个分支里调：签名没变就早退了，拖动节点时不会重放。
+     延迟按子项序号由 CSS 给（style.css 的 .lk-enter-stagger），所以之后新加的页签也有错峰。 */
+  staggerIn(tabs);
   tabs.querySelector('#lk-world-new')?.addEventListener('click', () => {
     void promptDialog({
       title: '新建世界观',
@@ -192,7 +192,7 @@ function renderTimelineTabs(store: Store): void {
       )
       .join('');
     tabs.innerHTML = tabsHtml + `<button class="lk-tl-tab is-new" id="lk-tl-new" title="新建时间线">＋</button>`;
-    staggerIn(tabs, '.lk-tl-tab', 40);   /* 页签错峰入场（签名没变时上面已早退，拖动不会重放） */
+    staggerIn(tabs);   /* 页签错峰入场（签名没变时上面已早退，拖动不会重放） */
     tabs.querySelectorAll('.lk-tl-tab[data-tl]').forEach((el) => {
       const id = (el as HTMLElement).dataset.tl!;
       el.addEventListener('click', () => store.setActiveTimeline(id));

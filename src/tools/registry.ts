@@ -35,7 +35,10 @@ export function openTool(id: string, host: HTMLElement, store?: Store): void {
   host.innerHTML = '';
   /* 切工具/开面板的入场（DESIGN.md 第 7 节）。挂在这里 = 唯一入口，覆盖工具栏点击、
      快捷键、「世界沙盘」分支以外的所有工具打开路径；容器本身在动画，工具动态 import
-     完成后内容在淡入过程中落进来，不会二次闪。 */
+     完成后内容在淡入过程中落进来，不会二次闪。
+     注意**不要**在这儿给 host 挂子项错峰（staggerIn）：那是常驻类，而工具每次重渲染
+     （codex 就是 `host.innerHTML = …` 整块重来）都会让**新建出来的子项**重新播一遍 ——
+     改个字段整块闪一下。错峰只挂在「显式切换」那几处（页签栏 / 设定库内容块）。 */
   enter(host);
   const seq = ++openSeq;
   const ret = tool.open ? tool.open(host, store) : (renderPlaceholder(host, tool), undefined);
