@@ -67,6 +67,23 @@ export function renderShell(store: Store, host: HTMLElement): void {
    拖动节点时每帧被调一次，无条件重写 innerHTML 会每帧重建整个世界栏并重绑监听。 */
 let worldTabsSig = '';
 
+/* ↶ ↷ 的可用状态。`store.canUndo()/canRedo()` 一直是 store 的公开接口，但全仓**零调用点**——
+   按钮永远可点，撤销栈空时点了静默无反应（用户会以为「撤销坏了」）。
+   这里把状态映射成 disabled + 降透明度，让「现在能不能撤销」一眼可见。 */
+function syncHistoryButtons(store: Store): void {
+  const pairs: Array<[string, boolean]> = [
+    ['#lk-undo', store.canUndo()],
+    ['#lk-redo', store.canRedo()],
+  ];
+  for (const [sel, on] of pairs) {
+    const btn = document.querySelector(sel) as HTMLButtonElement | null;
+    if (!btn) continue;
+    btn.disabled = !on;
+    btn.style.opacity = on ? '' : '0.35';
+    btn.style.cursor = on ? '' : 'default';
+  }
+}
+
 function renderWorldTabs(store: Store): void {
   const tabs = document.getElementById('lk-world-tabs');
   if (!tabs) return;
@@ -155,6 +172,8 @@ function renderTimelineTabs(store: Store): void {
     });
     timelineTabsSig = '';   /* head 重建后 .lk-tl-tabs 是空容器，下面必须重建一次内容 */
   }
+  /* 撤销/重做按钮的可用态：随每次 store 通知刷新（这里在早退之前，签名不变也要刷） */
+  syncHistoryButtons(store);
   /* 只更新 tabs 容器内容（不覆盖整个 head，保留沙盘工具 appendChild 节点） */
   if (tabs) {
     /* 签名只由 (id, name, count, active) 决定：这四样没变就跳过重建 */

@@ -297,9 +297,11 @@ export function mountTimeline(
   let render: () => void = renderBase;   /* 可被剧情线/循环包装重赋 */
 
   /* 节点 HTML（legacy 结构：.tl__n + .cap + .tl__name） */
-  function nodeHtml(n: TimelineNode, x: number, sel: boolean): string {
+  /** top 省略时沿用 CSS 的 `top:50%`（线性视图靠它对齐轴线）；
+      非线性视图要按泳道分行，所以显式给出行内纵坐标（元素盒中心 = top，见 .tl__n 的负 margin）。 */
+  function nodeHtml(n: TimelineNode, x: number, sel: boolean, top?: number): string {
     const typeCls = n.type === 'story_event' ? ' is-story' : n.type === 'world_event' ? ' is-world' : '';
-    return `<div class="tl__n${sel ? ' is-sel' : ''}${typeCls}" data-id="${n.id}" style="left:${x}px;">
+    return `<div class="tl__n${sel ? ' is-sel' : ''}${typeCls}" data-id="${n.id}" style="left:${x}px;${top === undefined ? '' : `top:${top}px;`}">
       <div class="cap"></div><div class="tl__name">${escapeHtml(n.title)}</div>
     </div>`;
   }
@@ -958,18 +960,32 @@ export function mountTimeline(
     lanes.forEach((l) => { laneCounts[l] = nodes.filter((n) => inLane(n, l)).length; });
     const maxCount = Math.max(1, ...Object.values(laneCounts));
     const pitch = Math.max(24, (wrap.clientWidth - 100) / maxCount);
+    /* 每条泳道一行，laneY 是**这一行节点的圆心**纵坐标。行内相对布局：
+       年份在圆点上方 -19、名字在下方 +9（.tl__name 的 top:22px，而盒子顶边 = laneY-13）、
+       行标签在左侧 -8、行分隔线在 +30。
+       以前这里只写 left、纵坐标交给 CSS 的 `top:50%` —— 两条泳道的圆点全挤在垂直中线上，
+       而年份数字留在各自的泳道上，离自己的节点 90px 以上，读不出对应关系。 */
     const laneY: Record<string, number> = {};
     let y = 40;
     lanes.forEach((l) => { laneY[l] = y; y += 90; });
-    const laneEls = lanes.map((l) => `<div style="position:absolute;left:0;right:0;top:${laneY[l] - 14}px;height:1px;background:var(--border-soft);"></div><div style="position:absolute;left:4px;top:${laneY[l] - 20}px;font-size:9px;color:var(--fg-2);">${l === 'world_event' ? '世界事件' : '剧情事件'}</div>`).join('');
+    const laneEls = lanes
+      .map((l) => {
+        const label = l === 'world_event' ? '世界事件' : '剧情事件';
+        return (
+          `<div style="position:absolute;left:0;right:0;top:${laneY[l] + 30}px;height:1px;background:var(--border-soft);"></div>` +
+          `<div style="position:absolute;left:4px;top:${laneY[l] - 8}px;font-size:9px;color:var(--fg-2);">${label}</div>`
+        );
+      })
+      .join('');
     const counters: Record<string, number> = { world_event: 0, story_event: 0 };
     track.innerHTML =
-      `<div class="tl-line" style="left:0;right:0;"></div>` + laneEls +
+      laneEls +
       nodes
         .map((node) => {
           const lane = lanes.find((l) => inLane(node, l)) ?? 'world_event';
           const x = 50 + counters[lane]++ * pitch;
-          return nodeHtml(node, x, node.id === selectedId) + `<div style="font-size:8px;color:var(--fg-2);position:absolute;top:${laneY[lane] + 12}px;left:${x}px;transform:translateX(-50%);">${node.year}</div>`;
+          return nodeHtml(node, x, node.id === selectedId, laneY[lane]) +
+            `<div style="font-size:8px;color:var(--fg-2);position:absolute;top:${laneY[lane] - 19}px;left:${x}px;transform:translateX(-50%);">${node.year}</div>`;
         })
         .join('');
     renderScale();
@@ -979,6 +995,9 @@ export function mountTimeline(
   /* render 统一入口：非线性 > 剧情线聚焦 > 常规 */
   const baseRender = render;
   render = function () {
+    /* 非线性视图里节点按类型分行，名字一律放圆点下方（线性视图里剧情事件的名字在
+       上方，搬进泳道会和上一行的年份、行标签打架）。样式挂在 track 上，见 style.css。 */
+    track.classList.toggle('is-nonlinear', nonlinearMode);
     /* 非线性分支也要重画因果线：节点已按序列重排，若只 return，
        causesSvg 里留着上一帧线性布局的箭头，指向空白处 */
     if (nonlinearMode) { renderNonlinear(); renderLoops(); renderStoryOverlay(); drawCauses(); return; }
