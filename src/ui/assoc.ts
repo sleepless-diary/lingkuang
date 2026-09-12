@@ -15,7 +15,14 @@ interface AssocNode {
 interface AssocEdge { from: number; to: number; }
 interface AssocGraph { nodes: AssocNode[]; edges: AssocEdge[]; wordIndex: Record<string, number>; }
 
-const WORLD_W = 2000, WORLD_H = 1200;
+/* 初版把画布当成一个 2000×1200 的「世界」，节点和视窗都被夹在里头。
+   用户 2026-09-12：「**现在有边界了，向上拖不动节点了，我想要无限画布**」——
+   于是三个夹子全撤：拖节点不再夹、力导向不再夹、视窗平移也不再夹（只保留缩放 0.4~3）。
+   这两个常量现在只剩两个用途：① 新节点的初始落点参考区 ② 连线 SVG 的作图原点与 viewBox。
+   连线必须能画到框外 ⇒ `.assoc__lines` 在 `src/style.css` 里 `overflow: visible`
+   （SVG 根元素默认裁到自己的视口，节点跑到框外时连线会被裁掉）。
+   视窗可以飘到很远，靠画布里的「回到节点群」按钮回来（`updateViewportHelp` / `recenterToNodes`，早就有）。 */
+const HOME_W = 2000, HOME_H = 1200;
 /* 拖节点时贴边自动推视窗（用户 2026-09-12：「把节点移出视窗时视窗不会顺着移动」）：
    指针进到画布边缘 PAN_EDGE 以内就持续朝那个方向推；拖出画布甚至拖出窗口也算，越界越深推得越快。 */
 const PAN_EDGE = 56, PAN_MAX_V = 18;
@@ -47,8 +54,8 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
         <span style="font-size:10px;color:var(--fg-2);">左键拖节点/拖空白 · 中键轮盘移动 · Alt+滚轮缩放</span>
       </div>
       <div id="assoc-stage" style="flex:1;position:relative;overflow:hidden;cursor:default;background:var(--surface);">
-        <div id="assoc-world" style="position:absolute;top:0;left:0;width:${WORLD_W}px;height:${WORLD_H}px;transform-origin:0 0;">
-          <svg class="assoc__lines" style="position:absolute;top:0;left:0;width:${WORLD_W}px;height:${WORLD_H}px;pointer-events:none;"></svg>
+        <div id="assoc-world" style="position:absolute;top:0;left:0;width:${HOME_W}px;height:${HOME_H}px;transform-origin:0 0;">
+          <svg class="assoc__lines" style="position:absolute;top:0;left:0;width:${HOME_W}px;height:${HOME_H}px;pointer-events:none;"></svg>
         </div>
         <!-- 轮盘方向指示箭头（锚定在屏幕，画布平移/缩放不带动它） -->
         <svg id="assoc-rocker-arrow" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;display:none;">
@@ -137,11 +144,16 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
     const dy = cy - dragSY - (assocPanY - dragPanY0);
     if (!dragMoved && Math.abs(dx) + Math.abs(dy) > 4) dragMoved = true;
     if (!dragMoved) return;
-    /* 与世界边界一致地夹一下（forceStep 里的那套）：不夹的话松手瞬间会被力导向夹回来、节点"跳"一下 */
-    const w = dn.w || 70, h = dn.h || 30;
-    dn.x = Math.min(Math.max((dn as any)._dragOx + dx / assocZoom, 20), WORLD_W - 20 - w);
-    dn.y = Math.min(Math.max((dn as any)._dragOy + dy / assocZoom, 20), WORLD_H - 20 - h);
+    /* ⚠️ 刻意**不夹**在世界边界里（用户 2026-09-12 要「无限画布」）：夹了的话节点一碰边就钉住、
+       从边上根本拖不出去（往上拖尤其明显 —— 世界顶边 y=20 就在眼前）。
+       松手后也不能再被力导向夹回来 ⇒ `forceStep` 里那四个边界判断也一并撤了。 */
+    dn.x = (dn as any)._dragOx + dx / assocZoom;
+    dn.y = (dn as any)._dragOy + dy / assocZoom;
     dn.vx = 0; dn.vy = 0;
+    /* 手动摆过的节点**钉住**：松手后不许力导向把它拽回原位（见 forceStep 里的 _pinned 分支）。
+       实测（2026-09-12）：只撤边界不钉位置的话，往正上方拖 300px、松手 2 秒内会被弹簧拽回约 200px 并继续荡
+       —— 用户看到的就是「拖了又弹回去」。 */
+    (dn as any)._pinned = true;
     world.querySelectorAll('.assoc__node, .assoc__root').forEach((el, i) => {
       const n = assocGraph!.nodes[i];
       if (n) (el as HTMLElement).style.transform = `translate(${n.x}px,${n.y}px)`;
@@ -159,19 +171,9 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
   function stopAutoPan(): void {
     if (autoPanRAF !== null) { cancelAnimationFrame(autoPanRAF); autoPanRAF = null; }
   }
-  /** 贴边推视窗时的边界：别把世界推出视口之外。
-   *  节点本来就被力导向夹在世界里（forceStep 的 20..WORLD_W-20），推过头只会剩一片空白，
-   *  而且被拖的节点会先撞到世界边界、然后被甩在鼠标后面（实测 panX 一路从 0 推到 -1311，
-   *  而节点早就贴在世界右墙上不动了 —— 看着像"节点跟丢了"）。
-   *  世界比视口大 → 允许的平移区间是 [视口宽−世界宽, 0]；比视口小 → [0, 视口宽−世界宽]。 */
-  function clampPanToWorld(): void {
-    const r = stage.getBoundingClientRect();
-    const wW = WORLD_W * assocZoom, wH = WORLD_H * assocZoom;
-    const loX = Math.min(0, r.width - wW), hiX = Math.max(0, r.width - wW);
-    const loY = Math.min(0, r.height - wH), hiY = Math.max(0, r.height - wH);
-    assocPanX = Math.max(loX, Math.min(hiX, assocPanX));
-    assocPanY = Math.max(loY, Math.min(hiY, assocPanY));
-  }
+  /* 贴边自动推视窗：**不再夹在世界边界里**（原本有 clampPanToWorld，「无限画布」要撤掉它）。
+     旧版夹它的理由 —— 「节点被力导向夹在世界里、推过头只剩空白、被拖的节点会先撞墙然后被甩在鼠标后面」
+     —— 随着节点夹子一起作废：现在节点能一直跟着指针走，视窗也就该一直跟。 */
   function autoPanTick(): void {
     autoPanRAF = null;   /* 先清再判：下面 applyDrag 不会再启动第二个循环 */
     if (dragNodeId === null || !dragMoved || !host.isConnected) return;
@@ -179,15 +181,11 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
     const px = edgePush(dragPX, r.left, r.right);
     const py = edgePush(dragPY, r.top, r.bottom);
     if (!px && !py) return;   /* 指针回到中间 → 停帧；下次 pointermove 会再启动 */
-    const bx = assocPanX, by = assocPanY;
     assocPanX += px * PAN_MAX_V;
     assocPanY += py * PAN_MAX_V;
-    clampPanToWorld();
     applyWorldTransform();
     applyDrag(dragPX, dragPY);   /* 视窗动了 → 立刻把节点重新贴回指针（它世界坐标要跟着变） */
-    /* 已经推到世界边界（这一帧实际没动）且节点也已夹在墙上 → 收手，不再空转 */
-    if (Math.abs(assocPanX - bx) < 0.01 && Math.abs(assocPanY - by) < 0.01) return;
-    autoPanRAF = requestAnimationFrame(autoPanTick);
+    autoPanRAF = requestAnimationFrame(autoPanTick);   /* 指针还在边上就一直推（没有边界，永不"推到头"） */
   }
   /** 指针不动时也要继续推（pointermove 不会再来），所以用 rAF 循环；已在跑就不重复起。 */
   function ensureAutoPan(): void {
@@ -402,18 +400,22 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
     });
     vList.forEach((n) => {
       if (dragGroup && n.id === dragNodeId) { n.vx = 0; n.vy = 0; return; }
+      /* 手动摆过的节点（`_pinned`，在 applyDrag 里打标记）不再被力导向积分挪动：
+         它仍然参与上面的斥力/弹簧计算（会把别的节点推开、把子节点拉过来），但自己的位置不动。
+         这就是「无限画布」里"我放哪儿就待在哪儿"的那一半；撤掉边界只解决了"能拖出去"。 */
+      if ((n as any)._pinned) { n.vx = 0; n.vy = 0; return; }
       n.vx *= damp; n.vy *= damp; n.x += n.vx * 0.5; n.y += n.vy * 0.5;
-      if (n.x < 20) { n.x = 20; n.vx = 0; }
-      if (n.x > WORLD_W - 20 - (n.w || 70)) { n.x = WORLD_W - 20 - (n.w || 70); n.vx = 0; }
-      if (n.y < 20) { n.y = 20; n.vy = 0; }
-      if (n.y > WORLD_H - 20 - (n.h || 30)) { n.y = WORLD_H - 20 - (n.h || 30); n.vy = 0; }
+      /* ⚠️ 这里原来有四个「夹在世界里」的判断（20 .. WORLD_W-20），已撤掉：
+         用户要的是无限画布 —— 夹住的话节点一碰边就停、松手还会被拽回世界内。
+         现在节点的世界坐标不设上下限（可以为负），图的聚拢靠弹簧（子节点被拉到父节点 140px 处）
+         与斥力的平衡，不再拿边界当容器。 */
     });
   }
 
   function drawEdges() {
     const svg = world.querySelector('.assoc__lines') as SVGSVGElement | null;
     if (!svg || !assocGraph) return;
-    svg.setAttribute('viewBox', `0 0 ${WORLD_W} ${WORLD_H}`);
+    svg.setAttribute('viewBox', `0 0 ${HOME_W} ${HOME_H}`);
     const nodeById: Record<number, AssocNode> = {};
     assocGraph.nodes.forEach((n) => { nodeById[n.id] = n; });
     /* 只画可见节点之间的边——收起节点的连线一并隐藏（视觉干净，只留聚焦链路） */
@@ -460,8 +462,8 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
   /* ── 渲染 world 内节点 ── */
   function renderGraph() {
     if (!assocGraph) return;
-    world.style.width = WORLD_W + 'px';
-    world.style.height = WORLD_H + 'px';
+    world.style.width = HOME_W + 'px';
+    world.style.height = HOME_H + 'px';
     const vis = visibleIds();
     world.innerHTML = '<svg class="assoc__lines" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;"></svg>'
       + assocGraph.nodes.map((n) => {

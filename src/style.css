@@ -285,6 +285,9 @@ body {
 }
 
 /* ══════════ 词义联想画布（.assoc__node 力导向节点，legacy 样式）══════════ */
+/* 连线层是 2000×1200 的 SVG，而无限画布允许节点跑到框外（甚至负坐标）——
+   SVG 根元素默认把内容裁到自己的视口，所以必须放开，否则出框的连线整段消失。 */
+.assoc__lines { overflow: visible; }
 .assoc__node, .assoc__root {
   position: absolute;
   display: inline-block;

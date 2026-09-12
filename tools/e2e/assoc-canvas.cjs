@@ -1,6 +1,7 @@
 /* 灵感触发器 · 词义联想画布：① 画布不许被 sticky 工具条遮住（看不全）
  * ② 画布上的滚轮要真的能滚页面 ③ 拖节点贴边（或拖出视窗）时视窗要跟着推、节点要一直贴在鼠标下
- * ④ 松手后推力要停。
+ * ④ 松手后推力要停 ⑤ **无限画布**（用户 2026-09-12：「现在有边界了，向上拖不动节点了，我想要无限画布」）
+ *    —— 没有世界边界：能一直往外拖、视窗一直跟、松手不弹回、框外的连线也照样画。
  *
  * 用法（见 tools/e2e/README.md）：
  *   $env:LINGKUANG_* 指向测试目录 → 起应用（--remote-debugging-port=9500）→ node tools/e2e/assoc-canvas.cjs
@@ -43,6 +44,12 @@ async function main() {
   const pan = () => ev(`(() => {
     const m = /translate\\(([-0-9.]+)px,\\s*([-0-9.]+)px\\)/.exec(document.querySelector('#assoc-world').style.transform);
     return m ? { x: Math.round(parseFloat(m[1])), y: Math.round(parseFloat(m[2])) } : null;
+  })()`);
+  /** 被拖那个节点（.assoc__root）的**世界坐标**（从它自己的行内 transform 抠）——判"能不能拖出去"看这个 */
+  const nodeXY = () => ev(`(() => {
+    const n = document.querySelector('#assoc-world .assoc__root, #assoc-world .assoc__node');
+    const m = /translate\\(([-0-9.]+)px,\\s*([-0-9.]+)px\\)/.exec(n.style.transform);
+    return m ? { x: parseFloat(m[1]), y: parseFloat(m[2]) } : null;
   })()`);
 
   await sleep(800);
@@ -146,7 +153,9 @@ async function main() {
     panBefore && panAfter && panAfter.x < panBefore.x - 20 && pushed.underCursor === true,
     { panBefore, panAfter, pushed, start: { gx: start.gx, gy: start.gy, edgeX: start.edgeX } });
 
-  /* ── ③b 推到头要停在世界边界（不许推出空白，也不许把节点甩在鼠标后面） ── */
+  /* ── ③b 没有"推到头"这回事（用户 2026-09-12：「我想要无限画布」） ──
+     旧版把视窗夹在世界框内（clampPanToWorld），推到 stageW−2000 就停；现在一路推。
+     同时要求节点**仍然贴在鼠标下** —— 这是"没有边界"与"跟丢了"的区别。 */
   await forceFrames(60);
   const panWall = await pan();
   await forceFrames(10);
@@ -154,11 +163,14 @@ async function main() {
   const wall = await ev(`(() => {
     const stage = document.querySelector('#assoc-stage').getBoundingClientRect();
     const node = document.querySelector('.assoc__root, .assoc__node');
-    return { stageW: Math.round(stage.width), nodeLeft: Math.round(node.getBoundingClientRect().left) };
+    const nR = node.getBoundingClientRect();
+    const cx = ${start.edgeX}, cy = ${start.edgeY};
+    return { stageW: Math.round(stage.width),
+      underCursor: cx >= nR.left && cx <= nR.right && cy >= nR.top && cy <= nR.bottom };
   })()`);
-  check('★3b 推到头停在世界右边界（panX 夹在 视口宽−2000 上、不再继续往空白里推）',
-    panWall && panWall2 && panWall2.x === panWall.x && Math.abs(panWall.x - (wall.stageW - 2000)) <= 1,
-    { panWall, panWall2, ...wall });
+  check('★3b 一直按住就一直推 —— 越过旧世界右墙（stageW−2000）继续走，节点仍贴鼠标下',
+    panWall && panWall2 && panWall.x < wall.stageW - 2000 - 50 && panWall2.x < panWall.x && wall.underCursor === true,
+    { panWall, panWall2, ...wall, oldWall: wall.stageW - 2000 });
 
   /* ── ④ 松手 → 推力必须停（不能松了手还在自己跑） ── */
   await ev(`window.__lkFire('pointerup', ${start.edgeX}, ${start.edgeY}, 0); true`);
@@ -168,7 +180,7 @@ async function main() {
   check('★4 松手后推力停住（再出 8 帧视窗纹丝不动）', panUp && panIdle && panIdle.x === panUp.x && panIdle.y === panUp.y,
     { panUp, panIdle });
 
-  /* ── ⑤ 反向：拖到左边缘 → 视窗往回推（panX 变大） ── */
+  /* ── ⑤ 反向：拖到左边缘 → 视窗往回推，并且**越过原点继续走**（左边也没有墙） ── */
   await ev(`(() => {
     const stage = document.querySelector('#assoc-stage');
     const node = document.querySelector('.assoc__root, .assoc__node');
@@ -182,12 +194,97 @@ async function main() {
     return true;
   })()`);
   const panL0 = await pan();
-  await forceFrames(60);
+  await forceFrames(45);
   const panL1 = await pan();
+  await forceFrames(45);
   const panL2 = await pan();
   await ev(`window.__lkFire('pointerup', window.__lkEdge, window.__lkEdgeY, 0); true`);
-  check('★5 拖到左边缘 → 视窗反向推、推到头停在世界左边界（panX 夹在 0，不再往空白里推）',
-    panL0 && panL1 && panL1.x > panL0.x + 20 && panL1.x === 0 && panL2.x === panL1.x, { panL0, panL1, panL2 });
+  /* 注：起点可能在很远的负值上（比如 -9000），所以"越过原点"要等第二段采样 —— 判的是
+     「两段都在往右走」+「最后真的过了 0」，而不是"第一段就过 0"。 */
+  check('★5 拖到左边缘 → 视窗反向推，且越过原点（panX > 0）继续走 —— 左边同样没有墙',
+    panL0 && panL1 && panL2 && panL1.x > panL0.x + 20 && panL2.x > panL1.x && panL2.x > 0,
+    { panL0, panL1, panL2 });
+
+  /* ── ⑦ 向上拖：节点必须真的往上走（旧版被夹在 y=20，所以"向上拖不动"） ──
+     用的就是用户原话那条：「现在有边界了，向上拖不动节点了，我想要无限画布」。 */
+  const beforeUp = await nodeXY();
+  const upStart = await ev(`(() => {
+    const stage = document.querySelector('#assoc-stage');
+    const node = document.querySelector('.assoc__root, .assoc__node');
+    const sR = stage.getBoundingClientRect(), nR = node.getBoundingClientRect();
+    const gx = Math.round(nR.left + nR.width / 2), gy = Math.round(nR.top + nR.height / 2);
+    window.__lkFire('pointerdown', gx, gy, 1);
+    window.__lkFire('pointermove', gx, gy - 40, 1);
+    window.__lkFire('pointermove', gx, gy - 300, 1);   /* 往上拖 300px */
+    window.__lkUpX = gx;
+    return { gx, gy, stageTop: Math.round(sR.top) };
+  })()`);
+  await sleep(200);
+  const afterUp = await nodeXY();
+  /* 接着把指针顶到画布上边缘按住不放 → 视窗要往上推（panY 变正，旧版夹在 0） */
+  await ev(`window.__lkFire('pointermove', window.__lkUpX, ${upStart.stageTop} + 8, 1); true`);
+  await forceFrames(30);
+  const panUpEdge = await pan();
+  const upHold = await ev(`(() => {
+    const node = document.querySelector('.assoc__root, .assoc__node');
+    const nR = node.getBoundingClientRect();
+    const cx = window.__lkUpX, cy = ${upStart.stageTop} + 8;
+    return { underCursor: cx >= nR.left && cx <= nR.right && cy >= nR.top && cy <= nR.bottom };
+  })()`);
+  check('★7 向上拖节点：世界坐标真的变小（y 可以 < 20、甚至为负），拖到上边缘按住视窗也往上推（panY > 0）',
+    beforeUp && afterUp && afterUp.y <= beforeUp.y - 250 && panUpEdge && panUpEdge.y > 50 && upHold.underCursor === true,
+    { beforeUp, afterUp, panUpEdge, upHold, upStart });
+
+  /* ── ⑧ 松手后不许回弹（钉住）：撤掉边界只解决了"能拖出去"，
+       不钉位置的话力导向的弹簧会在两秒内把节点拽回约 200px，用户看到的还是"拖了又弹回去" ── */
+  await ev(`window.__lkFire('pointerup', window.__lkUpX, ${upStart.stageTop} + 8, 0); true`);
+  const pinnedAt = await nodeXY();
+  await forceFrames(60);
+  const pinAfter = await nodeXY();
+  check('★8 松手后节点停在原地（手动摆过就钉住，不再被力导向拽回去）',
+    pinnedAt && pinAfter && Math.abs(pinAfter.y - pinnedAt.y) <= 2 && Math.abs(pinAfter.x - pinnedAt.x) <= 2,
+    { pinnedAt, pinAfter, drift: [Math.round(pinAfter.x - pinnedAt.x), Math.round(pinAfter.y - pinnedAt.y)] });
+
+  /* ── ⑨ 画到框外的连线不能被裁掉 ──
+     连线层是 2000×1200 的 SVG（viewBox 0 0 2000 1200），而无限画布允许节点跑到框外甚至负坐标；
+     SVG 根元素默认把内容裁到自己的视口 ⇒ 全靠 `src/style.css` 的 `.assoc__lines { overflow: visible }`。
+     这里做两件事：① 真连线里确实出现了框外坐标 ② 拿一条**故意画在框外**的线做 A/B：
+        overflow visible 时 elementFromPoint 打得中、把它改成 hidden（＝没放开裁剪）就打不中
+        —— 后者证明"裁掉"这件事真的会发生，前者才不是自说自话。 */
+  const clip = await ev(`(() => {
+    const svg = document.querySelector('#assoc-world .assoc__lines');
+    const path = svg.querySelector('path');
+    const d = path ? (path.getAttribute('d') || '') : '';
+    const outside = /M (-[\\d.]+|\\d{4,}) /.test(d) || / L (-[\\d.]+|\\d{4,})/.test(d);
+    /* 临时加一条"框外"的线：位置取**当前视口正中心**换算出来的世界坐标 ——
+       视窗已经被推到很远（pan 是几万），所以这个坐标必然在 SVG 的 0..2000 视口之外，
+       同时又一定在屏幕里（elementFromPoint 才打得中）。 */
+    const world = document.querySelector('#assoc-world');
+    const t = /translate\\(([-\\d.]+)px,\\s*([-\\d.]+)px\\)\\s*scale\\(([-\\d.]+)\\)/.exec(world.style.transform);
+    const z = +t[3], px = +t[1], py = +t[2];
+    const stage = document.querySelector('#assoc-stage').getBoundingClientRect();
+    const vx = (stage.width / 2 - px) / z, vy = (stage.height / 2 - py) / z;
+    const probe = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    probe.setAttribute('d', 'M ' + vx + ' ' + vy + ' L ' + (vx + 200) + ' ' + vy);
+    probe.setAttribute('fill', 'none');
+    probe.setAttribute('stroke', '#000');
+    probe.setAttribute('stroke-width', '12');
+    probe.setAttribute('pointer-events', 'stroke');
+    svg.appendChild(probe);
+    const sx = Math.round((vx + 100) * z + px + stage.left), sy = Math.round(vy * z + py + stage.top);
+    const onScreen = sx >= stage.left && sx <= stage.right && sy >= stage.top && sy <= stage.bottom;
+    const hit = () => { const e = document.elementFromPoint(sx, sy); return e ? e.tagName : null; };
+    const hitVisible = hit();
+    svg.style.overflow = 'hidden';   /* A/B：模拟"没放开裁剪" */
+    const hitClipped = hit();
+    svg.style.overflow = '';
+    probe.remove();
+    return { d: d.slice(0, 60), outside, computed: getComputedStyle(svg).overflow, onScreen, probeAt: [Math.round(vx), Math.round(vy)], sx, sy, hitVisible, hitClipped };
+  })()`);
+  check('★9 跑到框外的连线照样画出来（SVG 不裁到自己的 2000×1200 视口）',
+    clip && clip.outside === true && clip.computed === 'visible' && clip.onScreen === true &&
+    clip.hitVisible === 'path' && clip.hitClipped !== 'path',
+    clip);
 
   const errs = await ev(`window.__errs`);
   check('★6 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

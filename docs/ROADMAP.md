@@ -127,8 +127,16 @@
   改成量工具条实际底边再 `calc(100vh − need)`，挂 `ResizeObserver` + `resize`。② 滚轮分支写死
   `closest('.lk-module-view')`（那层**根本不会滚**），改用 `scrollParent()` 现找真滚动容器（`.lk-tool-slot`）。
   ③ 拖拽算式没扣 pan（`dx = cx − dragSX − (assocPanX − dragPanX0)`）+ 新增贴边自动推视窗
-  （`PAN_EDGE 56` / `PAN_MAX_V 18` / rAF）+ `clampPanToWorld()` 夹在世界内。
-  验证：新增 `tools/e2e/assoc-canvas.cjs` **8/8**（详见 `docs/BUGS.md` 第二十轮十）。
+  （`PAN_EDGE 56` / `PAN_MAX_V 18` / rAF）。验证：`tools/e2e/assoc-canvas.cjs`（详见 BUGS 第二十轮十）。
+- [x] **改成真正的无限画布（2026-09-12，用户当场推翻上一版的边界）**：用户「**现在有边界了，
+  向上拖不动节点了，我想要无限画布**」—— 上一版为防"节点被甩在鼠标后面"给节点落点与视窗平移各加了
+  一个"夹在世界内"的夹子，代价是**往上拖到 y=20 就钉住、panY 最大只能到 0**。
+  本轮三个夹子全撤（拖节点 / 力导向 / 视窗），`WORLD_W/H` 改名 `HOME_W/H`（只剩初始落点区 +
+  SVG 作图区两个用途）；另加两件必要的配套：
+  ① **手动摆过的节点钉住**（`_pinned`，否则松手 2 秒内被弹簧拽回约 200px，仍是"拖了又弹回去"）；
+  ② 框外的连线靠 `.assoc__lines { overflow: visible }` 才画得出来（SVG 默认裁到自己的 2000×1200 视口）。
+  安全绳是既有的「回到节点群」按钮。验证：`assoc-canvas.cjs` **11/11**（含向上拖、越过旧墙不回头、
+  松手不回弹、框外连线不裁的 A/B）。
 - [ ] **第 B 片 · 列表变化（剩下的一半）**：条目**增删**时其余项**让位**（CSS 表达不了，
   要用 Anime.js 或手写 FLIP）。⚠️ 别把错峰挂在每次 `renderList()` 上 —— 搜索框每敲一个字都会重画左列
   （左列条目那种"显式切换才播"的做法可以照 `src/ui/codex.ts` 的 `pendingEnter` 抄）。

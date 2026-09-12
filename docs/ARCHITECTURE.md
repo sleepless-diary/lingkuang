@@ -30,7 +30,7 @@
 | `src/ui/shell.ts` | 壳 UI：世界栏 + 工具栏 + 沙盘 + 工具宿主 |
 | `src/ui/timeline.ts` | 世界沙盘时间线（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针） |
 | `src/ui/inspire.ts` | 灵感触发器（随机角色生成 + 词义联想入口） |
-| `src/ui/assoc.ts` | 词义联想无限画布（力导向 + 单线聚焦 + 视窗平移/缩放 + 拖节点贴边自动推视窗）；宿主高度由 `src/ui/inspire.ts` 的 `fitAssocHeight()` 让开 sticky 工具条，滚动容器用 `scrollParent()` 现找 |
+| `src/ui/assoc.ts` | 词义联想**无限画布**（力导向 + 单线聚焦 + 视窗平移/缩放 + 拖节点贴边自动推视窗 + 手动摆过的节点钉住）；没有世界边界（`HOME_W/HOME_H` 只是初始落点区与 SVG 作图区），框外连线靠 `.assoc__lines { overflow: visible }`；宿主高度由 `src/ui/inspire.ts` 的 `fitAssocHeight()` 让开 sticky 工具条，滚动容器用 `scrollParent()` 现找 |
 | `src/ui/editor.ts` | 编辑器（tiptap，左侧 sidebar 时间线/实体 tab，右侧文稿编辑）。属性面板**不在这个文件里**了 —— 见 `src/ui/props-panel.ts` |
 | `src/ui/props-panel.ts` | **公共属性面板**（节点与实体共用**同一份**「改字段」实现，编辑器和设定库都调它）：`createPropsPanel({ store, host, status?, getTarget, patchTarget })` → `{ render(node, isEntity?), hide() }`；`PropsTarget` 是两边共用的身份联合类型。内含 AE 式 scrub（`createScrubField`）与历法推进的时间控件。⚠️ 面板构建后**刻意不重渲染**（避免销毁拖拽中的 scrub 控件），所以提交要走 `patchTarget`（从 store 取最新 properties 再合并） |
 | `src/ui/ai-workbench.ts` / `roleplay.ts` / `tavern.ts` | AI 工作台 / 角色扮演 / 酒馆剧情推演 |
@@ -346,21 +346,32 @@
   （重建后的元素没有"旧位置"这个概念）。
 
 ### 联想画布（`src/ui/assoc.ts` + 宿主 `src/ui/inspire.ts`）
-- 世界坐标固定 `WORLD_W = 2000` / `WORLD_H = 1200`；`#assoc-stage`（`flex:1; overflow:hidden`）
-  里放 `#assoc-world`（2000×1200，`transform-origin: 0 0`），视窗靠
+- **无限画布**（用户 2026-09-12：「现在有边界了，向上拖不动节点了，我想要无限画布」）：
+  **没有任何世界边界** —— 拖节点不夹、力导向不夹、视窗平移不夹（只夹缩放 0.4~3）。
+  两个常量 `HOME_W = 2000` / `HOME_H = 1200` 现在只剩两个用途：**新节点的初始落点参考区**
+  与**连线 SVG 的作图原点 + viewBox**（早先叫 `WORLD_W/WORLD_H`，那名字会让人以为是边界，已改名）。
+  视窗可以飘到很远 ⇒ 安全绳是画布里的「回到节点群」按钮（`updateViewportHelp` 在节点全出屏时显示、
+  `recenterToNodes` 把质心平移回画布中心）。
+- ⚠️ **手动摆过的节点被钉住**：`applyDrag` 里 `(dn as any)._pinned = true`，`forceStep` 的积分循环里
+  `if ((n as any)._pinned) { n.vx = 0; n.vy = 0; return; }` —— 钉住的节点仍参与斥力/弹簧计算
+  （推开别人、把子节点拉过来），只是自己不动。**为什么需要**：实测只撤边界的话，往正上方拖 300px、
+  松手后 2 秒内被弹簧拽回 **217px** 并继续荡，用户看到的还是"拖了又弹回去"。
+  钉标记会随 `assocSetRoot`（按根词重建）自然清掉。
+- ⚠️ **框外的连线靠 CSS 才画得出来**：连线层是 `2000×1200` 的 SVG（`viewBox: 0 0 2000 1200`），
+  而 SVG 根元素**默认把内容裁到自己的视口** ⇒ 节点跑到框外时线整段消失（节点还在）。
+  `src/style.css` 的 `.assoc__lines { overflow: visible }` 是这条的全部依据，删了它框外的线就没了
+  （`tools/e2e/assoc-canvas.cjs` ★9 用"故意画在框外的 path + `elementFromPoint` 命中/A-B"守着）。
+- 世界坐标固定 `HOME_W × HOME_H` 作为**原点区**；`#assoc-stage`（`flex:1; overflow:hidden`）
+  里放 `#assoc-world`（`transform-origin: 0 0`），视窗靠
   `world.style.transform = translate(assocPanX, assocPanY) scale(assocZoom)` —— 即
-  **节点屏幕坐标 = 世界坐标 × zoom + pan**。
+  **节点屏幕坐标 = 世界坐标 × zoom + pan**（世界坐标可以为负、可以离原点很远）。
 - ⚠️ **拖拽算式必须扣掉 pan**（否则视窗一动节点就漂）：
   `dx = cx - dragSX - (assocPanX - dragPanX0)`（`applyDrag(cx, cy)`）。
-  `dragPanX0/dragPanY0` = **按下那一刻**的 pan，`dragSX/dragSY` = 按下点。落点还要**夹在世界内**，
-  否则松手时 `forceStep()` 会把它拽回边界、看着"跳一下"。
+  `dragPanX0/dragPanY0` = **按下那一刻**的 pan，`dragSX/dragSY` = 按下点。
 - **贴边自动推视窗**：`edgePush(pos, lo, hi)` 在离边缘 `PAN_EDGE = 56` 内返回 ±1 推力；
   `ensureAutoPan()` 起 rAF、`autoPanTick()` 每帧把 pan 推 `PAN_MAX_V = 18` px；
   `stopAutoPan()` 挂在 `endPointerGestures()` 与卸载清理上（松手/切工具/卸载都要停）。
-- ⚠️ **pan 必须夹在世界内**：`clampPanToWorld()` 夹到
-  `[min(0, 视口宽 − WORLD_W), max(0, 视口宽 − WORLD_W)]`。不夹的话 pan 会一路推到 −1311，
-  而节点早被 `forceStep()` 夹在世界右墙不动 ⇒ **节点被视窗甩在鼠标后面**（实测：夹住后停在
-  −899 = stageW 1101 − 2000）。
+  没有边界 ⇒ 指针还在边上就一直推（旧版有 `clampPanToWorld()`，已随无限画布删掉）。
 - ⚠️ **滚动容器不能写死**：真正会滚的是工具格 `.lk-tool-slot`（`overflow: auto`），而
   `#lk-module-view` 自己 `scrollHeight === clientHeight` **根本不会滚**。画布上的滚轮分支要用
   模块级 `scrollParent(el)`（沿祖先链找第一个 `overflowY` 为 auto/scroll 且 `scrollHeight > clientHeight`
@@ -371,7 +382,7 @@
   `fitAssocHeight()` 量 `need = 工具条底边 − 画布容器顶边`，再让 `#insp-assoc` 用
   `calc(100vh − <need>px)`；挂 `ResizeObserver` 盯那条工具条 + `window resize`，清理函数里 `disconnect`。
   兜底 CSS 写 `calc(100vh - 62px)`（JS 跑之前的首帧不能是错的）。
-  守卫：`tools/e2e/assoc-canvas.cjs`（☆1 还要求画布顶部那一圈 `elementFromPoint` 归画布而不是工具条）。
+  守卫：`tools/e2e/assoc-canvas.cjs`（★1 还要求画布顶部那一圈 `elementFromPoint` 归画布而不是工具条）。
 - 测试注意：测试实例 `showInactive` ⇒ 窗口 `hidden` ⇒ **rAF 不出帧不推进**，断言"自动推视窗"前
   必须 `forceFrames()`（`Page.captureScreenshot`）；指针事件用合成的 `PointerEvent`，
   `pointerdown` 打在**节点元素**上（stage 靠冒泡收），`pointermove/pointerup` 打在 `window` 上。
