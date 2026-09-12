@@ -111,6 +111,10 @@
 - `store.ts`：`createStore` + `subscribe`，`update(cb, opts)` 统一改数据
 - `actions.ts`：`addNode` / `addTimeline` / `setTimeCursor` 等，视图不直接碰 data
 - 持久化经 `main.js` IPC（`%APPDATA%\lingkuang\worldbuilding.json`；`LINGKUANG_TEST_DATA` 覆盖测试路径）
+- **落盘保护（别退回去）**：写前把现有文件轮换到 `.backup-0/1/2.json`；若文件**存在但
+  `JSON.parse` 失败**，必须先逐字节另存为 `.bak-corrupt-<时间戳>.json` 再弹原生对话框，
+  **绝不能让它演变成「空数据覆盖整个文件」**——旧行为实测：损坏后启动，不做任何操作，
+  世界就被换成「新世界」，且 3 次保存内轮换会把最后一份原文件挤掉。
 
 ### vault（Obsidian 文稿源，`main.js`）
 - **判「世界/时间线是否存在」看目录，不看节点数**：`scanWorldDir` / `scanTimelineDir` 收空时间线（`nodes: []`）。

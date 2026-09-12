@@ -3,7 +3,7 @@
  * 渲染进程通过 preload 暴露的 window.lingkuangAPI 调用，数据落盘到
  * user-data/worldbuilding.json —— 世界观数据真正物理存储。
  */
-const { app, BrowserWindow, ipcMain, Menu, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -299,14 +299,66 @@ function createWindow() {
   });
 }
 
+/* ── 数据文件损坏的保护 ──────────────────────────────────────
+   解析不了的 worldbuilding.json **绝不能被空数据静默覆盖**。
+   旧行为：data:load 解析失败只回 ok:false → 渲染层 jsonData=null → emptyData() 顶上 →
+   400ms 防抖自动落盘把整个文件写成「新世界」。实测：造一个截断的 worldbuilding.json 启动，
+   **不做任何操作**，文件就从 296B 变成 369B 的空世界观，界面变成「新世界」、零提示零报错；
+   而 .backup-0/1/2 三格轮换会在 3 次保存内把最后一份原文件彻底挤掉 → 数据全丢。
+   这里先把损坏内容原样另存为带时间戳的副本（沿用机器上已有的 bak-corrupt 命名），再回 ok:false。 */
+function preserveCorruptDataFile() {
+  try {
+    const dir = path.dirname(DATA_FILE());
+    const base = path.basename(DATA_FILE()).replace(/\.json$/, '');
+    const d = new Date();
+    const p2 = (n) => String(n).padStart(2, '0');
+    const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+    let dest = path.join(dir, `${base}.bak-corrupt-${stamp}.json`);
+    for (let i = 2; fs.existsSync(dest) && i < 100; i++) dest = path.join(dir, `${base}.bak-corrupt-${stamp}-${i}.json`);
+    fs.copyFileSync(DATA_FILE(), dest);
+    return dest;
+  } catch (e) { return ''; }
+}
+
+/** 数据文件损坏 → 原生对话框（这种事不该被错过）。带「打开所在文件夹」，
+    省得用户自己去翻 %APPDATA%；恢复只需把副本改名回 worldbuilding.json。 */
+function notifyCorruptData(corruptPath, bytes, err) {
+  try {
+    const opts = {
+      type: 'error',
+      title: '数据文件损坏',
+      message: `worldbuilding.json 读不出来（${bytes} 字节）`,
+      detail: [
+        `原因：${err && err.message ? err.message : String(err)}`,
+        corruptPath ? `为避免被覆盖，损坏内容已原样另存为：\n${corruptPath}` : '另外保存失败——请立刻手动备份该文件，否则会被覆盖。',
+        '灵框现在显示的是空白世界观。你原来的世界没有被删除，就在上面那个副本里：\n关掉灵框 → 把新的 worldbuilding.json 删掉 → 把副本改名回 worldbuilding.json。'
+      ].join('\n\n'),
+      buttons: corruptPath ? ['打开所在文件夹', '知道了'] : ['知道了'],
+      defaultId: 0,
+      noLink: true
+    };
+    const p = mainWin ? dialog.showMessageBox(mainWin, opts) : dialog.showMessageBox(opts);
+    p.then((r) => { if (r.response === 0 && corruptPath) shell.showItemInFolder(corruptPath); }).catch(() => {});
+  } catch (e) { /* 提示失败不能挡启动 */ }
+}
+
 /* ── IPC: read the worldbuilding data file ─────────────────── */
 ipcMain.handle('data:load', () => {
+  let raw;
   try {
-    const raw = fs.readFileSync(DATA_FILE(), 'utf8');
-    return { ok: true, data: JSON.parse(raw) };
+    raw = fs.readFileSync(DATA_FILE(), 'utf8');
   } catch (e) {
     /* file missing = first run: return nothing, front-end falls back to seed */
     return { ok: false, error: e.code || String(e) };
+  }
+  try {
+    return { ok: true, data: JSON.parse(raw) };
+  } catch (e) {
+    const corruptPath = preserveCorruptDataFile();
+    /* 用 Buffer.byteLength 而不是 raw.length：raw.length 是 JS 字符串长度（UTF-16 码元数），
+       中文一个字只算 1，和文件真实字节数对不上（曾把 296 字节的文件报成 264 字节）。 */
+    notifyCorruptData(corruptPath, Buffer.byteLength(raw, 'utf8'), e);
+    return { ok: false, error: 'JSON 解析失败：' + (e && e.message ? e.message : String(e)), corruptPath };
   }
 });
 
