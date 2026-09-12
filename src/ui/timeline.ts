@@ -297,11 +297,9 @@ export function mountTimeline(
   let render: () => void = renderBase;   /* 可被剧情线/循环包装重赋 */
 
   /* 节点 HTML（legacy 结构：.tl__n + .cap + .tl__name） */
-  /** top 省略时沿用 CSS 的 `top:50%`（线性视图靠它对齐轴线）；
-      非线性视图要按泳道分行，所以显式给出行内纵坐标（元素盒中心 = top，见 .tl__n 的负 margin）。 */
-  function nodeHtml(n: TimelineNode, x: number, sel: boolean, top?: number): string {
+  function nodeHtml(n: TimelineNode, x: number, sel: boolean): string {
     const typeCls = n.type === 'story_event' ? ' is-story' : n.type === 'world_event' ? ' is-world' : '';
-    return `<div class="tl__n${sel ? ' is-sel' : ''}${typeCls}" data-id="${n.id}" style="left:${x}px;${top === undefined ? '' : `top:${top}px;`}">
+    return `<div class="tl__n${sel ? ' is-sel' : ''}${typeCls}" data-id="${n.id}" style="left:${x}px;">
       <div class="cap"></div><div class="tl__name">${escapeHtml(n.title)}</div>
     </div>`;
   }
@@ -948,56 +946,51 @@ export function mountTimeline(
     });
   }
 
-  /* ══════════ 非线性模式（按序列顺序均匀横排 + 类型泳道）══════════ */
+  /* ══════════ 非线性模式（序列顺序 · 等距横排）══════════ */
   function renderNonlinear() {
     const tl = timeline();
     if (!tl || !nonlinearMode) return;
     const nodes = tl.nodes;
     if (!nodes.length) return;
-    const lanes = ['world_event', 'story_event'];
-    const inLane = (n: TimelineNode, l: string) => (l === 'world_event' ? n.type === 'world_event' : n.type === 'story_event');
-    let laneCounts: Record<string, number> = {};
-    lanes.forEach((l) => { laneCounts[l] = nodes.filter((n) => inLane(n, l)).length; });
-    const maxCount = Math.max(1, ...Object.values(laneCounts));
-    const pitch = Math.max(24, (wrap.clientWidth - 100) / maxCount);
-    /* 每条泳道一行，laneY 是**这一行节点的圆心**纵坐标。行内相对布局：
-       年份在圆点上方 -19、名字在下方 +9（.tl__name 的 top:22px，而盒子顶边 = laneY-13）、
-       行标签在左侧 -8、行分隔线在 +30。
-       以前这里只写 left、纵坐标交给 CSS 的 `top:50%` —— 两条泳道的圆点全挤在垂直中线上，
-       而年份数字留在各自的泳道上，离自己的节点 90px 以上，读不出对应关系。 */
-    const laneY: Record<string, number> = {};
-    let y = 40;
-    lanes.forEach((l) => { laneY[l] = y; y += 90; });
-    const laneEls = lanes
-      .map((l) => {
-        const label = l === 'world_event' ? '世界事件' : '剧情事件';
-        return (
-          `<div style="position:absolute;left:0;right:0;top:${laneY[l] + 30}px;height:1px;background:var(--border-soft);"></div>` +
-          `<div style="position:absolute;left:4px;top:${laneY[l] - 8}px;font-size:9px;color:var(--fg-2);">${label}</div>`
-        );
-      })
-      .join('');
-    const counters: Record<string, number> = { world_event: 0, story_event: 0 };
+    /* 排版与线性视图一致（节点都落在轴线上、剧情事件名字在上、世界事件名字在下），
+       区别只有两点：x 一律等距（与年份无关），以及每个节点自带年份标签。
+       **不按类型分行** —— 分行会把同一条时间线上的先后关系拆到两行里，反而看不清顺序。
+       这个模式的目的（用户 2026-09-12）就是「方便看清节点的时间顺序（排除时间干扰）」。 */
+    /* 先按**时间**排序再等距排 —— 这个模式的目的就是「看清时间顺序」，而 `tl.nodes`
+       的数组顺序并不是时间序（vault 是节点的源，重扫后数组顺序 = 目录/文件顺序）。
+       照原样排会得到 330→420→450→312→500 这种乱序，等于把功能废掉。
+       线性视图靠 x 坐标表达时间，所以不受数组顺序影响；这个模式只把「距离」换成等距。 */
+    const ordered = nodes.slice().sort((a, b) => nodeEpoch(a) - nodeEpoch(b));
+    const pitch = Math.max(24, (wrap.clientWidth - 100) / Math.max(1, ordered.length));
+    /* 顶部标尺是按**时间**画刻度的，而这里的 x 是序列序 → 刻度与节点对不上；
+       标尺正是这个模式要排除的「时间干扰」，清空（切回线性时 baseRender 会重画）。 */
+    scaleEl.innerHTML = '';
     track.innerHTML =
-      laneEls +
-      nodes
-        .map((node) => {
-          const lane = lanes.find((l) => inLane(node, l)) ?? 'world_event';
-          const x = 50 + counters[lane]++ * pitch;
-          return nodeHtml(node, x, node.id === selectedId, laneY[lane]) +
-            `<div style="font-size:8px;color:var(--fg-2);position:absolute;top:${laneY[lane] - 19}px;left:${x}px;transform:translateX(-50%);">${node.year}</div>`;
+      `<div class="tl-line" style="left:0;right:0;"></div>` +
+      ordered
+        .map((node, i) => {
+          const x = 50 + i * pitch;
+          /* 年份放「名字的对侧」，两边都不打架：世界事件的名字在圆点下方
+             （.tl__n.is-world .tl__name{top:22px}）→ 年份在上；剧情事件的名字在上方
+             （.is-story → top:-19px）→ 年份在下。calc(50%) 跟着节点的 top:50% 走。 */
+          const yearTop = node.type === 'story_event' ? 'calc(50% + 14px)' : 'calc(50% - 19px)';
+          return nodeHtml(node, x, node.id === selectedId) +
+            `<div style="font-size:8px;color:var(--fg-2);position:absolute;top:${yearTop};left:${x}px;transform:translateX(-50%);">${node.year}</div>`;
         })
         .join('');
-    renderScale();
     updateCursor();
+    /* 时间指针的横坐标在这个模式下没有意义（x 是序列序），藏掉指针本身 ——
+       只能写在这里：`updateCursor` 在 `let nonlinearMode` 声明**之前**就会被调用
+       （renderScale 的尾部），在那儿读它属于暂存死区，会让启动直接抛
+       `ReferenceError: Cannot access 'nonlinearMode' before initialization`，
+       而 mountTimeline 是在尾部才 renderExtraTools()，一抛整排沙盘按钮都不会创建。
+       「已发生/未发生」的淡化在上面 updateCursor 里已按时间算好，不受影响。 */
+    cursorEl.style.display = 'none';
   }
 
   /* render 统一入口：非线性 > 剧情线聚焦 > 常规 */
   const baseRender = render;
   render = function () {
-    /* 非线性视图里节点按类型分行，名字一律放圆点下方（线性视图里剧情事件的名字在
-       上方，搬进泳道会和上一行的年份、行标签打架）。样式挂在 track 上，见 style.css。 */
-    track.classList.toggle('is-nonlinear', nonlinearMode);
     /* 非线性分支也要重画因果线：节点已按序列重排，若只 return，
        causesSvg 里留着上一帧线性布局的箭头，指向空白处 */
     if (nonlinearMode) { renderNonlinear(); renderLoops(); renderStoryOverlay(); drawCauses(); return; }

@@ -19,24 +19,43 @@
 
 > 这两条会改变用户能看到的画面，按此前口径必须先确认；用户 2026-09-12 选择「两个都做」。
 
-### 非线性视图的「类型泳道」没有真正生效
-- 位置：`src/ui/timeline.ts` 的 `renderNonlinear` + `nodeHtml`，`src/style.css` 的 `.tl__n{top:50%}`。
-- 根因：`nodeHtml` 只写 `left`，纵坐标交给 CSS 的 `top:50%` → **两条泳道的圆点全挤在垂直中线上**，
-  而年份数字留在各自的泳道行上（`laneY + 12`），离自己的节点 90px 以上，读不出对应关系。
-- 修法：
-  ① `nodeHtml` 增加可选参数 `top`（省略时仍走 CSS 的 50%，线性视图完全不受影响），
-     非线性分支把圆点圆心放到各自的泳道行 `laneY`；
-  ② 年份数字改到圆点**上方** `laneY - 19`（名字在下方 `+9`，两者都在 x 上居中，不再打架）；
-  ③ 行标签移到行左侧 `laneY - 8`、行分隔线移到行下方 `laneY + 30`；
-  ④ 非线性视图不再画那条贯穿全宽的时间轴线 —— 非线性视图的 x 是**序列序**、不是时间，轴线在那里没有意义；
-  ⑤ `src/style.css` 新增 `.tl-track.is-nonlinear .tl__n .tl__name{top:22px}`：线性视图里剧情事件的
-     名字在上方，搬进泳道会撞上上一行的年份与行标签（`render` 入口用
-     `track.classList.toggle('is-nonlinear', nonlinearMode)` 控制，切回线性会移除）。
-- 实测（真实 Electron + CDP，量 `getBoundingClientRect`）：世界事件圆点 `cy=40`、剧情事件 `cy=130`
-  （正好 90 的行距），每个年份数字距自己的圆点 `dx=0 / dy=-14`，名字距圆点 `+15.5`，
-  两条行分隔线在 `70/160`，轴线 0 条。
-- **线性视图回归**（必须验，因为动了 `nodeHtml` 与 CSS）：全部圆点 `cy=140.5` = 轨道半高 `281/2`，
-  剧情名在上 `-25.5`、世界名在下 `+15.5`，轴线 1 条、`is-nonlinear` 类已移除。
+### 非线性视图：改成「与线性同排版 + 等距」（按用户澄清的目的重做）
+- 位置：`src/ui/timeline.ts` 的 `renderNonlinear`。
+- 上一版（同日的 commit `30537bd`）按本文档原来写的「类型泳道」实现：按 `world_event` /
+  `story_event` 分成两行。**用户澄清目的后推翻**——原话：
+  「其实非线性不需要泳道，就和线性模式一样排版就行，只要等距就行了，
+  非线性的作用是为了方便看清节点的时间顺序（排除时间干扰）」。
+  分行恰恰违背目的：同一条时间线上的先后关系被拆到两行里，反而看不出顺序。
+- 修法（最终版）：
+  ① **单行**：不再分行，节点一律落在轴线上（沿用 CSS `.tl__n{top:50%}`，与线性完全一致），
+     `.tl-line` 轴线保留；`nodeHtml` 恢复三参数（上一版为分行而加的 `top?` 已删除）；
+  ② **按时间排序再等距**：`const ordered = nodes.slice().sort((a, b) => nodeEpoch(a) - nodeEpoch(b))`
+    —— `tl.nodes` 的数组顺序**不是时间序**（vault 是节点的源，重扫后是目录/文件顺序），
+     照原样排会得到 `330→420→450→312→500` 这种乱序，等于把这个功能废掉；
+  ③ 每个节点自带年份标签，放在**名字的对侧**（世界事件名字在下方 → 年份在上
+     `calc(50% - 19px)`；剧情事件名字在上方 → 年份在下 `calc(50% + 14px)`），两边都不打架；
+  ④ **顶部标尺与时间指针在该模式隐藏**：标尺按时间画刻度、而这里 x 是序列序，刻度与节点对不上，
+     标尺正是这个模式要排除的「时间干扰」（`scaleEl.innerHTML = ''`），
+     指针横坐标同理（`cursorEl.style.display = 'none'`，写在 `renderNonlinear` 里），
+     但「已发生/未发生」的淡化仍在 `updateCursor` 里按时间算。
+- 实测（真实 Electron + CDP，量 `getBoundingClientRect`）：5 个节点全部 `cy=140.5` = 轨道半高 `281/2`
+  （**单行**），相邻间距恒为 `143.2`（**等距**），年份从左到右 `312/330/420/450/500`（**单调不减 = 时间序**），
+  每个年份距自己的圆点 `dx=0`、世界在上 `-14` / 剧情在下 `+19`，轴线 1 条，标尺长度 0，指针 `display:none`。
+- **线性视图回归**：标尺回来（长度 6415）、指针回来、无逐节点年份标签、节点仍居中于轴线
+  （`cy=140.5`）、剧情名在上 `-25.5` / 世界名在下 `+15.5`。
+
+### ★ 本轮同步踩到并修掉的坑：`nonlinearMode` 暂存死区（真实教训）
+- 第一版改法把 `nonlinearMode` 读进了 `updateCursor()`（`cursorEl.style.display = nonlinearMode ? ... `）。
+  而 `updateCursor` 是由 `renderScale()` 尾部调用的，`renderScale` 在 `let nonlinearMode` 声明
+  **之前**就会被执行 → 启动直接抛
+  `ReferenceError: Cannot access 'Z' before initialization`（打包后变量被压缩成 `Z`）。
+- 后果不是「界面难看」而是**整排沙盘按钮消失**：`mountTimeline` 在尾部才调 `renderExtraTools()`，
+  一抛就中断，`#lk-tools` 里永远空的 —— 「＋循环 / 非线性」两个按钮连创建都没创建
+  （实测 `#lk-tools` 子元素数 0）。是 CDP 抓 `Runtime.exceptionThrown` 才定位到的。
+- 修法：把隐藏指针的语句移到 `renderNonlinear` 内部（那里 `nonlinearMode` 必定已初始化），
+  `updateCursor` 恢复原样。
+- 教训：**在「声明位置靠后的 `let`」和「声明位置靠前的函数」之间连引用要格外小心** ——
+  函数定义早于变量声明没问题，但调用点若也早于声明就是 TDZ。启动期异常会静默砍掉后面所有初始化。
 
 ### ↶ ↷ 没有可用状态
 - `store.canUndo()/canRedo()` 是 store 的公开接口，但全仓**零调用点** —— 工具栏两个按钮永远可点，

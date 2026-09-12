@@ -295,10 +295,6 @@ body {
 /* 节点类型位置：剧情事件名称在时间线上方，世界事件名称在下方（默认） */
 .tl__n.is-story .tl__name { top: -19px; color: var(--fg); }
 .tl__n.is-world .tl__name { top: 22px; }
-/* 非线性视图（类型泳道）：每行节点的纵坐标由内联 top 给，名字也要一律放圆点下方 ——
-   线性视图里剧情事件的名字在上方，搬进泳道会撞上上一行的年份与行标签。
-   纵坐标本身由 renderNonlinear 写在 style 上，这里只改名字的落点。 */
-.tl-track.is-nonlinear .tl__n .tl__name { top: 22px; }
 /* 时间线（照搬 legacy .tl__axis）：3px 粗结构线，常驻贯穿全宽，垂直居中 */
 .tl-line {
   position: absolute;
