@@ -3,7 +3,7 @@
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { saveNodeDoc, addEntity } from '../store/actions';
-import type { PropValue, TimelineNode, Entity, Timeline, TimePrecision } from '../store/types';
+import type { PropValue, TimelineNode, Entity, Timeline, TimePrecision, FieldType } from '../store/types';
 import { PRECISION_ORDER, PRECISION_LABELS } from '../store/types';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
@@ -12,6 +12,7 @@ import { Image } from './image-ext';
 import { Tag } from './tag-ext';
 import { parseTimeText } from './node-form';
 import { isImeEnter } from './keys';
+import { promptDialog } from './confirm';
 import { toEpoch, fromEpoch, buildYearTable, calendarOf, timePointOf } from '../calendar';
 
 function escape(s: string): string {
@@ -116,7 +117,17 @@ function fmtCNDate(s: string): string {
 /** 按属性类型生成值控件（数值/日期 scrub、布尔 checkbox、多选一列 checkbox、文本 input），change 回调对应 PropValue。
  *  live 用于数组控件：属性面板刻意不重渲染，若按构建时的快照 v 增删，
  *  连点两项时第二项会把第一项算回来（取消勾选 A → 存 [B,C]，再取消 B → 由旧 v 算出 [A,C]，A 复活）。 */
-function buildPropCtrl(v: PropValue, onChange: (next: PropValue) => void, live?: () => PropValue): HTMLElement {
+/** 按值生成属性控件。`declType` = 模板里**声明的**字段类型，用来覆盖「按值的 JS 类型猜」的默认行为：
+ *  长文本要 textarea（而不是单行 input）、列表即使当前是空值也要走勾选列表那一支。 */
+function buildPropCtrl(v: PropValue, onChange: (next: PropValue) => void, live?: () => PropValue, declType?: FieldType): HTMLElement {
+  /* 长文本（模板声明）→ 多行框 */
+  if (declType === 'longtext') {
+    const ta = document.createElement('textarea');
+    ta.value = typeof v === 'string' ? v : '';
+    ta.style.cssText = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-xs);outline:none;font-family:inherit;line-height:1.5;min-height:40px;resize:vertical;';
+    ta.addEventListener('change', () => onChange(ta.value));
+    return ta;
+  }
   /* 数值 → 拖拽 + 滚轮 scrub */
   if (typeof v === 'number') {
     return createScrubField({ value: v, step: 1, format: (n) => String(n), onCommit: (n) => onChange(n) });
@@ -138,11 +149,12 @@ function buildPropCtrl(v: PropValue, onChange: (next: PropValue) => void, live?:
     cb.addEventListener('change', () => onChange(cb.checked));
     return cb;
   }
-  /* 多选 → 一列复选框（每项一个开关） */
-  if (Array.isArray(v)) {
+  /* 多选（或模板声明为列表）→ 一列复选框（每项一个开关）+ 新增项 */
+  if (Array.isArray(v) || declType === 'list') {
+    const base: (string | number)[] = Array.isArray(v) ? v : [];
     const list = document.createElement('div');
     list.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;';
-    v.forEach((item) => {
+    base.forEach((item) => {
       const lab = document.createElement('label');
       lab.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:var(--text-xs);color:var(--fg);';
       const cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = String(item); cb.checked = true;
@@ -151,7 +163,7 @@ function buildPropCtrl(v: PropValue, onChange: (next: PropValue) => void, live?:
       cb.addEventListener('change', () => {
         /* 取消勾选 = 从列表移除该项。基于「最新值」算，而不是构建时的快照 */
         const cur = live ? live() : v;
-        const arr = Array.isArray(cur) ? cur : v;
+        const arr = Array.isArray(cur) ? cur : base;
         const next = cb.checked ? [...arr, item] : arr.filter((x) => String(x) !== String(item));
         onChange(next);
       });
@@ -173,7 +185,7 @@ function buildPropCtrl(v: PropValue, onChange: (next: PropValue) => void, live?:
       const t = addInp.value.trim();
       if (!t) return;
       const cur = live ? live() : v;
-      const arr = Array.isArray(cur) ? cur : v;
+      const arr = Array.isArray(cur) ? cur : base;
       if (arr.some((x) => String(x) === t)) { addInp.value = ''; return; }
       onChange([...arr, t]);
       addInp.value = '';
@@ -184,7 +196,7 @@ function buildPropCtrl(v: PropValue, onChange: (next: PropValue) => void, live?:
       cb.style.cssText = 'width:14px;height:14px;';
       cb.addEventListener('change', () => {
         const c2 = live ? live() : v;
-        const a2 = Array.isArray(c2) ? c2 : v;
+        const a2 = Array.isArray(c2) ? c2 : base;
         onChange(cb.checked ? [...a2, t] : a2.filter((x) => String(x) !== t));
       });
       const txt2 = document.createElement('span'); txt2.textContent = t;
@@ -440,9 +452,19 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
     status.textContent = '已保存 ✓';
   }
   /* 属性面板（只读）：显示节点元数据 + #描述： + 已有自定义属性（结构化属性由世界沙盘管理，编辑器仅展示） */
-  function renderProps(node: { title?: string; name?: string; year?: number | string; precision?: string; type?: string; kind?: string; desc?: string; properties?: Record<string, PropValue>; month?: number; day?: number; hour?: number; minute?: number; second?: number } | undefined, isEntity = false) {
+  function renderProps(node: { title?: string; name?: string; year?: number | string; precision?: string; type?: string; kind?: string; typeId?: string; desc?: string; properties?: Record<string, PropValue>; month?: number; day?: number; hour?: number; minute?: number; second?: number } | undefined, isEntity = false) {
     if (!node) { propsEl.style.display = 'none'; propsEl.innerHTML = ''; return; }
     propsEl.style.display = '';
+    /* 模板里声明的字段类型（决定长文本用 textarea、列表走勾选列表那一支）：
+       节点看 kind 对应的 formats，实体看它 typeId 对应的实体类型。 */
+    const decl: Record<string, FieldType> = {};
+    if (isEntity) {
+      const t = (currentWorld(store).entityTypes ?? {})[node.typeId ?? ''];
+      for (const f of t?.fields ?? []) decl[f.name] = f.type;
+    } else {
+      const t = store.data.formats?.[node.kind ?? '事件'];
+      for (const f of t?.fields ?? []) decl[f.name] = f.type;
+    }
     /* 自定义属性：可编辑（按类型控件），固定属性也用可编辑控件（年份 scrub、精度/类型下拉、标题/描述文本） */
     /* 面板构建后刻意不重渲染（避免销毁拖拽中的 scrub 控件），所以每次提交都要从 store
        取最新 properties 再合并——用构建时的 props 快照会让「改第二项」把「改第一项」覆盖回去 */
@@ -462,7 +484,7 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
       keyEl.style.cssText = 'flex-shrink:0;width:80px;font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
       keyEl.textContent = k;
       row.appendChild(keyEl);
-      row.appendChild(buildPropCtrl(v, (nv) => saveProp({ ...liveProps(), [k]: nv }), () => liveProps()[k]));
+      row.appendChild(buildPropCtrl(v, (nv) => saveProp({ ...liveProps(), [k]: nv }), () => liveProps()[k], decl[k]));
       const del = document.createElement('button'); del.textContent = '×'; del.title = '删除属性';
       del.style.cssText = 'flex-shrink:0;width:18px;height:18px;background:none;border:none;color:var(--fg-2);cursor:pointer;font-size:14px;';
       del.addEventListener('click', () => { const np = { ...liveProps() }; delete np[k]; saveProp(np); renderProps(node, isEntity); });
@@ -472,8 +494,9 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
     /* 固定属性也改成可编辑：标题/描述文本、年份数值 scrub、精度/类型下拉；保存写回 node 字段 */
     const saveFixed = (patch: Record<string, string>) => {
       patchTarget((o) => {
-        if ('name' in o) {   /* 实体：只有名称可改 */
+        if ('name' in o) {   /* 实体：名称 + 类型（类型=模板，决定该有哪些字段） */
           if (patch['名称'] !== undefined) o.name = patch['名称'];
+          if (patch['实体类型'] !== undefined) o.typeId = patch['实体类型'];
           return;
         }
         for (const [k, v] of Object.entries(patch)) {
@@ -508,7 +531,7 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
     /* 固定属性行：年份数值 scrub、精度/类型下拉、标题/描述文本 */
     /* 固定属性行：年份数值 scrub、精度/类型下拉、标题/描述文本、种类下拉（模板引用） */
     const fixedRows: { k: string; v: string }[] = isEntity
-      ? [{ k: '名称', v: node.name ?? '' }]
+      ? [{ k: '名称', v: node.name ?? '' }, { k: '实体类型', v: node.typeId ?? '' }]
       : [
           { k: '标题', v: node.title ?? '' },
           { k: '时间', v: node.year !== undefined ? String(node.year) : '' },
@@ -617,6 +640,22 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
           saveFixed({ 种类: sel.value });
           /* 换种类后属性字段集合变了，重渲染让属性区跟上 */
           renderProps(targetNode());
+        });
+        ctrl = sel;
+      } else if (k === '实体类型') {
+        /* 实体换类型（= 换模板）：换完要按新类型补字段 —— 派发模板变更事件，
+           由 src/main.ts 的 ensureEntityLayer 统一补全（模板是唯一权威）。 */
+        const sel = document.createElement('select');
+        sel.style.cssText = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-xs);outline:none;';
+        const types = currentWorld(store).entityTypes ?? {};
+        const ids = Object.keys(types);
+        (ids.length ? ids : ['']).forEach((tid) => { const o = document.createElement('option'); o.value = tid; o.textContent = tid ? (types[tid].name || tid) : '（还没有类型）'; sel.appendChild(o); });
+        sel.value = v && types[v] ? v : (ids[0] ?? '');
+        sel.title = '实体类型（模板）：决定这个实体有哪些字段，在左栏「结构体管理」的“实体类型”里定义';
+        sel.addEventListener('change', () => {
+          saveFixed({ 实体类型: sel.value });
+          window.dispatchEvent(new CustomEvent('lingkuang-formats-changed'));
+          renderProps(targetEntity(), true);
         });
         ctrl = sel;
       } else if (k === '类型') {
@@ -800,12 +839,15 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
     const entities = ws.entities ?? {};
     sidebar.innerHTML = `
       <div style="display:flex;gap:4px;margin-bottom:6px;">
+        <select id="ed-entity-type" title="新建实体用哪个类型（= 模板，在左栏「结构体管理」的“实体类型”分区里增删字段）" style="flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 4px;font-size:11px;outline:none;">${Object.entries(types).map(([tid, t]) => `<option value="${escape(tid)}">${escape(t.name)}</option>`).join('')}</select>
         <button id="ed-entity-new" style="flex:1;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px;cursor:pointer;">＋实体</button>
         <button id="ed-type-new" style="flex:1;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px;cursor:pointer;">＋类型</button>
       </div>
       <div id="ed-entity-list"></div>`;
     sidebar.querySelector('#ed-entity-new')?.addEventListener('click', () => {
-      const typeId = Object.keys(types)[0] ?? 'default';
+      /* 用下拉里选的类型（旧写法硬编码「取第一个类型」，还不带类型选择入口） */
+      const picked = (sidebar.querySelector('#ed-entity-type') as HTMLSelectElement | null)?.value;
+      const typeId = picked || Object.keys(types)[0] || 'default';
       const id = addEntity(store, { typeId, name: '新实体' });
       currentEntityId = id;
       target = { kind: 'entity', world: store.activeWorld, entityId: id };
@@ -817,13 +859,25 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
       renderSidebar();
     });
     sidebar.querySelector('#ed-type-new')?.addEventListener('click', () => {
-      store.update((d) => {
-        const ws2 = d.worldsets[store.activeWorld];
-        if (!ws2.entityTypes) ws2.entityTypes = {};
-        const tid = 'et' + Date.now();
-        ws2.entityTypes[tid] = { id: tid, name: '新类型', fields: [] };
+      void promptDialog({
+        title: '新建实体类型',
+        message: '类型就是这套实体的模板（定义该有哪些字段）。字段在左栏「结构体管理」的“实体类型”分区里增删。',
+        label: '类型名（如 势力 / 种族 / 魔法体系）',
+        placeholder: '势力',
+        confirmText: '创建',
+      }).then((name) => {
+        const k = (name ?? '').trim();
+        if (!k) return;
+        store.update((d) => {
+          const ws2 = d.worldsets[store.activeWorld];
+          if (!ws2) return;
+          if (!ws2.entityTypes) ws2.entityTypes = {};
+          if (ws2.entityTypes[k]) return;
+          ws2.entityTypes[k] = { id: k, name: k, fields: [] };
+        });
+        renderSidebar();
+        status.textContent = `已建类型「${k}」· 到「结构体管理」加字段`;
       });
-      renderSidebar();
     });
     const el = sidebar.querySelector('#ed-entity-list') as HTMLElement;
     const frag = document.createElement('div');

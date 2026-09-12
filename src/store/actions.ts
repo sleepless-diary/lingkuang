@@ -1,7 +1,7 @@
 /** 灵框 · actions（通过 store.update 修改数据——视图不直接碰 data） */
 import type { Store } from './store';
 import { currentWorld } from './store';
-import type { Timeline, TimelineNode, Entity, Worldset, WorldData } from './types';
+import type { Timeline, TimelineNode, Entity, Worldset, WorldData, PropValue } from './types';
 
 export function addTimeline(store: Store, name: string): string {
   const id = 'tl' + Date.now();
@@ -53,9 +53,33 @@ export function addEntity(store: Store, entity: Partial<Entity>): string {
     const ws = d.worldsets[store.activeWorld];
     if (!ws) return;
     if (!ws.entities) ws.entities = {};
-    ws.entities[id] = { id, typeId: entity.typeId ?? 'default', name: entity.name ?? '新实体', doc: entity.doc ?? '' };
+    /* 类型：传了的且存在就用它，否则取第一个已存在的类型。
+       旧写法硬编码 `entity.typeId ?? 'default'` —— 而 'default' 这个类型根本不存在，
+       于是新实体挂在一个不存在的类型上、模板永远不生效。 */
+    const typeId = entity.typeId && ws.entityTypes?.[entity.typeId]
+      ? entity.typeId
+      : Object.keys(ws.entityTypes ?? {})[0] ?? 'default';
+    /* 建实体就按类型模板补全字段：否则新实体 properties 是空的，属性区一片空，
+       用户不知道这个类型该填什么（节点那边的 addNode 也是同样的道理）。 */
+    const properties: Record<string, PropValue> = { ...(entity.properties ?? {}) };
+    for (const f of ws.entityTypes?.[typeId]?.fields ?? []) {
+      if (properties[f.name] === undefined) {
+        properties[f.name] = f.type === 'number' ? 0 : f.type === 'boolean' ? false : f.type === 'list' ? [] : '';
+      }
+    }
+    ws.entities[id] = { ...entity, id, typeId, name: entity.name ?? '新实体', doc: entity.doc ?? '', properties };
   });
   return id;
+}
+
+/** 删除实体（设定库条目）。注意：地图标记等地方可能存了它的 id 作为引用 ——
+ *  那些引用会变成悬空（地图标记自身还有 label，所以只是退化、不会报错）。 */
+export function removeEntity(store: Store, entityId: string): void {
+  store.update((d) => {
+    const ws = d.worldsets[store.activeWorld];
+    if (!ws?.entities) return;
+    delete ws.entities[entityId];
+  });
 }
 
 export function addMap(store: Store, name: string): string {

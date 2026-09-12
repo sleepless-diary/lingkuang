@@ -75,9 +75,20 @@ export interface Timeline {
   calendar?: import('../../src/calendar').Calendar;   // 该线历法；空则默认 360 天制（兼容现有数据）
 }
 
-/** 实体类型（自定义） */
-export interface EntityTypeField { id: string; name: string; type: FieldType; }
+/** 实体类型（= 实体模板）。字段与 FormatField 同构：按**名字**索引，值存在实体的 properties 里。
+ *  （旧结构里每个字段还带一个从未被读取的 `id`，已去掉。） */
+export interface EntityTypeField { name: string; type: FieldType; }
 export interface EntityType { id: string; name: string; fields: EntityTypeField[]; }
+
+/** 差异帧（Phase 2「角色演变」用）：从 `since` 起生效的一组字段覆盖；`until` 为空 = 一直有效。
+ *  按用户 2026-09-12 的决定：**存在实体自己身上**（不放在事件节点上）。
+ *  「此刻的样子」= properties（初稿）+ 所有 `since <= 当前时间` 的帧按时间叠加。 */
+export interface EntityLayer {
+  since: number;                    // epoch 秒（与 timeCursor / 节点位置同一套刻度）
+  until?: number | null;
+  note?: string;                    // 这条变化因何而来（如「第一次魔潮」）
+  values: Record<string, PropValue>;
+}
 
 /** 模板字段类型（结构体管理面板里可选的种类）——
  *  「列表」的值是数组，编辑器按数组渲染成一列可勾选项 + 新增输入框。 */
@@ -94,7 +105,8 @@ export interface Entity {
   kind?: string;                // 引用格式
   name: string;
   doc?: string;
-  properties?: Record<string, PropValue>;   // 自定义笔记属性（frontmatter 任意键值）
+  properties?: Record<string, PropValue>;   // 「初稿」：按类型模板填的结构化特征
+  layers?: EntityLayer[];                   // 「差异帧」：按时间叠加的变化（Phase 2 使用）
 }
 
 /** 地图（Leaflet 思路：手绘区域 + 标记 + 轨迹） */

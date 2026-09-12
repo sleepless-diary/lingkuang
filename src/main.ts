@@ -3,6 +3,7 @@ import createStore, { emptyData } from './store/store';
 import { renderShell } from './ui/shell';
 import { disposeCurrentTool } from './tools/registry';
 import { undoWithVault, redoWithVault } from './store/actions';
+import { ensureEntityTypes, ensureEntityFields } from './store/entities';
 import './style.css';
 
 /** 数据加载：优先 vault(.md 文件为源)；无 vault 则回退 JSON/空数据 */
@@ -229,6 +230,19 @@ function ensureAllFormatFields(store: any): void {
   if (changed) store.update(() => {}, { undo: false, keepRedo: true }); /* 触发落盘，把补全字段写回 vault */
 }
 
+/** 实体侧：世界还没有实体类型就播种内建类型（角色/地点/物品/组织/种族），
+ *  再按类型模板给每个实体补全字段。与 `ensureAllFormatFields` 同一套约定（模板是唯一权威）。
+ *  ⚠️ 类型只**播种一次**，之后以数据为准 —— 不做读取端兜底合并，否则会重演
+ *  「内建种类在面板里删掉、下次读又冒出来」（`main.js` 的 loadFormatsRaw 踩过）。 */
+function ensureEntityLayer(store: any): void {
+  let changed = false;
+  for (const ws of Object.values(store.data.worldsets) as any[]) {
+    if (ensureEntityTypes(ws)) changed = true;
+    if (ensureEntityFields(ws)) changed = true;
+  }
+  if (changed) store.update(() => {}, { undo: false, keepRedo: true });
+}
+
 async function main() {
   const data = await loadData();
   const store = createStore(data);
@@ -256,7 +270,7 @@ async function main() {
      并顺带触发落盘把结果写回 vault。ensureAllFormatFields 定义在本文件（模板的权威执行点），
      所以由这里监听，而不是让面板自己去改节点数据。 */
   window.addEventListener('lingkuang-formats-changed', () => {
-    try { ensureAllFormatFields(store); } catch (e) { console.error('[lingkuang] 模板变更后补全失败：', e); }
+    try { ensureAllFormatFields(store); ensureEntityLayer(store); } catch (e) { console.error('[lingkuang] 模板变更后补全失败：', e); }
   });
   async function writeAll(): Promise<void> {
     const api = (window as any).lingkuangAPI;
@@ -307,6 +321,7 @@ async function main() {
   });
   /* 在落盘订阅注册后才补全，确保 store.update 能触发落盘写回 .md（type/precision/kind + 格式字段） */
   ensureAllFormatFields(store);
+  ensureEntityLayer(store);
   const host = document.getElementById('app')!;
   renderShell(store, host);
 

@@ -25,15 +25,19 @@ const TYPE_LABEL: Record<FieldType, string> = {
 };
 const TYPE_ORDER: FieldType[] = ['text', 'longtext', 'number', 'boolean', 'list'];
 
-type Formats = Record<string, WorldFormat>;
+type Formats = Record<string, WorldFormat>;   // 节点种类与实体类型同构：{ id, name, fields[] }
+type Tab = 'kind' | 'etype';
 
-/** store 里的 formats 快照（深拷贝，面板在草稿上编辑，点保存才生效） */
-function readFormats(store: Store): Formats {
-  const src = store.data.formats;
-  if (!src) return {};
+/** 读取当前分区的模板集合。
+ *  - 节点种类（kind）：`worldbuilding.json` 顶层的 `formats`（整个应用共用，`main.js` 的 formats:load/save 管）
+ *  - 实体类型（etype）：**当前世界**的 `entityTypes`（每个世界一套，随世界数据一起存） */
+function readTab(store: Store, tab: Tab): Formats {
+  const src = (tab === 'kind' ? store.data.formats : store.data.worldsets[store.activeWorld]?.entityTypes) ?? {};
   const out: Formats = {};
   for (const [k, v] of Object.entries(src)) {
-    out[k] = { id: v?.id ?? k, name: v?.name ?? k, fields: (v?.fields ?? []).map((f) => ({ name: f.name, type: f.type })) };
+    const t = v as WorldFormat;
+    if (!t) continue;
+    out[k] = { id: t.id ?? k, name: t.name ?? k, fields: (t.fields ?? []).map((f) => ({ name: f.name, type: f.type })) };
   }
   return out;
 }
@@ -41,23 +45,36 @@ function readFormats(store: Store): Formats {
 export function renderSchema(store: Store, host: HTMLElement): () => void {
   host.style.overflow = 'auto';
   const api = (window as unknown as { lingkuangAPI?: { saveFormats?: (f: Formats) => Promise<{ ok: boolean; error?: string }> } }).lingkuangAPI;
+  const worldName = (): string => store.activeWorld || '（未选世界）';
 
-  let saved: Formats = readFormats(store);      // 已保存的
-  let draft: Formats = readFormats(store);      // 草稿
+  let tab: Tab = 'kind';
+  let saved: Formats = readTab(store, tab);      // 已保存的
+  let draft: Formats = readTab(store, tab);      // 草稿
   let activeKind: string = Object.keys(draft)[0] ?? '';
   let msgTimer: number | undefined;
 
-  /** 数一下某种类下有多少节点、以及某个字段被多少节点填过值（用于「会影响 N 个节点」的提示） */
+  /** 数一下某种类下有多少**对象**、以及某个字段被多少对象填过值（用于「会影响 N 个」的提示）。
+   *  节点种类数的是节点（跨全部世界），实体类型数的是当前世界里的实体。 */
   function impact(kind: string, fieldName?: string): { nodes: number; filled: number } {
     let nodes = 0, filled = 0;
+    const countOne = (props: Record<string, unknown> | undefined): void => {
+      nodes++;
+      if (fieldName && props && props[fieldName] !== undefined && props[fieldName] !== '') filled++;
+    };
+    if (tab === 'etype') {
+      for (const e of Object.values(store.data.worldsets[store.activeWorld]?.entities ?? {})) {
+        if (e.typeId !== kind) continue;
+        countOne(e.properties as Record<string, unknown> | undefined);
+      }
+      return { nodes, filled };
+    }
     for (const ws of Object.values(store.data.worldsets)) {
       for (const tlId of ws.order ?? []) {
         const tl = ws.timelines?.[tlId];
         if (!tl) continue;
         for (const n of tl.nodes ?? []) {
           if ((n.kind ?? '事件') !== kind) continue;
-          nodes++;
-          if (fieldName && n.properties && n.properties[fieldName] !== undefined && n.properties[fieldName] !== '') filled++;
+          countOne(n.properties as Record<string, unknown> | undefined);
         }
       }
     }
@@ -73,6 +90,26 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
     el.style.color = bad ? 'var(--danger)' : 'var(--accent)';
     if (msgTimer) window.clearTimeout(msgTimer);
     msgTimer = window.setTimeout(() => { if (el.isConnected) el.textContent = ''; }, 2600);
+  }
+
+  /** 切换分区（节点种类 / 实体类型）—— 两个分区共用同一套编辑 UI（数据结构同构）。
+      有未保存改动时先问一句，别静默丢草稿。 */
+  function switchTab(t: Tab): void {
+    if (t === tab) return;
+    const go = (): void => {
+      tab = t;
+      saved = readTab(store, tab);
+      draft = readTab(store, tab);
+      activeKind = Object.keys(draft)[0] ?? '';
+      render();
+    };
+    if (!dirty()) { go(); return; }
+    void confirmDialog({
+      title: '切换分区？',
+      message: '当前分区有未保存的改动，切换会丢掉它们。',
+      confirmText: '丢弃并切换',
+      danger: true,
+    }).then((ok) => { if (ok) go(); });
   }
 
   function render(): void {
@@ -91,7 +128,7 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
       .join('');
 
     const fieldRows = !cur
-      ? '<div style="font-size:var(--text-xs);color:var(--fg-2);">还没有任何种类，点左下角「＋新建种类」。</div>'
+      ? '<div style="font-size:var(--text-xs);color:var(--fg-2);">还没有任何模板，点左下角「＋新建」。</div>'
       : cur.fields
           .map((f, i) => `<div data-row="${i}" style="display:flex;align-items:center;gap:6px;">
             <input data-fname="${i}" value="${escapeHtml(f.name)}" placeholder="字段名（如 性别）" style="flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;"/>
@@ -107,23 +144,29 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
       <div style="max-width:940px;margin:0 auto;padding:18px 16px;display:flex;flex-direction:column;gap:12px;" id="sc-root">
         <div>
           <div style="font-size:17px;font-weight:600;color:var(--fg);">结构体管理</div>
-          <div style="font-size:var(--text-xs);color:var(--fg-2);line-height:1.6;margin-top:4px;">
-            种类=模板（定义有哪些字段），节点=按模板填内容。节点的种类由它在 vault 里的<b>文件夹名</b>决定。<br/>
-            加字段 → 该种类的所有节点自动补空值；<b>删字段 → 这些节点里该字段已填的值会被清掉</b>（保存时会先让你确认）。
+          <div style="display:flex;gap:6px;margin-top:8px;">
+            <button id="sc-tab-kind" style="background:${tab === 'kind' ? 'var(--accent)' : 'var(--surface-2)'};color:${tab === 'kind' ? 'var(--accent-on)' : 'var(--fg)'};border:1px solid ${tab === 'kind' ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius-sm);padding:5px 12px;font-size:var(--text-xs);cursor:pointer;">节点种类</button>
+            <button id="sc-tab-etype" style="background:${tab === 'etype' ? 'var(--accent)' : 'var(--surface-2)'};color:${tab === 'etype' ? 'var(--accent-on)' : 'var(--fg)'};border:1px solid ${tab === 'etype' ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius-sm);padding:5px 12px;font-size:var(--text-xs);cursor:pointer;">实体类型</button>
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--fg-2);line-height:1.6;margin-top:6px;">
+            ${tab === 'kind'
+              ? '种类=模板（定义有哪些字段），<b>时间线节点</b>按模板填内容；节点的种类由它在 vault 里的<b>文件夹名</b>决定。'
+              : `类型=模板（定义有哪些字段），<b>设定库里的实体</b>按模板填内容；这套类型属于<b>「${escapeHtml(worldName())}」</b>这个世界的设定体系。`}
+            <br/>加字段 → 该${tab === 'kind' ? '种类' : '类型'}下的所有${tab === 'kind' ? '节点' : '实体'}自动补空值；<b>删字段 → 已填的值会被清掉</b>（保存时会先让你确认）。
           </div>
         </div>
         <div style="display:flex;gap:12px;align-items:flex-start;">
           <div style="width:250px;flex-shrink:0;display:flex;flex-direction:column;gap:4px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;">
-            <div style="font-size:var(--text-xs);color:var(--fg-2);padding:0 2px 2px;">种类（模板）</div>
+            <div style="font-size:var(--text-xs);color:var(--fg-2);padding:0 2px 2px;">${tab === 'kind' ? '种类（节点模板）' : '类型（实体模板）'}</div>
             ${kindList || '<div style="font-size:var(--text-xs);color:var(--fg-2);">（空）</div>'}
-            <button id="sc-kind-new" style="margin-top:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:5px;font-size:var(--text-xs);cursor:pointer;">＋新建种类</button>
+            <button id="sc-kind-new" style="margin-top:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:5px;font-size:var(--text-xs);cursor:pointer;">＋新建${tab === 'kind' ? '种类' : '类型'}</button>
           </div>
           <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;">
             ${cur
               ? `<div style="display:flex;align-items:center;gap:8px;">
                    <span style="font-size:var(--text-sm);font-weight:600;color:var(--fg);">${escapeHtml(activeKind)}</span>
-                   <span style="font-size:var(--text-xs);color:var(--fg-2);">${imp.nodes} 个节点用这个模板</span>
-                   <button id="sc-kind-del" style="margin-left:auto;background:transparent;border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;">删除此种类</button>
+                   <span style="font-size:var(--text-xs);color:var(--fg-2);">${imp.nodes} 个${tab === 'kind' ? '节点' : '实体'}用这个模板</span>
+                   <button id="sc-kind-del" style="margin-left:auto;background:transparent;border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;">删除此${tab === 'kind' ? '种类' : '类型'}</button>
                  </div>
                  <div style="display:flex;flex-direction:column;gap:6px;">${fieldRows}</div>
                  <button id="sc-field-new" style="align-self:flex-start;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:5px 12px;font-size:var(--text-xs);cursor:pointer;">＋添加字段</button>`
@@ -146,6 +189,8 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
       if (s) { s.disabled = !d; s.style.opacity = d ? '' : '.4'; s.style.cursor = d ? 'pointer' : 'default'; }
       if (r) { r.disabled = !d; r.style.opacity = d ? '' : '.4'; }
     };
+    host.querySelector('#sc-tab-kind')?.addEventListener('click', () => switchTab('kind'));
+    host.querySelector('#sc-tab-etype')?.addEventListener('click', () => switchTab('etype'));
     host.querySelectorAll<HTMLElement>('[data-kind]').forEach((el) => {
       el.addEventListener('click', () => { activeKind = el.dataset.kind ?? ''; render(); });
     });
@@ -187,12 +232,13 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
         if (!cur || !cur.fields[i]) return;
         const f = cur.fields[i];
         const imp2 = impact(activeKind, f.name);
+        const unit = tab === 'kind' ? '节点' : '实体';
         void confirmDialog({
           title: `删除字段「${f.name}」？`,
           message: imp2.filled
-            ? `这个种类下有 ${imp2.filled} 个节点填过这个字段，保存后它们的值会被清掉。`
-            : `这个种类下没有节点填过这个字段，删除是安全的。`,
-          detail: cur.fields.length <= 1 ? '注意：这是该种类的最后一个字段，删完后模板会没有字段。' : undefined,
+            ? `这个${tab === 'kind' ? '种类' : '类型'}下有 ${imp2.filled} 个${unit}填过这个字段，保存后它们的值会被清掉。`
+            : `这个${tab === 'kind' ? '种类' : '类型'}下没有${unit}填过这个字段，删除是安全的。`,
+          detail: cur.fields.length <= 1 ? `注意：这是该${tab === 'kind' ? '种类' : '类型'}的最后一个字段，删完后模板会没有字段。` : undefined,
           confirmText: '删除字段',
           danger: true,
         }).then((ok) => {
@@ -212,11 +258,14 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
     });
 
     host.querySelector('#sc-kind-new')?.addEventListener('click', () => {
+      const isKind = tab === 'kind';
       void promptDialog({
-        title: '新建种类',
-        message: '种类名会直接成为 vault 里的文件夹名（节点就放在那个文件夹下）。',
-        label: '种类名（如 魔法体系 / 种族 / 势力）',
-        placeholder: '魔法体系',
+        title: isKind ? '新建种类' : '新建实体类型',
+        message: isKind
+          ? '种类名会直接成为 vault 里的文件夹名（节点就放在那个文件夹下）。'
+          : `这套实体类型属于「${worldName()}」这个世界（换世界就换一套设定体系）。`,
+        label: isKind ? '种类名（如 魔法体系 / 事件 / 剧情）' : '类型名（如 角色 / 地点 / 势力）',
+        placeholder: isKind ? '魔法体系' : '势力',
         confirmText: '创建',
       }).then((name) => {
         const k = (name ?? '').trim();
@@ -232,13 +281,16 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
     host.querySelector('#sc-kind-del')?.addEventListener('click', () => {
       if (!activeKind || !cur) return;
       const imp2 = impact(activeKind);
+      const isKind = tab === 'kind';
       void confirmDialog({
-        title: `删除种类「${activeKind}」？`,
+        title: `删除${isKind ? '种类' : '类型'}「${activeKind}」？`,
         message: imp2.nodes
-          ? `有 ${imp2.nodes} 个节点属于这个种类。删掉模板后它们仍然存在、属性值也不会丢，只是不再有「该填哪些字段」的约束。`
-          : '这个种类下还没有节点。',
-        detail: 'vault 里的文件夹不会被删（节点文件还在原处）。',
-        confirmText: '删除种类',
+          ? isKind
+            ? `有 ${imp2.nodes} 个节点属于这个种类。删掉模板后它们仍然存在、属性值也不会丢，只是不再有「该填哪些字段」的约束。`
+            : `有 ${imp2.nodes} 个实体属于这个类型。删掉模板后它们仍然存在、字段值也不会丢，只是不再有「该填哪些字段」的约束。`
+          : `这个${isKind ? '种类' : '类型'}下还没有${isKind ? '节点' : '实体'}。`,
+        detail: isKind ? 'vault 里的文件夹不会被删（节点文件还在原处）。' : undefined,
+        confirmText: `删除${isKind ? '种类' : '类型'}`,
         danger: true,
       }).then((ok) => {
         if (!ok) return;
@@ -292,13 +344,23 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
           for (const [k, v] of Object.entries(draft)) {
             clean[k] = { id: k, name: v.name || k, fields: v.fields.map((f) => ({ name: f.name.trim(), type: f.type })) };
           }
-          const res = api?.saveFormats ? await api.saveFormats(clean).catch(() => ({ ok: false, error: '写入失败' })) : { ok: false, error: '不在 Electron 环境' };
+          const res = tab === 'kind'
+            ? (api?.saveFormats ? await api.saveFormats(clean).catch(() => ({ ok: false as const, error: '写入失败' })) : { ok: false as const, error: '不在 Electron 环境' })
+            : { ok: true as const };
           if (!res || !res.ok) { say('保存失败：' + (res?.error ?? '未知错误'), true); return; }
           saved = JSON.parse(JSON.stringify(clean)) as Formats;
           draft = JSON.parse(JSON.stringify(clean)) as Formats;
-          /* 让 store 里的模板立刻生效（改模板不是节点数据改动，用 undo:false + keepRedo） */
-          store.update((d) => { d.formats = clean; }, { undo: false, keepRedo: true });
-          /* 交给 src/main.ts 的 ensureAllFormatFields 去补空值 / 清多余字段，并把结果落盘 */
+          if (tab === 'kind') {
+            /* 节点种类存在 worldbuilding.json 顶层的 formats（main.js 的 formats:load/save 负责落盘） */
+            store.update((d) => { d.formats = clean; }, { undo: false, keepRedo: true });
+          } else {
+            /* 实体类型跟着世界数据走（就在 worldbuilding.json 里），不需要单独 IPC */
+            store.update((d) => {
+              const ws = d.worldsets[store.activeWorld];
+              if (ws) ws.entityTypes = clean;
+            }, { undo: false, keepRedo: true });
+          }
+          /* 交给 src/main.ts 的 ensureAllFormatFields / ensureEntityLayer 去补空值、清多余字段 */
           window.dispatchEvent(new CustomEvent('lingkuang-formats-changed'));
           render();
           say('已保存 ✓');

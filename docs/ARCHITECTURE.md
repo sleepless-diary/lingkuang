@@ -41,7 +41,9 @@
 | `src/ui/trash.ts` | 回收站面板（`vault/.trash` 的列出 / 恢复 / 彻底清空；孤儿项需用户指定世界与格式） |
 | `src/ui/backup.ts` | 备份管理面板（世界观数据 / 角色词库的备份列表、恢复、导出、导入）。恢复要走「禁写 → 覆盖 → 重载」，见 §4 落盘保护 |
 | `src/ui/keys.ts` / `html.ts` | `isImeEnter(e)`（中文输入法回车守卫）/ `escapeHtml(s)`（外部文本进 innerHTML 前必过） |
-| `src/ui/schema.ts` | **结构体管理**面板（种类=模板：字段增删改名/排序/类型）。保存 → `formats.json` → `store.formats` → 派发 `lingkuang-formats-changed`，由 `src/main.ts` 的 `ensureAllFormatFields` 给所有节点补空值、清掉模板外的字段 |
+| `src/ui/schema.ts` | **结构体管理**面板（两个分区：**节点种类** / **实体类型**）。保存 → 节点种类写 `formats`（`formats.json`）或实体类型写 `worldsets[active].entityTypes` → 派发 `lingkuang-formats-changed`，由 `src/main.ts` 的 `ensureAllFormatFields` / `ensureEntityLayer` 补空值、清模板外的字段 |
+| `src/ui/codex.ts` | **设定库**面板（实体档案：类型筛选 + 实体列表 + 档案卡；字段按实体类型模板渲染） |
+| `src/store/entities.ts` | 实体层基础：`BUILTIN_ENTITY_TYPES`（角色/地点/物品/组织/种族）、`ensureEntityTypes`（世界没有类型时**播种一次**）、`ensureEntityFields`（按类型补字段）、`entityTypeOf` |
 | `data/worldbuilding.js` | 世界观种子数据（`window.__SEED_TIMELINES__`），首次运行/无用户数据时使用 |
 | `data/character_lib.json` | 角色生成词库（58 分类，萌百来源 CC BY-NC-SA，勿商用） |
 | `design-system/` | 设计令牌（`tokens.css` 权威颜色/字体源） |
@@ -68,6 +70,26 @@
   或在编辑器的属性区填。两处写的是同一份 `node.properties`，都走 `store.update`（可撤销）。
   ⚠️ 这两个面板都是**每次 store 通知就整块重渲染**，所以字段控件只在 `change`（失焦/回车）时提交 ——
   用 `input` 边打边存会触发重渲染、把正在输入的框销毁。
+
+### 实体（设定库）与实体类型
+
+- **实体类型 `EntityType` = 模板**：定义这类实体该有哪些字段。存在**每个世界**的 `entityTypes`
+  （跟着 `worldbuilding.json` 走，不走 IPC）。内建 5 个（角色/地点/物品/组织/种族）由
+  `src/store/entities.ts` 的 `ensureEntityTypes` 在「这个世界还没有任何类型」时**播种一次**，
+  之后完全由用户增删改。⚠️ 故意不做读取端兜底合并（`main.js` 的 `loadFormatsRaw` 踩过：
+  内建种类在面板里删掉、下次读又冒出来）。
+- **实体 `Entity` = 实现**：`properties` 是「**初稿**」（按类型模板填的结构化特征），`doc` 是正文（Markdown）。
+  `layers: EntityLayer[]` 是「**差异帧**」——按时间叠加的字段覆盖：
+  「此刻的样子」= 初稿 + 所有 `since <= 当前时间` 的帧按时间叠加（Phase 2 使用，类型已定义好）。
+- **模板分开存、面板统一管**：节点种类在 `formats`（应用级），实体类型在 `entityTypes`（世界级），
+  但都由左栏「结构体管理」一个面板的两个分区编辑（两者数据结构同构 `{ id, name, fields[] }`，复用同一套 UI）。
+- **补全时机**：`src/main.ts` 的 `ensureEntityLayer`（播种类型 + 按模板补字段）在启动时、以及任何
+  `lingkuang-formats-changed` 事件后运行，与节点侧的 `ensureAllFormatFields` 并列。
+- **看与改内容**：左栏「设定库」（`src/ui/codex.ts`）—— 类型筛选 + 列表 + 档案卡；
+  编辑器实体页也能改（属性区按类型模板渲染，含「实体类型」行可换类型，换完派发模板变更事件补字段）。
+- `buildPropCtrl(v, onChange, live?, declType?)` 的第 4 个参数是**模板声明的类型**：
+  长文本用 textarea、列表即使当前是空值也走勾选列表那一支 —— 让编辑器与详情面板「按模板渲染」
+  而不是「按值的 JS 类型猜」。
 
 ## 3. 数据模型
 
