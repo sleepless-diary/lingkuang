@@ -93,9 +93,18 @@
 - [ ] 本地优先不变：AI 永远是可选能力（双模式 + 费用自理声明）
 - [ ] **设定一致性检查（AI 任务）**：查矛盾（"他说 300 岁但种族寿命 200"、"角色位置与事件地点冲突"）——差异化卖点，AI 最擅长
 
-### 动效与出入场（设计已定、参考实现已有、v3 未实现）
-- [ ] **把 `DESIGN.md` 的动效语言补回来**（用户 2026-09-12 问过，选择先做功能，故记档待做）
-  - 设计定义：`design-system/DESIGN.md` 第 19 / 152 / 156 / 157 / 159 行 —— 呼吸感（**8s 签名动效
+### 动效与出入场（设计已定、参考实现已有、v3 分三片落地）
+- [x] **第 A 片（2026-09-12 完成）· 切换类**：切工具 / 开面板 / 弹窗 / 页签。新增 `src/ui/motion.ts`
+  （`enter` / `staggerIn`）+ `src/style.css` 末尾「动效层」（4 个 keyframes + 错峰容器 + reduced 降级）。
+  顺带把 `src/style.css` 的动效令牌对齐设计系统（原来是 fast 100ms / base 160ms，比 DESIGN.md 第 7 节
+  快一倍，落在被明令禁止的 snappy 档）。挂点与纪律见 `ARCHITECTURE.md`「动效（src/ui/motion.ts…）」。
+  验证：`tools/e2e/motion-switch.cjs` 13/13（读 `getAnimations()` 断言真的在跑 + 收尾不残留 + reduced 降级）。
+- [ ] **第 B 片 · 列表变化**：条目增删/搜索过滤时的错峰浮现与**其余项让位**（后者 CSS 表达不了，
+  要用 Anime.js 或手写 FLIP）。⚠️ 别把错峰挂在每次 `renderList()` 上 —— 搜索框每敲一个字都会重画左列。
+- [ ] **第 C 片 · 画布**：时间线节点移动 / 循环框 / 剧情线。⚠️ 撞 `src/ui/timeline.ts` 的
+  「每次 store 通知整体重渲染」硬约束，得先让节点能跨重建续上位置（这是 Anime.js 真正该上场的地方）。
+- [ ] **The Breath（8s 签名动效）**：只许用在 AI 头像 / 发送按钮（`DESIGN.md:156`）—— 等 AI 工具那片做。
+- 设计定义：`design-system/DESIGN.md` 第 19 / 152 / 156 / 157 / 159 行 —— 呼吸感（**8s 签名动效
     「The Breath」**，只许用在 AI 头像/发送按钮）、**苏醒入场（Waking fade）**（首次挂载
     opacity 0→1 + translateY 8px→0，各 640ms，每项**错峰 ~40ms**）、`prefers-reduced-motion` 下
     关掉呼吸与错峰、只留 `--motion-fast` 淡入。
@@ -103,11 +112,10 @@
     `--motion-slow:640ms` / `--ease-standard:cubic-bezier(0.22,0.75,0.25,1)` + `@media (prefers-reduced-motion)` 降级块。
   - **参考实现就在仓库里**：`legacy-index.html` 有全套 keyframes —— `grain`(VHS 颗粒) / `drift` /
     `wake`(苏醒) / `breath`(8s) / `breathe-in`(640ms) / `breath-avatar` / `modal-in` / `pulse-dot` /
-    标签错峰（`--delay` 由 JS 注入，注释写明「so any number of tabs adapts」）。
-  - 现状：`src/style.css` 只有 3 处 `transition`（第 279 / 318 / 510 行），**全仓 0 个 `@keyframes`**；
-    面板与工具切换都是 `host.innerHTML = …` 瞬时替换。
-  - ⚠️ 实现时的硬约束：**画布（时间线）每次 store 通知就整体重渲染**，不能给它挂「挂载即动画」
-    （拖节点时会不停重放）。入场动画只能挂在「切工具 / 首次挂载 / 面板打开」上。
+    标签错峰（`--delay` 由 JS 注入，注释写明「so any number of tabs adapts」）；
+    第 A 片已把 `wake` / `modal-in` / 错峰三件套的核心搬进 `src/style.css`（改名 `lk-*`）。
+  - 动画库：**Anime.js**（`animejs@4.5.0`，MIT，KB 笔记 `tech-notes/design/animejs.md` 就是冲灵框写的）
+    已装，留给 B/C 两片；A 片纯 CSS（零运行时开销、自动吃 tokens 降级块）。
   - ⚠️ 不属于动效美化、而属于 bug 的：`docs/BUGS.md` 的「时间指针缓动与画布不同步」。
 
 ## 中期（P2 · 设定库化）

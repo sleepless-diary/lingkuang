@@ -76,6 +76,8 @@ cwd 与环境变量不跨调用保留 —— 环境变量要和命令写在同�
 | `seed-corrupt-data.cjs` | 前置：造出「截断的 `worldbuilding.json` + 空 vault」（= `docs/BUGS.md` 记的那条数据损失场景；**空 vault 是关键**，否则 vault 会兜住） |
 | `data-corrupt-guard.cjs` | 判损护栏 16 项：截断文件启动后**原文件逐字节未被覆盖** + 副本隔离 + 重读过（`attempts>1`）+ `data:save` 被拒且标明 `locked` + 壳级横幅两条出口 + 点「继续用新数据」解锁并自愈 + 中途补全的文件被重读捞回 |
 | `data-load-clean.cjs` | 误报守卫 6 项：**干净**数据启动时护栏一步都不该动（`attempts===1`、无横幅、无副本、写盘照常） |
+| `seed-motion.cjs` | 前置：给动效套件造确定起点 —— **两条时间线**（页签错峰至少要两个 tab）+ 各一个节点 + 一个实体。独立目录（`%TEMP%\lk-motion`），免得给别的套件留下额外时间线 |
+| `motion-switch.cjs` | 动效（切换类）13 项：切工具/开面板/回沙盘/页签错峰/弹窗 各自**读 `getAnimations()` 断言动画真在跑**（animationName + 时长 + `playState`，在点击的同一个同步块里读）+ 收尾不残留（opacity=1 / transform=none）+ **减少动效降级**（`Emulation.setEmulatedMedia` 翻 `prefers-reduced-motion`：时长降到 160ms、动画名降级 `lk-fade`、错峰延迟全 0）+ 功能回归（点第二个时间线页签真的切过去了） |
 
 启动补写那条单独跑一次：
 
@@ -133,3 +135,35 @@ node tools\e2e\seed-node.cjs                 # 干净数据 + 一条节点 + 一
 # 起应用
 node tools\e2e\data-load-clean.cjs           # 6 项：attempts===1 / 无横幅 / 无副本 / 写盘照常
 ```
+
+动效（切换类）那条 —— 用**独立目录**（`lk-motion`），因为它需要一个两条时间线的世界：
+
+```powershell
+$env:LINGKUANG_TEST_DATA="C:\Users\<你>\AppData\Local\Temp\lk-motion\worldbuilding.json"
+$env:LINGKUANG_VAULT="C:\Users\<你>\AppData\Local\Temp\lk-motion\vault"
+
+node tools\e2e\seed-motion.cjs                # 2 条时间线（各 1 节点）+ 1 个实体
+# 起应用（同上面的 Start-Process）
+node tools\e2e\motion-switch.cjs              # 13 项
+```
+
+⚠️ 这套件**必须在 `no-preference` 下跑**，脚本自己会先 `Emulation.setEmulatedMedia` 钉死环境
+（系统的「减少动效」偏好会让令牌降级、时长全变 160ms），★11 再翻成 `reduce` 验降级。
+
+## 铁律 5：**别把播种脚本接进 `Select-Object -First N`**
+
+```powershell
+node tools\e2e\seed-node.cjs | Select-Object -First 1   # ❌ 会杀掉正在写盘的进程
+node tools\e2e\seed-node.cjs                            # ✅ 不接管道，或接 -Last（-Last 要读完整个流）
+```
+
+PowerShell 拿到第 N 条输出就**提前终止上游进程**。播种脚本是「写文件」的（`seed-node.cjs` 最后一步
+是 `writeFileSync(DATA, …)`），正好被打断就留下 **0 字节**的 `worldbuilding.json`。
+后果是一串连锁误报：应用启动读空文件 → 判损上锁 → 世界根本没加载 → `codex-node-tab` 的
+「切回实体页签」挂、`data-load-clean` 0/6（它会如实报告 `locked:true` + `attempts:4`）。
+当时我按「产品坏了」排查了一轮，最后 `Get-ChildItem` 看到 `worldbuilding.json` **0 字节**、mtime
+与播种同一秒才定案 —— **回归挂了先看盘中文件的实际大小与 mtime，再怀疑代码。**
+
+补救：**0 字节的数据文件不会自愈（这是判损护栏的设计）**，要从同目录的
+`worldbuilding.backup-N.json` 拷回来（`Copy-Item worldbuilding.backup-0.json worldbuilding.json`），
+再删掉那几份 `worldbuilding.bak-corrupt-*.json`（否则 `data-load-clean` 的 ★4「没有凭空生成损坏副本」会挂）。

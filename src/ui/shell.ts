@@ -9,6 +9,7 @@ import { addTimeline, addWorld, removeTimeline, removeWorld, undoWithVault, redo
 import { confirmDialog, promptDialog } from './confirm';
 import { currentWorld } from '../store/store';
 import { renderNodeForm } from './node-form';
+import { enter, staggerIn } from './motion';
 
 export function renderShell(store: Store, host: HTMLElement): void {
   registerAllTools();
@@ -119,6 +120,9 @@ function renderWorldTabs(store: Store): void {
       }).then((okDel) => { if (okDel) removeWorld(store, name); });
     });
   });
+  /* 页签错峰入场（DESIGN.md:157 的 staggered ~40ms）。只在这个分支里调：签名没变就早退了，
+     拖动节点时不会重放。新页签插进已带 lk-enter-stagger 的容器会自动获得动画。 */
+  staggerIn(tabs, '.lk-world-tab', 40);
   tabs.querySelector('#lk-world-new')?.addEventListener('click', () => {
     void promptDialog({
       title: '新建世界观',
@@ -188,6 +192,7 @@ function renderTimelineTabs(store: Store): void {
       )
       .join('');
     tabs.innerHTML = tabsHtml + `<button class="lk-tl-tab is-new" id="lk-tl-new" title="新建时间线">＋</button>`;
+    staggerIn(tabs, '.lk-tl-tab', 40);   /* 页签错峰入场（签名没变时上面已早退，拖动不会重放） */
     tabs.querySelectorAll('.lk-tl-tab[data-tl]').forEach((el) => {
       const id = (el as HTMLElement).dataset.tl!;
       el.addEventListener('click', () => store.setActiveTimeline(id));
@@ -233,6 +238,9 @@ function renderToolbar(store: Store): void {
         if (moduleView) { moduleView.style.display = 'none'; moduleView.innerHTML = ''; }
         if (toolHost) { toolHost.style.display = ''; toolHost.innerHTML = ''; }
         if (right) right.style.display = '';
+        /* 回到沙盘也走一次入场。这里用 lk-fade-in（只淡入、不加 transform）：
+           沙盘内是整体重渲染的画布，含 position:fixed 的右键菜单，别让容器变成它的包含块。 */
+        enter(document.getElementById('lk-sandbox'), 'lk-fade-in');
         return;
       }
       /* 其他模块：隐藏右区（sandbox/worldbar），模块 flex 占满工具栏右侧（工具栏始终可见） */

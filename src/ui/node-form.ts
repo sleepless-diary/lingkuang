@@ -7,6 +7,7 @@ import { buildYearTable, calendarOf, fromEpoch } from '../calendar';
 import { addNode } from '../store/actions';
 import { isImeEnter } from './keys';
 import { escapeHtml } from './html';
+import { enter } from './motion';
 
 /** 公历平均年宽（365.25 天）。与 `src/ui/timeline.ts:100` 的坐标轴口径一致：
  *  坐标轴是公历 epoch 秒，只有「epoch 秒 → 年」的粗估才用它。 */
@@ -201,6 +202,9 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
     err.textContent = msg;
     err.style.display = '';
   }
+  /* 面板入场（DESIGN.md 第 7 节）。本函数是一次性的（无订阅、提交即 host.innerHTML='' 关闭），
+     所以直接播即可，不需要防重播。 */
+  enter(host);
   host.querySelector('#nf-ok')?.addEventListener('click', submit);
   host.querySelector('#nf-cancel')?.addEventListener('click', () => (host.innerHTML = ''));
   /* 输入法组字期的回车是「上屏候选词」，不是提交（见 src/ui/keys.ts） */

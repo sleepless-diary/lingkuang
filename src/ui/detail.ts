@@ -9,6 +9,7 @@ import { escapeHtml } from './html';
 import { isImeEnter } from './keys';
 import { removeNode } from '../store/actions';
 import { confirmDialog } from './confirm';
+import { enter } from './motion';
 
 interface ParsedDoc {
   fields: { k: string; v: string }[];
@@ -316,7 +317,9 @@ export function renderNodeDetail(
   }
 
   renderView();
-  /* 外部 vault 改动 → store 更新 → 面板自动重绘最新值（编辑中不干扰） */
+  /* 面板打开 / 换节点时的入场（DESIGN.md 第 7 节）。只在这里播一次：
+     下面订阅里的 renderView() 属于「外部改动重绘」，重绘不该有动画（编辑时会闪）。 */
+  enter(host);
   detailUnsub?.();
   detailUnsub = store.subscribe(() => {
     /* #d-view 只由本面板产出：容器被别的工具接管 / 面板已卸载 → 自行退订 */

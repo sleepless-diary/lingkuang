@@ -24,6 +24,7 @@ import { escapeHtml } from './html';
 import { fieldRow } from './fields';
 import { createDocEditor, type DocEditor } from './doc-editor';
 import { createPropsPanel, type PropsPanel } from './props-panel';
+import { enter } from './motion';
 
 const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;font-family:inherit;user-select:text;';
 
@@ -47,6 +48,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   /* 中/右栏的内容签名（见 bodySignature）。声明在这里而不是订阅旁边：
      render() 里要写它，而 render() 定义在前 —— 放后面会形成 TDZ。 */
   let bodySig = '';
+  /* 显式切换（换条目 / 换页签）标记：只有它触发的中/右栏重建才播入场动画。
+     store 订阅触发的重建（外部改 vault 回扫、字段提交后签名变化）**不播** ——
+     否则改一个字段整块面板块淡入一次，看着像闪。 */
+  let pendingEnter = false;
   /* 节点页签的树展开状态（世界 / 时间线 / 种类 三级，与编辑器同一套交互） */
   const expandedWorlds = new Set<string>();
   const expandedTls = new Set<string>();
@@ -149,11 +154,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   function switchTarget(mutate: () => void): void {
     if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }
     mutate();
+    pendingEnter = true;   /* 这是用户主动切换：render() 播一次入场 */
     render();
   }
 
   const tabBtn = (id: string, label: string, on: boolean): string =>
-    `<button id="${id}" style="background:${on ? 'var(--accent)' : 'var(--surface-2)'};color:${on ? 'var(--accent-on)' : 'var(--fg)'};border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius-pill);padding:3px 12px;font-size:var(--text-xs);cursor:pointer;">${escapeHtml(label)}</button>`;
+    `<button id="${id}" class="lk-cx-tab" style="background:${on ? 'var(--accent)' : 'var(--surface-2)'};color:${on ? 'var(--accent-on)' : 'var(--fg)'};border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius-pill);padding:3px 12px;font-size:var(--text-xs);cursor:pointer;">${escapeHtml(label)}</button>`;
 
   function render(): void {
     /* 切条目 / 换页签 / 重渲染前先把正文结算掉（未失焦的编辑也在里面），再销毁旧实例 */
@@ -227,6 +233,13 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       </div>`;
 
     renderList();
+
+    /* 切换才播入场（见 pendingEnter 的说明）。动画挂在 #cx-root 上：它是这一整块内容的外框，
+       换条目/换页签时淡入上浮一次；store 订阅触发的重建不播，避免改个字段就整块闪一下。 */
+    if (pendingEnter) {
+      pendingEnter = false;
+      enter(host.querySelector<HTMLElement>('#cx-root'));
+    }
 
     /* ── 事件 ── */
     host.querySelector('#cx-tab-entity')?.addEventListener('click', () => switchTarget(() => { mode = 'entity'; query = ''; }));

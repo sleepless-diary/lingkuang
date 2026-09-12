@@ -20,9 +20,14 @@
   --text-sm: 12.5px;
   --text-base: 14px;
   /* legacy 画布依赖（还原旧版时间线 UI） */
-  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
-  --motion-base: 160ms;
-  --motion-fast: 100ms;
+  /* 动效令牌以 `design-system/tokens.css` 为准（DESIGN.md 第 7 节：慢、呼吸感、不 snappy）。
+     原来这里是 fast 100ms / base 160ms —— 比设计系统快一倍，正好落在 DESIGN.md:182 明令禁止的
+     「snappy developer tool」档（"The dream registers at 300ms+, not 150ms"）；动效层要复现的是
+     设计语言，故取值对齐设计系统（`--motion-slow` 以前在这个文件里根本没定义）。 */
+  --motion-fast: 180ms;
+  --motion-base: 320ms;
+  --motion-slow: 640ms;
+  --ease-standard: cubic-bezier(0.22, 0.75, 0.25, 1);
   --border-strong: #6f6d66;
   --radius-pill: 999px;
   /* legacy 工具内部卡片（大圆角/浮雕，还原旧版灵感/编辑器） */
@@ -569,3 +574,51 @@ body {
 .ed-props-title { margin-top: 6px; font-size: var(--text-xs); font-weight: 600; color: var(--fg); }
 /* 吸管模式：时间线高亮提示 */
 .tl-wrap.lk-eyedrop { box-shadow: inset 0 0 0 2px var(--accent); }
+
+/* ══════════ 动效层（DESIGN.md 第 7 节 Motion & Interaction）══════════
+   规则：入场动画只挂**显式切换**（切工具 / 开面板 / 换页签 / 弹窗），
+   绝不挂 store 订阅触发的重渲染 —— 沙盘每次通知都整体重渲染，挂了会在拖动节点时不停重放。
+   重放靠 JS 侧「摘类 → 强制重排 → 加类」（src/ui/motion.ts）；这里只放 keyframes 与类。
+   时长一律走 tokens.css 的 --motion-* 令牌，所以 prefers-reduced-motion 降级块自动生效。 */
+@keyframes lk-wake {          /* 唤醒淡入：opacity 0→1 + 上浮 8px（DESIGN.md:157 Waking fade） */
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes lk-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes lk-reveal-x {      /* 通栏/列表项：从左侧滑入（legacy fxRevealX） */
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes lk-pop {           /* 弹层卡片（legacy modal-in） */
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.lk-enter { animation: lk-wake var(--motion-base) var(--ease-standard) both; }
+.lk-fade-in { animation: lk-fade var(--motion-base) var(--ease-standard) both; }
+.lk-reveal-x { animation: lk-reveal-x var(--motion-base) var(--ease-standard) both; }
+.lk-pop-in { animation: lk-pop var(--motion-base) var(--ease-standard) both; }
+/* 弹层遮罩比卡片快：遮罩是 chrome，卡片才是内容 */
+.lk-overlay-in { animation: lk-fade var(--motion-fast) linear both; }
+/* 错峰容器：类留在容器上，新插入的子项自动获得入场（延迟由 motion.ts 注入 --lk-delay） */
+.lk-enter-stagger > * {
+  animation: lk-wake var(--motion-base) var(--ease-standard) both;
+  animation-delay: var(--lk-delay, 0ms);
+}
+/* 减少动效：错峰归零 + 入场降级为纯淡入（DESIGN.md:159）。行内 --lk-delay 由 motion.ts 跳过注入。 */
+@media (prefers-reduced-motion: reduce) {
+  /* 令牌降级：与 design-system/tokens.css:139-145 同值（本文件不 import tokens.css，复写一份） */
+  :root { --motion-fast: 120ms; --motion-base: 160ms; --motion-slow: 200ms; }
+  .lk-enter-stagger > * { animation-delay: 0ms; }
+  .lk-enter, .lk-enter-stagger > *, .lk-pop-in, .lk-reveal-x { animation-name: lk-fade; }
+}
+
+/* 交互态过渡（只在 hover/选中变色上用 --motion-fast：点一下要立刻有反馈，不能等 320ms） */
+.lk-tool-btn,
+.lk-world-tab,
+.lk-tl-tab,
+.lk-cx-tab {
+  transition: background var(--motion-fast) var(--ease-standard),
+              color var(--motion-fast) var(--ease-standard),
+              border-color var(--motion-fast) var(--ease-standard),
+              opacity var(--motion-fast) var(--ease-standard);
+}

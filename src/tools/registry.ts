@@ -1,5 +1,6 @@
 /** 灵框 · 工具注册表（工具栏）——模块 = 大视图（灵感/编辑器/AI…） */
 import type { Store } from '../store/store';
+import { enter } from '../ui/motion';
 export interface Tool {
   id: string;
   name: string;
@@ -32,6 +33,10 @@ export function openTool(id: string, host: HTMLElement, store?: Store): void {
   disposeCurrent?.();
   disposeCurrent = null;
   host.innerHTML = '';
+  /* 切工具/开面板的入场（DESIGN.md 第 7 节）。挂在这里 = 唯一入口，覆盖工具栏点击、
+     快捷键、「世界沙盘」分支以外的所有工具打开路径；容器本身在动画，工具动态 import
+     完成后内容在淡入过程中落进来，不会二次闪。 */
+  enter(host);
   const seq = ++openSeq;
   const ret = tool.open ? tool.open(host, store) : (renderPlaceholder(host, tool), undefined);
   const adopt = (d: void | (() => void)) => {

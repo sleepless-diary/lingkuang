@@ -8,6 +8,9 @@
  *  Esc / 点遮罩 / 取消 → 取消；任何路径都会 resolve，不会悬挂调用方。
  *  输入弹层里回车 = 确认（有文本框，回车是自然提交），但走 isImeEnter 排除输入法上屏。 */
 import { isImeEnter } from './keys';
+/* 动效：遮罩淡入（快）+ 卡片上浮（--motion-base）。类名与 keyframes 在 src/style.css「动效层」。
+   只做入场不做退场：settle() 立刻 resolve 并移除 overlay，抖动退场动画会推迟 Promise 结算，
+   调用方（删除/恢复这类破坏性操作）不该为一个观感等 200ms。 */
 
 export interface DialogOptions {
   title: string;
@@ -37,9 +40,11 @@ interface Extra {
 function openDialog(opts: DialogOptions & { extra?: (card: HTMLElement) => Extra }): Promise<unknown> {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
+    overlay.className = 'lk-overlay-in';
     overlay.style.cssText =
       'position:fixed;inset:0;z-index:2000;background:rgba(15,15,17,.45);display:flex;align-items:center;justify-content:center;';
     const card = document.createElement('div');
+    card.className = 'lk-pop-in';
     card.style.cssText =
       'min-width:320px;max-width:460px;background:var(--chrome-2);color:var(--fg-inverse);border:1px solid var(--border-strong);border-radius:var(--radius-lg);padding:var(--space-5);box-shadow:var(--elev-raised);display:flex;flex-direction:column;gap:var(--space-3);';
 

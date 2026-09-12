@@ -15,7 +15,69 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
-## 第十九轮（2026-09-12）· 改「种类」后残留的旧 .md 让改动自己变回去
+## 第二十轮（2026-09-12）· 动效层第 A 片（切换类）+ 一条新发现的数据损失
+
+> **目的**：用户在前两轮数据修复后选了「3 做动效」，并明确「**这是个大活，所有涉及元素变化情况的
+> 都要做上动画**」，随后补一句「**看一下有没有现成的动画库可以用，看 kb**」。
+> 分片计划：**A 切换类（本轮）** / B 列表变化 / C 画布（时间线）；用户先选 A。
+
+### 一、先查 kb：现成动画库有什么（用户点名要看）
+- `F:\knowledge-base\tech-notes\design\animejs.md` = **Anime.js**（`juliangarnier/anime`，69.2k⭐，MIT），
+  笔记本身就是冲着灵框写的：「**灵框 v3 是 Electron 前端** —— 加 UI 微交互（卡片/折叠/切换动画）
+  能用 Anime.js；世界观**时间线交互**（节点拖动/展开/循环框动效）更丝滑；用户之前用类 AE scrub +
+  transition 做动效 —— Anime.js 是更完善方案（几行代码替代手搓）」。
+- 另有 `tech-notes/dev/morph-icon.md`（状态图标动画，配 Anime.js）；KB 日记 `daily/2026-07-12.md:25`
+  记着用户装过 GSAP AI Skills（`F:\gsap-skills` 目录确实在）。但 GSAP 是 Webflow 自家许可
+  （免费、非 OSI），Anime.js 是 MIT 且体积小得多（打包约 119.8KB）⇒ 真要装就装 Anime.js。
+- **决定（用户选 1）**：现在就装 Anime.js，但 **CSS 打底**，库只用在 CSS 表达不了的地方
+  （元素被重建、却要从**旧位置**滑到新位置：画布节点移动 / 列表增删让位 = 第 B/C 片）。
+  ⇒ `animejs@4.5.0` 进 devDependencies，**本轮一行都没用**；装前做过烟测（ESM 命名导出
+  `animate`/`stagger`/`utils` 类型可解析 + esbuild 能打包）。
+
+### 二、动效层（新增 `src/ui/motion.ts` + `src/style.css` 末尾「动效层」）
+- 两个 API：`enter(el, cls='lk-enter')` 重放一次入场（**摘类 → 强制重排 → 加类**，只加类不会重播）；
+  `staggerIn(container, sel, step=40, cap=12)` 给子项注入 `--lk-delay`（≤12 项，长列表不至于等一两秒）。
+- keyframes：`lk-wake`（淡入 + 上浮 8px = DESIGN.md:157 的 Waking fade）/ `lk-fade` / `lk-reveal-x` /
+  `lk-pop`（= legacy `modal-in`）；错峰靠容器类 `.lk-enter-stagger > *` 读 `--lk-delay`。
+- 挂点（细节见 `ARCHITECTURE.md`）：`src/tools/registry.ts` 的 `openTool()`（切工具/开面板唯一入口）、
+  `src/ui/shell.ts`（回沙盘走 `lk-fade-in` 不带 transform；世界栏/时间线页签错峰 40ms）、
+  `src/ui/confirm.ts`（遮罩 + 卡片）、`src/ui/codex.ts`（`pendingEnter`：**只有显式换条目/换页签**才播）、
+  `src/ui/detail.ts`（首次 renderView）、`src/ui/node-form.ts`、`src/ui/alert.ts`（横幅滑入）。
+- **只入场、不做退场**（弹窗）：`settle()` 立刻 resolve 并移除 overlay；等 animationend 再 resolve
+  会让破坏性操作（删除/恢复）为一个观感延迟 200ms。要退场得先想清楚这个时序。
+- `prefers-reduced-motion`：容器动画降级为纯淡入（DESIGN.md:159「only --motion-fast fades」），
+  **错峰延迟由 JS 侧跳过注入** —— 行内 `--lk-delay` 是媒体查询压不住的。
+
+### 三、顺带修掉：`src/style.css` 的动效令牌与设计系统差一倍（本轮已修）
+- `src/style.css:23-25` 自己声明了一份动效令牌：`--ease-standard: cubic-bezier(0.4,0,0.2,1)`（Material 味）、
+  `--motion-base: 160ms`、`--motion-fast: 100ms`，**且没有 `--motion-slow`**；
+  而 `design-system/tokens.css:116-119` + DESIGN.md 第 7 节写的是 **180 / 320 / 640ms** +
+  `cubic-bezier(0.22,0.75,0.25,1)`，并在 `DESIGN.md:182` 明令「**Do not** speed up the motion to feel like
+  a snappy developer tool. The dream registers at **300ms+, not 150ms**」。
+  ⇒ 应用跑的是被设计系统明确禁止的档位。已把 `src/style.css` 的四个令牌对齐设计系统，
+  并在文件里复写一份 reduced-motion 降级块（该文件不 import `tokens.css`，只能复写）。
+  影响面：只有 `src/style.css:320` 那一处既有 `transition` 用到这些令牌（画布节点变色/位移），
+  其余动效都是本轮新加的。
+
+### 四、新发现（**未修**，待用户决定）· 没有节点的时间线会被 vault 重建抹掉
+- **现象**：新建一条时间线（还没有节点），重启应用（或任何一次 vault 回扫）后它**从界面上消失**。
+- **机制**：`src/main.ts:122 vaultToWorldData()` 重建 `timelines` 时**只遍历 vault 扫描结果**
+  （`for (const [tlName, nodes] of Object.entries(tls))`，`id = 'tl-' + tlName`，`order.push(id)`），
+  而**一条没有任何节点的时间线在 vault 里根本没有对应目录** ⇒ 这趟重建直接把它丢掉。
+  同类漏洞此前已修过两处：`maps`（`src/main.ts:147-151` 的注释）与 `entities`
+  （`src/main.ts:161-163` 的「vault 里还没有 `_设定` 目录 → 保留 base」例外），**`timelines` 漏了**。
+  更值得注意：时间线级的 `absOffset` / `loops` / `circa` / `storylines` **只有 JSON 一份**
+  （重建时靠 `prev?.` 从 base 抄回来）—— 一旦这条时间线被丢掉，**它的循环与剧情线一起消失**，
+  这正是用户上一轮问过的「只存在 JSON 里的东西」。
+- **实测（本机，`%TEMP%\lk-motion`）**：播两条时间线（主线 1 节点 / 支线 0 节点）→ 起应用 →
+  页签栏只有「主线 ＋」，盘上 JSON 里两条都还在（`loadData` 后没写盘所以没被抹）；
+  **若此时发生任何落盘，`writeAll` 会按内存里那份（少了空时间线）覆盖文件 ⇒ 变成永久丢失。**
+- **建议方向**（与 `entities` 的例外同构，注意别反过来把外部删除搞成"删不掉"）：
+  vault 扫描里没有、但 `base` 里**本身就是 0 节点**的时间线要保留（那是纯 JSON 容器）；
+  而 `base` 里**有节点**却扫不到目录的，继续按「文件为源」丢掉（那是用户外部删了目录）。
+  修的时候配一条 e2e（建空时间线 → 触发落盘 → 重启 → 仍在；且外部删目录的时间线不被复活）。
+
+
 
 > **目的**：用户在菜单里选的「先修『改动自己变回去』」。节点的**种类 = 它所在的文件夹名**
 > （`nodePath()` 按 `n.kind` 建目录、`scanTimelineDir()` 用 `sub.name` 回填），

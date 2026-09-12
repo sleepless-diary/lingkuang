@@ -5,6 +5,8 @@
  *  这里放的都是数据安全级的状态（如「数据文件判损、自动保存已暂停」），
  *  漏看一次的代价不对称 —— 所以宁可常驻，也不做成一闪而过的提示。 */
 
+import { enter } from './motion';
+
 export interface ShellAlertAction {
   text: string;
   /** 主操作（最该点的那个）：描边强调，不打色块 —— 与 design-system 的克制风格一致 */
@@ -46,6 +48,8 @@ function render(): void {
     const row = document.createElement('div');
     row.className = 'lk-alert' + (a.tone ? ` is-${a.tone}` : '');
     row.dataset.alert = a.id;
+    /* 通栏从左侧滑入：这是「必须被看见」的数据安全提示，缓一下比直接闪出来更容易被注意到 */
+    enter(row, 'lk-reveal-x');
     /* 结构固定：文本块（标题 + 正文）+ 右侧按钮组。文本用 textContent 而不是 innerHTML
        —— 正文里要带文件路径（可能含用户自己起的名字），拼 HTML 会变成注入面。 */
     const text = document.createElement('div');

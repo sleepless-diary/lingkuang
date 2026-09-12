@@ -44,6 +44,7 @@
 | `src/ui/keys.ts` / `html.ts` | `isImeEnter(e)`（中文输入法回车守卫）/ `escapeHtml(s)`（外部文本进 innerHTML 前必过） |
 | `src/ui/alert.ts` | **壳级横幅**（`#lk-alerts` 通栏，`showShellAlert`/`removeShellAlert`/`hasShellAlert`）：放「必须被看见、且要用户做选择」的状态（数据文件判损、自动保存已暂停）。与编辑器内部的 `addHint` 不同 —— 那条活在编辑器工具里、切走就没了，这条挂壳上，任何工具下都在 |
 | `src/ui/schema.ts` | **结构体管理**面板（两个分区：**节点种类** / **实体类型**）。保存 → 节点种类写 `formats`（`formats.json`）或实体类型写 `worldsets[active].entityTypes` → 派发 `lingkuang-formats-changed`，由 `src/main.ts` 的 `ensureAllFormatFields` / `ensureEntityLayer` 补空值、清模板外的字段 |
+| `src/ui/motion.ts` | **动效层**（`enter(el, cls='lk-enter')` 重放入场 / `staggerIn(container, sel, step, cap)` 错峰 / `motionReduced()`）：keyframes 在 `src/style.css` 末尾「动效层」一节，时长走 `--motion-*` 令牌。⚠️ 只挂**显式切换**（切工具/开面板/换页签/弹窗），别挂 store 订阅触发的重渲染 |
 | `src/ui/codex.ts` | **设定库 = 工作台**（合并方案 A 第 3 步）：左列「实体」/「时间线节点」双页签 + 搜索框（节点是 世界→时间线→种类→节点 四级树，搜索时摊平成列表）、中栏档案字段、右栏正文编辑器。节点中栏用 `src/ui/props-panel.ts`（与编辑器同一份）、实体用 `src/ui/fields.ts`、正文用 `src/ui/doc-editor.ts`。⚠️ 换条目必须走 `switchTarget()`（先 flush 再改选择），正文写回**创建时捕获的目标**。⚠️ store 订阅**按 `bodySignature()` 决定要不要重建**中/右栏 —— 无条件 `render()` 会 dispose 掉 tiptap，而「自动落盘 → vault 回扫」每次编辑后约 360ms 就会走一趟订阅，实测每换一次 DOM 就有丢击键/焦点/IME 的风险（第十八轮） |
 | `src/ui/fields.ts` | 模板字段控件的**公共渲染**（`fieldRow(field, value, onChange, labelWidth)` / `parseFieldInput` / `formatFieldValue`），按模板声明的类型决定形态。约定：只在 `change`（失焦/回车）提交 |
 | `src/ui/doc-editor.ts` | 极简文稿编辑器（tiptap，与 `editor.ts` 同一套扩展）：`createDocEditor(el, onFlush)` → `{ setDoc, getDoc, flush, dispose }`。⚠️ 切条目必须 flush 再 dispose |
@@ -236,6 +237,30 @@
   ⚠️ 清理**挂在写盘上**（既有语义）：一份「输了」的残留要等这个节点下次被写才会消失。
 - ⚠️ **测试前置必须给出确定起点**：`seed-node.cjs` 播节点前先清空这条时间线。
   同 id 两份并存时赢家随 readdir 顺序而变，断言会假挂（曾把「目录脏」误判成代码改坏 —— 见第十九轮的 A/B）。
+
+### 动效（`src/ui/motion.ts` + `src/style.css` 末尾「动效层」）
+- **规格源**：`design-system/DESIGN.md` 第 7 节（慢、呼吸感、不 snappy）+ `design-system/tokens.css`
+  第 115-145 行（`--motion-fast 180ms` / `--motion-base 320ms` / `--motion-slow 640ms` /
+  `--ease-standard` + reduced-motion 降级块）。
+  ⚠️ `src/style.css` **不 import tokens.css**，所以它自己那份令牌必须与设计系统同值 ——
+  本轮之前是 fast `100ms` / base `160ms`（比设计系统快一倍，正落在 DESIGN.md:182 禁止的
+  "snappy developer tool" 档），已对齐；降级块也在 style.css 里复写了一份。
+- **两个 API**：`enter(el, cls = 'lk-enter')` 重放一次入场（摘类 → 强制重排 → 加类；只加类不重播）；
+  `staggerIn(container, sel = ':scope > *', step = 40, cap = 12)` 给子项注入 `--lk-delay`
+  （减少动效时**跳过注入** —— 延迟是行内值，媒体查询压不住它，只能 JS 侧不写）。
+- **挂点**：切工具/开面板 = `src/tools/registry.ts` 的 `openTool()`（唯一入口，覆盖工具栏点击与快捷键）；
+  回沙盘 = `src/ui/shell.ts`（用 `lk-fade-in`，**不带 transform** —— transform 会让容器变成
+  fixed 子元素的包含块）；时间线/世界页签 = `src/ui/shell.ts`（签名没变就早退，拖动不会重放）；
+  弹窗 = `src/ui/confirm.ts`（遮罩 `--motion-fast` + 卡片 `--motion-base`，**只入场不退场**：
+  退场要等 animationend 才能 resolve，破坏性操作的 Promise 不该为观感延迟）；
+  设定库换条目/换页签 = `src/ui/codex.ts`（`pendingEnter` 标志：只有显式切换播，store 订阅触发的
+  重建不播，否则改一个字段整块面板块淡入一次）；详情面板 = `src/ui/detail.ts`（只在首次 `renderView`）；
+  新建节点表单 = `src/ui/node-form.ts`；壳级横幅 = `src/ui/alert.ts`。
+- ⚠️ **纪律**：入场动画只挂显式切换 —— `src/ui/timeline.ts` 每次 store 通知都整体重渲染，
+  给它挂「挂载即动画」会在拖动节点时不停重放（`docs/ROADMAP.md` 的硬约束）。
+- Anime.js（`animejs@4.5.0`，devDependency）已装但**尚未使用**：它留给「元素被重建、却要从旧位置
+  连续滑到新位置」的场景（画布节点移动 / 列表增删让位），那是 CSS transition 表达不了的
+  （重建后的元素没有"旧位置"这个概念）。
 
 ## 5. 脚手架
 
