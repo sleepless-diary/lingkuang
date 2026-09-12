@@ -629,6 +629,13 @@ body {
 .lk-pop-in { animation: lk-pop var(--motion-base) var(--ease-standard) both; }
 /* 弹层遮罩比卡片快：遮罩是 chrome，卡片才是内容 */
 .lk-overlay-in { animation: lk-fade var(--motion-fast) linear both; }
+/* 内容区**换条目**（设定库点左列换一条）：动的是「同一块地方换成了别的内容」，
+   所以从 0.5 不透明度落位，**不是从透明**——从 0 出来就是闪一下空白，那是用户报过的老毛病
+   （见上面「整块容器不许淡入」那段）。也刻意只动 opacity 不加 transform：
+   这一块里套着 contenteditable（tiptap），transform 会让它成为 fixed 的包含块、
+   还会让过渡期间的光标位置跟着位移。 */
+@keyframes lk-swap { from { opacity: .5; } to { opacity: 1; } }
+.lk-swap-in { animation: lk-swap var(--motion-base) var(--ease-standard) both; }
 /* 错峰容器：子项按序号依次浮现。两种用法共用这一个类，区别是**类留不留**：
    ① 常驻（页签栏：`staggerIn()`，容器长期活着、子项随时被换掉 ⇒ 新子项自动有错峰）；
    ② 一次性（工具打开 / 换页签 / 换条目：`cascadeIn()`，跑完把类摘掉，否则工具下次整块重渲染

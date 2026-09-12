@@ -14,6 +14,10 @@
  *
  * ⚠️ 换条目（实体或节点）必须**先 flush 旧正文、再把选择改掉**（见 `switchTarget`）：
  * 顺序反了会把上一条的正文写进新选中的那一条。这一坑在编辑器里踩过（见 editor.ts 的注释）。
+ *
+ * ⚠️ 同模式内换条目走**就地换内容**（见 `swapBody`），不再整块 `render()`：整块重建会把骨架
+ * 重造一遍（左列重播错峰、滚动位置回顶、tiptap 被销毁再新建）——用户对它的描述是
+ * 「点击实体会刷新界面」（2026-09-13）。
  */
 import type { Store } from '../store/store';
 import type { Entity, TimelineNode } from '../store/types';
@@ -24,9 +28,13 @@ import { escapeHtml } from './html';
 import { fieldRow } from './fields';
 import { createDocEditor, type DocEditor } from './doc-editor';
 import { createPropsPanel, type PropsPanel } from './props-panel';
-import { cascadeIn } from './motion';
+import { cascadeIn, enter } from './motion';
 
 const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;font-family:inherit;user-select:text;';
+
+/** 正文写回哪个目标（编辑器跨条目复用，目标会变，所以是**读时取值**不是创建时捕获）。
+ *  安全性由 `switchTarget` 保证：它一定先 `flush()`（此时 docTarget 还是旧目标）再改 docTarget。 */
+type DocTarget = { kind: 'entity'; id: string } | { kind: 'node'; world: string; tlId: string; nodeId: string };
 
 /** 节点身份（带 world —— 左列会列出**所有世界**的时间线，保存时必须写回它自己那个世界） */
 interface NodeTarget { world: string; tlId: string; nodeId: string; }
@@ -39,9 +47,16 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   let activeId = '';            /* 当前实体 */
   let nodeTarget: NodeTarget | null = null;   /* 当前节点 */
   let msgTimer: number | undefined;
-  /* 正文编辑器（tiptap）。切换条目时必须先 flush 再 dispose —— 否则正在编辑的正文会丢，
-     而 tiptap 实例不销毁会积 window 监听与订阅。 */
+  /* 正文编辑器（tiptap）。**整块重建时**必须先 flush 再 dispose —— 否则正在编辑的正文会丢，
+     而 tiptap 实例不销毁会积 window 监听与订阅。同模式内换条目则**留着它**（见 swapBody）。 */
   let docEditor: DocEditor | null = null;
+  /* 编辑器当前指向谁（读写都在 DocTarget 的类型注释里说明） */
+  let docTarget: DocTarget | null = null;
+  /* 节点中栏的公共属性面板（与编辑器共用同一份实现）。同模式内换节点直接复用它 ——
+     面板从 getTarget()+store 推导目标，所以换个 nodeTarget 再 render 就是新节点。 */
+  let propsPanel: PropsPanel | null = null;
+  /* 现在的骨架是按哪个页签建出来的：与 mode 不一致就说明得整块重来（中栏结构不同） */
+  let renderedMode: 'entity' | 'node' | null = null;
   /* 正文/面板**自身**的提交不要整块重渲染：否则每敲完一段失焦都会重建编辑器丢光标，
      拖拽中的 scrub 控件也会被销毁（props-panel 依赖这一点）。 */
   let quiet = false;
@@ -135,7 +150,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     });
   }
   /** 把正文写回**指定**目标（不是「当前选中的」）—— 关闭时调用也不会串文档。 */
-  function writeDoc(t: { kind: 'entity'; id: string } | { kind: 'node'; world: string; tlId: string; nodeId: string }, md: string): void {
+  function writeDoc(t: DocTarget, md: string): void {
     quiet = true;
     try {
       if (t.kind === 'entity') {
@@ -150,25 +165,107 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   }
 
   /** 换目标（换条目 / 换页签）：**先把正文结算掉再改选择**。
-   *  反过来的话，`render()` 开头那次 flush 会把旧条目的正文写进新选中的条目 —— 实测过的坑。 */
+   *  反过来的话，`render()` 开头那次 flush 会把旧条目的正文写进新选中的条目 —— 实测过的坑。
+   *  flush 之后不销毁编辑器：同模式内换条目走就地换内容（保留 tiptap 实例与滚动位置）。 */
   function switchTarget(mutate: () => void): void {
-    if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }
+    if (docEditor) docEditor.flush();   /* 只结算，不 dispose（dispose 交给整块 render 那条路） */
     mutate();
-    pendingEnter = true;   /* 这是用户主动切换：render() 播一次入场 */
+    if (swapBody()) return;
+    pendingEnter = true;   /* 这是用户主动切换：整块重建时播一次入场 */
     render();
+  }
+
+  /** 实体选择归一（当前这条被筛掉/被删掉 → 落到列表第一条）。render() 与 swapBody() 共用同一规则，
+   *  两处各写一遍就会漂移（比如删除后回退到哪一条）。 */
+  function normalizeEntitySelection(): void {
+    if (mode !== 'entity') return;
+    if (!active() || !filtered().some((e) => e.id === activeId)) activeId = filtered()[0]?.id ?? '';
+  }
+
+  /* ── 就地换内容（用户 2026-09-13：「设定库中点击实体会刷新界面，我希望变成平滑切换」）────────
+     旧路径：点条目 → switchTarget → render() → `host.innerHTML = …`，把**整个面板**（标题行、页签行、
+     左列、中栏、右栏）重造一遍。一次点击要付三样代价，眼睛看到的就是"界面刷新了一下"：
+       ① 左列与整块骨架重播一次错峰入场（该点开的东西又一个个冒出来，最多 700ms）；
+       ② `#cx-root` 就是滚动容器，被换掉 ⇒ **滚动位置回到顶部**（正文在屏幕下半截时最明显）；
+       ③ tiptap 实例被 dispose 再新建 ⇒ 正文区先空一帧再填回来。
+     而同一页签内换条目，**真正该变的只有三样**：名字/类型/字段行、正文、左列那条高亮。
+     所以这里保住骨架，只换这三样，再给内容区一次轻淡入（`.lk-swap-in` 从 0.5 不透明度落位 —— 
+     不是从透明开始：从 0 出来就是"闪一下白"，那是用户报过的老毛病，别再犯）。
+     返回 false = 这次不该走这条路（换页签 / 换世界 / 条目被删空 / 骨架还没建好）⇒ 调用方整块 render()。 */
+  function swapBody(): boolean {
+    if (renderedMode !== mode || !host.querySelector('#cx-root')) return false;
+    const body = host.querySelector<HTMLElement>('#cx-body');
+    if (!body) return false;
+    let next: DocTarget;
+    let md: string;
+    if (mode === 'entity') {
+      normalizeEntitySelection();
+      const e = active();
+      const nameEl = host.querySelector<HTMLInputElement>('#cx-name');
+      const typeEl = host.querySelector<HTMLSelectElement>('#cx-type');
+      const fieldsEl = host.querySelector<HTMLElement>('#cx-fields');
+      /* 骨架是"一个条目都没有"那一版（中栏只有一句提示）⇒ 结构不同，整块重建 */
+      if (!e || !nameEl || !typeEl || !fieldsEl) return false;
+      nameEl.value = e.name ?? '';
+      /* 类型下拉里没有这个 id（外部的类型被删了）就别硬写 value —— 浏览器会把 select 落到第一个选项上 */
+      if (Array.from(typeEl.options).some((o) => o.value === e.typeId)) typeEl.value = e.typeId ?? '';
+      fillEntityFields(fieldsEl, e);
+      next = { kind: 'entity', id: e.id };
+      md = e.doc ?? '';
+    } else {
+      const t = nodeTarget;
+      const n = activeNode();
+      const pathEl = host.querySelector<HTMLElement>('#cx-nodepath');
+      const propsEl = host.querySelector<HTMLElement>('#cx-props');
+      if (!t || !n || !pathEl || !propsEl || !propsPanel) return false;
+      const tlName = store.data.worldsets[t.world]?.timelines[t.tlId]?.name ?? t.tlId;
+      pathEl.textContent = `${t.world} · ${tlName} · ${n.kind || '事件'}`;
+      propsPanel.render(n, false);
+      next = { kind: 'node', world: t.world, tlId: t.tlId, nodeId: t.nodeId };
+      md = n.doc ?? '';
+    }
+    docTarget = next;
+    if (docEditor) docEditor.setDoc(md);   /* 同一个 tiptap 实例换文档，不销毁不重建 */
+    renderList();                          /* 左列只动高亮：那一列没有编辑器，重建只花 DOM 钱 */
+    pendingEnter = false;                  /* 骨架没重建 ⇒ 不该有整块错峰 */
+    bodySig = bodySignature();             /* 签名立刻对齐，否则下一次 store 变化会白重建一次 */
+    enter(body, 'lk-swap-in');
+    return true;
   }
 
   const tabBtn = (id: string, label: string, on: boolean): string =>
     `<button id="${id}" class="lk-cx-tab" style="background:${on ? 'var(--accent)' : 'var(--surface-2)'};color:${on ? 'var(--accent-on)' : 'var(--fg)'};border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius-pill);padding:3px 12px;font-size:var(--text-xs);cursor:pointer;">${escapeHtml(label)}</button>`;
 
+  /** 中栏的实体字段行（模板声明的类型决定控件形态）。
+   *  整块 render() 与就地换条目（swapBody）**共用这一份** —— 两处各写一遍就会漂移，
+   *  这一课在抽公共属性面板时吃过（同一件事做两遍，各缺一半）。 */
+  function fillEntityFields(el: HTMLElement, e: Entity): void {
+    el.innerHTML = '';
+    const t = types()[e.typeId];
+    if (!(t?.fields ?? []).length) {
+      const hint = document.createElement('div');
+      hint.style.cssText = 'font-size:var(--text-xs);color:var(--fg-2);';
+      hint.textContent = '这个类型还没有字段 —— 到左栏「结构体管理」的“实体类型”里加。';
+      el.appendChild(hint);
+    }
+    for (const f of t?.fields ?? []) {
+      el.appendChild(fieldRow(f, e.properties?.[f.name], (v) => {
+        patchEntity((ent) => { ent.properties = { ...(ent.properties ?? {}), [f.name]: v }; });
+        say('已保存 ✓');
+      }));
+    }
+  }
+
   function render(): void {
-    /* 切条目 / 换页签 / 重渲染前先把正文结算掉（未失焦的编辑也在里面），再销毁旧实例 */
+    /* 切条目 / 换页签 / 重渲染前先把正文结算掉（未失焦的编辑也在里面），再销毁旧实例。
+       结算用的是**旧** docTarget，所以清空它必须排在这一步之后。 */
     if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }
+    docTarget = null;
+    propsPanel = null;   /* 旧面板的宿主元素马上要被换掉，留着没用 */
     /* 目标没了（外部删掉 / 换世界）→ 清掉，免得面板显示一条不存在的数据 */
     if (nodeTarget && !activeNode()) nodeTarget = null;
     const isEntity = mode === 'entity';
-    const cur = isEntity ? active() : undefined;
-    if (isEntity && (!cur || !filtered().some((e) => e.id === activeId))) activeId = filtered()[0]?.id ?? '';
+    normalizeEntitySelection();
     const kinds = Object.keys(types());
     const mainEnt = (): string => {
       const e = active();
@@ -195,7 +292,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       const tlName = store.data.worldsets[t.world]?.timelines[t.tlId]?.name ?? t.tlId;
       const kind = n.kind || '事件';
       return `
-        <div style="font-size:var(--text-xs);color:var(--fg-2);margin-bottom:8px;">${escapeHtml(t.world)} · ${escapeHtml(tlName)} · ${escapeHtml(kind)}</div>
+        <div id="cx-nodepath" style="font-size:var(--text-xs);color:var(--fg-2);margin-bottom:8px;">${escapeHtml(t.world)} · ${escapeHtml(tlName)} · ${escapeHtml(kind)}</div>
         <div id="cx-props" style="display:flex;flex-direction:column;gap:5px;"></div>
         <div style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
           <div style="font-size:10px;color:var(--fg-2);margin-bottom:4px;">正文（Markdown · 失焦自动保存）</div>
@@ -225,7 +322,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
             <div id="cx-chips" style="display:flex;gap:4px;flex-wrap:wrap;"></div>
             <div id="cx-list" style="display:flex;flex-direction:column;gap:3px;"></div>
           </div>
-          <div style="flex:1;min-width:0;border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;">
+          <div id="cx-body" style="flex:1;min-width:0;border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;">
             ${isEntity ? mainEnt() : mainNode()}
           </div>
         </div>
@@ -276,25 +373,11 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     /* 实体字段行（公共控件 `src/ui/fields.ts`）：模板声明的类型决定控件形态 */
     const fieldsHost = host.querySelector('#cx-fields') as HTMLElement | null;
     const e = active();
-    if (fieldsHost && e) {
-      const t = types()[e.typeId];
-      if (!(t?.fields ?? []).length) {
-        const hint = document.createElement('div');
-        hint.style.cssText = 'font-size:var(--text-xs);color:var(--fg-2);';
-        hint.textContent = '这个类型还没有字段 —— 到左栏「结构体管理」的“实体类型”里加。';
-        fieldsHost.appendChild(hint);
-      }
-      for (const f of t?.fields ?? []) {
-        fieldsHost.appendChild(fieldRow(f, e.properties?.[f.name], (v) => {
-          patchEntity((ent) => { ent.properties = { ...(ent.properties ?? {}), [f.name]: v }; });
-          say('已保存 ✓');
-        }));
-      }
-    }
+    if (fieldsHost && e) fillEntityFields(fieldsHost, e);
     /* 节点：中栏用**公共属性面板**（与编辑器同一份实现，含标题/时间历法 scrub/精度/种类/描述 + 种类字段） */
     const propsHost = host.querySelector('#cx-props') as HTMLElement | null;
     if (propsHost && nodeTarget) {
-      const panel: PropsPanel = createPropsPanel({
+      propsPanel = createPropsPanel({
         store,
         host: propsHost,
         status: null,
@@ -307,16 +390,16 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
           renderList();
         },
       });
-      panel.render(activeNode(), false);
+      propsPanel.render(activeNode(), false);
     }
-    /* 正文：真编辑器（tiptap）。**写回创建时就捕获的目标**，不是「当前选中的那个」——
-       这样即便选择已经变了，内容也不会串到别的条目上。 */
+    /* 正文：真编辑器（tiptap）。**写回 docTarget 当时指着的目标**（不是"当前选中的那个"按值捕获）——
+       编辑器现在跨条目复用（见 swapBody），目标会变；而 switchTarget/ render() 都保证
+       先 flush（旧目标）再改 docTarget，所以内容不会串到别的条目上。 */
     const docHost = host.querySelector('#cx-doc') as HTMLElement | null;
     if (docHost && (isEntity ? !!active() : !!nodeTarget)) {
-      const myTarget: { kind: 'entity'; id: string } | { kind: 'node'; world: string; tlId: string; nodeId: string } =
-        isEntity ? { kind: 'entity', id: activeId } : { kind: 'node', ...(nodeTarget as NodeTarget) };
+      docTarget = isEntity ? { kind: 'entity', id: activeId } : { kind: 'node', ...(nodeTarget as NodeTarget) };
       docEditor = createDocEditor(docHost, (md) => {
-        writeDoc(myTarget, md);
+        if (docTarget) writeDoc(docTarget, md);
         /* 正文落盘后左列不用重画（标题没变），也不该整块重渲染（会丢光标） */
       });
       docEditor.setDoc((isEntity ? active()?.doc : activeNode()?.doc) ?? '');
@@ -339,6 +422,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     });
     /* 骨架重建完就把签名对齐，免得下一次 store 变化因为签名过期而白重建一次 */
     bodySig = bodySignature();
+    /* 记下这版骨架是按哪个页签建的：同页签内换条目才敢走就地换内容（中栏结构相同） */
+    renderedMode = mode;
   }
 
   /** 中/右栏「该显示什么」的内容签名（目标身份 + 字段 + 正文）。

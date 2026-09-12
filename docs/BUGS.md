@@ -487,6 +487,62 @@ if (dragGroup && (dragGroup.has(a.id) !== dragGroup.has(b.id))) return;     // �
 - 回归：`motion-switch` **25/25**、`codex-node-tab` **15/15**、`editor-props-panel` **9/9**、
   `toolbar-groups` **4/4**；`tsc --noEmit` / `node --check` / `vite build` 全 exit 0。
 
+### 十三、设定库点一下实体就像"刷新界面"（2026-09-13，**本轮已修**）
+
+> **用户原话**：「**设定库中点击实体会刷新界面，我希望变成平滑切换（点击其他实体时），
+> 顺便生成一点测试数据**」。
+
+**机制**（`src/ui/codex.ts`，旧写法）：点左列条目 → `switchTarget()` → `render()` →
+`host.innerHTML = …` 把**整个面板**（标题行、页签行、左列、中栏、右栏）重造一遍。
+同一页签内换条目时，真正该变的只有三样东西（名字/类型 + 字段行 + 正文），却要付三样代价：
+
+1. **左列与整块骨架重播一次错峰入场**（`cascadeIn(#cx-root)` + `cascadeIn(#cx-list, 60, 420, 200)`）
+   ⇒ 该点开的东西又一个个冒出来，最多 700ms；
+2. **`#cx-root` 本身就是滚动容器**（`overflow:auto` + `height:100%`）—— 被换掉 ⇒ **滚动位置回到顶部**。
+   实测：点前 `scrollTop 260`，点后 **0**（正文在屏幕下半截、或左列条目多的时候最明显）；
+3. **tiptap 实例被 `dispose()` 再新建** ⇒ 正文区先空一帧再填回来
+   （`#cx-doc .ProseMirror` 元素身份新旧不同）。
+
+**修法：同模式内换条目走「就地换内容」**（`swapBody()`，`src/ui/codex.ts`）——
+保住骨架，只换该换的三样，再给内容区一次**轻淡入** `.lk-swap-in`：
+
+- `switchTarget()` 里 `flush()` 之后**不再 dispose** 编辑器；`swapBody()` 成功就直接返回，
+  失败（换页签 / 换世界 / 条目被删空 / 骨架是"没有条目"那一版）才 `pendingEnter = true; render()`。
+- 正文写回的目标从"创建时捕获"改成**读时取值**（`docTarget`）——编辑器跨条目复用了，
+  目标会变；安全性由 `switchTarget` 的顺序保证（先 `flush`（旧目标）再改 `docTarget`）。
+- 节点中栏的公共属性面板 `propsPanel` 同样提升成模块级并复用（它从 `getTarget()+store`
+  推导目标，换个 `nodeTarget` 再 `render(node)` 就是新节点）。
+- 骨架里新增两个 id 当"就地换"的抓手：**`#cx-body`**（中栏 + 右栏那块容器，淡入挂在它上面）、
+  **`#cx-nodepath`**（节点的「世界 · 时间线 · 种类」面包屑）。
+- 实体字段行抽成 `fillEntityFields(el, e)`，`render()` 与 `swapBody()` **共用一份**
+  （两处各写一遍就会漂移 —— 抽公共属性面板时吃过这个亏）。
+- `.lk-swap-in` 的 keyframes 从 **`opacity: .5` 落位，不是从 0**：从 0 出来就是"闪一下白"
+  （用户报过的老毛病，见第五节）；也刻意只动 opacity 不加 transform ——
+  这一块里套着 contenteditable，transform 会让它成为 fixed 的包含块、还会让过渡期间的光标位置跟着位移。
+- 换页签（中栏结构真的变了）与换世界仍然整块重建 + 错峰，★13 专门守这一条。
+
+**A/B（先证明断言有判别力，见 e2e README 铁律 9）**：同一个 `%TEMP%\lk-smooth` 目录、
+`git checkout -- src/ui/codex.ts` + `vite build` 复跑 ⇒ **未修复 8/16**，
+挂的正是 ★1（骨架元素换了）/★2（搜索框换了）/★3（tiptap 换了）/★6（滚动 260 → **0**）/
+★8（错峰重播：`stagger:true, wake:4, delayed:4`）/★9（没有 `lk-swap`）/★10/★14；
+**修复后 16/16**。内容类断言（★4/★5/★7/★11/★12）在两边都过 —— 那本来就是对的，留作回归。
+
+**顺带产出的测试数据**（用户「顺便生成一点测试数据」）：
+`tools/e2e/seed-smooth-switch.cjs` 播 3 个不同类型实体 + 2 个节点 + **20 个「配角」实体**
+（配角是为了让左列自己撑得比可视区高 —— 否则"滚动不回顶"这条断言没有可滚的余地）；
+用户真实世界（`F:\\lingkuang-vault\\测试世界观\\_设定\\`）另写入 9 条**演示设定**
+（艾德温·霜冠 / 灰袍法师·塞尔 / 守夜人队长·凛 / 安德希亚城 / 北境冻原 / 王之霜冠 / 霜纹剑 /
+守夜人 / 霜精灵，id 前缀 `demo-`），内容贴合那个世界已有的时间线。
+
+### 验证（十三）
+
+- 新增 `tools/e2e/codex-smooth-switch.cjs` **16/16**；A/B 未修复版 **8/16**（见上）。
+- 回归：`codex-node-tab` **15/15**、`editor-props-panel` **9/9**、`codex-switch-target` **7/7**、
+  `data-load-clean` **6/6**、`toolbar-groups` **4/4**、`entity-vault` **17/17**（干净起点）、
+  `motion-switch` **25/25**；`tsc --noEmit` / `vite build` 全 exit 0。
+- ⚠️ `entity-vault` 第一次跑出 **11/17**：同一实例里先跑了 `codex-switch-target`（它建了「甲」「乙」），
+  断言于是看到多余的实体 —— 按铁律 4（先怀疑目录脏）重来：**reset + 重启后 17/17**。
+
 ## 第十八轮（2026-09-12）· 数据判损护栏 + 两个静默失效
 
 > **目的**：`main.js` 里那条注释早就写下了后果 —— 解析不了的 `worldbuilding.json`

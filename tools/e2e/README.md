@@ -83,6 +83,8 @@ cwd 与环境变量不跨调用保留 —— 环境变量要和命令写在同�
 | `codex-node-tab.cjs` | 设定库「时间线节点」页签：四级树 → 公共属性面板固定行 → 改描述/正文落到节点的 `.md` → 搜索 → 跨页签不串文档 |
 | `editor-props-panel.cjs` | 编辑器侧的共享面板守卫：固定行齐全、时间是 scrub、描述是 textarea、**提交后面板不重建**（元素身份不变） |
 | `codex-switch-target.cjs` | 不变量：换条目不能把上一条的正文写进下一条（按 `.md` 文件断言正文归属；走「不失焦就切」的危险路径） |
+| `seed-smooth-switch.cjs` | 前置（**只许跑在测试目录**，它会清空测试世界的 `_设定`/`主线`/`.trash`）：3 个**不同类型**的实体（角色/地点/物品，字段集合不同）+ 2 个节点 + **20 个「配角」实体**。配角是为了让**左列自己就撑得比可视区高** —— 否则「换条目后滚动位置不回顶」这条断言没有可滚的余地（中栏高度随字段数变，靠正文撑高度既费字又不稳）。正文写在**闭合的 `---` 之后**：第一版把 `#正文：` 塞进了 frontmatter，结果实体 doc 全是空串、断言一片 FAIL |
+| `codex-smooth-switch.cjs` | 设定库**换条目不发"刷新"**16 项（用户 2026-09-13：「点击实体会刷新界面，我希望变成平滑切换」）：★1/★2/★3 换实体后 `#cx-root`/`#cx-search`/`#cx-doc .ProseMirror` **还是同一个元素**（骨架/编辑器没被重建）、★4/★5 名字+字段行+正文都换成新条目的（字段集合真的换了）、★6 **滚动位置不回顶**（`scrollTop 260 → 260`；旧实现换掉滚动容器 ⇒ 恒 0）、★7 左列高亮跟过去、★8 **不重播整块错峰**（无 `.lk-enter-stagger` / 无 `lk-wake` / 无行内延迟）、★9/★10 内容区播一次 `lk-swap` 淡入且终态不透明无位移、★11/★12 打字后不失焦直接换条目**正文归属不串**（编辑器跨条目复用带来的新风险）、★13 换页签**仍然整块重建 + 错峰**（结构变了，不许就地换）、★14 节点→节点也就地换且中栏属性面板跟着换、★15 无异常。⚠️ 断言前必须**轮询等上一次错峰收手**（见铁律 10） |
 | `seed-corrupt-data.cjs` | 前置：造出「截断的 `worldbuilding.json` + 空 vault」（= `docs/BUGS.md` 记的那条数据损失场景；**空 vault 是关键**，否则 vault 会兜住） |
 | `data-corrupt-guard.cjs` | 判损护栏 16 项：截断文件启动后**原文件逐字节未被覆盖** + 副本隔离 + 重读过（`attempts>1`）+ `data:save` 被拒且标明 `locked` + 壳级横幅两条出口 + 点「继续用新数据」解锁并自愈 + 中途补全的文件被重读捞回 |
 | `data-load-clean.cjs` | 误报守卫 6 项：**干净**数据启动时护栏一步都不该动（`attempts===1`、无横幅、无副本、写盘照常） |
@@ -115,6 +117,22 @@ node tools\e2e\editor-props-panel.cjs        # 9 项（同一个实例直接接�
 # 另一轮：换条目串不串正文（先 reset，不用 seed）
 node tools\e2e\codex-switch-target.cjs       # 7 项
 ```
+
+**设定库"换条目不发刷新"那条**用独立目录（`lk-smooth`）—— 它要 3 个不同类型的实体 + 一个能被左列撑高的列表：
+
+```powershell
+$env:LINGKUANG_TEST_DATA="C:\Users\<你>\AppData\Local\Temp\lk-smooth\worldbuilding.json"
+$env:LINGKUANG_VAULT="C:\Users\<你>\AppData\Local\Temp\lk-smooth\vault"
+$env:LINGKUANG_TEST_USERDATA="C:\Users\<你>\AppData\Local\Temp\lk-smooth\userdata"
+
+node tools\e2e\seed-smooth-switch.cjs        # ⚠️ 会清空测试世界的 _设定/主线/.trash
+# 起应用（同上面的 Start-Process）
+node tools\e2e\codex-smooth-switch.cjs       # 16 项
+```
+
+⚠️ 这条**改完界面后要重跑**（重跑前重新播种 + 重启实例：套件结尾会把面板停在节点页签上）。
+⚠️ A/B（验证断言真有判别力，见铁律 9）：`git checkout -- src/ui/codex.ts` + `vite build` 复跑 ⇒
+**未修复 8/16**（★1/★2/★3/★6/★8/★9/★10/★14 挂），修复后 16/16。
 
 ✅ 跑完上面的步骤，还可以顺手跑一条**不依赖世界数据**的：
 
@@ -257,6 +275,33 @@ npx vite build                       # 恢复修复后 ⇒ 6/6
 ```
 顺带两条：① 断言要盯**"只有修好才会发生的那件事"**（这次是"间距不涨"，不是"根词位移了多少"——
 后者随图布局浮动，不稳定）；② 几何类断言先看**方向/坐标系**对不对，再谈阈值。
+
+## 铁律 10：**别让"上一次的动画"污染这一次的断言**（等基线，别用固定 sleep）
+
+写「换条目不再重播错峰」时踩到：点了实体之后读 `#cx-root`，发现它**带着** `.lk-enter-stagger`、
+子项还有行内延迟 —— 差点判成"又播了一遍"。真因是**工具打开那一次**的错峰还挂着：
+
+- `openTool()` 的错峰目标是「工具根部的顶层块」：`slot.children.length >= 2 ? slot : slot.firstElementChild`。
+  **codex 的工具格只有一个子元素**（`#cx-root`）⇒ 那一次的错峰类与行内延迟就落在 `#cx-root` 上；
+- 隐藏窗口里动画不推进 ⇒ `animationend` 不会来，类只能等 `cascadeIn` 的兜底定时器
+  （`maxDelay + 2000` = 2500ms）摘掉。而工具是**动态 import** 的，错峰起点比"点工具"晚几百毫秒，
+  所以"点完睡 2800ms"正好压在边界上 —— A/B 那次就翻车（同一条 ★0 一次过、一次挂）。
+
+做法：**轮询到基线干净再开始**（比固定 sleep 稳，也说明白我们在等什么）：
+
+```js
+const clean = `(() => { const r = document.querySelector('#cx-root');
+  return !!r && !r.classList.contains('lk-enter-stagger')
+    && [...r.children].every((c) => !c.style.animationDelay); })()`;
+for (let i = 0; i < 32; i++) { if (await ev(clean)) break; await sleep(250); }
+```
+
+同族的第二条：**要断言"滚动位置不回顶"，得先让内容真的能滚**。
+`#cx-root` 是 `overflow:auto; height:100%`，内容没超过可视高时 `scrollTop` 恒为 0 ——
+断言就成了空过（修复前也过 ⇒ 假绿）。实测（窗口 1180×780、可视高 741）：8 段正文 + 4 个字段的实体
+`scrollHeight` 只有 741，11 个字段的角色才 846。所以要么把正文写到够长，要么**让左列自己撑高**
+（`seed-smooth-switch.cjs` 播 20 个配角就是干这个的）。另外注意：换到**内容更短**的条目时，
+浏览器会把 `scrollTop` 夹回可滚范围（甚至 0）—— 那是正常行为，断言别写成"任何情况都必须相等"。
 
 ## 空时间线那条（数据损失修复的守卫）
 
