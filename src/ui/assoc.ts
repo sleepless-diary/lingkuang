@@ -111,6 +111,9 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
   /* 拖节点时的贴边自动推视窗：dragPanX0/Y0 = 按下那一刻的视窗平移量（算拖拽位移时要扣掉它），
      dragPX/PY = 指针最后位置（指针不动时靠 rAF 循环继续推），autoPanRAF = 推视窗的帧循环 */
   let dragPanX0 = 0, dragPanY0 = 0, dragPX = 0, dragPY = 0, autoPanRAF: number | null = null;
+  /* 钉住（`_pinned`）的效力上限：两个相连的词被拉开超过这么多像素，钉子就松开、让弹簧把线收回来。
+     静止长度是 140（弹簧 `(d - 140) * 0.05`），这里给到约 3 倍，小范围摆位不受影响。 */
+  const PIN_YIELD = 420;
 
   /* 统一复位指针手势：pointerup / pointercancel / 「丢失 pointerup 的 pointermove」兜底都走这里。
      旧实现只有 pointerup 一个出口，且全文件没有 pointercancel——
@@ -377,32 +380,50 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
     const nodeById: Record<number, AssocNode> = {};
     nodes.forEach((n) => { nodeById[n.id] = n; });
     const vList = nodes.filter((n) => vis.has(n.id));
+    /* ⭐ 「手里那一格」的受力只免**它自己**，线的另一头照常受力。
+       用户 2026-09-13 报「线没断，但是拉力失效了」：原来是「跨过手里那一格的受力**两边一起**跳过」
+       （`if (dragGroup && has(a) !== has(b)) continue/return`），于是拖一个词走的**全程**
+       与它相连的词纹丝不动（实测：拖子节点 120px，根词位移 0），松手之后才追过来 ——
+       看着就是「线还在、线上没有力」，拖得越远越明显。
+       被拖的那一格在下面积分阶段本来就被冻住（`n.id === dragNodeId`），所以只免它、别的一律照拉。 */
+    const inHand = (id: number) => dragGroup !== null && dragGroup.has(id);
     for (let i = 0; i < vList.length; i++) {
       for (let j = i + 1; j < vList.length; j++) {
         const a = vList[i], b = vList[j];
-        if (dragGroup && (dragGroup.has(a.id) !== dragGroup.has(b.id))) continue;
+        const aIn = inHand(a.id), bIn = inHand(b.id);
+        if (aIn && bIn) continue;   /* 两端都在手里（拖的是整棵子树）→ 组内力学照旧，组形不变 */
         const dx = a.x - b.x, dy = a.y - b.y;
         const d = Math.sqrt(dx * dx + dy * dy) || 1;
         const f = (900 / (d * d)) * temp;
         const fx = (dx / d) * f, fy = (dy / d) * f;
-        a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+        if (!aIn) { a.vx += fx; a.vy += fy; }
+        if (!bIn) { b.vx -= fx; b.vy -= fy; }
       }
     }
     edges.forEach((e) => {
       const a = nodeById[e.from], b = nodeById[e.to];
       if (!a || !b || !vis.has(a.id) || !vis.has(b.id)) return;
-      if (dragGroup && (dragGroup.has(a.id) !== dragGroup.has(b.id))) return;
+      const aIn = inHand(a.id), bIn = inHand(b.id);
+      if (aIn && bIn) return;
       const dx = b.x - a.x, dy = b.y - a.y;
       const d = Math.sqrt(dx * dx + dy * dy) || 1;
+      /* 钉住是「别乱动」，不是「焊死」：被拉得超过 PIN_YIELD 就**松开钉子跟着走**。
+         否则「我手工摆过的词」会成为唯一一处"拉力失效"的地方 —— 而用户报的正是拉力失效
+         （2026-09-13：「拉太远时拉力会失效」）。手动摆过 → 在原地不动；被拉太远 → 弹簧赢。
+         阈值取得比静止长度（140）大得多，所以小范围摆位不受影响。 */
+      if (!aIn && d > PIN_YIELD) (a as any)._pinned = false;
+      if (!bIn && d > PIN_YIELD) (b as any)._pinned = false;
       const f = (d - 140) * 0.05 * temp;
       const fx = (dx / d) * f, fy = (dy / d) * f;
-      a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+      if (!aIn) { a.vx += fx; a.vy += fy; }
+      if (!bIn) { b.vx -= fx; b.vy -= fy; }
     });
     vList.forEach((n) => {
       if (dragGroup && n.id === dragNodeId) { n.vx = 0; n.vy = 0; return; }
       /* 手动摆过的节点（`_pinned`，在 applyDrag 里打标记）不再被力导向积分挪动：
          它仍然参与上面的斥力/弹簧计算（会把别的节点推开、把子节点拉过来），但自己的位置不动。
-         这就是「无限画布」里"我放哪儿就待在哪儿"的那一半；撤掉边界只解决了"能拖出去"。 */
+         这就是「无限画布」里"我放哪儿就待在哪儿"的那一半；撤掉边界只解决了"能拖出去"。
+         ⚠️ 例外：被拉得超过 PIN_YIELD 时上面的弹簧会把钉子摘掉（见那里的注释）。 */
       if ((n as any)._pinned) { n.vx = 0; n.vy = 0; return; }
       n.vx *= damp; n.vy *= damp; n.x += n.vx * 0.5; n.y += n.vy * 0.5;
       /* ⚠️ 这里原来有四个「夹在世界里」的判断（20 .. WORLD_W-20），已撤掉：

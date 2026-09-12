@@ -30,7 +30,7 @@
 | `src/ui/shell.ts` | 壳 UI：世界栏 + 工具栏 + 沙盘 + 工具宿主 |
 | `src/ui/timeline.ts` | 世界沙盘时间线（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针） |
 | `src/ui/inspire.ts` | 灵感触发器（随机角色生成 + 词义联想入口） |
-| `src/ui/assoc.ts` | 词义联想**无限画布**（力导向 + 单线聚焦 + 视窗平移/缩放 + 拖节点贴边自动推视窗 + 手动摆过的节点钉住）；没有世界边界（`HOME_W/HOME_H` 只是初始落点区与 SVG 作图区），框外连线靠 `.assoc__lines { overflow: visible }`；宿主高度由 `src/ui/inspire.ts` 的 `fitAssocHeight()` 让开 sticky 工具条，滚动容器用 `scrollParent()` 现找 |
+| `src/ui/assoc.ts` | 词义联想**无限画布**（力导向 + 单线聚焦 + 视窗平移/缩放 + 拖节点贴边自动推视窗 + 手动摆过的节点钉住，钉住上限 `PIN_YIELD = 420`）；拖拽中只免"手里那一格"、线的另一头照常受力（＝线上的拉力）；没有世界边界（`HOME_W/HOME_H` 只是初始落点区与 SVG 作图区），框外连线靠 `.assoc__lines { overflow: visible }`；宿主高度由 `src/ui/inspire.ts` 的 `fitAssocHeight()` 让开 sticky 工具条，滚动容器用 `scrollParent()` 现找 |
 | `src/ui/editor.ts` | 编辑器（tiptap，左侧 sidebar 时间线/实体 tab，右侧文稿编辑）。属性面板**不在这个文件里**了 —— 见 `src/ui/props-panel.ts` |
 | `src/ui/props-panel.ts` | **公共属性面板**（节点与实体共用**同一份**「改字段」实现，编辑器和设定库都调它）：`createPropsPanel({ store, host, status?, getTarget, patchTarget })` → `{ render(node, isEntity?), hide() }`；`PropsTarget` 是两边共用的身份联合类型。内含 AE 式 scrub（`createScrubField`）与历法推进的时间控件。⚠️ 面板构建后**刻意不重渲染**（避免销毁拖拽中的 scrub 控件），所以提交要走 `patchTarget`（从 store 取最新 properties 再合并） |
 | `src/ui/ai-workbench.ts` / `roleplay.ts` / `tavern.ts` | AI 工作台 / 角色扮演 / 酒馆剧情推演 |
@@ -357,6 +357,20 @@
   （推开别人、把子节点拉过来），只是自己不动。**为什么需要**：实测只撤边界的话，往正上方拖 300px、
   松手后 2 秒内被弹簧拽回 **217px** 并继续荡，用户看到的还是"拖了又弹回去"。
   钉标记会随 `assocSetRoot`（按根词重建）自然清掉。
+- ⭐ **钉住有上限 `PIN_YIELD = 420`**（用户 2026-09-13：「拉太远时拉力会失效」）：
+  弹簧循环里 `if (!aIn && d > PIN_YIELD) (a as any)._pinned = false;`（两端各判一次）——
+  「钉住是别乱动，不是焊死」。没有它的话，**两端都被手工摆过**时线被拉多长都回不来
+  （A/B 实测间距 `4477 → 4477`，就是用户说的"拉力失效"）。420 ≈ 静止长度 140 的 3 倍，小范围摆位不受影响。
+- ⭐ **拖拽中"手里那一格"只免它自己**（同一条用户反馈的另一半，也是主因）：
+  `forceStep` 里用 `const inHand = (id) => dragGroup !== null && dragGroup.has(id);`，
+  跨边界的斥力/弹簧改成「**谁不在手里谁受力**」（`if (!aIn) { a.vx += fx; … }`），
+  只有两端都在手里（拖整棵子树）时才整对跳过（组形不变）。
+  **旧写法 `if (dragGroup && (has(a) !== has(b))) continue;` 把线的另一头也一起免了** ⇒
+  拖一个词的全程相连的词纹丝不动（A/B：拖 144px 时根词位移 1px、线从 148 拉成 291），
+  松手才追过来 —— 用户看到的就是「线没断，但线上没有力」。
+  守卫：`tools/e2e/assoc-pull.cjs`（★1 把节点往"离开根"的方向拖，要求间距不许被拉长）。
+  ⚠️ 力本身**不是**数据溢出：`(d-140)*0.05` 随距离线性增长、1e6 px 时 10998/帧、全程有限，
+  ★4 把节点丢到 40 万像素外专门验证不出 NaN/Infinity。
 - ⚠️ **框外的连线靠 CSS 才画得出来**：连线层是 `2000×1200` 的 SVG（`viewBox: 0 0 2000 1200`），
   而 SVG 根元素**默认把内容裁到自己的视口** ⇒ 节点跑到框外时线整段消失（节点还在）。
   `src/style.css` 的 `.assoc__lines { overflow: visible }` 是这条的全部依据，删了它框外的线就没了
@@ -386,6 +400,9 @@
 - 测试注意：测试实例 `showInactive` ⇒ 窗口 `hidden` ⇒ **rAF 不出帧不推进**，断言"自动推视窗"前
   必须 `forceFrames()`（`Page.captureScreenshot`）；指针事件用合成的 `PointerEvent`，
   `pointerdown` 打在**节点元素**上（stage 靠冒泡收），`pointermove/pointerup` 打在 `window` 上。
+  两套守卫：`tools/e2e/assoc-canvas.cjs`（几何/无限/框外连线）、
+  `tools/e2e/assoc-pull.cjs`（拉力：拖拽全程、近处钉住、拉太远收线、极远处不出 NaN；
+  它把 `window.fetch` 换成固定 5 个词，保证"根 + 5 子词"的图确定复现）。
 
 ## 5. 脚手架
 

@@ -235,15 +235,24 @@ async function main() {
     beforeUp && afterUp && afterUp.y <= beforeUp.y - 250 && panUpEdge && panUpEdge.y > 50 && upHold.underCursor === true,
     { beforeUp, afterUp, panUpEdge, upHold, upStart });
 
-  /* ── ⑧ 松手后不许回弹（钉住）：撤掉边界只解决了"能拖出去"，
-       不钉位置的话力导向的弹簧会在两秒内把节点拽回约 200px，用户看到的还是"拖了又弹回去" ── */
+  /* ── ⑧ 松手就是真的松手：之后的指针移动不再带动节点、贴边推视窗也停 ──
+     ⚠️ 原来这里断言的是「松手后节点坐标一动不动（钉住）」——2026-09-13 用户报「拉太远时拉力会失效」
+     之后，钉住被改成**有上限**的（`PIN_YIELD = 420`，被拉太远就松钉、让弹簧把线收回来），
+     所以"一动不动"不再是承诺；拉力本身改由 `tools/e2e/assoc-pull.cjs` 断言。
+     这里守住的是"手势真的结束"：松手后的指针移动不许再把节点拖走（hidden 窗口里不出帧就不跑物理，
+     所以同一 tick 里比较坐标是确定的），并且贴边推停住。 */
   await ev(`window.__lkFire('pointerup', window.__lkUpX, ${upStart.stageTop} + 8, 0); true`);
-  const pinnedAt = await nodeXY();
-  await forceFrames(60);
-  const pinAfter = await nodeXY();
-  check('★8 松手后节点停在原地（手动摆过就钉住，不再被力导向拽回去）',
-    pinnedAt && pinAfter && Math.abs(pinAfter.y - pinnedAt.y) <= 2 && Math.abs(pinAfter.x - pinnedAt.x) <= 2,
-    { pinnedAt, pinAfter, drift: [Math.round(pinAfter.x - pinnedAt.x), Math.round(pinAfter.y - pinnedAt.y)] });
+  const releasedAt = await nodeXY();
+  await ev(`window.__lkFire('pointermove', window.__lkUpX + 160, ${upStart.stageTop} + 60, 0); true`);
+  const afterStrayMove = await nodeXY();
+  const panAtRelease = await pan();
+  await forceFrames(12);
+  const panAfterRelease = await pan();
+  check('★8 松手即真的松手：之后的指针移动不再带动节点（同一 tick 坐标不变），贴边推也停住',
+    releasedAt && afterStrayMove &&
+    Math.abs(afterStrayMove.x - releasedAt.x) <= 2 && Math.abs(afterStrayMove.y - releasedAt.y) <= 2 &&
+    panAtRelease && panAfterRelease && panAfterRelease.x === panAtRelease.x && panAfterRelease.y === panAtRelease.y,
+    { releasedAt, afterStrayMove, panAtRelease, panAfterRelease });
 
   /* ── ⑨ 画到框外的连线不能被裁掉 ──
      连线层是 2000×1200 的 SVG（viewBox 0 0 2000 1200），而无限画布允许节点跑到框外甚至负坐标；
@@ -255,7 +264,11 @@ async function main() {
     const svg = document.querySelector('#assoc-world .assoc__lines');
     const path = svg.querySelector('path');
     const d = path ? (path.getAttribute('d') || '') : '';
-    const outside = /M (-[\\d.]+|\\d{4,}) /.test(d) || / L (-[\\d.]+|\\d{4,})/.test(d);
+    /* ⚠️ 原来这里用正则只挑"紧跟 M/L 的那个数"、还要求它以 - 开头或 4 位以上 —— 漏掉 x 正常而
+       **y 为负**的常见情形（实测踩到：d = "M 638.5 -443.5 L …"，y 明明在框外却判成 inside）。
+       现在把 M/L 后面的坐标全取出来，按 SVG 视口 0 0 2000 1200 逐点判在不在框外。 */
+    const coords = (d.match(/-?[\\d.]+(?:e[-+]?\\d+)?/g) || []).map(Number);
+    const outside = coords.some((v, i) => (i % 2 === 0 ? (v < 0 || v > 2000) : (v < 0 || v > 1200)));
     /* 临时加一条"框外"的线：位置取**当前视口正中心**换算出来的世界坐标 ——
        视窗已经被推到很远（pan 是几万），所以这个坐标必然在 SVG 的 0..2000 视口之外，
        同时又一定在屏幕里（elementFromPoint 才打得中）。 */
