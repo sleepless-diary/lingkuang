@@ -681,3 +681,106 @@ body {
               border-color var(--motion-fast) var(--ease-standard),
               opacity var(--motion-fast) var(--ease-standard);
 }
+
+/* ── 演变（设定库右侧那条竖线）────────────────────────────────────────
+   用户 2026-09-13：「我想在设定库右侧加一条竖着的等距的时间线」——
+   **每格等高**（46px，不按时间比例；世界跨度几万年也不会把格子挤成一条线），
+   像 git log：顶上第一格是初稿，往下是世界里的事件节点；有版本的格子点亮。
+   颜色只用本文件顶部那套令牌。 */
+.lk-rail {
+  width: 176px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.lk-rail__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border);
+}
+.lk-rail__title { font-size: var(--text-sm); font-weight: 600; color: var(--fg); }
+.lk-rail__mode {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--fg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 0 6px;
+}
+.lk-rail__rows { position: relative; display: flex; flex-direction: column; max-height: 58vh; overflow: auto; }
+.lk-rail__row {
+  position: relative;
+  flex: 0 0 46px;
+  /* 等距是这一条的全部意义：高度钉死（不然标题/摘要多一行，格子就比旁边高一截），内容溢出裁掉 */
+  height: 46px;
+  min-height: 46px;
+  max-height: 46px;
+  box-sizing: border-box;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  padding: 4px 8px 4px 26px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  transition: background var(--motion-fast) var(--ease-standard),
+              border-color var(--motion-fast) var(--ease-standard);
+}
+.lk-rail__row::before {
+  content: '';
+  position: absolute;
+  left: 13px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+.lk-rail__dot {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.lk-rail__row--base .lk-rail__dot { background: var(--fg-2); border-color: var(--fg-2); }
+.lk-rail__row.is-frame .lk-rail__dot { background: var(--accent); border-color: var(--accent); }
+.lk-rail__row:hover { background: var(--surface); }
+.lk-rail__row.is-on { background: var(--surface); border-left-color: var(--accent); }
+.lk-rail__t { font-size: 10px; color: var(--fg-2); }
+.lk-rail__n,
+.lk-rail__s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lk-rail__n { font-size: var(--text-xs); color: var(--fg); }
+.lk-rail__s { font-size: 10px; color: var(--fg-2); }
+.lk-rail__foot {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 9px;
+  border-top: 1px solid var(--border);
+}
+.lk-rail__add,
+.lk-rail__del {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-size: var(--text-xs);
+  padding: 4px 6px;
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--ease-standard),
+              color var(--motion-fast) var(--ease-standard);
+}
+.lk-rail__add { border-color: var(--accent); color: var(--accent); }
+.lk-rail__del { border-color: var(--danger); color: var(--danger); }
+.lk-rail__hint { font-size: 10px; color: var(--fg-2); line-height: 1.4; }

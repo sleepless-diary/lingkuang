@@ -20,7 +20,7 @@
  * 「点击实体会刷新界面」（2026-09-13）。
  */
 import type { Store } from '../store/store';
-import type { Entity, TimelineNode } from '../store/types';
+import type { Entity, EntityFrame, TimelineNode } from '../store/types';
 import { currentWorld } from '../store/store';
 import { addEntity, removeEntity } from '../store/actions';
 import { confirmDialog } from './confirm';
@@ -28,6 +28,11 @@ import { escapeHtml } from './html';
 import { fieldRow } from './fields';
 import { createDocEditor, type DocEditor } from './doc-editor';
 import { createPropsPanel, type PropsPanel } from './props-panel';
+import { createEvolutionRail, type Rail } from './evolution-rail';
+import { loadSettings } from './settings';
+import {
+  epochOfNodes, frameDiff, nearestVersion, normalizeFrames, statesOf, versionAtNode, type EntityState,
+} from '../store/evolution';
 import { cascadeIn, enter } from './motion';
 
 const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;font-family:inherit;user-select:text;';
@@ -67,6 +72,19 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
      store 订阅触发的重建（外部改 vault 回扫、字段提交后签名变化）**不播** ——
      否则改一个字段整块面板块淡入一次，看着像闪。 */
   let pendingEnter = false;
+  /* ── 演变（版本历史，2026-09-13）─────────────────────────────────
+     中/右栏显示的**不是实体身上那一份**，而是「你现在站在哪个事件上看它」那一版：
+     `statesOf(实体)` 一次算出初稿 + 每一帧之后的全部样子，换版本就是换个下标取数组（O(1)）。
+     `railNode` = 选中的锚点节点（null = 初稿那一格）；`railKey` = 这个选择属于哪条实体，
+     换实体要重挑默认值（用户指定：**离沙盘时间指针最近的那一帧**）。 */
+  let railNode: string | null = null;
+  let railKey = '';
+  let rail: Rail | null = null;
+  let states: EntityState[] = [];
+  let statesId = '';
+  /* 节点 epoch 按世界缓存（拖帧条、每次改字段都要查，不该每次重算年表） */
+  let epochWorld = '';
+  let epochCache: Map<string, number> = new Map();
   /* 节点页签的树展开状态（世界 / 时间线 / 种类 三级，与编辑器同一套交互） */
   const expandedWorlds = new Set<string>();
   const expandedTls = new Set<string>();
@@ -132,36 +150,218 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     msgTimer = window.setTimeout(() => { if (el.isConnected) el.textContent = ''; }, 2600);
   }
 
-  /** 改实体身上某个字段（或名字/类型）。走 store.update → 可撤销、会落盘。 */
-  function patchEntity(fn: (e: Entity) => void): void {
-    store.update((d) => {
-      const ws = d.worldsets[store.activeWorld];
-      const e = ws?.entities?.[activeId];
-      if (e) fn(e);
-    });
-  }
   /** 就地改 target 指向的节点（用 nodeTarget 自己的 world，不回退 activeWorld）。 */
   function patchNode(fn: (n: TimelineNode) => void): void {
     const t = nodeTarget;
     if (!t) return;
     store.update((d) => {
-      const n = d.worldsets[t.world]?.timelines[t.tlId]?.nodes.find((x) => x.id === t.nodeId);
+      const n = d.worldsets[t.world]?.timelines?.[t.tlId]?.nodes.find((x) => x.id === t.nodeId);
       if (n) fn(n);
     });
   }
+
+  /* ── 演变：版本、物化、写回 ─────────────────────────────────────── */
+
+  /** 静默提交（不触发整块重渲染）。**保存并恢复**旧值而不是无脑置 false —— 这几段会互相嵌套
+   *  （写正文 → 提交某一版），无脑置 false 会在里层提前解除静默，让整块面板重建一次。 */
+  function withQuiet(fn: () => void): void {
+    const was = quiet;
+    quiet = true;
+    try { fn(); } finally { quiet = was; }
+  }
+
+  /** 节点 epoch（键 = 节点 id）。按世界缓存。 */
+  function epochMap(): Map<string, number> {
+    const w = store.activeWorld ?? '';
+    if (w !== epochWorld) { epochWorld = w; epochCache = epochOfNodes(currentWorld(store) as any); }
+    return epochCache;
+  }
+  const epochOf = (id: string): number => epochMap().get(id) ?? 0;
+
+  /** 左列/右栏要显示的节点（带它属于哪条时间线） */
+  function findNode(nodeId: string): { node: TimelineNode; tlId: string } | undefined {
+    for (const tlId of currentWorld(store).order ?? []) {
+      const n = currentWorld(store).timelines?.[tlId]?.nodes?.find((x) => x.id === nodeId);
+      if (n) return { node: n, tlId };
+    }
+    return undefined;
+  }
+
+  /** 换实体时重挑锚点。锁定模式钉在锁定那一格；否则 = **离沙盘时间指针最近的那一帧**
+   *  （用户 2026-09-13 指定），一帧都没有就落到初稿。顺便把物化结果算好、把帧按时间排好。 */
+  function ensureRailSelection(): void {
+    const e = active();
+    if (!e) { railNode = null; railKey = ''; states = []; statesId = ''; return; }
+    const st = loadSettings();
+    const lock = st.evolveLock;
+    if (st.evolveMode === 'locked' && lock && lock.world === store.activeWorld && findNode(lock.nodeId)) {
+      railNode = lock.nodeId;
+    } else if (railKey !== e.id) {
+      const cursor = Number((currentWorld(store) as any).timeCursor ?? 0);
+      const v = nearestVersion(e, epochOf, cursor);
+      railNode = v > 0 ? ((e.frames ?? [])[v - 1]?.nodeId ?? null) : null;
+    }
+    railKey = e.id;
+    /* 帧按锚点时间排序（同一个节点只留一帧）。就地整理**不写回**：写回由 store.update 那条路做 */
+    normalizeFrames(e, epochOf);
+    states = statesOf(e);
+    statesId = e.id;
+  }
+
+  /** 现在看的是第几版：0 = 初稿，k = 第 k 帧之后 */
+  function entityVersion(): number {
+    const e = active();
+    if (!e || railNode === null) return 0;
+    return versionAtNode(e, epochOf, epochOf(railNode), railNode);
+  }
+
+  /** 现在看到的这一版的样子（中栏字段 / 正文都从这里取，不再直接读实体身上的初稿） */
+  function viewState(): EntityState | undefined {
+    const e = active();
+    if (!e) return undefined;
+    if (statesId !== e.id) { states = statesOf(e); statesId = e.id; }
+    return states[Math.max(0, Math.min(states.length - 1, entityVersion()))];
+  }
+
+  /** 把「某一版的样子」写回去：v=0 改实体自己（初稿），v≥1 改那一帧的差异。
+   *  ⚠️ 差异是**用前后两版重新算出来的**（`frameDiff(states[v-1], next)`），不做增量记账 ——
+   *  这样改任何一版都只动那一帧，后面各帧的差异天然跟着重放，不会算错。 */
+  function commitState(v: number, next: EntityState): void {
+    const prev = states[v - 1];
+    withQuiet(() => {
+      store.update((d) => {
+        const ent = d.worldsets[store.activeWorld]?.entities?.[activeId];
+        if (!ent) return;
+        if (v === 0) {
+          ent.name = next.name;
+          ent.typeId = next.typeId;
+          ent.properties = next.properties;
+          ent.doc = next.doc;
+          return;
+        }
+        const fr = ent.frames?.[v - 1];
+        if (fr) fr.patch = (prev ? frameDiff(prev, next) : null) ?? {};
+      });
+    });
+    if (states[v]) states[v] = next;
+  }
+
+  /** 编辑**该落到哪一版**（用户 2026-09-13 把三种模式放进设置里）：
+   *   - 手动（默认）：不新开版本 —— 选中格没有帧时，改动落到它**之前最近的那一版**（右栏那行小字会写明）；
+   *   - 自动：选中格还没有帧 → 先开一个空帧，改动即成「这一格与上一格的区别」；
+   *   - 锁定：永远落到锁定的那一帧（设置里选）。
+   *  三种模式都**不弹窗**：落点写在右栏上，看得见再改。 */
+  function editVersion(): number {
+    const e = active();
+    if (!e) return 0;
+    const st = loadSettings();
+    if (st.evolveMode === 'locked') {
+      const lock = st.evolveLock;
+      if (lock && lock.world === store.activeWorld) return versionAtNode(e, epochOf, epochOf(lock.nodeId), lock.nodeId);
+    }
+    if (st.evolveMode === 'auto' && railNode !== null && !(e.frames ?? []).some((f) => f.nodeId === railNode)) {
+      addFrame(railNode, true);
+      return entityVersion();
+    }
+    return entityVersion();
+  }
+
+  /** 改「现在看到的那一版」（名字/类型/字段/正文都走这里） */
+  function patchVersion(fn: (st: EntityState) => void): void {
+    const st = viewState();
+    if (!st) return;
+    const next: EntityState = { ...st, properties: { ...st.properties } };
+    fn(next);
+    commitState(editVersion(), next);
+    rail?.render();
+  }
+
+  /** 在某个事件节点上留一帧（空帧 = 只是标记「从这一刻起就是这个样子」；
+   *  随后在这一格里改动，改动就成为它与上一帧的区别）。 */
+  function addFrame(nodeId: string, silent = false): void {
+    const hit = findNode(nodeId);
+    if (!hit) return;
+    const fr: EntityFrame = {
+      nodeId,
+      world: store.activeWorld,
+      tlId: hit.tlId,
+      note: hit.node.title,
+      at: Date.now(),
+      patch: {},
+    };
+    const e = active();
+    withQuiet(() => {
+      store.update((d) => {
+        const ent = d.worldsets[store.activeWorld]?.entities?.[activeId];
+        if (!ent) return;
+        ent.frames = [...(ent.frames ?? []), fr];
+        normalizeFrames(ent, epochOf);   /* 按锚点时间插到正确位置（同一个节点只留一帧） */
+      });
+    });
+    if (e) { states = statesOf(active() ?? e); statesId = e.id; }
+    if (!silent) { say('已在这一格记下一帧 ✓'); rail?.render(); }
+  }
+
+  /** 删掉某一格上的帧（历史，带确认）。后面的帧不受影响：它们各自相对自己的上一帧。 */
+  function deleteFrame(nodeId: string): void {
+    const e = active();
+    const fr = (e?.frames ?? []).find((f) => f.nodeId === nodeId);
+    if (!e || !fr) return;
+    void confirmDialog({
+      title: '删掉这一帧？',
+      message: `「${fr.note || findNode(nodeId)?.node.title || '这一格'}」这一帧记的变化会被丢掉。`,
+      detail: '之后的版本不受影响（每一帧存的是它与上一帧的区别）。',
+      confirmText: '删掉这一帧',
+      danger: true,
+    }).then((ok) => {
+      if (!ok) return;
+      withQuiet(() => {
+        store.update((d) => {
+          const ent = d.worldsets[store.activeWorld]?.entities?.[activeId];
+          if (ent?.frames) ent.frames = ent.frames.filter((f) => f.nodeId !== nodeId);
+        });
+      });
+      const e2 = active();
+      if (e2) { states = statesOf(e2); statesId = e2.id; }
+      say('已删掉这一帧');
+      if (!swapBody()) render();
+    });
+  }
+
+  /** 「正在看：…」那行小字：站在初稿还是站在某个事件之后的版本（放在中栏顶部）。
+   *  ⚠️ 它必须**跟着换条目/换版本一起更新** —— 否则切到另一条实体后这行还写着上一条的版本
+   *  （实测：切到没有版本的实体再切回来，右栏高亮是「第 1 版」而这里仍写着"初稿"）。 */
+  function versionNoteText(): string {
+    const v = entityVersion();
+    return v === 0 ? '正在看：初稿' : `正在看：第 ${v} 版（锚在右边那格事件上）`;
+  }
+
+  /** 换「站在哪个事件上看」：先结算正文，再换版本（顺序反了会把这一版的正文写进那一版）。 */
+  function setRailNode(nodeId: string | null): void {
+    if (railNode === nodeId) return;
+    if (docEditor) docEditor.flush();
+    railNode = nodeId;
+    const e = active();
+    if (e) { states = statesOf(e); statesId = e.id; }   /* 换版本 = 换个下标取数组，不用重算 */
+    if (!swapBody()) render();
+  }
   /** 把正文写回**指定**目标（不是「当前选中的」）—— 关闭时调用也不会串文档。 */
   function writeDoc(t: DocTarget, md: string): void {
-    quiet = true;
-    try {
+    withQuiet(() => {
       if (t.kind === 'entity') {
-        store.update((d) => { const e = d.worldsets[store.activeWorld]?.entities?.[t.id]; if (e) e.doc = md; });
+        /* 实体：正文属于**现在看到的那一版**（初稿 or 某一帧的差异），不是实体身上那一份。
+           `t.id` 一定还是"刚才编辑的那条"（switchTarget 先 flush 再改选择），
+           所以 viewState()/editVersion() 此刻读到的就是对的版本。 */
+        const st = t.id === activeId ? viewState() : undefined;
+        if (st && st.doc !== md) commitState(editVersion(), { ...st, doc: md });
+        else if (!st) store.update((d) => { const e = d.worldsets[store.activeWorld]?.entities?.[t.id]; if (e) e.doc = md; });
       } else {
         store.update((d) => {
-          const n = d.worldsets[t.world]?.timelines[t.tlId]?.nodes.find((x) => x.id === t.nodeId);
+          const n = d.worldsets[t.world]?.timelines?.[t.tlId]?.nodes.find((x) => x.id === t.nodeId);
           if (n) n.doc = md;
         });
       }
-    } finally { quiet = false; }
+    });
   }
 
   /** 换目标（换条目 / 换页签）：**先把正文结算掉再改选择**。
@@ -200,18 +400,21 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     let md: string;
     if (mode === 'entity') {
       normalizeEntitySelection();
-      const e = active();
+      ensureRailSelection();
+      const st = viewState();
       const nameEl = host.querySelector<HTMLInputElement>('#cx-name');
       const typeEl = host.querySelector<HTMLSelectElement>('#cx-type');
       const fieldsEl = host.querySelector<HTMLElement>('#cx-fields');
       /* 骨架是"一个条目都没有"那一版（中栏只有一句提示）⇒ 结构不同，整块重建 */
-      if (!e || !nameEl || !typeEl || !fieldsEl) return false;
-      nameEl.value = e.name ?? '';
+      if (!st || !nameEl || !typeEl || !fieldsEl) return false;
+      nameEl.value = st.name ?? '';
       /* 类型下拉里没有这个 id（外部的类型被删了）就别硬写 value —— 浏览器会把 select 落到第一个选项上 */
-      if (Array.from(typeEl.options).some((o) => o.value === e.typeId)) typeEl.value = e.typeId ?? '';
-      fillEntityFields(fieldsEl, e);
-      next = { kind: 'entity', id: e.id };
-      md = e.doc ?? '';
+      if (Array.from(typeEl.options).some((o) => o.value === st.typeId)) typeEl.value = st.typeId ?? '';
+      fillEntityFields(fieldsEl, st);
+      const vn = host.querySelector<HTMLElement>('#cx-vnote');
+      if (vn) vn.textContent = versionNoteText();
+      next = { kind: 'entity', id: activeId };
+      md = st.doc ?? '';
     } else {
       const t = nodeTarget;
       const n = activeNode();
@@ -227,6 +430,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     docTarget = next;
     if (docEditor) docEditor.setDoc(md);   /* 同一个 tiptap 实例换文档，不销毁不重建 */
     renderList();                          /* 左列只动高亮：那一列没有编辑器，重建只花 DOM 钱 */
+    rail?.render();                        /* 右栏那条竖线：换实体/换版本要重画高亮与摘要 */
     pendingEnter = false;                  /* 骨架没重建 ⇒ 不该有整块错峰 */
     bodySig = bodySignature();             /* 签名立刻对齐，否则下一次 store 变化会白重建一次 */
     enter(body, 'lk-swap-in');
@@ -238,10 +442,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
 
   /** 中栏的实体字段行（模板声明的类型决定控件形态）。
    *  整块 render() 与就地换条目（swapBody）**共用这一份** —— 两处各写一遍就会漂移，
-   *  这一课在抽公共属性面板时吃过（同一件事做两遍，各缺一半）。 */
-  function fillEntityFields(el: HTMLElement, e: Entity): void {
+   *  这一课在抽公共属性面板时吃过（同一件事做两遍，各缺一半）。
+   *  ⚠️ 参数是**某一版的样子**（`EntityState`），不是实体本身：显示的是"你站的这一格"的版本，
+   *  写回也写进那一版（`patchVersion`），字段值与初稿可以不同。 */
+  function fillEntityFields(el: HTMLElement, st: EntityState): void {
     el.innerHTML = '';
-    const t = types()[e.typeId];
+    const t = types()[st.typeId];
     if (!(t?.fields ?? []).length) {
       const hint = document.createElement('div');
       hint.style.cssText = 'font-size:var(--text-xs);color:var(--fg-2);';
@@ -249,8 +455,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       el.appendChild(hint);
     }
     for (const f of t?.fields ?? []) {
-      el.appendChild(fieldRow(f, e.properties?.[f.name], (v) => {
-        patchEntity((ent) => { ent.properties = { ...(ent.properties ?? {}), [f.name]: v }; });
+      el.appendChild(fieldRow(f, st.properties?.[f.name], (v) => {
+        patchVersion((s) => { s.properties = { ...s.properties, [f.name]: v }; });
         say('已保存 ✓');
       }));
     }
@@ -266,17 +472,19 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (nodeTarget && !activeNode()) nodeTarget = null;
     const isEntity = mode === 'entity';
     normalizeEntitySelection();
+    ensureRailSelection();   /* 实体页签：把"站在哪个事件上看"与各版本的样子准备好 */
     const kinds = Object.keys(types());
     const mainEnt = (): string => {
-      const e = active();
-      if (!e) return '<div style="font-size:var(--text-xs);color:var(--fg-2);">左边选一个实体看图。</div>';
+      const st = viewState();
+      if (!st) return '<div style="font-size:var(--text-xs);color:var(--fg-2);">左边选一个实体看图。</div>';
       return `
         <div style="display:flex;align-items:center;gap:8px;">
-          <input id="cx-name" value="${escapeHtml(e.name)}" style="${INP}font-size:15px;font-weight:600;"/>
+          <input id="cx-name" value="${escapeHtml(st.name)}" style="${INP}font-size:15px;font-weight:600;"/>
           <span style="font-size:var(--text-xs);color:var(--fg-2);flex-shrink:0;">类型</span>
-          <select id="cx-type" style="flex-shrink:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-xs);outline:none;">${kinds.map((k) => `<option value="${escapeHtml(k)}"${k === e.typeId ? ' selected' : ''}>${escapeHtml(typeName(k))}</option>`).join('')}</select>
+          <select id="cx-type" style="flex-shrink:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-xs);outline:none;">${kinds.map((k) => `<option value="${escapeHtml(k)}"${k === st.typeId ? ' selected' : ''}>${escapeHtml(typeName(k))}</option>`).join('')}</select>
           <button id="cx-del" style="margin-left:auto;flex-shrink:0;background:transparent;border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;">删除</button>
         </div>
+        <div id="cx-vnote" style="font-size:var(--text-xs);color:var(--fg-2);margin-top:4px;">${escapeHtml(versionNoteText())}</div>
         <div style="display:flex;flex-direction:column;gap:5px;margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
           <div id="cx-fields" style="display:flex;flex-direction:column;gap:5px;"></div>
         </div>
@@ -325,11 +533,28 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
           <div id="cx-body" style="flex:1;min-width:0;border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;">
             ${isEntity ? mainEnt() : mainNode()}
           </div>
+          ${isEntity ? '<div id="cx-rail" class="lk-rail" title="演变：站在某个事件上看这条设定"></div>' : ''}
         </div>
         <div id="cx-msg" style="font-size:var(--text-xs);"></div>
       </div>`;
 
     renderList();
+
+    /* 右栏那条竖线（演变）。只在实体页签有 —— 它按「世界的事件节点」画格子；
+       它自己不写数据，建帧/删帧/换格都回到这个文件里（免得两处各说一套怎么落盘）。 */
+    const railHost = host.querySelector<HTMLElement>('#cx-rail');
+    rail = railHost
+      ? createEvolutionRail({
+        store,
+        host: railHost,
+        getEntity: () => active(),
+        getSelected: () => railNode,
+        onSelect: (id) => setRailNode(id),
+        onAddFrame: (id) => { addFrame(id); bodySig = bodySignature(); rail?.render(); },
+        onDeleteFrame: (id) => deleteFrame(id),
+      })
+      : null;
+    rail?.render();
 
     /* 切换才播入场（见 pendingEnter 的说明）。用**一次性错峰**而不是整块淡入 ——
        整块淡入会让整个面板"洗白一下"，还盖掉元素自己的错峰。两级：
@@ -360,20 +585,22 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     });
     host.querySelector('#cx-name')?.addEventListener('change', () => {
       const inp = host.querySelector('#cx-name') as HTMLInputElement;
-      patchEntity((e) => { e.name = inp.value.trim() || '未命名'; });
+      /* 改名走**当前那一版**：初稿就改实体自己（文件名跟着变），某一帧上就记进那帧的差异
+         （文件名始终按初稿的名字 —— .md 得有个稳定的落点） */
+      patchVersion((st) => { st.name = inp.value.trim() || '未命名'; });
       say('已保存 ✓');
     });
     host.querySelector('#cx-type')?.addEventListener('change', () => {
       const sel = host.querySelector('#cx-type') as HTMLSelectElement;
-      patchEntity((e) => { e.typeId = sel.value; });
+      patchVersion((st) => { st.typeId = sel.value; });
       /* 换类型 → 按新模板补字段（由 src/main.ts 的 ensureEntityLayer 统一做） */
       window.dispatchEvent(new CustomEvent('lingkuang-formats-changed'));
       say('已换类型 ✓');
     });
     /* 实体字段行（公共控件 `src/ui/fields.ts`）：模板声明的类型决定控件形态 */
     const fieldsHost = host.querySelector('#cx-fields') as HTMLElement | null;
-    const e = active();
-    if (fieldsHost && e) fillEntityFields(fieldsHost, e);
+    const st0 = viewState();
+    if (fieldsHost && st0) fillEntityFields(fieldsHost, st0);
     /* 节点：中栏用**公共属性面板**（与编辑器同一份实现，含标题/时间历法 scrub/精度/种类/描述 + 种类字段） */
     const propsHost = host.querySelector('#cx-props') as HTMLElement | null;
     if (propsHost && nodeTarget) {
@@ -402,7 +629,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         if (docTarget) writeDoc(docTarget, md);
         /* 正文落盘后左列不用重画（标题没变），也不该整块重渲染（会丢光标） */
       });
-      docEditor.setDoc((isEntity ? active()?.doc : activeNode()?.doc) ?? '');
+      docEditor.setDoc((isEntity ? viewState()?.doc : activeNode()?.doc) ?? '');
     }
     host.querySelector('#cx-del')?.addEventListener('click', () => {
       const c = active();
@@ -433,10 +660,14 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
        换世界必须重建，否则留着上一个世界的名字。 */
     const w = store.activeWorld ?? '';
     if (mode === 'entity') {
-      const e = active();
       const kindList = Object.keys(types()).join(',');
-      if (!e) return ['entity', w, 'none', kindList].join('|');
-      return ['entity', w, e.id, e.typeId ?? '', e.name, JSON.stringify(e.properties ?? {}), e.doc ?? '', kindList].join('|');
+      const st = viewState();
+      if (!st) return ['entity', w, 'none', kindList].join('|');
+      /* 带版本号：同一格里换版本（点右栏另一格）必须重建中/右栏。
+         内容取**这一版的样子**（不是实体身上的初稿）—— 否则改了某一帧、显示的却是初稿，签名看不出差别。 */
+      const v = entityVersion();
+      return ['entity', w, activeId, 'v' + v, railNode ?? '', st.typeId ?? '', st.name,
+        JSON.stringify(st.properties ?? {}), st.doc ?? '', kindList].join('|');
     }
     if (!nodeTarget) return ['node', w, 'none'].join('|');
     const n = activeNode();
@@ -570,6 +801,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   const unsub = store.subscribe(() => {
     if (torn) return;
     if (!host.isConnected || !host.querySelector('#cx-root')) { unsub(); return; }
+    /* 物化结果缓存作废：数据可能被外部回扫换过（同一个实体 id，但帧/正文已不同） */
+    statesId = '';
     /* 左列照旧重画：那一列没有编辑器，重建只花 DOM 钱，而且实体/节点增删必须立刻反映 */
     updateTabCounts();
     renderList();
@@ -586,10 +819,17 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (quiet) { bodySig = sig; return; }
     if (sig !== bodySig) render();
   });
+  /* 设置里改了「设定演变」的模式/锁定点 → 视图与落点都要跟着变（锁定模式下视图钉在锁定那一格） */
+  const onSettings = (): void => {
+    if (!railKey || !active()) return;
+    if (!swapBody()) render();   /* swapBody 内部会 ensureRailSelection + 重画帧条 */
+  };
+  window.addEventListener('lingkuang-settings', onSettings);
   render();
   return () => {
     torn = true;
     unsub();
+    window.removeEventListener('lingkuang-settings', onSettings);
     /* 切走工具时把未失焦的正文也结算掉，再销毁 tiptap 实例 */
     if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }
     if (msgTimer) window.clearTimeout(msgTimer);

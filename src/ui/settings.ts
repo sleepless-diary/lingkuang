@@ -1,5 +1,9 @@
 /** 设置模块——AI 引擎（本地 Ollama / OpenAI 兼容 API）+ 偏好项；存 localStorage */
 import type { Store } from '../store/store';
+import { currentWorld } from '../store/store';
+
+/** 演变（设定库的版本历史）的三种模式，用户 2026-09-13 选「都做，把模式放到设置里面」 */
+export type EvolveMode = 'manual' | 'auto' | 'locked';
 
 interface Settings {
   aiMode: 'ollama' | 'api';
@@ -9,6 +13,8 @@ interface Settings {
   glide: number;      // 平移惯性（0-1）
   sensitivity: number; // 平移敏感度
   rulerDensity: number; // 标尺密度
+  evolveMode: EvolveMode;   // 改动什么时候变成"一版"（见设置面板里的说明）
+  evolveLock: { world: string; tlId: string; nodeId: string } | null;   // 锁定模式锁在哪一格
 }
 
 const DEFAULTS: Settings = {
@@ -19,6 +25,8 @@ const DEFAULTS: Settings = {
   glide: 0.55,
   sensitivity: 1,
   rulerDensity: 1,
+  evolveMode: 'manual',
+  evolveLock: null,
 };
 
 export function loadSettings(): Settings {
@@ -36,8 +44,19 @@ export function saveSettings(s: Settings) {
   localStorage.setItem('lingkuang-settings', JSON.stringify(s));
 }
 
-export function renderSettings(_store: Store, host: HTMLElement): void {
+export function renderSettings(store: Store, host: HTMLElement): void {
   const s = loadSettings();
+  /* 锁定模式下要选"锁在哪一格"：列出当前世界的时间线节点（按时间排） */
+  const lockWorld = store.activeWorld || '';
+  const lockNodes: { id: string; tlId: string; label: string }[] = [];
+  const ws: any = currentWorld(store);
+  for (const tlId of ws.order ?? []) {
+    const tl = ws.timelines?.[tlId];
+    for (const n of tl?.nodes ?? []) {
+      lockNodes.push({ id: n.id, tlId, label: `${n.year ?? ''}${n.month ? '-' + String(n.month).padStart(2, '0') : ''} ${n.title ?? ''}`.trim() });
+    }
+  }
+  const lockId = s.evolveLock && s.evolveLock.world === lockWorld ? s.evolveLock.nodeId : '';
   host.style.overflow = 'auto';
   host.innerHTML = `
     <div style="max-width:520px;margin:0 auto;padding:20px 16px;display:flex;flex-direction:column;gap:14px;">
@@ -80,6 +99,21 @@ export function renderSettings(_store: Store, host: HTMLElement): void {
         </div>
       </div>
       <div style="font-size:var(--text-xs);color:var(--fg-2);">⚠️ 灵框本体免费开源。AI 联想为可选能力——本地部署（自付电费）或第三方 API（费用由提供商收取），均与灵框无关。</div>
+      <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;display:flex;flex-direction:column;gap:8px;">
+        <div style="font-size:var(--text-sm);font-weight:600;color:var(--fg);">设定演变（版本历史）</div>
+        <div style="font-size:var(--text-xs);color:var(--fg-2);">设定库右侧那条竖线叫「演变」：每一格是时间线上的一个事件节点。同一格可以在不同事件上长成不同的样子，这里决定<b>改动什么时候变成"一版"</b>。改完立刻生效。</div>
+        <label style="font-size:var(--text-xs);color:var(--fg-2);display:flex;align-items:flex-start;gap:6px;"><input type="radio" name="evolveMode" value="manual"${s.evolveMode === 'manual' ? ' checked' : ''}/><span><b>手动</b>（默认）：只有点「＋ 在这一格记一帧」才会留一版；平时改动改的是<b>你现在看的这一版</b>，不随手产生历史。</span></label>
+        <label style="font-size:var(--text-xs);color:var(--fg-2);display:flex;align-items:flex-start;gap:6px;"><input type="radio" name="evolveMode" value="auto"${s.evolveMode === 'auto' ? ' checked' : ''}/><span><b>自动</b>：改动直接落在你选中的那一格上；这一格还没有版本就自动开一个 —— 事件之间自然长出差异。</span></label>
+        <label style="font-size:var(--text-xs);color:var(--fg-2);display:flex;align-items:flex-start;gap:6px;"><input type="radio" name="evolveMode" value="locked"${s.evolveMode === 'locked' ? ' checked' : ''}/><span><b>锁定</b>：改动永远记到下面选定的那一格上（右侧竖线也钉在它上面），适合"往后所有变化都算在这个事件之后"。</span></label>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:var(--text-xs);color:var(--fg-2);width:90px;">锁定在哪一格</span>
+          <select id="set-evolve-lock" style="flex:1;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 6px;font-size:var(--text-xs);outline:none;">
+            <option value="">（未选）</option>
+            ${lockNodes.map((n) => `<option value="${n.id}"${n.id === lockId ? ' selected' : ''}>${n.label}</option>`).join('')}
+          </select>
+        </div>
+        <div style="font-size:var(--text-xs);color:var(--fg-2);">「${lockWorld || '（未选世界）'}」有 ${lockNodes.length} 个事件节点可选。</div>
+      </div>
       <button id="set-save" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:8px;font-size:var(--text-sm);cursor:pointer;">保存设置</button>
       <div id="set-msg" style="font-size:var(--text-xs);color:var(--accent);"></div>
     </div>`;
@@ -101,6 +135,32 @@ export function renderSettings(_store: Store, host: HTMLElement): void {
     (el as HTMLInputElement).addEventListener('change', () => {
       s.aiMode = (el as HTMLInputElement).value as Settings['aiMode'];
     });
+  });
+  /* 演变模式与锁定点：**立刻存盘并广播**（不用等"保存设置"）——
+     设定库的右栏要在用户切回去时就已经是新规则了。 */
+  const saveNow = (msgText: string) => {
+    saveSettings(s);
+    window.dispatchEvent(new CustomEvent('lingkuang-settings'));
+    msg.textContent = msgText;
+    setTimeout(() => (msg.textContent = ''), 1500);
+  };
+  host.querySelectorAll('input[name="evolveMode"]').forEach((el) => {
+    (el as HTMLInputElement).addEventListener('change', () => {
+      s.evolveMode = (el as HTMLInputElement).value as EvolveMode;
+      /* 选锁定却没选过格子 → 自动落到第一个事件上，免得"锁了个空" */
+      if (s.evolveMode === 'locked' && !lockId && lockNodes.length) {
+        s.evolveLock = { world: lockWorld, tlId: lockNodes[0].tlId, nodeId: lockNodes[0].id };
+        const sel = host.querySelector('#set-evolve-lock') as HTMLSelectElement | null;
+        if (sel) sel.value = lockNodes[0].id;   /* 面板上的下拉当场显示出来 */
+      }
+      saveNow('已保存 ✓');
+    });
+  });
+  host.querySelector('#set-evolve-lock')?.addEventListener('change', (ev) => {
+    const id = (ev.target as HTMLSelectElement).value;
+    const hit = lockNodes.find((n) => n.id === id);
+    s.evolveLock = hit ? { world: lockWorld, tlId: hit.tlId, nodeId: hit.id } : null;
+    saveNow(hit ? '已锁定到这一格 ✓' : '已取消锁定 ✓');
   });
   host.querySelector('#set-save')?.addEventListener('click', () => {
     saveSettings(s);

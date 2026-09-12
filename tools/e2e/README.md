@@ -96,6 +96,9 @@ cwd 与环境变量不跨调用保留 —— 环境变量要和命令写在同�
 | `cold-start-empty-timeline.cjs` | 重启复验 3 项（承接 `timeline-persist.cjs` 的收尾状态）：两条空时间线仍在、被外部删目录的主线不复活、盘上文件与界面一致 |
 | `assoc-canvas.cjs` | 灵感触发器·联想画布 **11 项**（用户 2026-09-12 两条：「节点会被一块地方挡住，看不全 / 移出视窗时视窗不跟着移」→「**现在有边界了，向上拖不动节点了，我想要无限画布**」）：★1 滚到底时**画布顶部不被 sticky 工具条压住**（`stageTop ≥ barBottom`、`stageBottom ≤ vh`、画布顶部那一圈 `elementFromPoint` 归画布、高度 ≥ vh×0.7）、★2 鼠标停在**画布上**滚滚轮真能滚页面（找的是真滚动容器 `.lk-tool-slot`，不是写死的类名）、★3 拖到右边缘**按住不放**→视窗自己往右推且节点**一直贴在鼠标下**、★3b **越过旧世界右墙继续推**（没有边界）、★4 松手后推力立刻停、★5 反向拖到左边缘 → 越过原点继续走（左边同样没墙）、★7 **向上拖节点**：世界坐标真的变小（可以 < 20、甚至为负）+ 贴上边缘时 `panY > 0`、★8 松手即真的松手（之后的指针移动不再带动节点 + 贴边推停住；**原来断言"坐标一动不动"，`PIN_YIELD` 之后已改判据**）、★9 跑到**框外的连线照样画出来**（含 A/B：把 SVG 的 `overflow` 改成 `hidden` 时同一点 `elementFromPoint` 就打不中）、★6 无未捕获异常。⚠️ 自动推视窗是 rAF 驱动的 ⇒ 断言前必须 `forceFrames()`（见铁律 6） |
 | `assoc-pull.cjs` | 联想画布**连线上的"拉力"6 项**（用户 2026-09-13：「**拉太远时拉力会失效**」→「线没断，但是拉力失效了，是不是数据溢出的问题」）：★1 拖拽**全程**就是"线被拉住"（往"离开根"的方向拖 150px，间距不许被拉长；A/B：修复前根词位移 **1px**、线从 148 拉成 **291**，修复后 146/146）、★2 拖得近（< `PIN_YIELD 420`）松手后**它自己留在被放下的地方**（自身漂移 0，线由邻居过来收）、★3 **两端都被手工摆过** + 拉太远 → 钉子失效、间距收回静止长度（A/B：修复前 `4477 → 4477` 永远回不来）、★4 丢到 **40 万像素外**不出 NaN/Infinity 且仍在被往回拉（否定"数据溢出"这个猜测）、★5 无异常。⚠️ 它把 `window.fetch` 换成固定 5 个词（`雪狼/冻湖/松林/极光/猎户`）—— 没有 ollama 时图里只有根词、**没有边就无从断言拉力**；落点夹在画布内（拖出画布会触发贴边推视窗，测到的就不是弹簧）；★1 必须**沿"根 → 被拖词"方向往外拖**（见铁律 9） |
+| `seed-evolution.cjs` | 前置（**只许跑在测试目录**）：3 个事件节点（年份 **315 / 327 / 350**，帧要按锚点时间排序）+ 2 条实体（角色·银发少女 = 被测；物品·霜纹剑 = 验"历史各归各的"）+ 把 JSON 的 `timeCursor` 设成 **3.1e10**（≈公元 1000 年，**一定在所有节点之后**）。⚠️ 这是唯一**不依赖历法换算**的写法：只要 epoch 随年份单调，就能断言"最近的那一帧"是最后一帧 |
+| `entity-evolution.cjs` | 演变（实体版本历史）**27 项**（用户 2026-09-13：「我想在设定库右侧加一条竖着的等距的时间线…当选中实例时，默认进入离当前指针最近的 git」+「都做吧，把模式放到设置里面」）：★0/★0b 右栏帧条存在且**每格等高**（等距）、★1 没有版本时默认落初稿、★2 点没有版本的格子 → 看到的是"上一版"且底部写明改动会记到哪、★3 **手动模式**在没版本的格子上改字段 = 改**初稿**（frontmatter 变）且**不产生帧**、★4/★4b ＋记一帧 → `.md` 出现 `#演变：` 段（锚在 n-evo-2）且该格点亮、★5/★5b 改字段进**那一帧的 patch** 而初稿不动（中栏显示的是这一版的值）、★6/★6b 切回初稿看到初稿的值、★7/★7b/★7c 改正文 → **行级 hunks**（不是整段）且初稿正文没被改写、切版本正文也不同、★8 换另一条实体不串台、★9 **默认落在离沙盘指针最近的那一帧**、★10/★10b/★10c/★10d **自动模式**自动开一帧且新帧是**增量**、★11 站在最早的格子看到初稿、★12/★12b/★12c **锁定模式**视图与落点都钉在锁定帧、★14/★14b 删帧先弹确认且只删那一帧、★13 无异常。⚠️ 读 `.md` 必须**轮询等写下去**（见铁律 11） |
+| `cold-start-evolution.cjs` | 演变**冷启动 8 项**（承接上一条跑完的数据）：帧还在（亮格数 = 文件里的帧数）+ 摘要正确 + 默认落点仍是最近的那一帧 + **物化正确**（末版 = 初稿 + 第1帧 + 第2帧：发色墨黑/年龄19/能力霜、冰晶）+ 切初稿只剩初稿值 + 正文也按版本取 + 无异常 |
 
 启动补写那条单独跑一次：
 
@@ -318,7 +321,6 @@ node tools\e2e\cold-start-empty-timeline.cjs   # 3 项：空时间线仍在、�
 ```
 
 ## 铁律 5：**别把播种脚本接进 `Select-Object -First N`**
-
 ```powershell
 node tools\e2e\seed-node.cjs | Select-Object -First 1   # ❌ 会杀掉正在写盘的进程
 node tools\e2e\seed-node.cjs                            # ✅ 不接管道，或接 -Last（-Last 要读完整个流）
@@ -334,3 +336,37 @@ PowerShell 拿到第 N 条输出就**提前终止上游进程**。播种脚本�
 补救：**0 字节的数据文件不会自愈（这是判损护栏的设计）**，要从同目录的
 `worldbuilding.backup-N.json` 拷回来（`Copy-Item worldbuilding.backup-0.json worldbuilding.json`），
 再删掉那几份 `worldbuilding.bak-corrupt-*.json`（否则 `data-load-clean` 的 ★4「没有凭空生成损坏副本」会挂）。
+
+## 演变（实体版本历史）那条
+
+```powershell
+$env:LINGKUANG_TEST_DATA="C:\Users\<你>\AppData\Local\Temp\lk-evo\worldbuilding.json"
+$env:LINGKUANG_VAULT="C:\Users\<你>\AppData\Local\Temp\lk-evo\vault"
+$env:LINGKUANG_TEST_USERDATA="C:\Users\<你>\AppData\Local\Temp\lk-evo\userdata"
+
+node tools\e2e\seed-evolution.cjs          # 3 节点（315/327/350）+ 2 实体 + timeCursor 设到所有节点之后
+# 起应用
+node tools\e2e\entity-evolution.cjs        # 27 项（会写入帧、最后删掉一帧）
+
+# 重启应用（数据保留上一轮的结果）
+node tools\e2e\cold-start-evolution.cjs    # 8 项：帧还在 + 物化正确
+```
+
+## 铁律 11：**要断言 `.md` 的内容，必须轮询等它写下去，不能固定 sleep**
+
+`store.update` → 400ms 防抖（`src/main.ts`）→ IPC `vault:write-*` → 落盘，
+再叠上 vault watcher 回扫，实际落盘时间随机器和上一个动作浮动。
+第一版 `entity-evolution.cjs` 用 `await sleep(500)` 之后读文件，结果 ★3/★4/★7/★10c/★12b
+**五条全报 FAIL**，读到的都是"上一拍"的文件 —— 当时差点去改产品代码。
+改成轮询（`waitMd(path, pred)`，最多 6s）后同一份代码 27/27。
+
+```js
+const waitMd = (p, pred, ms = 6000) => waitFor(() => { try { return pred(read(p)); } catch { return false; } }, ms);
+await ev(setField('发色', '墨黑'));
+await waitMd(MD_A, (t) => fmValue(t, '发色') === '墨黑');   // ✅
+// await sleep(500); const t = read(MD_A);                  // ❌ 会读到上一拍
+```
+
+同族提醒：**别把"动画/定时器有没有跑"混进这类断言**。判"写下去了没有"看文件；
+判"动画播了没有"看 `getAnimations()` + `animationend`（铁律 6/7）。两者用了同一句
+`sleep(500)` 的时候，挂起来会分不清是哪一边。

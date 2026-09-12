@@ -49,6 +49,8 @@
 | `src/ui/fields.ts` | 模板字段控件的**公共渲染**（`fieldRow(field, value, onChange, labelWidth)` / `parseFieldInput` / `formatFieldValue`），按模板声明的类型决定形态。约定：只在 `change`（失焦/回车）提交 |
 | `src/ui/doc-editor.ts` | 极简文稿编辑器（tiptap，与 `editor.ts` 同一套扩展）：`createDocEditor(el, onFlush)` → `{ setDoc, getDoc, flush, dispose }`。⚠️ 切条目必须 flush 再 dispose；⭐ 但**同页签内换条目**（codex）刻意**不 dispose**：`setDoc(md)` 换文档、实例留着，省掉"正文区先空一帧"（`setDoc` 会同步 `last`，所以换文档本身不会触发一次多余的写回） |
 | `src/store/entities.ts` | 实体层基础：`BUILTIN_ENTITY_TYPES`（角色/地点/物品/组织/种族）、`ensureEntityTypes`（世界没有类型时**播种一次**）、`ensureEntityFields`（按类型补字段）、`entityTypeOf` |
+| `src/store/evolution.ts` | **演变（实体版本历史）的纯逻辑**，不碰 DOM / store：`docDiff(prev, next)` / `applyDoc(prev, patch)`（正文**按行**存差异，`hunks[].at` = 上一版行号、从大到小排、从后往前应用）、`frameDiff(prev, next)`（没变化返回 `null`，不产生空帧）/ `applyPatch(st, patch)`、**`statesOf(e)` 一次算出全部前缀**（初稿 + 每一帧之后的样子；换版本 = 换个下标取数组，O(1)）、`epochOfNodes(ws)`（节点 → epoch，按世界算一次年表）、`normalizeFrames(e, epochOf)`（按锚点时间排序 + 一个节点只留一帧，**就地**整理）、`nearestVersion` / `versionAtNode`（站哪个节点看哪一版）、`patchSummary` / `isEmptyPatch` |
+| `src/ui/evolution-rail.ts` | 设定库右侧那条**等距竖线**（用户 2026-09-13）：一格 = 世界里一个事件节点（所有时间线合起来按时间排，顶上第一格是初稿），每格 46px 固定高（`flex: 0 0 46px` + `min/max-height` 钉死 —— 高度不稳就不叫"等距"）、有帧的格子点亮并显示差异摘要。它**自己不写数据**，只通过 `onSelect` / `onAddFrame` / `onDeleteFrame` 回调 `codex.ts`。⚠️ 让选中格滚进视野时**只滚帧条自己的 `.lk-rail__rows`**（算 `offsetTop`），**不要用 `scrollIntoView()`** —— 它会把所有祖先滚动容器一起滚，而 `#cx-root` 正是面板的滚动容器（实测把面板 scrollTop 从 260 拽到 122，被 `codex-smooth-switch.cjs` ★6 抓住） |
 | `data/worldbuilding.js` | 世界观种子数据（`window.__SEED_TIMELINES__`），首次运行/无用户数据时使用 |
 | `data/character_lib.json` | 角色生成词库（58 分类，萌百来源 CC BY-NC-SA，勿商用） |
 | `design-system/` | 设计令牌（`tokens.css` 权威颜色/字体源） |
@@ -84,8 +86,10 @@
   之后完全由用户增删改。⚠️ 故意不做读取端兜底合并（`main.js` 的 `loadFormatsRaw` 踩过：
   内建种类在面板里删掉、下次读又冒出来）。
 - **实体 `Entity` = 实现**：`properties` 是「**初稿**」（按类型模板填的结构化特征），`doc` 是正文（Markdown）。
-  `layers: EntityLayer[]` 是「**差异帧**」——按时间叠加的字段覆盖：
-  「此刻的样子」= 初稿 + 所有 `since <= 当前时间` 的帧按时间叠加（Phase 2 使用，类型已定义好）。
+  `frames: EntityFrame[]` 是「**演变**」—— 一串锚在时间线事件节点上的版本帧，**每帧只存与上一帧的区别**
+  （字段用 `set`/`del`、正文用行级 `hunks`）。「某一刻的样子」= 初稿 + 按锚点时间叠加到那一帧为止的所有差异。
+  完整方案见 `docs/ENTITY-EVOLUTION.md`；纯逻辑在 `src/store/evolution.ts`，界面在
+  `src/ui/evolution-rail.ts`（右栏那条竖线）+ `src/ui/codex.ts`（看哪一版 / 改哪一版 / 写回那一版）。
 - **模板分开存、面板统一管**：节点种类在 `formats`（应用级），实体类型在 `entityTypes`（世界级），
   但都由左栏「结构体管理」一个面板的两个分区编辑（两者数据结构同构 `{ id, name, fields[] }`，复用同一套 UI）。
 - **补全时机**：`src/main.ts` 的 `ensureEntityLayer`（播种类型 + 按模板补字段）在启动时、以及任何
@@ -219,6 +223,13 @@
     规则与节点侧**同构**，见下面那条「同 id 只留一份」。
   - `src/main.ts` 的 `mergeEntities(byType, baseEntities)` 把扫描结果摊平成 `{ id: Entity }` 并带 `typeId`；
     **例外**：这个世界在 vault 里还没有 `_设定` 目录时保留 `base` 的实体，别把升级前 JSON-only 的实体整批抹掉。
+  - **演变（版本历史）也在同一个 `.md` 里**：`entityToMd` 在正文之后追加 `#演变：` 段，
+    内容是 ```json 围栏里的一串帧（`framesToMd` / `parseFrames`）。为什么不用 frontmatter：
+    Obsidian 的属性面板只认扁平键值，嵌套数组既不好读也不好写回；围栏里的 JSON 能**原样往返**。
+    ⚠️ `mdToEntity` 必须**先切掉 `#演变：` 段再做正文解析**（否则整段 JSON 会被当成正文的一部分）。
+    ⚠️ **认不出来就原样保留**：段在、JSON 读不出来时打 `_framesBroken` + 存 `_framesRaw`，
+    `entityToMd` 见到这两个标记就**照抄原文** —— 历史绝不能被一次解析失败写没。
+    `frames` 在 `mergeEntities` 里是「**文件为源**」的：`.md` 没有这段就是没有帧（用户在 Obsidian 删掉应当生效）。
   - **启动时要补写一趟实体**（`writeAllEntities()`，在 `renderShell()` 之后、`vaultWatch()` 之前）：
     `writeAll` 只由 store 订阅触发，光靠它的话「升级前就存在的实体」要等用户碰一下才会变成文件。
     只写实体不写节点 —— 节点 `.md` 可能是手写手工排版的，每次启动回写会把它们整体归一化。
@@ -247,6 +258,31 @@
   ⚠️ 清理**挂在写盘上**（既有语义）：一份「输了」的残留要等这个节点下次被写才会消失。
 - ⚠️ **测试前置必须给出确定起点**：`seed-node.cjs` 播节点前先清空这条时间线。
   同 id 两份并存时赢家随 readdir 顺序而变，断言会假挂（曾把「目录脏」误判成代码改坏 —— 见第十九轮的 A/B）。
+
+### 演变（实体版本历史：看哪一版 / 改哪一版 / 写回哪一版）
+
+方案与存储格式见 `docs/ENTITY-EVOLUTION.md`；这里是**实现上的三条线**，改这块之前务必先读：
+
+- **数据形状**：`entity.properties/doc/name/typeId` = **初稿**（第 0 版），`entity.frames[]` = 一串提交，
+  每帧 `{ nodeId, world, tlId, note, at, patch }`，`patch` 只写**出现过的键**（`set` / `del` / `name` / `typeId` / `doc`）。
+- **看哪一版**：`codex.ts` 的 `viewState()` = `statesOf(e)[entityVersion()]`。
+  `entityVersion()` = `versionAtNode(e, epochOf, epochOf(railNode), railNode)` ——
+  选中的节点自己有帧就是那一帧，否则是**它之前最近的一帧**（floor），一帧都没有就是初稿。
+  中栏字段、名字/类型、正文**全部从这里取**，不再直接读实体身上的初稿。
+- **改哪一版 = 落点策略**（`editVersion()`，用户 2026-09-13 把三种模式放进设置）：
+  **手动**（默认）不新开版本（改的是你现在看的那一版）；**自动**在"选中格还没有版本"时先开一个空帧；
+  **锁定**永远落到 `settings.evolveLock` 指的那一帧。⚠️ 落点写在右栏底部小字上（`editHint`），不弹窗。
+- **写回**：`commitState(v, next)` —— `v === 0` 直接改实体自己；`v ≥ 1` 改那一帧的 patch，而 patch 是
+  **用前后两版重新算出来的**（`frameDiff(states[v-1], next)`），不做增量记账：改任何一版都只动那一帧，
+  后面各帧的差异天然跟着重放。
+- **默认落点**：换实体时 `ensureRailSelection()` 把选中格设成**离沙盘时间指针（`timeCursor`，epoch 秒）最近的那一帧**
+  （用户指定），没有帧就是初稿。用 `nearestVersion(e, epochOf, cursor)`。
+- ⚠️ **物化缓存必须跟着 store 通知作废**：`states` 按实体 id 缓存，`store.subscribe` 里 `statesId = ''`
+  —— 外部回扫可能换掉同一个实体 id 的帧/正文，不清缓存就会显示旧内容。
+- ⚠️ **静默提交要能嵌套**：`withQuiet(fn)` 保存并恢复旧值（不是无脑置 `false`）——
+  「写正文 → 提交某一版」是嵌套的，里层提前解除静默会让整块面板重建一次。
+- ⚠️ 「正在看：初稿 / 第 N 版」那行（`#cx-vnote`）必须在**换条目（`swapBody`）与换版本**时都刷新 ——
+  它属于骨架 HTML，只在 `render()` 里生成的话，切到另一条实体会显示上一条的版本（实测踩到）。
 
 ### 工具宿主（`src/tools/registry.ts` 的 `openTool`）
 - 工具栏工具都是**模块级大视图**：点击 → `openTool(id, moduleView, store)` → 各工具用动态 import 渲染

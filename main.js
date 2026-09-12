@@ -219,6 +219,16 @@ const ENTITY_DIR = '_设定';
 
 /* ── 实体序列化：Entity <-> .md（frontmatter 存 id/name/type + 全部字段，正文用 #正文： 标签）──
    与节点同构：字段写进 frontmatter（Obsidian 双向可读），正文写进 body。 */
+/* 演变（版本历史）段落。**为什么用 ```json 围栏而不是 frontmatter**：
+   Obsidian 的属性面板只认扁平键值，嵌套数组塞 frontmatter 既不好读、也不好写回；
+   围栏里的 JSON 能原样往返 —— 历史数据"一个字节都别丢"比"看着好看"重要。
+   解析失败（用户在外部手改坏了）时走 `_framesRaw` 原样带回，绝不把历史写没。 */
+function framesToMd(e) {
+  if (e._framesBroken && typeof e._framesRaw === 'string' && e._framesRaw) return '\n' + e._framesRaw + '\n';
+  const frames = e.frames;
+  if (!Array.isArray(frames) || !frames.length) return '';
+  return `\n#演变：\n每帧只记与上一帧的区别（叠加在上面 frontmatter 的初稿上）；锚点是时间线上的事件节点。\n\n\`\`\`json\n${JSON.stringify(frames, null, 2)}\n\`\`\`\n`;
+}
 function entityToMd(e, typeName) {
   const meta = ['id', 'name', 'type'].filter((k) => k === 'type' ? (typeName || e[k]) : (e[k] !== undefined && e[k] !== null))
     .map((k) => (k === 'type' ? `type: ${typeName || e[k]}` : `${k}: ${e[k]}`)).join('\n');
@@ -226,11 +236,34 @@ function entityToMd(e, typeName) {
   const propsMeta = Object.entries(props)
     .filter(([k, v]) => v !== undefined && v !== null && !['id', 'name', 'type'].includes(k))
     .map(([k, v]) => `${fmtKey(k)}: ${fmtProp(v)}`).join('\n');
-  const body = e.doc ? `#正文：\n${e.doc}\n` : '';
+  const body = (e.doc ? `#正文：\n${e.doc}\n` : '') + framesToMd(e);
   return `---\n${meta}${propsMeta ? '\n' + propsMeta : ''}\n---\n${body}`.replace(/\r\n/g, '\n');
 }
+/* 解析 `#演变：` 段（已连同标记行一起切下来）。JSON 读不出来就标记 broken + 留原文。 */
+function parseFrames(raw, e) {
+  const text = String(raw || '').replace(/\r\n/g, '\n').replace(/\n+$/, '');
+  const m = text.match(/```[a-zA-Z]*\s*\n([\s\S]*?)\n```/);
+  let arr = null;
+  try {
+    const v = JSON.parse(m ? m[1] : text.replace(/^#\s*演变\s*[：:]\s*$/, '').trim());
+    if (Array.isArray(v)) arr = v;
+  } catch { arr = null; }
+  const ok = (arr || []).filter((f) => f && typeof f.nodeId === 'string' && f.nodeId && f.patch && typeof f.patch === 'object');
+  if (!arr || ok.length !== arr.length) {
+    /* 认不出来就**原样保留**（下次写盘照抄这段），并说一声：宁可界面暂时没有历史，也不能把历史写没 */
+    e._framesBroken = true;
+    e._framesRaw = text;
+    console.warn(`[lingkuang] 实体「${e.name ?? ''}」的 #演变： 段解析失败，已原样保留（不覆盖、不清空）`);
+    return;
+  }
+  if (ok.length) e.frames = ok;
+}
 function mdToEntity(text) {
-  const { fm, rest } = parseFm(text);
+  const { fm, rest: restAll } = parseFm(text);
+  /* 先切掉 `#演变：` 段：它排在正文后面，不切的话正文解析会把整段 JSON 当成正文的一部分 */
+  const all = String(restAll ?? '').replace(/\r\n/g, '\n').split('\n');
+  const evIdx = all.findIndex((l) => /^#\s*演变\s*[：:]\s*$/.test(l.trim()));
+  const rest = (evIdx === -1 ? all : all.slice(0, evIdx)).join('\n');
   const e = {};
   if (fm.id !== undefined) e.id = fm.id;
   if (fm.name !== undefined) e.name = fm.name;
@@ -243,6 +276,7 @@ function mdToEntity(text) {
   const lines = rest.split('\n');
   const idx = lines.findIndex((l) => /^#\s*正文\s*[：:]\s*$/.test(l.trim()));
   e.doc = (idx === -1 ? lines : lines.slice(idx + 1)).join('\n').trim();
+  if (evIdx !== -1) parseFrames(all.slice(evIdx).join('\n'), e);
   return e;
 }
 

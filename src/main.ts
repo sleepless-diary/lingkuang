@@ -106,14 +106,17 @@ function mountDataCorruptAlert(info: DataCorruptInfo): void {
 }
 
 /** 把扫描到的实体摊平成 `{ id: Entity }`：**文件为源**（Obsidian 改过的值生效），
- *  但保留 base 里文件没写的字段（例如差异帧 `layers` —— 实体 .md 暂时不序列化它，
- *  用扩展展开就能让它熬过每一次回扫）。文件里没有的实体就是不在了。 */
+ *  但保留 base 里文件没写的字段（用扩展展开就能让它熬过每一次回扫）。文件里没有的实体就是不在了。
+ *  ⚠️ `frames`（演变帧）是**例外里的例外**：它以 .md 里的 `#演变：` 段为源，
+ *  文件里没有这个段就是"没有帧"（用户在 Obsidian 删掉它应当生效）。
+ *  唯一的防线是 main.js 的 `_framesBroken` —— 段在、但 JSON 读不出来时原样带回、不覆盖。 */
 function mergeEntities(byType: Record<string, any[]>, baseEntities?: Record<string, any>): Record<string, any> {
   const out: Record<string, any> = {};
   for (const [typeName, list] of Object.entries(byType ?? {})) {
     for (const e of list ?? []) {
       if (!e || !e.id) continue;
       out[e.id] = { ...(baseEntities?.[e.id] ?? {}), ...e, typeId: e.type ?? typeName };
+      if (!Array.isArray(out[e.id].frames)) out[e.id].frames = [];
     }
   }
   return out;

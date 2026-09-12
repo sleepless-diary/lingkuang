@@ -80,14 +80,49 @@ export interface Timeline {
 export interface EntityTypeField { name: string; type: FieldType; }
 export interface EntityType { id: string; name: string; fields: EntityTypeField[]; }
 
-/** 差异帧（Phase 2「角色演变」用）：从 `since` 起生效的一组字段覆盖；`until` 为空 = 一直有效。
- *  按用户 2026-09-12 的决定：**存在实体自己身上**（不放在事件节点上）。
- *  「此刻的样子」= properties（初稿）+ 所有 `since <= 当前时间` 的帧按时间叠加。 */
-export interface EntityLayer {
-  since: number;                    // epoch 秒（与 timeCursor / 节点位置同一套刻度）
-  until?: number | null;
-  note?: string;                    // 这条变化因何而来（如「第一次魔潮」）
-  values: Record<string, PropValue>;
+/** ── 演变（实体版本历史，用户 2026-09-12 定方向、2026-09-13 细化）──
+ *
+ *  模型（与 git 同构）：
+ *   - **初稿** = 实体自己身上的 `name` / `typeId` / `properties` / `doc`（= 第 0 版）
+ *   - **帧** = 一个个提交，**只存与上一帧的区别**，锚在时间线上的一个事件节点上（`nodeId`）
+ *   - 「某一刻的样子」= 初稿 + 按时间顺序叠加到那一帧为止的所有差异
+ *
+ *  几条硬约定：
+ *   1. 帧数据存在**实体自己身上**（旧设计 `EntityLayer` 曾想按 epoch 开时间窗、后被本设计取代），
+ *      不写进事件节点 —— 节点只是锚点。
+ *   2. 每帧**只记改掉的键**，没动的字段不重复存（长文正文按行存差异，见 `DocPatch`）。
+ *   3. `nodeId` 指向的节点被删掉时，帧**不删**（历史不能因为删了个节点就丢），只标记为「孤立」。
+ */
+export interface EntityFrame {
+  nodeId: string;                   // 锚点：时间线节点 id
+  world: string;                    // 该节点所在世界观
+  tlId: string;                     // 该节点所在时间线
+  note?: string;                    // 备注（缺省用节点标题显示）
+  at?: number;                      // 记下这一帧的时刻（epoch 毫秒，仅显示用）
+  patch: FramePatch;                // 与上一帧的区别
+}
+
+/** 一帧的差异内容：只有出现过的键才写（未动的字段一律省略） */
+export interface FramePatch {
+  name?: string;                            // 改了名字
+  typeId?: string;                          // 换了类型
+  set?: Record<string, PropValue>;          // 字段值：键 = 字段名，值 = 这一刻的新值
+  del?: string[];                           // 被清空的字段名
+  doc?: DocPatch;                           // 正文（Markdown）的差异
+}
+
+/** 按行存正文差异。`hunks` 为空且 `full` 有值 = 整段替换（改得太多、或差异算不出来时的兜底）。 */
+export interface DocPatch {
+  hunks?: DocHunk[];
+  full?: string;
+}
+
+/** 一段行级改动。`at` 是**上一版**里的行号（0 基）；`hunks` 按 `at` **从大到小**排列，
+ *  从后往前应用就天然不用算偏移（这是选这个顺序的唯一原因）。 */
+export interface DocHunk {
+  at: number;
+  del: string[];
+  ins: string[];
 }
 
 /** 模板字段类型（结构体管理面板里可选的种类）——
@@ -106,7 +141,7 @@ export interface Entity {
   name: string;
   doc?: string;
   properties?: Record<string, PropValue>;   // 「初稿」：按类型模板填的结构化特征
-  layers?: EntityLayer[];                   // 「差异帧」：按时间叠加的变化（Phase 2 使用）
+  frames?: EntityFrame[];                   // 「演变」：按时间排列的版本帧（只存与上一帧的区别）
 }
 
 /** 地图（Leaflet 思路：手绘区域 + 标记 + 轨迹） */
