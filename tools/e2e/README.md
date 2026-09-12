@@ -77,7 +77,7 @@ cwd 与环境变量不跨调用保留 —— 环境变量要和命令写在同�
 | `data-corrupt-guard.cjs` | 判损护栏 16 项：截断文件启动后**原文件逐字节未被覆盖** + 副本隔离 + 重读过（`attempts>1`）+ `data:save` 被拒且标明 `locked` + 壳级横幅两条出口 + 点「继续用新数据」解锁并自愈 + 中途补全的文件被重读捞回 |
 | `data-load-clean.cjs` | 误报守卫 6 项：**干净**数据启动时护栏一步都不该动（`attempts===1`、无横幅、无副本、写盘照常） |
 | `seed-motion.cjs` | 前置：给动效套件造确定起点 —— **两条时间线**（页签错峰至少要两个 tab，**第二条故意 0 节点、vault 里没有目录**，顺带守着「空时间线不被 vault 重建抹掉」那条修复）+ 各一个节点 + 一个实体。独立目录（`%TEMP%\lk-motion`），免得给别的套件留下额外时间线 |
-| `motion-switch.cjs` | 动效（切换类）14 项：切工具/开面板/回沙盘/页签错峰/弹窗/设定库换页签 各自**读 `getAnimations()` 断言动画真在跑**（name + 时长 + 延迟 + `playState`，在点击的同一个同步块里读）→ **强制出帧验推进**（`currentTime > 0`）→ **`finish()` 验终态不残留**（opacity=1 / transform=none）+ **减少动效降级**（`Emulation.setEmulatedMedia` 翻 `prefers-reduced-motion`：入场 200ms、动画名降级 `lk-fade`、错峰延迟全 0）+ 功能回归（点第二个时间线页签真的切过去了）。⚠️ 断言**不依赖墙钟**，原因见铁律 6 |
+| `motion-switch.cjs` | 动效（切换类）**18 项**：切工具/开面板/回沙盘/页签错峰/弹窗/设定库换页签 —— ① **参数**（`getAnimations()` 的 name + 时长 + 延迟 + `playState`，在点击的同一个同步块里读）② **真的在跑**（出**一帧**后要 `animationend`，见铁律 6）③ **终态不残留**（`finish()` 后 opacity=1 / transform=none）④ **容器不许播**（★2/★7/★9：整块淡入是"闪一下"的来源）⑤ **错峰自收手**（★6：类与行内延迟都清掉，否则重渲染会重播）⑥ **减少动效降级**（★15：`lk-fade`/200ms、错峰延迟全 0，含行内值）⑦ **竞态守卫**（★17：同 tick 连点两个工具，终态必须是后点的那个）+ 功能回归（★16 点第二个时间线页签真的切过去了）。⚠️ 断言**不依赖墙钟**，原因见铁律 6/7 |
 | `seed-empty-timeline.cjs` | 前置：三条时间线 —— 主线(1 节点)、**支线(0 节点，故意不建目录)**、副线(1 节点)；vault 里只有主线与副线的目录 |
 | `timeline-persist.cjs` | 空时间线不该被 vault 重建抹掉 8 项：启动后三条页签都在 → 空时间线能选中 → 点＋新建（直接建、默认名「新时间线」）→ **落盘后空时间线还在文件里** → 回扫后仍在 → **外部删掉主线目录后主线消失且不复活** → 副线与两条空时间线都没被牵连 |
 | `cold-start-empty-timeline.cjs` | 重启复验 3 项（承接 `timeline-persist.cjs` 的收尾状态）：两条空时间线仍在、被外部删目录的主线不复活、盘上文件与界面一致 |
@@ -147,11 +147,11 @@ $env:LINGKUANG_VAULT="C:\Users\<你>\AppData\Local\Temp\lk-motion\vault"
 
 node tools\e2e\seed-motion.cjs                # 2 条时间线（各 1 节点）+ 1 个实体
 # 起应用（同上面的 Start-Process）
-node tools\e2e\motion-switch.cjs              # 14 项
+node tools\e2e\motion-switch.cjs              # 18 项
 ```
 
 ⚠️ 这套件**必须在 `no-preference` 下跑**，脚本自己会先 `Emulation.setEmulatedMedia` 钉死环境
-（系统的「减少动效」偏好会让令牌降级、时长全变），★12 再翻成 `reduce` 验降级。
+（系统的「减少动效」偏好会让令牌降级、时长全变），★15 再翻成 `reduce` 验降级。
 
 ## 铁律 6：**隐藏窗口里 CSS 动画不推进** —— 动效断言不能靠墙钟
 
@@ -166,11 +166,26 @@ node tools\e2e\motion-switch.cjs              # 14 项
 
 正确姿势（`motion-switch.cjs` 就是这么写的）：
 1. **参数**：在点击的**同一个同步块**里读 `getAnimations()` 的 name / 时长 / 延迟 / `playState`；
-2. **真的会动**：`Page.captureScreenshot`（jpeg quality 10 即可）连打几帧，再看 `currentTime > 0`
-   —— 这一步才证明"动画在跑"，只读 `playState` 证明不了；
+2. **真的会动**：`Page.captureScreenshot`（jpeg quality 10）出**一帧**，然后要 **`animationend` 事件**
+   （脚本开头挂 `window.__ends` 全局监听）—— 动画播到结尾才会触发，帧被吞掉或动画从未启动都不会来。
+   ⚠️ **别用 `currentTime > 0` 当证据**：实测这一帧往往**直接把动画推到结尾**（读完是"已播完"、类也
+   被清了，见下条铁律 7），中途态根本抓不到（早期版本就是这么随机挂的）；
 3. **终态**：`el.getAnimations().forEach(a => a.finish())` 把动画推到结尾，再读计算样式
    （必须回到 `opacity: 1` + `transform: none`）。这比"等一会儿"更确定，而且正好覆盖
    「动画停在起点/中途」这类真缺陷。
+
+## 铁律 7：**一次性动效会"自己收手"** —— 读晚了什么都没有
+
+`cascadeIn()` 是**一次性**错峰：它给子项加类 + 行内延迟，播完（最后一块 `animationend`，或
+`maxDelay + 2000ms` 兜底）就把类与行内延迟都清掉 —— 因为不清的话，工具下次整块重渲染
+（`host.innerHTML = …`）时新建的子项会带着旧延迟再播一遍＝改个字段闪一下。
+
+后果（都踩过）：
+- 「出一帧再读动画对象」可能读到**空数组**：动画已经播完并收手了。要断言"播过了"请用
+  `animationend`（见铁律 6 第 2 步）。
+- 想知道"收手了没有"，就**故意**等它播完（或 `finish()` 推到底）再读：类必须已摘掉、
+  `style.animationDelay` 必须已清空（`motion-switch.cjs` ★6 就是这条）。
+- 别指望「出帧 → 读中间态 → 再出帧」这种节奏：这套环境里第一帧就可能把动画直接送到结尾。
 
 ## 空时间线那条（数据损失修复的守卫）
 

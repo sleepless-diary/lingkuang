@@ -94,14 +94,22 @@
 - [ ] **设定一致性检查（AI 任务）**：查矛盾（"他说 300 岁但种族寿命 200"、"角色位置与事件地点冲突"）——差异化卖点，AI 最擅长
 
 ### 动效与出入场（设计已定、参考实现已有、v3 分三片落地）
-- [x] **第 A 片（2026-09-12 完成）· 切换类**：切工具 / 开面板 / 弹窗 / 页签。新增 `src/ui/motion.ts`
-  （`enter` / `staggerIn`）+ `src/style.css` 末尾「动效层」（4 个 keyframes + 错峰容器 + reduced 降级）。
-  顺带把 `src/style.css` 的动效令牌对齐设计系统（原来是 fast 100ms / base 160ms，比 DESIGN.md 第 7 节
-  快一倍，落在被明令禁止的 snappy 档）。挂点与纪律见 `ARCHITECTURE.md`「动效（src/ui/motion.ts…）」。
-  验证：`tools/e2e/motion-switch.cjs` 14/14（读 `getAnimations()` 断言真的在跑 + 终态不残留 + reduced 降级）。
-  **时值经用户体感调过一轮**（2026-09-12「稍微慢一点、元素弹出再错开一点」）：入场 `--motion-enter: 480ms`、
-  错峰 80ms/项；并发现测试环境的一条事实（窗口 showInactive ⇒ 渲染进程 hidden ⇒ 动画不推进），
-  断言改为「参数 + 强制出帧验推进 + `finish()` 验终态」，与墙钟无关。
+- [x] **第 A 片（2026-09-12 完成，已按用户两次体感反馈收敛）· 切换类**：切工具 / 开面板 / 弹窗 / 页签。
+  新增 `src/ui/motion.ts`（`enter` / `staggerIn` 常驻错峰（页签栏）/ `cascadeIn` 一次性错峰）+ `src/style.css`
+  末尾「动效层」（keyframes + 错峰容器 + reduced 降级）。顺带把 `src/style.css` 的动效令牌对齐设计系统
+  （原来是 fast 100ms / base 160ms，比 DESIGN.md 第 7 节快一倍，落在被明令禁止的 snappy 档）。
+  挂点与纪律见 `ARCHITECTURE.md`「动效（src/ui/motion.ts…）」与「工具宿主」两段。
+- [x] **时值（用户两轮体感调过）**：入场 `--motion-enter: 640ms`（＝设计系统 slow 档＝DESIGN.md:157
+  Waking fade 自己的时长）、错峰 **100ms/项**（第 6 项封顶）、弹窗卡片走 `--motion-base 320ms`。
+- [x] **⚠️ 关键结论：整块容器不许播动画**（用户 2026-09-12「切换工具时会闪黑一下…元素还是没错开弹出」）——
+  抓帧证实那是同一病根：容器停在低不透明度上＝整片发灰的"闪"，且把元素错峰完全盖住。改成容器不透明、
+  **工具根部的顶层块**依次浮现。同轮还修掉「慢工具在切走之后才渲染完，把新工具盖掉」的工具切换竞态
+  （详见 `docs/BUGS.md` 第二十轮五/六/七）。
+  验证：`tools/e2e/motion-switch.cjs` **18/18**（参数 + animationend 当"真的在跑"的证据 + 终态不残留 +
+  reduced 降级 + 同 tick 连点竞态守卫）。
+- [ ] **第 B 片 · 列表变化**：条目增删/搜索过滤时的错峰浮现与**其余项让位**（后者 CSS 表达不了，
+  要用 Anime.js 或手写 FLIP）。⚠️ 别把错峰挂在每次 `renderList()` 上 —— 搜索框每敲一个字都会重画左列
+  （左列条目那种"显式切换才播"的做法可以照 `src/ui/codex.ts` 的 `pendingEnter` 抄）。
 - [ ] **第 B 片 · 列表变化**：条目增删/搜索过滤时的错峰浮现与**其余项让位**（后者 CSS 表达不了，
   要用 Anime.js 或手写 FLIP）。⚠️ 别把错峰挂在每次 `renderList()` 上 —— 搜索框每敲一个字都会重画左列。
 - [ ] **第 C 片 · 画布**：时间线节点移动 / 循环框 / 剧情线。⚠️ 撞 `src/ui/timeline.ts` 的

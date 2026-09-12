@@ -173,6 +173,63 @@
   它是本 bug 的传播机制；现在写盘会清掉/自愈，但「谁是赢家」这条规则本身还是隐式的。
 - 实体**重名**会撞进同一个 `.md` 路径（`entityPath()` 用名字当文件名）——既有设计，未改。
 
+### 五、用户第二条体感反馈「切换工具时会闪黑一下…元素还是没错开弹出」（本轮已修）
+
+- **抓帧定性**：`Page.captureScreenshot` 连抓 6 帧（脚本 `%TEMP%\lk-swithseq.cjs`，图 `%TEMP%\lk-sw-0..5.png`）
+  ⇒ 点工具后的**第一帧**「面板里内容其实已全部就位、只是整块发灰」（`#lk-module-view` 停在低不透明度上）。
+  窗口底色 `main.js:319 backgroundColor: '#c5c2ba'` 是浅色，所以不是真"黑"——用户说的是这一下"整片洗白/发暗"。
+  **两条反馈同一个病根**：整块容器 opacity 动画既造成"闪"，又把每个元素自己的错峰**完全盖住**
+  （整片一起淡入，看不出谁先谁后）。
+- **修法**：① `src/tools/registry.ts` 的 `openTool()` 删掉 `enter(host)`；② `src/ui/shell.ts` 回沙盘不再
+  `lk-fade-in`；③ 改成渲染完后给**工具根部的顶层块**挂 `cascadeIn()`（一次性错峰）；
+  ④ 设定库再加**第二级** `cascadeIn(#cx-list, 60, 420, 200)`（左列条目等主体那块到位后逐条浮现）；
+  ⑤ 时值按用户「直接再调慢一点」：`--motion-enter` 480 → **640ms**（＝设计系统 slow 档＝
+  `DESIGN.md:157` 自己的 Waking fade 时长），错峰 80 → **100ms/项**（第 6 项封顶）；
+  ⑥ 弹窗卡片改走 `--motion-base`（320ms）：弹层是"等你操作"的东西，不该花一整个 dream 时长浮上来。
+
+### 六、本片途中挖出的**工具切换竞态：慢工具盖掉新工具**（本轮已修）
+
+- **现象/实测**：同一个同步块里点 `settings`（import 未缓存）→ 立刻点 `codex`（已缓存），
+  **2.5 秒后主区仍停在 settings，而工具栏按钮亮着 codex**（MutationObserver 时间线：`cx-root` 先出现、
+  settings 的 `DIV` 后出现，之后没有任何修正）。
+- **机制**：各工具的 `open` 是 `import(...).then((m) => m.renderXxx(host, store))`，而
+  `src/ui/settings.ts` **函数内部还有自己的一层异步渲染** —— 它把清理函数交回来时 DOM 未必写完。
+  `openTool` 里"过期回调就地作废"只护得住**清理函数**，护不住那次渲染：落后的那次直接写进
+  `#lk-module-view`，把当前工具盖掉。（曾先试过"过期落地就把当前工具重开一次盖回来"——
+  **不够**：settings 的内部渲染发生在它返回清理函数之后，守卫跑完它还能再写一次。）
+- **修法：一格一工具**。`openTool` 每次在 `#lk-module-view` 里新建 `.lk-tool-slot`，把**格子**当 host
+  交给工具；切走时整格（连 DOM）摘掉 ⇒ 晚到的渲染写进已被摘掉的格子，永远无害。把"写哪儿"钉在
+  **打开那一刻**是关键。布局上格子要 `height: 100%`（把「百分比高度撑得住」这条链传下去，
+  否则工具根部 `height: 100%` 会因为父元素高度 auto 塌成 0）；`closest('.lk-module-view')` 这类
+  查询仍能穿过格子（`src/ui/assoc.ts` 在用）。
+- **守护**：`motion-switch.cjs` ★17 用**同一个同步块**连点两个工具（挑本套件从没点过、import 必然
+  没缓存的 `schema`），断言终态是后点的那个、且格子只剩一个。
+
+### 七、本轮自己写出来的两个坑（都已修，留档防重犯）
+
+- **`animationend` 会冒泡**：`cascadeIn` 的收手监听器原来只 `{ once: true }` 挂在"最后一块"上，
+  容器里任何**后代**元素自己的动画结束都会把它消耗掉 ⇒ 整组错峰被提前收掉（实测：本该错峰
+  0/100/200/300 + 640ms，几百毫秒后动画对象就空了、类也摘了）。修法：认 `e.target === 最后一块`，
+  且不能用 `once`。
+- **行内 `animation-delay` 压得过媒体查询**：`cascadeIn` 注入的是行内值，只在 CSS 里写
+  `prefers-reduced-motion` 降级块**压不住** ⇒ 函数里必须自己读 `motionReduced()` 把延迟清零
+  （否则"减少动效"下依然一个个错开着出来）。
+- 顺带把 `openTool` 的 `.catch(() => {})` 改成 `console.warn`：静默吞异常让"点了没反应"极难查
+  （本会话被它耽误过一次，`#cx-root` 一直不出现却什么错都看不到）。
+
+### 验证（五/六/七）
+
+- `tools/e2e/motion-switch.cjs` 扩到 **18 项**（新增 ★2/★7/★9「容器不许播」、★6「错峰自收手」、
+  ★17「同 tick 连点竞态守卫」、★4 改用 `animationend` 当"真的在跑"的证据）—— **18/18**
+- 回归（全部干净起点、各自独立目录）：`codex-node-tab` **15/15**、`editor-props-panel` **9/9**、
+  `codex-switch-target` **7/7**、`data-load-clean` **6/6**、`startup-materialize-entity` **6/6**、
+  `entity-vault` **17/17** + 冷启动 **PASS**、`kind-change-stale-file` **11/11**、
+  `data-corrupt-guard` **16/16**、`timeline-persist` **8/8**、`cold-start-empty-timeline` **3/3**
+- `node --check main.js` / `node --check preload.js` / `tsc --noEmit` / `vite build` 全 exit 0
+- ⚠️ 测试上的新事实（写进 `tools/e2e/README.md` 铁律 6/7）：这个环境里**出一帧就可能把 CSS 动画
+  直接推到结尾**，所以"读 `currentTime` 中间态"是不可靠的（★4 改用 `animationend`）；而且
+  `cascadeIn` 是一次性的、播完会**自己收手**，读晚了动画对象就是空数组。
+
 ## 第十八轮（2026-09-12）· 数据判损护栏 + 两个静默失效
 
 > **目的**：`main.js` 里那条注释早就写下了后果 —— 解析不了的 `worldbuilding.json`

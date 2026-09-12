@@ -51,3 +51,49 @@ export function staggerIn(container: HTMLElement | null): void {
   void container.offsetWidth;
   container.classList.add('lk-enter-stagger');
 }
+
+/** **一次性**错峰：给容器的子项依次注入延迟并播一次入场，跑完把类与行内延迟都清掉。
+ *
+ *  与 `staggerIn` 的唯一区别是「一次性 vs 常驻」，两者都不能混用：
+ *   · 页签栏那种「容器长期活着、子项随时会被换掉」→ `staggerIn`（类常驻，新子项自动有错峰）；
+ *   · 工具打开 / 换页签那种「**这一次**渲染出来的这些块依次浮现」→ `cascadeIn`。
+ *     类必须摘掉：工具下次重渲染（codex 是 `host.innerHTML = …` 整块重来）时新建的子项
+ *     若再播一遍，就是"改个字段闪一下"。
+ *
+ *  ⚠️ 为什么不再对**整块容器**做淡入（原 `openTool` 里的 `enter(host)`）：容器是占满主区的
+ *  一大片，整块 opacity 0→1 在视觉上就是"整个界面被洗白一下"（实测抓帧：点工具后第一帧里面
+ *  内容已全部就位、只是整块发灰），而且它把每个元素自己的错峰**完全盖住**了。
+ *  现在改成容器保持不透明、由里面的块依次浮现。
+ *
+ *  `step` 每块间隔；`maxDelay` 封顶（块多时不让最后一块等到天荒地老）；`start` 用于二级错峰
+ *  （比如列表要等它所在的那一大块先浮现）。 */
+export function cascadeIn(container: HTMLElement | null, step = 100, maxDelay = 500, start = 0): void {
+  if (!container) return;
+  const kids = Array.from(container.children) as HTMLElement[];
+  if (!kids.length) return;
+  /* 减少动效：错峰整个关掉（DESIGN.md:159）。**必须在这里判**，不能只靠 CSS 的降级块 ——
+     本函数给子项写的是**行内** animation-delay，行内值优先级高于媒体查询里的规则，
+     不在这儿清零的话「减少动效」下依然会一个个错开着出来。 */
+  const reduced = motionReduced();
+  const st = reduced ? 0 : step;
+  const md = reduced ? 0 : maxDelay;
+  const s0 = reduced ? 0 : start;
+  kids.forEach((el, i) => el.style.animationDelay = `${Math.min(s0 + i * st, md)}ms`);
+  container.classList.remove('lk-enter-stagger');
+  void container.offsetWidth;   /* 强制重排：只加类不会重播 */
+  container.classList.add('lk-enter-stagger');
+  const last = kids[kids.length - 1];
+  const clear = (): void => {
+    last.removeEventListener('animationend', onEnd);
+    container.classList.remove('lk-enter-stagger');
+    for (const el of kids) el.style.animationDelay = '';
+  };
+  /* ⚠️ `animationend` **会冒泡**：容器里任何后代元素自己的动画结束时都会飘上来。
+     不认 `e.target` 的话，一个早早结束的后代动画就会把整组错峰提前收掉
+     （实测：本该错峰 0/100/200/300ms + 640ms，几百毫秒后动画对象就空了、类也被摘了）。
+     所以只认"最后一块自己"的那一次，且不能用 `{ once: true }`（冒泡事件会把它消耗掉）。 */
+  const onEnd = (e: AnimationEvent): void => { if (e.target === last) clear(); };
+  last.addEventListener('animationend', onEnd);
+  /* 兜底：元素中途被换掉 / 动画被跳过时 animationend 不会来，不清的话下次切换会带着旧延迟重播 */
+  window.setTimeout(clear, md + 2000);
+}

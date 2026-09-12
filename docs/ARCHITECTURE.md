@@ -26,7 +26,7 @@
 | `src/main.ts` | 渲染进程入口，创建 store → 渲染 shell |
 | `src/calendar.ts` | **历法系统**：可编辑历法模型（`Calendar`/`TimePoint`/`toEpoch`/`fromEpoch`），默认公历 |
 | `src/store/` | 数据层：`store.ts`（单一数据源 + 订阅）、`actions.ts`（修改入口）、`types.ts`（领域类型） |
-| `src/tools/` | `registry.ts`（工具栏工具注册表）+ `register.ts`（工具定义） |
+| `src/tools/` | `registry.ts`（工具栏工具注册表；`openTool()` 给每次打开发一个**工具格** `.lk-tool-slot`——见「工具宿主」一段）+ `register.ts`（工具定义） |
 | `src/ui/shell.ts` | 壳 UI：世界栏 + 工具栏 + 沙盘 + 工具宿主 |
 | `src/ui/timeline.ts` | 世界沙盘时间线（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针） |
 | `src/ui/inspire.ts` | 灵感触发器（随机角色生成 + 词义联想入口） |
@@ -44,7 +44,7 @@
 | `src/ui/keys.ts` / `html.ts` | `isImeEnter(e)`（中文输入法回车守卫）/ `escapeHtml(s)`（外部文本进 innerHTML 前必过） |
 | `src/ui/alert.ts` | **壳级横幅**（`#lk-alerts` 通栏，`showShellAlert`/`removeShellAlert`/`hasShellAlert`）：放「必须被看见、且要用户做选择」的状态（数据文件判损、自动保存已暂停）。与编辑器内部的 `addHint` 不同 —— 那条活在编辑器工具里、切走就没了，这条挂壳上，任何工具下都在 |
 | `src/ui/schema.ts` | **结构体管理**面板（两个分区：**节点种类** / **实体类型**）。保存 → 节点种类写 `formats`（`formats.json`）或实体类型写 `worldsets[active].entityTypes` → 派发 `lingkuang-formats-changed`，由 `src/main.ts` 的 `ensureAllFormatFields` / `ensureEntityLayer` 补空值、清模板外的字段 |
-| `src/ui/motion.ts` | **动效层**（`enter(el, cls='lk-enter')` 重放入场 / `staggerIn(container, sel, step, cap)` 错峰 / `motionReduced()`）：keyframes 在 `src/style.css` 末尾「动效层」一节，时长走 `--motion-*` 令牌。⚠️ 只挂**显式切换**（切工具/开面板/换页签/弹窗），别挂 store 订阅触发的重渲染 |
+| `src/ui/motion.ts` | **动效层**（`enter(el, cls='lk-enter')` 重放入场 / `staggerIn(container)` 常驻错峰（页签栏）/ `cascadeIn(container, step, maxDelay, start)` 一次性错峰（工具打开、换页签、换条目）/ `motionReduced()`）：keyframes 在 `src/style.css` 末尾「动效层」一节，时长走 `--motion-*` 令牌。⚠️ 只挂**显式切换**（切工具/开面板/换页签/弹窗），别挂 store 订阅触发的重渲染；⚠️ **不给整块容器挂**（会"洗白一下"且盖掉元素错峰） |
 | `src/ui/codex.ts` | **设定库 = 工作台**（合并方案 A 第 3 步）：左列「实体」/「时间线节点」双页签 + 搜索框（节点是 世界→时间线→种类→节点 四级树，搜索时摊平成列表）、中栏档案字段、右栏正文编辑器。节点中栏用 `src/ui/props-panel.ts`（与编辑器同一份）、实体用 `src/ui/fields.ts`、正文用 `src/ui/doc-editor.ts`。⚠️ 换条目必须走 `switchTarget()`（先 flush 再改选择），正文写回**创建时捕获的目标**。⚠️ store 订阅**按 `bodySignature()` 决定要不要重建**中/右栏 —— 无条件 `render()` 会 dispose 掉 tiptap，而「自动落盘 → vault 回扫」每次编辑后约 360ms 就会走一趟订阅，实测每换一次 DOM 就有丢击键/焦点/IME 的风险（第十八轮） |
 | `src/ui/fields.ts` | 模板字段控件的**公共渲染**（`fieldRow(field, value, onChange, labelWidth)` / `parseFieldInput` / `formatFieldValue`），按模板声明的类型决定形态。约定：只在 `change`（失焦/回车）提交 |
 | `src/ui/doc-editor.ts` | 极简文稿编辑器（tiptap，与 `editor.ts` 同一套扩展）：`createDocEditor(el, onFlush)` → `{ setDoc, getDoc, flush, dispose }`。⚠️ 切条目必须 flush 再 dispose |
@@ -248,31 +248,60 @@
 - ⚠️ **测试前置必须给出确定起点**：`seed-node.cjs` 播节点前先清空这条时间线。
   同 id 两份并存时赢家随 readdir 顺序而变，断言会假挂（曾把「目录脏」误判成代码改坏 —— 见第十九轮的 A/B）。
 
+### 工具宿主（`src/tools/registry.ts` 的 `openTool`）
+- 工具栏工具都是**模块级大视图**：点击 → `openTool(id, moduleView, store)` → 各工具用动态 import 渲染
+  （`register.ts` 里每个 `open` 都是 `import('../ui/xxx').then((m) => m.renderXxx(host, store))`）。
+- **每个工具写进自己那一格**：`openTool` 在 `#lk-module-view` 里新建一个 `.lk-tool-slot` 并把它当 `host`
+  交给工具；渲染完若仍是当前工具 → 保留这一格 + 挂块级错峰；若中途被切走 → 摘掉这一格 + 跑它的清理函数。
+- ⚠️ **为什么不能让所有工具直接写 `#lk-module-view`**（实测出来的竞态，别退回去）：工具是「先渲染进
+  host、再把清理函数交回来」，而且像 `src/ui/settings.ts` 那样**函数内部还有自己的一层异步渲染**。
+  于是「打开 A → 立刻打开 B」时，慢的 A 完全可能在 B 渲染完之后才落地，把 B 盖掉：**工具栏亮着 B、
+  主区却是 A**（实测：同一个同步块里连点 settings + codex，2.5 秒后主区仍停在 settings）。
+  格子法把「写哪儿」钉在**打开那一刻** ⇒ 晚到多久都无害（它写的是已被摘掉的格子）。
+- 布局：`.lk-tool-slot { height: 100% }`（`src/style.css`）—— 必须把「百分比高度撑得住」这条链传下去，
+  否则工具根部写 `height: 100%` 会因为父元素高度 auto 塌成 0（`#lk-module-view` 是 `.lk-main` 的
+  flex 项，高度确定）。工具对 host 自己的设置（如 `host.style.overflow = 'auto'`）现在落在格子上，
+  语义与原来写在 `#lk-module-view` 上一致；`closest('.lk-module-view')` 这类查询依旧能穿过格子。
+- 打开失败**不再静默**：`.catch` 里 `console.warn`（以前静默吞掉，"点了没反应"很难查）。
+
 ### 动效（`src/ui/motion.ts` + `src/style.css` 末尾「动效层」）
-- 令牌：`--motion-fast 180ms`（hover / 选中变色，点一下要立刻有反馈）/ `--motion-base 320ms` /
-  `--motion-slow 640ms` / **`--motion-enter 480ms`（入场专用）** / `--ease-standard`。
-  设计系统只给了 base 与 slow，而 `DESIGN.md:157` 的 Waking fade 用的正是 640ms；用户 2026-09-12
-  的体感反馈是「**稍微慢一点，元素弹出要错分一点点时间**」⇒ 入场取两者之间的 480ms，错峰 80ms/项。
+- 令牌：`--motion-fast 180ms`（hover / 选中变色，点一下要立刻有反馈）/ `--motion-base 320ms`（弹窗卡片）/
+  `--motion-slow 640ms` / **`--motion-enter 640ms`（入场专用）** / `--ease-standard`。
+  用户 2026-09-12 两次体感反馈（「稍微慢一点」→「算了直接再调慢一点」）⇒ 入场直接取 640ms
+  ＝设计系统 slow 档＝`DESIGN.md:157` 的 Waking fade 自己的时长，不再自造中间值；错峰 **100ms/项**
+  （`.lk-enter-stagger > *:nth-child(n)`，第 6 项封顶）。
   ⚠️ `src/style.css` **不 import tokens.css**，所以它自己那份令牌必须与设计系统同值 ——
   本轮之前是 fast `100ms` / base `160ms`（比设计系统快一倍，正落在 DESIGN.md:182 禁止的
   "snappy developer tool" 档），已对齐；降级块也在 style.css 里复写了一份。
-- **两个 API**：`enter(el, cls = 'lk-enter')` 重放一次入场（摘类 → 强制重排 → 加类；只加类不重播）；
-  `staggerIn(container)` 让子项**错峰**入场 —— 延迟**不在 JS 里算**，而是 CSS 按子项序号给
-  （`.lk-enter-stagger > *:nth-child(n)`，80ms/项、第 8 项封顶）：工具是动态 import 的，
-  子项常常在这个函数之后才建出来，JS 遍历当时不存在的元素是注入不进去的；按序号给则天然覆盖。
-  改节奏只改 `src/style.css` 一处。
-- **挂点**：切工具/开面板 = `src/tools/registry.ts` 的 `openTool()`（唯一入口，覆盖工具栏点击与快捷键）；
-  回沙盘 = `src/ui/shell.ts`（用 `lk-fade-in`，**不带 transform** —— transform 会让容器变成
-  fixed 子元素的包含块）；时间线/世界页签 = `src/ui/shell.ts`（签名没变就早退，拖动不会重放）；
-  弹窗 = `src/ui/confirm.ts`（遮罩 `--motion-fast` + 卡片 `--motion-base`，**只入场不退场**：
-  退场要等 animationend 才能 resolve，破坏性操作的 Promise 不该为观感延迟）；
+- **三个 API**：
+  · `enter(el, cls = 'lk-enter')` 重放一次入场（摘类 → 强制重排 → 加类；只加类不重播）；
+  · `staggerIn(container)` = **常驻**错峰（类留在容器上）—— 延迟不在 JS 里算，而是 CSS 按子项序号给
+    （`.lk-enter-stagger > *:nth-child(n)`）：工具是动态 import 的，子项常在调用之后才建出来，
+    遍历当时不存在的元素注入不进去；按序号给则天然覆盖后插入的项。**只用于页签栏**这类
+    「容器长期活着、子项随时被换掉」的地方。
+  · `cascadeIn(container, step=100, maxDelay=500, start=0)` = **一次性**错峰（跑完自己摘类 + 清行内延迟）：
+    用于「**这一次**渲染出来的这些块依次浮现」（工具打开 / 换页签 / 换条目）。类**必须**摘掉 ——
+    否则工具下次重渲染（codex 是 `host.innerHTML = …` 整块重来）新建的子项会再播一遍＝改个字段闪一下。
+- ⚠️ **整块容器不许播动画**（用户 2026-09-12 反馈「切换工具时会闪黑一下」的真因）：抓帧实测，
+  点工具后第一帧"里面内容已全部就位、只是整块发灰"（`#lk-module-view` 在低不透明度上），
+  而且整块淡入把每个元素自己的错峰**完全盖住**。⇒ `openTool` 不再 `enter(host)`、回沙盘也不再
+  整块 `lk-fade-in`；改成容器保持不透明、由**工具根部的顶层块**依次浮现。
+- **挂点**：切工具/开面板 = `src/tools/registry.ts` 的 `openTool()`（唯一入口，覆盖工具栏点击与快捷键；
+  渲染完给 `cascadeIn` 挂块级错峰 —— 工具是动态 import 的，同步/异步两条路径都要挂）；
+  回沙盘 = `src/ui/shell.ts`（**不播动画**，只切显示）；时间线/世界页签 = `src/ui/shell.ts`（`staggerIn`，
+  签名没变就早退，拖动不会重放）；弹窗 = `src/ui/confirm.ts`（遮罩 `--motion-fast` + 卡片 `--motion-base`，
+  **只入场不退场**：退场要等 animationend 才能 resolve，破坏性操作的 Promise 不该为观感延迟）；
   设定库换条目/换页签 = `src/ui/codex.ts`（`pendingEnter` 标志：只有显式切换播，store 订阅触发的
-  重建不播，否则改一个字段整块面板块淡入一次；这里用 `staggerIn` 让标题行/页签行/三栏主体依次浮现）；
-  ⚠️ **不要**在 `openTool` 里给 host 挂常驻的错峰类：工具每次重渲染（codex 就是 `host.innerHTML = …`
-  整块重来）都会让新建出来的子项重播一遍，等于改个字段闪一下。详情面板 = `src/ui/detail.ts`（只在首次 `renderView`）；
-  新建节点表单 = `src/ui/node-form.ts`；壳级横幅 = `src/ui/alert.ts`。
+  重建不播，否则改一个字段整块淡入一次；两级 `cascadeIn`：顶层块 0/100/200/300 + 左列条目 200ms 起逐条 60ms）；
+  详情面板 = `src/ui/detail.ts`（只在首次 `renderView`）；新建节点表单 = `src/ui/node-form.ts`；
+  壳级横幅 = `src/ui/alert.ts`。
 - ⚠️ **纪律**：入场动画只挂显式切换 —— `src/ui/timeline.ts` 每次 store 通知都整体重渲染，
   给它挂「挂载即动画」会在拖动节点时不停重放（`docs/ROADMAP.md` 的硬约束）。
+- ⚠️ **`cascadeIn` 的两个坑（都实测踩过）**：
+  ① 它写的是**行内** `animation-delay`，行内值优先级**高过媒体查询** ⇒ 必须在函数里自己读
+     `motionReduced()` 把延迟清零，只靠 CSS 的降级块压不住（`DESIGN.md:159` 要求减少动效下错峰归零）。
+  ② `animationend` **会冒泡** ⇒ 收手监听器必须认 `e.target === 最后一块`，且不能用 `{ once: true }`
+     （冒泡事件会把它消耗掉）。不认的话，一个早早结束的后代动画就会把整组错峰提前收掉。
 - Anime.js（`animejs@4.5.0`，devDependency）已装但**尚未使用**：它留给「元素被重建、却要从旧位置
   连续滑到新位置」的场景（画布节点移动 / 列表增删让位），那是 CSS transition 表达不了的
   （重建后的元素没有"旧位置"这个概念）。

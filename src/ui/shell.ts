@@ -9,7 +9,7 @@ import { addTimeline, addWorld, removeTimeline, removeWorld, undoWithVault, redo
 import { confirmDialog, promptDialog } from './confirm';
 import { currentWorld } from '../store/store';
 import { renderNodeForm } from './node-form';
-import { enter, staggerIn } from './motion';
+import { staggerIn } from './motion';
 
 export function renderShell(store: Store, host: HTMLElement): void {
   registerAllTools();
@@ -238,9 +238,6 @@ function renderToolbar(store: Store): void {
         if (moduleView) { moduleView.style.display = 'none'; moduleView.innerHTML = ''; }
         if (toolHost) { toolHost.style.display = ''; toolHost.innerHTML = ''; }
         if (right) right.style.display = '';
-        /* 回到沙盘也走一次入场。这里用 lk-fade-in（只淡入、不加 transform）：
-           沙盘内是整体重渲染的画布，含 position:fixed 的右键菜单，别让容器变成它的包含块。 */
-        enter(document.getElementById('lk-sandbox'), 'lk-fade-in');
         return;
       }
       /* 其他模块：隐藏右区（sandbox/worldbar），模块 flex 占满工具栏右侧（工具栏始终可见） */

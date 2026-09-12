@@ -39,7 +39,7 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
   try { locks = JSON.parse(localStorage.getItem('lingkuang-inspire-locks') || '{}'); } catch { locks = {}; }
   const saves: Combo[] = (() => { try { return JSON.parse(localStorage.getItem('lingkuang-inspire-saves') || '[]'); } catch { return []; } })();
 
-  host.style.overflow = 'auto';   /* host = .lk-module-view，需 auto 才能滚动（内容溢出可滚） */
+  host.style.overflow = 'auto';   /* host = 本次打开的工具格（.lk-tool-slot），内容溢出让它自己滚 */
   host.innerHTML = `
     <div style="display:block;height:100%;" id="insp-scroll">
       <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border-soft);background:var(--surface-2);flex-wrap:wrap;position:sticky;top:0;z-index:2;">

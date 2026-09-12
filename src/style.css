@@ -28,8 +28,9 @@
   --motion-base: 320ms;
   --motion-slow: 640ms;
   /* 入场时长单列一档：设计系统只给了 base(320)/slow(640)，而 DESIGN.md:157 的 Waking fade 用的正是
-     640ms。用户 2026-09-12 的体感反馈是「稍微慢一点」，故取两者之间（480ms）：比 640 轻、比 320 稳。 */
-  --motion-enter: 480ms;
+     640ms。用户 2026-09-12 两次反馈都嫌快（「稍微慢一点」→「算了直接再调慢一点」），故直接取 640ms
+     ＝设计系统 slow 档 ＝DESIGN.md 自己给的 Waking fade 时长，不再自造中间值。 */
+  --motion-enter: 640ms;
   --ease-standard: cubic-bezier(0.22, 0.75, 0.25, 1);
   --border-strong: #6f6d66;
   --radius-pill: 999px;
@@ -233,6 +234,12 @@ body {
   overflow: auto;
   background: var(--surface);
 }
+/* 工具格：每次打开工具一个小容器，工具往它里面写（`src/tools/registry.ts` 的 openTool）。
+   ① 慢工具在切走之后才渲染完时，它写的是**已被摘掉的格子**，不会盖掉后来打开的工具；
+   ② `height: 100%` 是必须的 —— 要把「百分比高度能撑住」这条链传下去，否则工具根部写
+      `height: 100%` 时会因为父元素高度 auto 而塌成 0（模块视图是 .lk-main 的 flex 项，
+      高度是确定的）。 */
+.lk-tool-slot { height: 100%; }
 
 /* ══════════ 工具内部卡片（还原 legacy：大圆角+浮雕+实底强调标签）══════════ */
 .tool-card {
@@ -599,22 +606,23 @@ body {
 .lk-enter { animation: lk-wake var(--motion-enter) var(--ease-standard) both; }
 .lk-fade-in { animation: lk-fade var(--motion-enter) var(--ease-standard) both; }
 .lk-reveal-x { animation: lk-reveal-x var(--motion-enter) var(--ease-standard) both; }
-.lk-pop-in { animation: lk-pop var(--motion-enter) var(--ease-standard) both; }
+/* 弹窗卡片走 --motion-base（320ms）而不是入场那档 640ms：弹层是"等你操作"的东西，
+   让它花一整个 dream 时长浮上来会显得卡（legacy modal-in 也只有 200ms）。 */
+.lk-pop-in { animation: lk-pop var(--motion-base) var(--ease-standard) both; }
 /* 弹层遮罩比卡片快：遮罩是 chrome，卡片才是内容 */
 .lk-overlay-in { animation: lk-fade var(--motion-fast) linear both; }
-/* 错峰容器：类留在容器上，子项一个个依次浮现。
-   延迟**不靠 JS 注入**，而是按子项序号写在这儿 —— 因为工具是动态 import 的，子项常常在
-   JS 调 staggerIn 之后才被建出来，遍历当时不存在的元素是注入不进去的；按序号给则天然覆盖后插入的项。
-   第 8 项之后不再增加（长列表错峰无上限会让最后一项等一两秒，看着像卡了）。 */
+/* 错峰容器：子项按序号依次浮现。两种用法共用这一个类，区别是**类留不留**：
+   ① 常驻（页签栏：`staggerIn()`，容器长期活着、子项随时被换掉 ⇒ 新子项自动有错峰）；
+   ② 一次性（工具打开 / 换页签 / 换条目：`cascadeIn()`，跑完把类摘掉，否则工具下次整块重渲染
+      时新建的子项会再播一遍 = 改个字段闪一下）。cascadeIn 会给子项注入行内 animation-delay，
+      行内值优先于下面这些序号规则 —— 两处的步长**必须一致**（100ms），改一处要改两处。 */
 .lk-enter-stagger > * { animation: lk-wake var(--motion-enter) var(--ease-standard) both; }
 .lk-enter-stagger > *:nth-child(1) { animation-delay: 0ms; }
-.lk-enter-stagger > *:nth-child(2) { animation-delay: 80ms; }
-.lk-enter-stagger > *:nth-child(3) { animation-delay: 160ms; }
-.lk-enter-stagger > *:nth-child(4) { animation-delay: 240ms; }
-.lk-enter-stagger > *:nth-child(5) { animation-delay: 320ms; }
-.lk-enter-stagger > *:nth-child(6) { animation-delay: 400ms; }
-.lk-enter-stagger > *:nth-child(7) { animation-delay: 480ms; }
-.lk-enter-stagger > *:nth-child(n+8) { animation-delay: 560ms; }
+.lk-enter-stagger > *:nth-child(2) { animation-delay: 100ms; }
+.lk-enter-stagger > *:nth-child(3) { animation-delay: 200ms; }
+.lk-enter-stagger > *:nth-child(4) { animation-delay: 300ms; }
+.lk-enter-stagger > *:nth-child(5) { animation-delay: 400ms; }
+.lk-enter-stagger > *:nth-child(n+6) { animation-delay: 500ms; }
 /* 减少动效：错峰归零 + 入场降级为纯淡入（DESIGN.md:159）。
    选择器要与上面同特异性（`> *:nth-child(n)` 对 `> *:nth-child(2)`）并且**排在后面**才压得住。 */
 @media (prefers-reduced-motion: reduce) {
