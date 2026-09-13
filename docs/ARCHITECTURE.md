@@ -31,7 +31,8 @@
 | `src/ui/timeline.ts` | 世界沙盘时间线（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针） |
 | `src/ui/inspire.ts` | 灵感触发器（随机角色生成 + 词义联想入口） |
 | `src/ui/assoc.ts` | 词义联想**无限画布**（力导向 + 单线聚焦 + 视窗平移/缩放 + 拖节点贴边自动推视窗 + 手动摆过的节点钉住，钉住上限 `PIN_YIELD = 420`）；拖拽中只免"手里那一格"、线的另一头照常受力（＝线上的拉力）；没有世界边界（`HOME_W/HOME_H` 只是初始落点区与 SVG 作图区），框外连线靠 `.assoc__lines { overflow: visible }`；宿主高度由 `src/ui/inspire.ts` 的 `fitAssocHeight()` 让开 sticky 工具条，滚动容器用 `scrollParent()` 现找 |
-| `src/ui/editor.ts` | 编辑器（tiptap，左侧 sidebar 时间线/实体 tab，右侧文稿编辑）。属性面板**不在这个文件里**了 —— 见 `src/ui/props-panel.ts`。⭐ **左树跟硬盘上的文件夹一一对应**（2026-09-13，用户：「编辑器的树现在只能显示事件节点，其他结构体的文件夹没有在树里面」）：时间线页签 = 世界 → 时间线 → **种类** → 节点，种类**只列这条时间线里真的有节点的种类**（= 硬盘上真有的目录，`[...used.keys()]`）。⚠️ **不要**改成「`store.data.formats` 的全部种类」（第一版就是那样，被用户报回：「我指的是角色，地点，物品等文件夹同时存在于主线与设定文件夹下，是bug」—— `main.js` 的 `DEFAULT_FORMATS` 曾用 `角色/地点/物品/组织/事件`，前四个与实体类型 `BUILTIN_ENTITY_TYPES` 重名，列出来就会在「主线」和「_设定」下各挂一个同名文件夹；现在默认值只留 `事件`/`战斗`）；每个世界的时间线之后还有 **`_设定` 分支**（实体；列出 `entityTypes` 的**全部类型**，空的 `is-empty` 置灰 + 展开一句「这个类型还没有实体」），类型下是实体行。`_设定` 是**世界下面的一层**（与时间线同级）⇒ 缩进必须跟 `.ed-ttl` 一样是 `padding-left: 18px`（用户：「设定文件夹和世界观文件夹处于同一缩进」）。⚠️ 在时间线页签点实体行 = **就地换右栏文档，绝不 `setTab('entity')`**（切页签会把左栏整棵树换成「实体」页签那套类型列表 —— 用户：「点到设定里面的实体文件时测试世界观文件夹会消失，事件文件夹也没了」）；换 target 前先 `flushDoc()`，`lastTarget.tl` 不动，`selectEntity` 会写好 `lastTarget.entity`，所以之后手动切「实体」页签打开的正是它。`selectEntity(id, world?)` 里世界不同要先 `store.setActiveWorld`（树列的是**全部世界**的实体） |
+| ~~`src/ui/editor.ts`~~ | **已删除**（2026-09-13，用户批准「设定库和编辑器合成一个工作台，两种形态在设置里切」）。它的**树**并进了 `src/ui/codex.ts` 的左栏「文件夹树」形态（`_設定` 分支、种类只列真有节点的、`_设定` 与时间线同缩进 —— 这些语义都在 codex.ts 里，注释也搬过去了）；`H`/`插图` 两个正文按钮并进工作台的正文标题行；外部改动提示条搬到 `src/ui/vault-notice.ts`。工具入口从 `src/tools/register.ts` 撤掉 ⇒ 左栏创作组从 6 个变 5 个。历史实现要看就 `git show <commit>:src/ui/editor.ts`（`6d75086` 之前那一版是最后一版） |
+| `src/ui/vault-notice.ts` | **外部改动提示条**（原 `src/ui/editor.ts` 里的 `addHint` 那一套）：`createVaultNotices({ getHost, store, getCurrentNodeId, say? })` → `{ checkBodyTag(world, tlId, nodeId, doc, title), refresh(), dispose() }`。两件事：① Obsidian 把某个节点 `.md` 的 `「#描述：」`/`「#正文：」` 标签删了（或增删了字段）→ 一条提示 + 「恢复格式」一键写回；② 启动时被 `src/main.ts` 自动补回标签的那些文件，告知一声（可「不再提示」）。⚠️ 提示是**累积列表**（key 去重），切条目**不清空** —— 用户得能看见哪个文件出过事；⚠️ 宿主元素延后取（工作台 `render()` 会整块重建 DOM）⇒ 每次 render 之后调 `refresh()` 重画；⚠️ 两个 window 监听在 `dispose()` 里移除（否则每开一次工作台多积一对，它们持有整个模块作用域） |
 | `src/ui/props-panel.ts` | **公共属性面板**（节点与实体共用**同一份**「改字段」实现，编辑器和设定库都调它）：`createPropsPanel({ store, host, status?, getTarget, patchTarget })` → `{ render(node, isEntity?), hide() }`；`PropsTarget` 是两边共用的身份联合类型。内含 AE 式 scrub（`createScrubField`）与历法推进的时间控件。⚠️ 面板构建后**刻意不重渲染**（避免销毁拖拽中的 scrub 控件），所以提交要走 `patchTarget`（从 store 取最新 properties 再合并） |
 | `src/ui/ai-workbench.ts` / `roleplay.ts` / `tavern.ts` | AI 工作台 / 角色扮演 / 酒馆剧情推演 |
 | `src/ui/map.ts` | 手绘矢量地图（区域 + 标记） |
@@ -45,9 +46,9 @@
 | `src/ui/alert.ts` | **壳级横幅**（`#lk-alerts` 通栏，`showShellAlert`/`removeShellAlert`/`hasShellAlert`）：放「必须被看见、且要用户做选择」的状态（数据文件判损、自动保存已暂停）。与编辑器内部的 `addHint` 不同 —— 那条活在编辑器工具里、切走就没了，这条挂壳上，任何工具下都在 |
 | `src/ui/schema.ts` | **结构体管理**面板（两个分区：**节点种类** / **实体类型**）。保存 → 节点种类写 `formats`（`formats.json`）或实体类型写 `worldsets[active].entityTypes` → 派发 `lingkuang-formats-changed`，由 `src/main.ts` 的 `ensureAllFormatFields` / `ensureEntityLayer` 补空值、清模板外的字段 |
 | `src/ui/motion.ts` | **动效层**（`enter(el, cls='lk-enter')` 重放入场 / `staggerIn(container)` 常驻错峰（页签栏）/ `cascadeIn(container, step, maxDelay, start)` 一次性错峰（工具打开、换页签、换条目）/ `stopCascade(container)` 取消一次性错峰（"这次不许播"的分支要显式调）/ `childHeights(container)` + `smoothHeights(container, before)` 高度平滑（重排类）/ `motionReduced()`）：keyframes 在 `src/style.css` 末尾「动效层」一节，时长走 `--motion-*` 令牌。⚠️ 只挂**显式切换**（切工具/开面板/换页签/弹窗），别挂 store 订阅触发的重渲染；⚠️ **不给整块容器挂**（会"洗白一下"且盖掉元素错峰） |
-| `src/ui/codex.ts` | **设定库 = 工作台**（合并方案 A 第 3 步）：左列「实体」/「时间线节点」双页签 + 搜索框（节点是 世界→时间线→种类→节点 四级树，搜索时摊平成列表）、中栏档案字段、右栏正文编辑器。节点中栏用 `src/ui/props-panel.ts`（与编辑器同一份）、实体用 `src/ui/fields.ts`、正文用 `src/ui/doc-editor.ts`。⚠️ 换条目必须走 `switchTarget()`（先 flush 再改选择）。⭐ **同页签内换条目走「就地换内容」**（`swapBody()`，2026-09-13）：保住骨架，只换「名字/类型 + 字段行 + 正文」，内容区（`#cx-body`）播一次 `.lk-swap-in` 轻淡入 —— 整块 `render()` 会把左列错峰重播一遍、**把滚动位置打回顶部**（`#cx-root` 就是滚动容器）、还把 tiptap 销毁重建（用户描述为「点击实体会刷新界面」）。换页签/换世界/条目删空才整块重建。⭐ 编辑器的写回目标是**读时取值**的模块级 `docTarget`（编辑器跨条目复用），安全性由 `switchTarget` 的顺序保证：先 flush（旧目标）再改 `docTarget`。⚠️ store 订阅**按 `bodySignature()` 决定要不要重建**中/右栏 —— 无条件 `render()` 会 dispose 掉 tiptap，而「自动落盘 → vault 回扫」每次编辑后约 360ms 就会走一趟订阅，实测每换一次 DOM 就有丢击键/焦点/IME 的风险（第十八轮） |
+| `src/ui/codex.ts` | **设定库 = 工作台**（合并方案 A 第 3 步 + 2026-09-13 的形态合并）：左列「实体」/「时间线节点」双页签 + 搜索框、中栏档案字段、右栏正文编辑器、右边缘演变帧条，外加**外部改动提示条**（`src/ui/vault-notice.ts`，见那一行）。节点中栏用 `src/ui/props-panel.ts`（与实体共用同一份）、实体用 `src/ui/fields.ts`、正文用 `src/ui/doc-editor.ts`。⭐ **左栏两种形态**（`listView: 'list' \| 'tree'`，用户：「设定库和编辑器是不是可以做成同一工具的两种不同形式啊（在设置里面切换）」）：`'list'` = 两个页签的扁平列表 + 类型筛选 chips（原来的设定库）；`'tree'` = `renderTreeList()` 一棵**文件夹树**，跟硬盘目录一一对应：世界 → 时间线 → 种类 → 节点 ／ 世界 → `_设定` → 类型 → 实体（`data-act` = world/tl/tkind/wset/etype/node/entity）。默认形态在「设置 → 设定库（工作台）」里选（`Settings.workbenchView`，localStorage `lingkuang-settings`），左栏那个开关随时可切且**不整块重建**（只换左列 + 开关样式 + 搜索框占位，保住滚动位置与 tiptap）。⚠️ 两类"空"**待遇不同，别顺手统一**：节点**种类**只列真有节点的（= 硬盘上真有的目录，`[...used.keys()]`）—— 改成「`store.data.formats` 的全部种类」会被用户报回来（「我指的是角色，地点，物品等文件夹同时存在于主线与设定文件夹下，是bug」；`main.js` 的 `DEFAULT_FORMATS` 曾与实体类型 `BUILTIN_ENTITY_TYPES` 重名，现在只留 `事件`/`战斗`）；实体**类型**列**全部**（含一个实体都没有的，空的 `is-empty` 置灰 + 展开一句「这个类型还没有实体」）。`_设定` 是**世界下面的一层**（与时间线同级）⇒ 缩进跟 `.ed-ttl` 一样 `padding-left: 18px`。⚠️ 换条目必须走 `switchTarget()`（先 flush 再改选择）。⭐ **同页签内换条目走「就地换内容」**（`swapBody()`，2026-09-13）：保住骨架，只换「名字/类型 + 字段行 + 正文」，内容区（`#cx-body`）播一次 `.lk-swap-in` 轻淡入 —— 整块 `render()` 会把左列错峰重播一遍、**把滚动位置打回顶部**（`#cx-root` 就是滚动容器）、还把 tiptap 销毁重建（用户描述为「点击实体会刷新界面」）。换页签/换世界/条目删空才整块重建。⭐ 编辑器的写回目标是**读时取值**的模块级 `docTarget`（编辑器跨条目复用），安全性由 `switchTarget` 的顺序保证：先 flush（旧目标）再改 `docTarget`。⚠️ store 订阅**按 `bodySignature()` 决定要不要重建**中/右栏 —— 无条件 `render()` 会 dispose 掉 tiptap，而「自动落盘 → vault 回扫」每次编辑后约 360ms 就会走一趟订阅，实测每换一次 DOM 就有丢击键/焦点/IME 的风险（第十八轮）。⚠️ 面板**高度预算**：`#cx-root` 是 `height:100%` + `overflow:auto`，内容比窗口高 1px 就长滚动条（实测只差 3px）⇒ `#cx-msg`/`#cx-hint` 没内容时 `display:none`（守卫：`entity-evolution.cjs` ★0d 外壳开销 ≤130px） |
 | `src/ui/fields.ts` | 模板字段控件的**公共渲染**（`fieldRow(field, value, onChange, labelWidth)` / `parseFieldInput` / `formatFieldValue`），按模板声明的类型决定形态。约定：只在 `change`（失焦/回车）提交 |
-| `src/ui/doc-editor.ts` | 极简文稿编辑器（tiptap，与 `editor.ts` 同一套扩展）：`createDocEditor(el, onFlush)` → `{ setDoc, getDoc, flush, dispose }`。⚠️ 切条目必须 flush 再 dispose；⭐ 但**同页签内换条目**（codex）刻意**不 dispose**：`setDoc(md)` 换文档、实例留着，省掉"正文区先空一帧"（`setDoc` 会同步 `last`，所以换文档本身不会触发一次多余的写回） |
+| `src/ui/doc-editor.ts` | 极简文稿编辑器（tiptap，工作台两个形态共用这一份）：`createDocEditor(el, onFlush)` → `{ setDoc, getDoc, flush, dispose, toggleHeading(level), insertImage(src) }`。⚠️ 切条目必须 flush 再 dispose；⭐ 但**同页签内换条目**（codex）刻意**不 dispose**：`setDoc(md)` 换文档、实例留着，省掉"正文区先空一帧"（`setDoc` 会同步 `last`，所以换文档本身不会触发一次多余的写回） |
 | `src/store/entities.ts` | 实体层基础：`BUILTIN_ENTITY_TYPES`（角色/地点/物品/组织/种族）、`ensureEntityTypes`（世界没有类型时**播种一次**）、`ensureEntityFields`（按类型补字段）、`entityTypeOf` |
 | `src/store/evolution.ts` | **演变（实体版本历史）的纯逻辑**，不碰 DOM / store：`docDiff(prev, next)` / `applyDoc(prev, patch)`（正文**按行**存差异，`hunks[].at` = 上一版行号、从大到小排、从后往前应用）、`frameDiff(prev, next)`（没变化返回 `null`，不产生空帧）/ `applyPatch(st, patch)`、**`statesOf(e)` 一次算出全部前缀**（初稿 + 每一帧之后的样子；换版本 = 换个下标取数组，O(1)）、`epochOfNodes(ws)`（节点 → epoch，按世界算一次年表）、`normalizeFrames(e, epochOf)`（按锚点时间排序 + 一个节点只留一帧，**就地**整理）、`nearestVersion` / `versionAtNode`（站哪个节点看哪一版）、`patchSummary` / `isEmptyPatch` |
 | `src/ui/evolution-rail.ts` | 设定库右侧那条**等距竖线**（用户 2026-09-13）：一格 = 世界里一个事件节点（所有时间线合起来按时间排，顶上第一格是初稿），每格 46px 固定高（`flex: 0 0 46px` + `min/max-height` 钉死 —— 高度不稳就不叫"等距"）、有帧的格子点亮并显示差异摘要。它**自己不写数据**，只通过 `onSelect` / `onAddFrame` / `onDeleteFrame` 回调 `codex.ts`。⚠️ 让选中格滚进视野时**只滚帧条自己的 `.lk-rail__rows`**（算 `offsetTop`），**不要用 `scrollIntoView()`** —— 它会把所有祖先滚动容器一起滚，而 `#cx-root` 正是面板的滚动容器（实测把面板 scrollTop 从 260 拽到 122，被 `codex-smooth-switch.cjs` ★6 抓住） |
@@ -73,11 +74,12 @@
   「给模板内的字段补空值（`number→0`/`boolean→false`/`list→[]`/其余 `''`）+ 删掉模板外的键」，
   启动时、外部改动后、以及模板变更事件后都会跑。所以**在灵框里增删字段是唯一正道，外部手改属性会被抹平**
   （`cssclasses`/`tags`/`aliases` 除外）。
-- **给节点指定种类**：＋节点窗口的「种类」下拉（`src/ui/node-form.ts`）、编辑器属性面板的「种类」行
-  （`src/ui/editor.ts`）。两处都走 `addNode`/`saveFixed`，最终落到 `node.kind`。
+- **给节点指定种类**：＋节点窗口的「种类」下拉（`src/ui/node-form.ts`）、工作台中栏的属性面板「种类」行
+  （`src/ui/props-panel.ts`）。两处都走 `addNode`/`saveFixed`，最终落到 `node.kind`。
 - **填字段值**：点沙盘上的节点 → 详情面板的「模板字段」区（`src/ui/detail.ts`，控件形态跟字段类型走：
   短文本 input / 长文本 textarea / 数值 number / 开关 checkbox / 列表用「、」分隔的 input）；
-  或在编辑器的属性区填。两处写的是同一份 `node.properties`，都走 `store.update`（可撤销）。
+  或在设定库工作台（`src/ui/codex.ts`）的中栏属性面板里填。两处写的是同一份 `node.properties`，
+  都走 `store.update`（可撤销）。
   ⚠️ 这两个面板都是**每次 store 通知就整块重渲染**，所以字段控件只在 `change`（失焦/回车）时提交 ——
   用 `input` 边打边存会触发重渲染、把正在输入的框销毁。
 
@@ -97,8 +99,9 @@
   但都由左栏「结构体管理」一个面板的两个分区编辑（两者数据结构同构 `{ id, name, fields[] }`，复用同一套 UI）。
 - **补全时机**：`src/main.ts` 的 `ensureEntityLayer`（播种类型 + 按模板补字段）在启动时、以及任何
   `lingkuang-formats-changed` 事件后运行，与节点侧的 `ensureAllFormatFields` 并列。
-- **看与改内容**：左栏「设定库」（`src/ui/codex.ts`）—— 类型筛选 + 列表 + 档案卡；
-  编辑器实体页也能改（属性区按类型模板渲染，含「实体类型」行可换类型，换完派发模板变更事件补字段）。
+- **看与改内容**：左栏「设定库」（`src/ui/codex.ts`）—— 它就是**唯一的工作台**（「编辑器」工具已于
+  2026-09-13 并入）：左栏可在「列表」与「文件夹树」两个形态间切、中栏档案卡（实体走类型模板，
+  含「实体类型」行可换类型，换完派发模板变更事件补字段）、右栏正文 + 演变帧条。
 - `buildPropCtrl(v, onChange, live?, declType?)` 的第 4 个参数是**模板声明的类型**：
   长文本用 textarea、列表即使当前是空值也走勾选列表那一支 —— 让编辑器与详情面板「按模板渲染」
   而不是「按值的 JS 类型猜」。
@@ -316,7 +319,8 @@
 - 工具栏工具都是**模块级大视图**：点击 → `openTool(id, moduleView, store)` → 各工具用动态 import 渲染
   （`register.ts` 里每个 `open` 都是 `import('../ui/xxx').then((m) => m.renderXxx(host, store))`）。
 - **左栏分两段**（用户 2026-09-12：「设置放到左侧栏最底下」）：工具的 `Tool.group` 决定它去哪一段 ——
-  缺省 `'create'` = 创作工具（沙盘 / 灵感 / 编辑器 / AI / 设定库 / 素材库）在上段；
+  缺省 `'create'` = 创作工具（沙盘 / 灵感 / AI / 设定库 / 素材库）在上段
+  （⚠️ 2026-09-13 起**只有 5 个**：「编辑器」并进了「设定库」工作台，用户批准"一个工具两种形态"）；
   `'manage'` = 低频管理项（结构体管理 / 回收站 / 备份管理 / **设置**）在下段并**贴着底部**
   （`src/style.css` 的 `.lk-tool-group.is-bottom { margin-top: auto }`，分隔线 `--chrome-2`）。
   ⚠️ **顺序归壳管、不靠注册顺序**：`src/ui/shell.ts` 的 `renderToolbar()` 按 `Tool.group` 过滤后再拼 DOM

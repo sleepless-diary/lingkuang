@@ -295,19 +295,57 @@
   且在 `_设定` 下）、★23c，且 dump 里能直接看到 `[事件, 战斗, 角色]` 三个种类行
   = **用户报的现象本体**。
 
-### 验证（五/六/七/八/九/十）
+### 十一、设定库与编辑器合并成**一个工作台**（用户批准，**已做**）
+
+用户原话：「**设定库和编辑器是不是可以做成同一工具的两种不同形式啊（在设置里面切换）**」
+→ 我给了方案与代价（工具栏少一个图标、编辑器那棵树并进工作台、要重测左栏）→ 用户：「**那就开干吧**」。
+
+- **为什么这件事便宜**：`src/ui/codex.ts` 的「时间线节点」页签**已经**是 世界→时间线→种类→节点
+  四级树，用的就是 `src/style.css` 的 `.ed-*` 类（与 `src/ui/editor.ts` 那棵树同一套长相），
+  两边还共用 `src/ui/props-panel.ts`（中栏字段）与 `src/ui/doc-editor.ts`（右栏正文）。
+  缺的只是 `editor.ts` 独有的一条：**世界 → `_設定` → 类型 → 实体**分支。
+- **做成了什么**：工作台左栏顶部一个「列表 / 文件夹树」开关（`listView`），
+  `'tree'` 用新函数 `renderTreeList()` 把两类条目画进同一棵树（`data-act` = world/tl/tkind/wset/etype/node/entity），
+  点任意一行 = 换中栏/右栏的目标；搜索在树形态下**节点与实体一起搜**。
+  **两类"空"待遇不同**（别顺手统一）：节点**种类只列真有节点的**（= 硬盘上真有的目录，第十节那条），
+  实体**类型列全部**（含一个实体都没有的，置灰 + 一句人话）—— 后者才是用户要的「显示其他结构体」。
+- **默认形态在设置里**：`Settings.workbenchView: 'list' | 'tree'`（localStorage `lingkuang-settings`），
+  设置面板新增「设定库（工作台）」卡片（两个 radio + `saveNow`）；`codex.ts` 监听 `lingkuang-settings`，
+  改完**当场**换形态（开着的面板不用重开）。
+- **编辑器独有、本轮搬走的**：① `H`（`toggleHeading(1)`）与「插图」（`importImage` → `insertImage`）
+  两个正文按钮 → `doc-editor.ts` 新增 `toggleHeading` / `insertImage`，工作台正文标题行两个小按钮调它；
+  ② **外部改动提示条**（Obsidian 删了 `「#描述：」`/`「#正文：」` 标签、或启动时格式被自动补回）
+  → 新建 `src/ui/vault-notice.ts`（`createVaultNotices`，一次创建活到切走、宿主延后取、render 后 `refresh()`）。
+  **这一条是数据安全设施，不能跟着编辑器一起没掉** —— 所以是"搬"不是"删"。
+- **删掉的**：`src/ui/editor.ts`（`git rm`）、`src/tools/register.ts` 里的 `editor` 注册
+  ⇒ 左栏创作组 6 → 5 个（`toolbar-groups.cjs` 的期望值跟着改）。
+- **测试跟着搬**：原 `editor-tree.cjs`（33 项）与 `editor-props-panel.cjs`（9 项）随工具下线而退役，
+  它们的独特断言进了新套件 —— `tools/e2e/workbench-tree-folders.cjs`（31 项：文件夹语义那一批）
+  与 `codex-node-tab.cjs` 的 ★9b/★9c（提交后面板不重建 + 那次提交真落进了 `.md`）。
+  新增 `tools/e2e/codex-tree-view.cjs`（29 项：形态开关 / 同框 / 点行换目标 / 记住默认形态）。
+- **A/B（判别力）**：`git stash`（三个源文件）+ `vite build` + 重启实例 ⇒ `codex-tree-view.cjs`
+  **3/29**（开关都不存在，dump 里 `toggle:[]`、`ph:"搜索实体…"`），修复后 **29/29**。
+- 途中踩到的（都留了注释/README）：① `_設定`（繁体）与界面里的 `_设定`（简体）不是同一串 ——
+  按标签点行会静默点不中，`workbench-tree-folders.cjs` 第一版 **19/31** 全由它引起；
+  ② 新加的 `#cx-hint`（平时 `display:none`）**不占错峰序号**，而 `motion-switch.cjs` ★1/★13 是
+  按下标硬读子项的 ⇒ 25/25 掉到 23/25（改成 `.filter((x) => x.length)` 后恢复，已写进 README 铁律 12）。
+
+### 验证（五/六/七/八/九/十/十一）
 
 - `editor-tree.cjs` **28 → 34 → 33 项**（`seed-editor-tree.cjs` 播种：节点种类 `事件` 有 2 个节点 /
   `战斗` **空** / `角色` **空且与实体类型同名**；实体类型 `角色` 有 1 个实体 / `地点` **空**）；
   A/B：退回第一版 7/28、退回"切页签 + 无缩进" 27/34、退回第十节的"列 formats 全部种类" 28/33。
-  `%TEMP%\lk-edtree` + 端口 9704。
-- 视觉取证（第九节）：1440×900 截图确认 `测试世界观 → 主线 → 事件 2 / 战斗 0（置灰，展开写"这个结构体还没有节点"）`
-  与 `_设定 1 → 角色 1 → 银发少女 / 地点 0（置灰，展开写"这个类型还没有实体"）`；
-  点实体行之后**同一棵树仍在**（`_设定` 与「主线」同缩进、实体行高亮），右栏换成该实体的字段与正文。
-  ⚠️ 其中"战斗 0（置灰）"这一条**已被第十节推翻**（空种类不再画出来）。
+  `%TEMP%\lk-edtree` + 端口 9704。**该套件已退役**（第十一节），语义移入 `workbench-tree-folders.cjs`（31 项）。
+
+- 第十一节：`codex-tree-view.cjs` 29/29（`%TEMP%\lk-evault2` + `reset-entity-vault.cjs` + `seed-node.cjs`）、
+  `workbench-tree-folders.cjs` 31/31（`%TEMP%\lk-edtree` + `seed-editor-tree.cjs`）；
+  回归 `codex-node-tab` 17/17、`codex-smooth-switch` 16/16、`codex-switch-target` 7/7、
+  `toolbar-groups` 4/4（创作组 5 个）、`motion-switch` 25/25、`entity-evolution` 38/38（干净起点）、
+  `entity-vault` 17/17、`data-load-clean` 6/6、`kind-change-stale-file` 11/11；
+  `tsc --noEmit` / `node --check` / `vite build` 全 exit 0。
 - 真实数据副本（第十节）：`%TEMP%\lk-dupe`（真实 JSON + 真实 vault 的副本、**无 formats.json**）
   ⇒ 全树无重名，「主线」下只有「事件」。
-- 回归：`codex-node-tab.cjs` 15/15、`editor-props-panel.cjs` 9/9（同一实例接着跑）。
+- 回归（历史）：`codex-node-tab.cjs` 15/15、`editor-props-panel.cjs` 9/9（同一实例接着跑）。
 
 ## 第二十轮（2026-09-12）· 动效层第 A 片（切换类）+ 一条新发现的数据损失
 
@@ -995,6 +1033,9 @@ vault 根目录不存在时**永远不挂监听**，而渲染层那句 `api.vaul
   → **第十八轮已修**（订阅改按内容签名决定要不要重建；探针实测修复前每 ~360ms 换一次编辑器 DOM）。
 - **实体字段仍是两套**：设定库实体档案用 `fields.ts`、公共面板的属性行用 `buildPropCtrl`。
   节点侧已经收敛成一份，实体侧等第 4 步（编辑器去留）定了再收。
+→ **2026-09-13 已定**：编辑器工具**撤掉**、并入设定库工作台（第二十一轮十一），
+但**实体字段仍是两套**（`src/ui/fields.ts` 的模板控件 vs 工作台节点侧的 `buildPropCtrl`）——
+这一步没动它，仍是待办。
 - 设定库的节点视图**没有「删除节点」**（节点生命周期仍归世界沙盘 / 详情面板），
   这一步只做「看与改」。
 
@@ -1091,6 +1132,8 @@ vault 根目录不存在时**永远不挂监听**，而渲染层那句 `api.vaul
 ### 剩下的小步
 3. ~~设定库左列加「时间线节点」页签~~ → **已完成，见「第十七轮」**。
 4. 工具栏收口：编辑器降级保留（只做纯文稿写作）还是撤掉 —— 用一阵子再定。
+   → **2026-09-13 定了：撤掉**（用户：「设定库和编辑器是不是可以做成同一工具的两种不同形式啊
+   （在设置里面切换）」→「那就开干吧」）。做法与迁移清单见**第二十一轮十一**。
    （第 3 步之后两边其实已经都能列条目/改字段/写正文了，去留只差 UX 取舍。）
 5. 合并后的最终命名（「工作台」？）与布局微调。
 

@@ -19,6 +19,10 @@ export interface DocEditor {
   /** 有改动才交给 onFlush（避免每次失焦都压一个撤销格） */
   flush(): void;
   dispose(): void;
+  /** 把光标所在段落切成一/二/三级标题（所见即所得；从 `src/ui/editor.ts` 的 H1 按钮搬过来） */
+  toggleHeading(level: 1 | 2 | 3): void;
+  /** 在光标处插入图片（`src` 是 vault assets 里的相对路径，Image 扩展负责显示） */
+  insertImage(src: string): void;
 }
 
 export function createDocEditor(el: HTMLElement, onFlush: (md: string) => void): DocEditor {
@@ -49,6 +53,12 @@ export function createDocEditor(el: HTMLElement, onFlush: (md: string) => void):
     },
     getDoc,
     flush,
+    toggleHeading(level: 1 | 2 | 3) {
+      editor.chain().focus().toggleHeading({ level }).run();
+    },
+    insertImage(src: string) {
+      editor.chain().focus().setImage({ src, alt: '' }).run();
+    },
     dispose() {
       try { editor.destroy(); } catch { /* 销毁失败不挡切换 */ }
     },

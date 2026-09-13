@@ -29,7 +29,8 @@ import { fieldRow } from './fields';
 import { createDocEditor, type DocEditor } from './doc-editor';
 import { createPropsPanel, type PropsPanel } from './props-panel';
 import { createEvolutionRail, type Rail } from './evolution-rail';
-import { loadSettings } from './settings';
+import { createVaultNotices, type VaultNotices } from './vault-notice';
+import { loadSettings, saveSettings } from './settings';
 import {
   epochOfNodes, frameDiff, nearestVersion, normalizeFrames, statesOf, versionAtNode, type EntityState,
 } from '../store/evolution';
@@ -48,7 +49,14 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   host.style.overflow = 'hidden';
   let mode: 'entity' | 'node' = 'entity';
   let query = '';               /* 搜索词：实体按名字过滤，节点按标题过滤（非空时树摊平成列表） */
-  let filterType = '';          /* 实体页签的类型筛选，'' = 全部 */
+  let filterType = '';          /* 实体页签的类型筛选，'' = 全部（只在「列表」视图里有 chips，树视图忽略它） */
+  /** 左栏形态（用户 2026-09-13：「设定库和编辑器是不是可以做成同一工具的两种不同形式啊」）：
+   *  `'list'` = 两个页签的扁平列表 + 类型筛选（原来的设定库）；
+   *  `'tree'` = 一棵**文件夹树**，时间线节点与设定条目同框，跟硬盘目录一一对应：
+   *             世界 → 时间线 → 种类 → 节点 ／ 世界 → `_设定` → 类型 → 实体
+   *             （这棵树的 `_设定` 分支原来只在 `src/ui/editor.ts` 里有，现在并进来了）。
+   *  默认形态在「设置 → 设定库（工作台）」里选，面板里这个开关随时可切。 */
+  let listView: 'list' | 'tree' = loadSettings().workbenchView === 'tree' ? 'tree' : 'list';
   let activeId = '';            /* 当前实体 */
   let nodeTarget: NodeTarget | null = null;   /* 当前节点 */
   let msgTimer: number | undefined;
@@ -60,6 +68,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   /* 节点中栏的公共属性面板（与编辑器共用同一份实现）。同模式内换节点直接复用它 ——
      面板从 getTarget()+store 推导目标，所以换个 nodeTarget 再 render 就是新节点。 */
   let propsPanel: PropsPanel | null = null;
+  /* 外部改动提示条（Obsidian 把 `#描述：`/`#正文：` 标签改坏、或启动时被自动补回格式）。
+     一次创建活到切走；宿主元素每次 render 都会换，所以 render 完要 refresh()。 */
+  let vaultNotices: VaultNotices | null = null;
   /* 现在的骨架是按哪个页签建出来的：与 mode 不一致就说明得整块重来（中栏结构不同） */
   let renderedMode: 'entity' | 'node' | null = null;
   /* 正文/面板**自身**的提交不要整块重渲染：否则每敲完一段失焦都会重建编辑器丢光标，
@@ -100,8 +111,11 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   const active = (): Entity | undefined => world().entities?.[activeId];
   const match = (s: string | undefined): boolean => !query || String(s ?? '').toLowerCase().includes(query.toLowerCase());
 
+  /* 类型筛选（chips）只在「列表」视图里存在 —— 树视图里那些 chips 是隐藏的，
+     所以树视图下**必须忽略 filterType**，否则 normalizeEntitySelection 会把用户点中的
+     跨类型条目当成"被筛掉了"而挪走选择。 */
   const filtered = (): Entity[] => entities()
-    .filter((e) => (!filterType || e.typeId === filterType) && match(e.name))
+    .filter((e) => (listView === 'tree' || !filterType || e.typeId === filterType) && match(e.name))
     .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh'));
 
   /* ── 节点页签的数据源：世界 → 时间线 → 种类分组（＝ vault 的目录形状）──────────
@@ -139,6 +153,37 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         for (const node of list) {
           if (match(node.title)) out.push({ world: g.world, tlId: g.tlId, tlName: g.tlName, kind, node });
         }
+      }
+    }
+    return out;
+  }
+
+  /* ── 树的 `_设定` 分支：世界 → 类型 → 实体（＝ vault 的 `_设定/<类型>/<名字>.md` 形状）──────
+     与 tlGroups 一样刻意遍历**全部世界**。类型清单取 `entityTypes` 的**全部**（含一个实体都没有的：
+     置灰 + 一句「这个类型还没有实体」）—— 用户 2026-09-13 要的「显示其他结构体」。
+     ⚠️ 这里**不要**改成「只列有实体的类型」：那是把设定类型清单当成硬盘目录来用，
+     而类型本身是模型的一部分（新类型就是要能在树里看见、点进去建第一个条目）。 */
+  interface SetGroup { world: string; groups: { id: string; name: string; list: Entity[] }[]; }
+  function setGroups(): SetGroup[] {
+    const out: SetGroup[] = [];
+    for (const [wName, w] of Object.entries(store.data.worldsets)) {
+      const types = (w.entityTypes ?? {}) as Record<string, { name?: string }>;
+      const ents = Object.values((w.entities ?? {}) as Record<string, Entity>);
+      const groups = Object.keys(types).map((id) => ({
+        id,
+        name: types[id]?.name ?? id,
+        list: ents.filter((e) => e.typeId === id).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh')),
+      }));
+      out.push({ world: wName, groups });
+    }
+    return out;
+  }
+  /** 搜「设定条目」（跨世界按名字）—— 树视图里搜索要同时搜节点和实体 */
+  function searchEntities(): { world: string; entity: Entity }[] {
+    const out: { world: string; entity: Entity }[] = [];
+    for (const [wName, w] of Object.entries(store.data.worldsets)) {
+      for (const e of Object.values((w.entities ?? {}) as Record<string, Entity>)) {
+        if (match(e.name)) out.push({ world: wName, entity: e });
       }
     }
     return out;
@@ -473,6 +518,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       propsPanel.render(n, false);
       next = { kind: 'node', world: t.world, tlId: t.tlId, nodeId: t.nodeId };
       md = n.doc ?? '';
+      void vaultNotices?.checkBodyTag(t.world, t.tlId, t.nodeId, n.doc ?? '', n.title ?? '');
     }
     docTarget = next;
     if (docEditor) docEditor.setDoc(md);   /* 同一个 tiptap 实例换文档，不销毁不重建 */
@@ -486,6 +532,30 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
 
   const tabBtn = (id: string, label: string, on: boolean): string =>
     `<button id="${id}" class="lk-cx-tab" style="background:${on ? 'var(--accent)' : 'var(--surface-2)'};color:${on ? 'var(--accent-on)' : 'var(--fg)'};border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius-pill);padding:3px 12px;font-size:var(--text-xs);cursor:pointer;">${escapeHtml(label)}</button>`;
+
+  /* ── 左栏形态开关：列表 ⟷ 文件夹树 ──────────────────────────────────── */
+  const VIEW_TIP: Record<'list' | 'tree', string> = {
+    list: '列表：按类型筛选、按名字搜（原来的设定库）',
+    tree: '文件夹树：一棵树同时装下时间线节点与设定条目，跟硬盘目录一一对应',
+  };
+  const viewBtnStyle = (v: 'list' | 'tree'): string =>
+    `flex:1;background:${listView === v ? 'var(--accent)' : 'var(--surface-2)'};color:${listView === v ? 'var(--accent-on)' : 'var(--fg-2)'};border:1px solid ${listView === v ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius-pill);padding:3px 8px;font-size:var(--text-xs);cursor:pointer;`;
+  const viewBtn = (v: 'list' | 'tree', label: string): string =>
+    `<button data-cx-view="${v}" title="${VIEW_TIP[v]}" style="${viewBtnStyle(v)}">${label}</button>`;
+  const searchPlaceholder = (): string =>
+    listView === 'tree' ? '搜索条目…' : (mode === 'entity' ? '搜索实体…' : '搜索节点…');
+
+  /** 正文那一行的标题 + 两个小按钮（H1 / 插入图片）——
+   *  这两个动作原来是「编辑器」工具专有的（`src/ui/editor.ts` 的 `#ed-h1` / `#ed-img`），
+   *  并成工作台后搬到这里，两个形态（列表/树）都用同一份。 */
+  const docBar = (label: string): string => `
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+      <span style="font-size:10px;color:var(--fg-2);">${label}</span>
+      <span style="margin-left:auto;display:flex;gap:4px;flex-shrink:0;">
+        <button id="cx-h1" title="把光标所在段落设为一级标题" style="background:transparent;border:1px solid var(--border);color:var(--fg-2);border-radius:var(--radius-sm);padding:1px 8px;font-size:10px;cursor:pointer;">H1</button>
+        <button id="cx-img" title="插入图片（存进 vault 的 assets）" style="background:transparent;border:1px solid var(--border);color:var(--fg-2);border-radius:var(--radius-sm);padding:1px 8px;font-size:10px;cursor:pointer;">图片</button>
+      </span>
+    </div>`;
 
   /** 中栏的实体字段行（模板声明的类型决定控件形态）。
    *  整块 render() 与就地换条目（swapBody）**共用这一份** —— 两处各写一遍就会漂移，
@@ -536,7 +606,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
           <div id="cx-fields" style="display:flex;flex-direction:column;gap:5px;"></div>
         </div>
         <div style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
-          <div style="font-size:10px;color:var(--fg-2);margin-bottom:4px;">正文（Markdown · 失焦自动保存 · 落在 vault 的 <code>_设定/&lt;类型&gt;/&lt;名字&gt;.md</code>）</div>
+          ${docBar('正文（Markdown · 失焦自动保存 · 落在 vault 的 <code>_设定/&lt;类型&gt;/&lt;名字&gt;.md</code>）')}
           <div id="cx-doc"></div>
         </div>`;
     };
@@ -550,7 +620,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         <div id="cx-nodepath" style="font-size:var(--text-xs);color:var(--fg-2);margin-bottom:8px;">${escapeHtml(t.world)} · ${escapeHtml(tlName)} · ${escapeHtml(kind)}</div>
         <div id="cx-props" style="display:flex;flex-direction:column;gap:5px;"></div>
         <div style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
-          <div style="font-size:10px;color:var(--fg-2);margin-bottom:4px;">正文（Markdown · 失焦自动保存）</div>
+          ${docBar('正文（Markdown · 失焦自动保存）')}
           <div id="cx-doc"></div>
         </div>`;
     };
@@ -571,9 +641,11 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
           ${tabBtn('cx-tab-node', `时间线节点 ${nodeCount()}`, !isEntity)}
           <span style="font-size:var(--text-xs);color:var(--fg-2);margin-left:6px;">${isEntity ? '写设定条目' : '写时间线上的事件节点'}</span>
         </div>
+        <div id="cx-hint" style="display:none;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:rgba(217,101,92,.12);font-size:var(--text-xs);color:var(--fg);line-height:1.5;"></div>
         <div style="display:flex;gap:12px;align-items:flex-start;">
           <div style="width:250px;flex-shrink:0;display:flex;flex-direction:column;gap:6px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;">
-            <input id="cx-search" placeholder="${isEntity ? '搜索实体…' : '搜索节点…'}" style="${INP}" value="${escapeHtml(query)}"/>
+            <div style="display:flex;gap:4px;">${viewBtn('list', '列表')}${viewBtn('tree', '文件夹树')}</div>
+            <input id="cx-search" placeholder="${escapeHtml(searchPlaceholder())}" style="${INP}" value="${escapeHtml(query)}"/>
             <div id="cx-chips" style="display:flex;gap:4px;flex-wrap:wrap;"></div>
             <div id="cx-list" style="display:flex;flex-direction:column;gap:3px;"></div>
           </div>
@@ -596,6 +668,26 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
        内容真的比窗口高（正文写长了）时这条滚动条还会出现 —— 那时它是对的。 */
 
     renderList();
+
+    /* 左栏形态开关（列表 ⟷ 文件夹树）：**不整块重建** —— 只换左列 + 开关样式 + 搜索框占位，
+       骨架、滚动位置、tiptap 实例都留着（跟 swapBody 的理由一样）。顺手记成下次的默认形态。 */
+    host.querySelectorAll<HTMLElement>('[data-cx-view]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const v: 'list' | 'tree' = el.dataset.cxView === 'tree' ? 'tree' : 'list';
+        if (v === listView) return;
+        listView = v;
+        const st = loadSettings();
+        st.workbenchView = v;
+        saveSettings(st);
+        host.querySelectorAll<HTMLElement>('[data-cx-view]').forEach((b) => {
+          b.setAttribute('style', viewBtnStyle(b.dataset.cxView === 'tree' ? 'tree' : 'list'));
+        });
+        const si = host.querySelector<HTMLInputElement>('#cx-search');
+        if (si) si.placeholder = searchPlaceholder();
+        renderList();
+        say(v === 'tree' ? '已切到文件夹树（下次打开也是这个形态）' : '已切回列表');
+      });
+    });
 
     /* 右栏那条竖线（演变）。只在实体页签有 —— 它按「世界的事件节点」画格子；
        它自己不写数据，建帧/删帧/换格都回到这个文件里（免得两处各说一套怎么落盘）。 */
@@ -696,6 +788,25 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         /* 正文落盘后左列不用重画（标题没变），也不该整块重渲染（会丢光标） */
       });
       docEditor.setDoc((isEntity ? viewState()?.doc : activeNode()?.doc) ?? '');
+      /* 正文那两个小按钮（原来在「编辑器」工具里）：H1 = 当前段落设为一级标题；
+         图片 = 弹文件框 → 导入 vault assets → 在光标处插入（所见即所得）。 */
+      host.querySelector('#cx-h1')?.addEventListener('click', () => docEditor?.toggleHeading(1));
+      host.querySelector('#cx-img')?.addEventListener('click', async () => {
+        const api = (window as any).lingkuangAPI;
+        if (!api?.importImage || !docEditor) return;
+        const res = await api.importImage();
+        if (res?.ok && res.path) { docEditor.insertImage(String(res.path)); say('已插入图片 ✓'); }
+        else if (res?.canceled) { /* 用户取消，不提示 */ }
+        else say(String(res?.error ?? '插入图片失败'), true);
+      });
+    }
+    /* 外部改动提示条：宿主刚被整块重建，把已有提示重画进来（提示是累积的，不因切条目而丢） */
+    vaultNotices?.refresh();
+    /* 顺手校验这个节点的 .md 是否还带着「#正文：」标签（外部误删会破坏正文结构，
+       见 `src/ui/vault-notice.ts`）。原来这一步在编辑器工具里，现在跟着工作台。 */
+    if (nodeTarget) {
+      const n = activeNode();
+      if (n) void vaultNotices?.checkBodyTag(nodeTarget.world, nodeTarget.tlId, nodeTarget.nodeId, n.doc ?? '', n.title ?? '');
     }
     host.querySelector('#cx-del')?.addEventListener('click', () => {
       const c = active();
@@ -756,6 +867,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     const chipsEl = host.querySelector('#cx-chips') as HTMLElement | null;
     const listEl = host.querySelector('#cx-list') as HTMLElement | null;
     if (!chipsEl || !listEl) return;
+    if (listView === 'tree') { renderTreeList(chipsEl, listEl); return; }
 
     if (mode === 'entity') {
       const kinds = Object.keys(types());
@@ -863,6 +975,187 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     });
   }
 
+  /** 树里的一行（`.ed-*` 类来自 `src/style.css`，跟编辑器那棵树同一套样式） */
+  function treeRow(cls: string, html: string, ds: Record<string, string>): HTMLElement {
+    const d = document.createElement('div');
+    d.className = 'ed-tnode ' + cls;
+    d.innerHTML = html;
+    for (const [k, v] of Object.entries(ds)) d.dataset[k] = v;
+    return d;
+  }
+  function emptyRow(text: string): HTMLElement {
+    const d = document.createElement('div');
+    d.className = 'ed-tempty';
+    d.textContent = text;
+    return d;
+  }
+
+  /** ── 「文件夹树」视图（用户 2026-09-13：「设定库和编辑器是不是可以做成同一工具的两种不同
+      形式啊（在设置里面切换）」）────────────────────────────────────────────────
+      一棵树同时装下**时间线节点**和**设定条目**，跟硬盘上的目录一一对应：
+        世界 → 时间线 → 种类 → 节点      （= `<世界>/<时间线>/<种类>/<节点>.md`）
+        世界 → `_设定` → 类型 → 实体     （= `<世界>/_设定/<类型>/<实体>.md`）
+      点任意一行 = 换中栏/右栏的目标（节点与实体都能点，这正是把编辑器那棵树并进来的意思）。
+      搜索非空时摊平成命中列表（节点 + 实体一起搜）。
+      ⚠️ 种类/类型下"空着的"两类**待遇不同**，别顺手统一：
+        ① 节点**种类**只列真有节点的（= 硬盘上真有这个目录）—— 用户 2026-09-13：
+           「我指的是角色，地点，物品等文件夹同时存在于主线与设定文件夹下，是bug」；
+        ② 实体**类型**列全部（含一个实体都没有的，置灰 + 一句人话）—— 类型是模型的一部分，
+           新的类型要能在树里看见、点进去建第一个条目（用户要的「显示其他结构体」）。 */
+  function renderTreeList(chipsEl: HTMLElement, listEl: HTMLElement): void {
+    chipsEl.innerHTML = '';
+    const frag = document.createElement('div');
+    frag.className = 'ed-tree';
+
+    if (query) {
+      /* 搜索：节点与实体一起摊平（非空时不分层，跟列表视图节点的做法一致） */
+      const nodeHits = searchNodes();
+      const entHits = searchEntities();
+      if (!nodeHits.length && !entHits.length) {
+        listEl.innerHTML = '<div style="font-size:var(--text-xs);color:var(--fg-2);padding:4px;">没有匹配的条目。</div>';
+        return;
+      }
+      nodeHits.forEach((h) => {
+        const on = !!nodeTarget && nodeTarget.world === h.world && nodeTarget.tlId === h.tlId && nodeTarget.nodeId === h.node.id;
+        frag.appendChild(treeRow('ed-tnode-item' + (on ? ' is-on' : ''),
+          `<span class="ed-tlabel">${escapeHtml(h.node.title)}</span><span class="ed-tcount">${escapeHtml(h.kind)}</span>`,
+          { act: 'node', nw: h.world, ntl: h.tlId, nid: h.node.id }));
+      });
+      entHits.forEach((h) => {
+        const on = mode === 'entity' && store.activeWorld === h.world && h.entity.id === activeId;
+        frag.appendChild(treeRow('ed-tnode-item' + (on ? ' is-on' : ''),
+          `<span class="ed-tlabel">${escapeHtml(h.entity.name)}</span><span class="ed-tcount">${escapeHtml(typeNameOf(h.world, h.entity.typeId))}</span>`,
+          { act: 'entity', nw: h.world, nid: h.entity.id }));
+      });
+      listEl.innerHTML = '';
+      listEl.appendChild(frag);
+      bindTreeClicks(frag);
+      return;
+    }
+
+    const allGroups = tlGroups();
+    const setAll = setGroups();
+    const worlds = Object.keys(store.data.worldsets);
+    if (!worlds.length) {
+      listEl.innerHTML = '<div style="font-size:var(--text-xs);color:var(--fg-2);padding:4px;">还没有世界。</div>';
+      return;
+    }
+    for (const wName of worlds) {
+      const wOpen = expandedWorlds.has(wName);
+      frag.appendChild(treeRow('ed-tworld' + (wOpen ? ' is-open' : ''),
+        `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(wName)}</span>`,
+        { act: 'world', nw: wName }));
+      if (!wOpen) continue;
+
+      /* ① 时间线分支 */
+      for (const g of allGroups.filter((x) => x.world === wName)) {
+        const tlKey = g.world + '::' + g.tlId;
+        const tOpen = expandedTls.has(tlKey);
+        const total = [...g.kinds.values()].reduce((n, l) => n + l.length, 0);
+        frag.appendChild(treeRow('ed-ttl' + (tOpen ? ' is-open' : ''),
+          `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(g.tlName)}</span><span class="ed-tcount">${total}</span>`,
+          { act: 'tl', nw: g.world, ntl: g.tlId }));
+        if (!tOpen) continue;
+        for (const [kind, nodes] of g.kinds) {
+          const kKey = tlKey + '::' + kind;
+          const kOpen = expandedKinds.has(kKey);
+          frag.appendChild(treeRow('ed-tkind' + (kOpen ? ' is-open' : ''),
+            `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(kind)}</span><span class="ed-tcount">${nodes.length}</span>`,
+            { act: 'tkind', nw: g.world, ntl: g.tlId, nk: kind }));
+          if (!kOpen) continue;
+          for (const n of nodes) {
+            const on = !!nodeTarget && nodeTarget.world === g.world && nodeTarget.tlId === g.tlId && nodeTarget.nodeId === n.id;
+            frag.appendChild(treeRow('ed-tnode-item' + (on ? ' is-on' : ''),
+              `<span class="ed-tlabel">${escapeHtml(n.title)}</span>`,
+              { act: 'node', nw: g.world, ntl: g.tlId, nid: n.id }));
+          }
+        }
+      }
+
+      /* ② `_设定` 分支（实体）—— 与时间线平级 */
+      const sg = setAll.find((x) => x.world === wName);
+      if (sg) {
+        const setKey = 'setting::' + wName;
+        const sOpen = expandedTls.has(setKey);
+        const total = sg.groups.reduce((n, t) => n + t.list.length, 0);
+        frag.appendChild(treeRow('ed-tset' + (sOpen ? ' is-open' : ''),
+          `<span class="ed-tcaret"></span><span class="ed-tlabel">_设定</span><span class="ed-tcount">${total}</span>`,
+          { act: 'wset', nw: wName }));
+        if (sOpen) {
+          for (const t of sg.groups) {
+            /* 类型行：一个实体都没有也列（置灰 + 展开时给一句人话） */
+            const tKey = 'etype::' + wName + '::' + t.id;
+            const tOpen = expandedKinds.has(tKey);
+            frag.appendChild(treeRow('ed-ttype ed-tset-type' + (tOpen ? ' is-open' : '') + (t.list.length ? '' : ' is-empty'),
+              `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(t.name)}</span><span class="ed-tcount">${t.list.length}</span>`,
+              { act: 'etype', nw: wName, nk: t.id }));
+            if (!tOpen) continue;
+            if (!t.list.length) { frag.appendChild(emptyRow('这个类型还没有实体')); continue; }
+            for (const e of t.list) {
+              const on = mode === 'entity' && store.activeWorld === wName && e.id === activeId;
+              frag.appendChild(treeRow('ed-tnode-item' + (on ? ' is-on' : ''),
+                `<span class="ed-tlabel">${escapeHtml(e.name)}</span>`,
+                { act: 'entity', nw: wName, nid: e.id }));
+            }
+          }
+        }
+      }
+    }
+    listEl.innerHTML = '';
+    listEl.appendChild(frag);
+    bindTreeClicks(frag);
+  }
+
+  function bindTreeClicks(frag: HTMLElement): void {
+    frag.querySelectorAll<HTMLElement>('.ed-tnode').forEach((el) => {
+      el.addEventListener('click', () => {
+        const ds = el.dataset;
+        if (ds.act === 'world') {
+          const k = ds.nw!;
+          if (expandedWorlds.has(k)) expandedWorlds.delete(k); else expandedWorlds.add(k);
+          renderList();
+        } else if (ds.act === 'tl') {
+          const k = ds.nw + '::' + ds.ntl;
+          if (expandedTls.has(k)) expandedTls.delete(k); else expandedTls.add(k);
+          renderList();
+        } else if (ds.act === 'tkind') {
+          const k = ds.nw + '::' + ds.ntl + '::' + ds.nk;
+          if (expandedKinds.has(k)) expandedKinds.delete(k); else expandedKinds.add(k);
+          renderList();
+        } else if (ds.act === 'wset') {
+          const k = 'setting::' + ds.nw;
+          if (expandedTls.has(k)) expandedTls.delete(k); else expandedTls.add(k);
+          renderList();
+        } else if (ds.act === 'etype') {
+          const k = 'etype::' + ds.nw + '::' + ds.nk;
+          if (expandedKinds.has(k)) expandedKinds.delete(k); else expandedKinds.add(k);
+          renderList();
+        } else if (ds.act === 'node') {
+          switchTarget(() => {
+            mode = 'node';
+            nodeTarget = { world: ds.nw!, tlId: ds.ntl!, nodeId: ds.nid! };
+          });
+        } else if (ds.act === 'entity') {
+          /* 树列的是**全部世界**的条目 ⇒ 换世界要先 setActiveWorld（`active()` 只看当前世界的 entities） */
+          const w = ds.nw!;
+          const id = ds.nid!;
+          switchTarget(() => {
+            if (store.activeWorld !== w) store.setActiveWorld(w);
+            mode = 'entity';
+            activeId = id;
+            filterType = '';   /* 树视图没有类型 chips，留着旧筛选会把这条又筛掉 */
+          });
+        }
+      });
+    });
+  }
+
+  /** 某个世界里某个类型显示叫什么（树会列出**全部世界**的实体，`typeName()` 只看当前世界） */
+  function typeNameOf(wName: string, typeId: string): string {
+    const t = (store.data.worldsets[wName] as any)?.entityTypes?.[typeId];
+    return t?.name ?? typeId ?? '';
+  }
+
   let torn = false;
   const unsub = store.subscribe(() => {
     if (torn) return;
@@ -885,17 +1178,36 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (quiet) { bodySig = sig; return; }
     if (sig !== bodySig) render();
   });
-  /* 设置里改了「设定演变」的模式/锁定点 → 视图与落点都要跟着变（锁定模式下视图钉在锁定那一格） */
+  /* 设置里改了「设定演变」的模式/锁定点 → 视图与落点都要跟着变（锁定模式下视图钉在锁定那一格）；
+     改了「工作台默认形态」→ 当场换左栏形态（用户可能在设置里选完就切回来）。 */
   const onSettings = (): void => {
+    const wantView: 'list' | 'tree' = loadSettings().workbenchView === 'tree' ? 'tree' : 'list';
+    if (wantView !== listView) {
+      listView = wantView;
+      pendingEnter = false;   /* 只是换个看法，别播整块错峰 */
+      render();
+      return;
+    }
     if (!railKey || !active()) return;
     if (!swapBody()) render();   /* swapBody 内部会 ensureRailSelection + 重画帧条 */
   };
   window.addEventListener('lingkuang-settings', onSettings);
+  /* 外部改动提示条（原来长在「编辑器」工具里，工具下线时搬到 `src/ui/vault-notice.ts`）。
+     **一次创建、活到切走**：提示是累积列表（key 去重），切条目不清 —— 用户得能看见哪个文件出过事。
+     宿主元素延后取（`render()` 会整块重建 DOM），所以每次 render 之后要 `refresh()` 重画一遍。 */
+  vaultNotices = createVaultNotices({
+    getHost: () => host.querySelector<HTMLElement>('#cx-hint'),
+    store,
+    getCurrentNodeId: () => nodeTarget?.nodeId ?? '',
+    say,
+  });
   render();
   return () => {
     torn = true;
     unsub();
     window.removeEventListener('lingkuang-settings', onSettings);
+    vaultNotices?.dispose();
+    vaultNotices = null;
     /* 切走工具时把未失焦的正文也结算掉，再销毁 tiptap 实例 */
     if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }
     if (msgTimer) window.clearTimeout(msgTimer);

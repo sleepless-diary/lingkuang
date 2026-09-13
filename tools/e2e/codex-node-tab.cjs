@@ -76,6 +76,24 @@ async function main() {
   check('8 右栏正文编辑器载入了节点正文', String(doc0 ?? '').includes('灰烬'), String(doc0 ?? '').slice(0, 40));
   check('9 顶部显示面包屑（世界 · 时间线 · 种类）', String(await ev(`document.querySelector('#cx-root')?.textContent ?? ''`)).includes('测试世界观 · 主线 · 事件'));
 
+  /* ③b 提交字段后**面板不重建**（元素身份不变）—— 这是「拖拽中的 scrub 控件不被销毁」的前提，
+     也就是 `props-panel` 那条 `quiet` 提交路径唯一的守卫。
+     （原来在 `editor-props-panel.cjs` 里；编辑器工具并进工作台后搬到这里。
+       探针用种类模板字段「地点」，不动标题 —— 标题会改 .md 文件名，本套件后面按固定路径读文件。） */
+  const sameEl = await ev(`(() => {
+    const row = [...document.querySelectorAll('#cx-props .ed-props > div')].find((r) => r.firstElementChild?.textContent === '地点');
+    const inp = row?.querySelector('input');
+    if (!inp) return null;
+    window.__probeInput = inp;
+    inp.value = '安德希亚';
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    const still = document.querySelector('#cx-props .ed-props')?.contains(window.__probeInput);
+    return { sameEl: still === true };
+  })()`);
+  check('★9b 提交后面板没被重建（输入框元素身份不变）', !!sameEl && sameEl.sameEl === true, sameEl);
+  const probed = await waitFor(() => read().includes('安德希亚'));
+  check('★9c 这一次提交确实落进了 .md（不是"什么都没发生"式的假绿）', probed, read().slice(0, 200));
+
   /* ④ 改描述 → 落到 .md 的 `#描述：` 段 */
   await ev(`(() => { const el = ${ROW('描述')}; el.value='改写后的描述：基石落地。'; el.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`);
   const descOk = await waitFor(() => /#描述：\n改写后的描述/.test(read()));

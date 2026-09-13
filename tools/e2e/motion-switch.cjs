@@ -140,9 +140,13 @@ async function main() {
   const okRender = await waitFor(`!!document.querySelector('#cx-root')`);
   const a1 = await childAnims('#cx-root');
   const hostAnim = await anims('#lk-module-view');
+  /* ⚠️ 只看**真的播了动画**的块：`cascadeIn` 会跳过没有盒子的子项（工作台里没消息时的
+     `#cx-msg`、没提示时的 `#cx-hint` 都是 `display:none`），它们不占错峰序号。
+     按下标硬读就会读到空数组（2026-09-13 加了 `#cx-hint` 之后本套件当场挂 ★1/★13，就是这个原因）。 */
+  const played1 = (a1 || []).filter((x) => x.length);
   check('★1 切工具：工具的顶层块逐个错峰入场（lk-wake / 640ms / 延迟 0·100·200ms）',
-    Array.isArray(a1) && a1.length >= 3 && a1[0]?.[0]?.name === 'lk-wake' && a1[0]?.[0]?.dur === 640
-      && a1[0]?.[0]?.state === 'running' && a1[1]?.[0]?.delay === 100 && a1[2]?.[0]?.delay === 200, a1);
+    Array.isArray(a1) && played1.length >= 3 && played1[0]?.[0]?.name === 'lk-wake' && played1[0]?.[0]?.dur === 640
+      && played1[0]?.[0]?.state === 'running' && played1[1]?.[0]?.delay === 100 && played1[2]?.[0]?.delay === 200, a1);
   check('★2 主区容器上**没有**动画（整块淡入正是"闪一下"的来源，也盖掉了元素错峰）',
     Array.isArray(hostAnim) && hostAnim.length === 0, hostAnim);
 
@@ -239,9 +243,10 @@ async function main() {
   await waitFor(`!!document.querySelector('#cx-tab-node')`);
   await sleep(700);
   const a6 = await clickChildAnims(`document.querySelector('#cx-tab-node').click();`, '#cx-root');
+  const played6 = (a6 || []).filter((x) => x.length);   /* 同上：跳过的隐藏子项不占序号 */
   check('★13 换页签后内容块**逐块错峰**浮现（第 1 块 lk-wake/640ms/0ms、第 2 块 100ms、第 3 块 200ms）',
-    Array.isArray(a6) && a6[0]?.[0]?.name === 'lk-wake' && a6[0]?.[0]?.state === 'running' && a6[0]?.[0]?.dur === 640
-      && a6[1]?.[0]?.delay === 100 && a6[2]?.[0]?.delay === 200, a6);
+    Array.isArray(a6) && played6[0]?.[0]?.name === 'lk-wake' && played6[0]?.[0]?.state === 'running' && played6[0]?.[0]?.dur === 640
+      && played6[1]?.[0]?.delay === 100 && played6[2]?.[0]?.delay === 200, a6);
 
   await sleep(700);
   const a7 = await clickChildAnims(`document.querySelector('#cx-tab-entity').click();`, '#cx-root');

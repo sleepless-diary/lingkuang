@@ -1,13 +1,19 @@
 # 编辑器 ↔ 世界沙盘 · 对接文档（Editor / Sandbox Bridge）
 
-> 说明灵框**正文编辑器**（`src/ui/editor.ts`，tiptap）与**世界沙盘简易编辑器**（`src/ui/detail.ts` 节点详情）如何对接到**同一个节点**的数据。两者读写的是同一份 store 节点对象，职责边界如下。
+> ⚠️ **2026-09-13 起路径变了**：独立的「编辑器」工具已并入**设定库工作台**（`src/ui/codex.ts`，
+> 左栏可切「列表 / 文件夹树」两形态），`src/ui/editor.ts` 已删除。本文里写的 `src/ui/editor.ts`
+> 现在对应 **`src/ui/codex.ts` 的中栏（属性，走 `src/ui/props-panel.ts`）+ 右栏（正文，走
+> `src/ui/doc-editor.ts`）**；数据契约（字段名、`#描述：`/`#正文：` 标签、store 单一数据源）**一字未变**，
+> 所以下面的对接约定仍然有效，只是"由谁实现"改名了。
+
+> 说明灵框**正文编辑器**（tiptap）与**世界沙盘简易编辑器**（`src/ui/detail.ts` 节点详情）如何对接到**同一个节点**的数据。两者读写的是同一份 store 节点对象，职责边界如下。
 
 ## 1. 两端定位
 
 | 端 | 文件 | 职责 |
 |---|---|---|
-| **正文编辑器** | `src/ui/editor.ts` | 编辑节点的**叙事正文** `node.doc`（markdown 富文本，所见即所得 + 图片 + `#tag` 胶囊）；**编辑**结构化属性 `node.properties`（带类型：文本/数值/复选框/多选/日期，`saveProp` 写回） |
-| **世界沙盘简易编辑器** | `src/ui/detail.ts` | 节点详情面板：就地编辑 `title / type / desc / doc / year / precision`。**结构化属性编辑（`properties` + 类型控件）为约定目标，由沙盘側按本文档实现**（当前 detail.ts 未实现，编辑器已接管属性存储） |
+| **正文编辑器** | `src/ui/codex.ts`（原 `src/ui/editor.ts`）| 编辑节点的**叙事正文** `node.doc`（markdown 富文本，所见即所得 + 图片 + `#tag` 胶囊）；**编辑**结构化属性 `node.properties`（带类型：文本/数值/复选框/多选/日期，走公共属性面板 `src/ui/props-panel.ts`） |
+| **世界沙盘简易编辑器** | `src/ui/detail.ts` | 节点详情面板：就地编辑 `title / type / desc / doc / year / precision`。**结构化属性编辑（`properties` + 类型控件）为约定目标，由沙盘側按本文档实现**（当前 detail.ts 未实现，工作台已接管属性存储） |
 
 **核心原则**：正文是**文章**（富文本，编辑器管）；属性是**结构体字段**（节点/角色/地点的类型化键值，沙盘管）。编辑器不编辑属性，沙盘不负责正文富文本排版。
 

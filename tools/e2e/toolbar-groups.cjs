@@ -3,7 +3,7 @@
  * 为什么单开一条：这不是"好看不好看"，是**信息架构**的决定，而且很容易被顺手改掉
  * （比如往 register.ts 里加一个工具、或重排登记顺序）。排序由 `src/ui/shell.ts` 的 `renderToolbar`
  * 按 `Tool.group` 过滤决定，**不靠注册顺序** —— 所以这条套件断言的是 DOM 里的最终结果：
- *   ① 两组、顺序固定（上段创作：sandbox/inspire/editor/ai/codex/library；
+ *   ① 两组、顺序固定（上段创作：sandbox/inspire/ai/codex/library；
  *      下段管理：schema/trash/backup/settings）
  *   ② 管理组**贴底**（`margin-top:auto` 生效）且与上段之间留出空隙
  *   ③ 「设置」在最底下那一个，点了真的能打开设置面板（分组改动没把点击/高亮弄坏）
@@ -16,7 +16,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 function check(n, ok, extra) { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${extra !== undefined ? '   ' + JSON.stringify(extra) : ''}`); }
 
-const CREATE = ['sandbox', 'inspire', 'editor', 'ai', 'codex', 'library'];
+/* 「编辑器」已并入「设定库」工作台（2026-09-13 用户批准：一个工具两种形态，设置里切），
+   所以创作组从 6 个变 5 个 —— 少一个图标是本轮刻意付的代价。 */
+const CREATE = ['sandbox', 'inspire', 'ai', 'codex', 'library'];
 const MANAGE = ['schema', 'trash', 'backup', 'settings'];
 
 async function main() {
@@ -53,7 +55,7 @@ async function main() {
   })()`);
 
   const flat = (geo.order || []).join(',');
-  check('★1 左栏两组、顺序固定：创作 6 个在上、管理 4 个在下（设置排最底）',
+  check('★1 左栏两组、顺序固定：创作 5 个在上、管理 4 个在下（设置排最底）',
     (geo.groups || []).length === 2
       && (geo.groups[0].tools || []).join(',') === CREATE.join(',')
       && (geo.groups[1].tools || []).join(',') === MANAGE.join(',')

@@ -23,19 +23,10 @@ export function registerAllTools(): void {
     id: 'inspire', name: '灵感触发器', icon: IC.dice,
     open(host, store) {
       /* 必须 return 这条 promise 链：registry.openTool 靠它的 resolve 值拿到清理函数，
-         切走工具时才能拆掉 assoc 画布的 window 监听 + 两个 RAF 循环（与下面 editor 同理）。
+         切走工具时才能拆掉 assoc 画布的 window 监听 + 两个 RAF 循环（与下面 codex 同理）。
          不 return（旧写法）→ adopt 永远收不到清理函数 → 每点一次工具积一份监听与永不退场的帧循环。 */
       if (!store) return;
       return import('../ui/inspire').then((m) => m.renderInspire(store, host));
-    },
-  });
-  registerTool({
-    id: 'editor', name: '编辑器', icon: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
-    open(host, store) {
-      /* 返回 Promise<清理函数>：registry.openTool 会在切走时调用它，
-         拆掉 tiptap 实例 + window 监听 + store 订阅（否则每点一次积一份）。 */
-      if (!store) return;
-      return import('../ui/editor').then((m) => m.renderEditor(store, host));
     },
   });
   registerTool({
@@ -53,7 +44,10 @@ export function registerAllTools(): void {
       return import('../ui/codex').then((m) => m.renderCodex(store, host));
     },
   });
-  /* 占位模块：素材库 / 编辑器独立入口 */  registerTool({ id: 'library', name: '素材库', icon: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>', placeholder: true });
+  /* 占位模块：素材库
+     （原「编辑器」工具已并入「设定库」工作台：左栏可切「列表 / 文件夹树」两个形态，
+       见 `src/ui/codex.ts` 与「设置 → 设定库（工作台）」。）*/
+  registerTool({ id: 'library', name: '素材库', icon: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>', placeholder: true });
 
   /* ── 管理组（左栏下段，贴着底部；见 registry.ts 的 `Tool.group`）──
      用户 2026-09-12：「设置放到左侧栏最底下」+ 干活的和管理别混着排。
