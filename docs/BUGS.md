@@ -78,14 +78,56 @@
 - 新增 **`tools/e2e/codex-swap-motion.cjs`（14 项）** 与 **`tools/e2e/settings-panel.cjs`（12 项）**，
   两者都做过 A/B（改动前分别 **6/14** 与 **4/12** FAIL，断言有判别力）。
 
+### 四、换类别时元素上下跳 7px（用户 2026-09-13 深夜报）
+
+- 原话：「事件节点和设定实体切换时，元素 y 坐标会变，**应该是增加实体按钮的出现与消失导致的**」
+  —— 用户猜对了，量下来一字不差。
+- 实测（`tools/e2e/` 之外的探针，`%TEMP%\lk-yprobe.cjs`；窗口 1440×900）：
+
+  | | 实体态 | 节点态 |
+  |---|---|---|
+  | 头行（`#cx-root` 第一个子元素）高 | **28px** | **21px** |
+  | 三栏行 / `#cx-list` / `#cx-body` 的 top | 50 / 90 / 50 | 43 / 83 / 43 |
+  | `#cx-newbox`（「类型下拉 + ＋新建实体」） | `display:flex`，h=28 | `display:none`，h=0 |
+
+  那个按钮高 28px，而头行的文字只有 21px ⇒ 节点态把整组控件 `display:none` 之后头行矮 7px，
+  **下面所有元素（三栏行 / 左树 / 中右栏）跟着上下跳 7px**。另一个探针证明 `#cx-root` **之上**的外壳
+  （`#lk-alerts` / `.lk-app` / `.lk-main` / `#lk-module-view` / `.lk-tool-slot`）全程 top=0、h=863 不变
+  ⇒ 与外壳无关。
+- 修法（`src/ui/codex.ts`）：
+  1. 那组控件**两种类别下都渲染**（`newCtl` 不再 `isEntity && …`），骨架里也不带条件 `display:none`；
+  2. 新增 `syncNewBox()`：节点态**只 `visibility:hidden`**（占位照旧 ⇒ 头行恒 28px），
+     同时把里面的 `button,select,input` 全部 `disabled` —— **隐藏元素仍然吃程序化 `.click()`**，
+     不禁用的话节点态下还能凭空建出一个实体（`#cx-new` 的处理器不看 mode）；
+  3. `mountBody()` 与 `render()` 里都调 `syncNewBox()`（原来是直接改 `style.display`）。
+- 修后复量：头行两种模式都 28px，三栏行 top 都是 50、`#cx-list` 90、`#cx-body` 50。
+- **A/B（新断言必须在修复前的代码上挂）**：把 `box.style.visibility` 改回 `box.style.display` 并重建，
+  `codex-smooth-switch.cjs` 的 ★13b 立刻复现用户的症状 ——
+  `{"before":{"list":{"t":90},"body":{"t":50},"newbox":{"t":14,"h":28}},"after":{"list":{"t":83},"body":{"t":43},"newbox":{"h":0,"vis":"none"}}}`。
+- 测试：`tools/e2e/codex-smooth-switch.cjs` 18 → **20 项**，新增
+  ★13b（换类别时左树/中右栏/那组控件的 top 相同、它的高度不变、节点态 `visibility:hidden` 且控件被禁用）
+  与 ★14d（实体 → 节点 → 实体 绕一圈回来，框的位置与高度与出发时逐项相同）。
+- ⚠️ 量几何时踩到的坑：`#cx-root` **自己就是滚动容器**，直接读 `getBoundingClientRect().top` 会把
+  **滚动位置**算进来（★6 刚滚过 260px，基线就整体高 260 ⇒ 回程时对不上，★14d 假挂一次）。
+  正确写法是换算到「面板内容原点」：`top - rootRect.top + root.scrollTop`。同理，
+  **`display:none` 的元素 `getBoundingClientRect()` 全是 0**，只能拿它的 `h` 或 `display` 说话，别比 top。
+
 ### 验证（二十二）
 
 - `codex-swap-motion` **14/14**（A/B 改动前 6 FAIL）；`settings-panel` **12/12**（A/B 4/12）；
-- 回归全绿：`codex-smooth-switch` 18/18、`motion-switch` 25/25、`toolbar-groups` 5/5、
-  `codex-node-tab` 18/18、`codex-tree-view` 22/22、`workbench-tree-folders` 29/29、
-  `entity-evolution` 38/38、`codex-switch-target` 7/7、`data-load-clean` 6/6、
-  `kind-change-stale-file` 11/11、`entity-vault` 17/17 + `cold-start-entity-vault` PASS、
-  `startup-materialize-entity` 6/6；`tsc --noEmit` / `vite build` exit 0。
+- 换类别 y 跳 7px（第四节）：`codex-smooth-switch` **20/20**，A/B（退回 `display` 切换）时 ★13b 挂、
+  其余 19 项照旧（判别力坐实）；
+- 回归全绿（都在**这个构建**上跑过，各自干净起点）：
+  `codex-smooth-switch` **20/20**、`codex-swap-motion` 14/14、`codex-node-tab` 18/18、
+  `codex-tree-view` 22/22、`codex-switch-target` 7/7、`motion-switch` 25/25、
+  `toolbar-groups` 5/5、`workbench-tree-folders` 29/29、`entity-evolution` 38/38、
+  `data-load-clean` 6/6、`entity-vault` 17/17 + `cold-start-entity-vault` PASS、
+  `startup-materialize-entity` 6/6、`kind-change-stale-file` 11/11；
+  `tsc --noEmit` / `vite build` exit 0。
+- ⚠️ 两条测试环境教训：① `toolbar-groups` **必须用全新实例** —— `codex-tree-view` 会把悬浮设置面板
+  留在开着的状态，同实例接着跑时 ★3 点那一下变成"关"，且主区已被前一个套件改过
+  （`moduleUntouched:false`），实测假挂一次；② `#cx-root` 是滚动容器，量几何要换算成内容原点坐标
+  （见第四节末尾）。
 - ⚠️ 视觉取证受限：`Page.captureScreenshot` 在隐藏窗口（`LINGKUANG_TEST_WINDOW_NOFOCUS=1`，实测
   `Page.bringToFront` 也救不回来，`visibilityState` 仍是 `hidden`）里**抓不到中间帧** ——
   动画要么停在 0、要么被出帧一次性推到底。所以转场的证据是**参数级断言 + 演示页**（用户自己在

@@ -722,7 +722,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     normalizeEntitySelection();
     ensureRailSelection();   /* 实体页签：把"站在哪个事件上看"与各版本的样子准备好 */
     const kinds = Object.keys(types());
-    const newCtl = isEntity && kinds.length
+    /* ⚠️ 这组控件**两种类别下都要渲染出来**（节点态只是 `visibility:hidden`）：见 `syncNewBox()`。
+       少了它，节点态的头行会矮 7px（28 → 21），下面所有元素跟着上下跳一下。 */
+    const newCtl = kinds.length
       ? `<select id="cx-new-type" title="新实体的类型" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 6px;font-size:var(--text-xs);outline:none;">${kinds.map((k) => `<option value="${escapeHtml(k)}">${escapeHtml(typeName(k))}</option>`).join('')}</select>
          <button id="cx-new" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:6px 14px;font-size:var(--text-xs);cursor:pointer;">＋新建实体</button>`
       : '';
@@ -732,7 +734,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <div style="font-size:17px;font-weight:600;color:var(--fg);">设定库</div>
           <span style="font-size:var(--text-xs);color:var(--fg-2);">「${escapeHtml(store.activeWorld || '（未选世界）')}」的条目 · 字段由模板决定（在左栏「结构体管理」里改模板）</span>
-          <span id="cx-newbox" style="margin-left:auto;gap:6px;align-items:center;${isEntity ? 'display:flex;' : 'display:none;'}">${newCtl}</span>
+          <span id="cx-newbox" style="margin-left:auto;gap:6px;align-items:center;display:flex;">${newCtl}</span>
         </div>
         <div id="cx-hint" style="display:none;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:rgba(217,101,92,.12);font-size:var(--text-xs);color:var(--fg);line-height:1.5;"></div>
         <div style="display:flex;gap:12px;align-items:flex-start;">
@@ -815,6 +817,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     vaultNotices?.refresh();
     /* 中/右栏那一块的接线（编辑器 / 属性面板 / 字段行 / 各按钮）—— 与换类别时共用，见 wireBody */
     wireBody();
+    /* 顶栏那组「类型 + ＋新建实体」按当前类别显隐（只藏不拆，见 syncNewBox） */
+    syncNewBox();
     /* 骨架重建完就把签名对齐，免得下一次 store 变化因为签名过期而白重建一次 */
     bodySig = bodySignature();
     /* 记下这版骨架是按哪一类建的：相同类别内换条目才敢走"只换内容"那条轻路径 */
@@ -911,6 +915,25 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     });
   }
 
+  /** 顶栏那组「类型 + ＋新建实体」在节点态**只藏不拆**。
+   *
+   *  用户 2026-09-13 深夜：「事件节点和设定实体切换时，元素 y 坐标会变，**应该是增加实体按钮的出现与
+   *  消失导致的**」—— 量下来正是如此：那个按钮高 28px，而头行的文字只有 21px，`display:none` 之后
+   *  头行从 28 变 21 ⇒ **下面所有元素（三栏行 / 左树 / 中右栏）跟着上下跳 7px**。
+   *  所以改成 `visibility:hidden`：占位照旧（头行恒 28px），也点不到；
+   *  里面的控件同时 `disabled` —— 隐藏元素仍然吃**程序化** `.click()`，
+   *  不禁用的话节点态下还能凭空建出一个实体（`#cx-new` 的处理器不看 mode）。 */
+  function syncNewBox(): void {
+    const box = host.querySelector<HTMLElement>('#cx-newbox');
+    if (!box) return;
+    const isEntity = mode === 'entity';
+    box.style.visibility = isEntity ? '' : 'hidden';
+    box.setAttribute('aria-hidden', isEntity ? 'false' : 'true');
+    for (const el of Array.from(box.querySelectorAll<HTMLButtonElement | HTMLSelectElement | HTMLInputElement>('button,select,input'))) {
+      el.disabled = !isEntity;
+    }
+  }
+
   /** 换**类别**（时间线节点 ↔ 设定条目）时只重造 `#cx-body` 那一块。
    *  用户 2026-09-13：「从事件节点切换到实体节点时，事件节点保持选中状态，**且面板刷新**」——
    *  旧写法（`renderedMode !== mode` 就整块 `render()`）一次点击要付三样代价：左列那棵树重播一遍错峰、
@@ -930,8 +953,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     body.innerHTML = bodyHtml();
     const railHost = host.querySelector<HTMLElement>('#cx-rail');
     if (railHost) railHost.style.display = mode === 'entity' ? '' : 'none';
-    const newBox = host.querySelector<HTMLElement>('#cx-newbox');
-    if (newBox) newBox.style.display = mode === 'entity' ? 'flex' : 'none';
+    syncNewBox();
     wireBody();
     renderedMode = mode;
     /* 换类别也是"换文件"：同一套转场（旧内容往左退 → 新内容从右入）。放在 wireBody 之后 ——

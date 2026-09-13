@@ -51,11 +51,25 @@ async function main() {
     return r.result?.result?.value;
   };
 
-  /** 记下当前这几个元素（后面用身份比对判断"骨架有没有被重建"） */
+  /** 记下当前这几个元素（后面用身份比对判断"骨架有没有被重建"）。
+   *  顺带在页面里装一个 `window.__geoNow()`：量"**框**在哪儿"（左树 / 帧条 / 中右栏 / 顶栏那组控件的
+   *  top 与高）。★13 只管"元素有没有被换掉"，量不到"位置有没有变"—— 用户报的 y 跳 7px 就是后者。 */
   const mark = () => ev(`(() => {
     window.__s = { root: document.querySelector('#cx-root'), search: document.querySelector('#cx-search'),
       list: document.querySelector('#cx-list'), doc: document.querySelector('#cx-doc .ProseMirror'),
       props: document.querySelector('#cx-props') };
+    /* ⚠️ #cx-root 自己就是滚动容器：直接读 getBoundingClientRect().top 会把**滚动位置**算进来
+       （★6 刚滚过 260px，基线就整体高 260 ⇒ 回程时对不上，实测假挂一次）。
+       所以换算成「面板内容原点」里的坐标：top 减去 rootRect.top 再加上 root.scrollTop ⇒ 与滚动无关。 */
+    window.__geoNow = () => {
+      const root = document.querySelector('#cx-root');
+      const rr = root ? root.getBoundingClientRect() : { top: 0 };
+      const st = root ? root.scrollTop : 0;
+      const g = (sel) => { const el = document.querySelector(sel); if (!el) return null; const r = el.getBoundingClientRect();
+        return { t: Math.round(r.top - rr.top + st), h: Math.round(r.height),
+          vis: getComputedStyle(el).display === 'none' ? 'none' : getComputedStyle(el).visibility }; };
+      return { list: g('#cx-list'), rail: g('#cx-rail'), body: g('#cx-body'), newbox: g('#cx-newbox') };
+    };
     return Object.fromEntries(Object.entries(window.__s).map(([k, v]) => [k, !!v]));
   })()`);
   const same = (key) => ev(`document.querySelector(${JSON.stringify({ root: '#cx-root', search: '#cx-search', list: '#cx-list', doc: '#cx-doc .ProseMirror', props: '#cx-props' }[key])}) === window.__s.${key}`);
@@ -211,6 +225,8 @@ async function main() {
   /* ── ⑧ 换**类别**（实体 → 节点）也**就地**换 —— 骨架不用动：左树装着两类条目、顶栏只需显隐、
      帧条元素常驻。这里逐条断言"没有整块重建"的三个症状（换新元素 / 重播错峰 / 内容区动画）。 */
   await mark();
+  /* 换类别之前的"框位置"基线（此刻是实体态）。下面 ★13b / ★14d 都拿它比。 */
+  const geo = { before: await ev(`window.__geoNow()`) };
   const tab = await ev(`(() => {
     const row = document.querySelector('#cx-list .ed-tnode-item[data-act="node"]');
     if (!row) return { missing: '#cx-list [data-act=node]' };
@@ -229,6 +245,9 @@ async function main() {
       rowAnims: rows.reduce((n, el) => n + el.getAnimations().filter((a) => !a.animationName).length, 0),
       entOnAfter: [...document.querySelectorAll('#cx-list [data-cx-id]')].filter((b) => b.classList.contains('is-on')).length,
       nodeOnAfter: [...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]')].filter((b) => b.classList.contains('is-on')).length,
+      geo: window.__geoNow(),
+      newbox: (() => { const b = document.querySelector('#cx-newbox'); const btn = document.querySelector('#cx-new');
+        return { vis: b ? getComputedStyle(b).visibility : null, disabled: btn ? btn.disabled : null }; })(),
     };
   })()`);
   await sleep(500);
@@ -236,6 +255,17 @@ async function main() {
     tab.sameRoot === true && tab.stagger === false && tab.wake === 0 && tab.delayed === 0
       && tab.bodyCss.length === 0 && tab.ghost === true && tab.rowAnims > 0
       && tab.entOnAfter === 0 && tab.nodeOnAfter === 1, tab);
+  /* 用户 2026-09-13 深夜：「事件节点和设定实体切换时，元素 y 坐标会变，**应该是增加实体按钮的出现与
+     消失导致的**」—— 正是它：那个按钮高 28px、头行文字只有 21px，`display:none` 之后头行矮 7px，
+     下面所有元素跟着上下跳。修法 = 节点态只 `visibility:hidden`（占位照旧）。这条钉住"框不动"，
+     与 ★13 的"骨架不重建"是两件事：**重建没发生 ≠ 位置没变**。 */
+  check('★13b 换类别时框的位置与高度一律不动（左树/中右栏/顶栏那组控件的 top 相同、它的高度不变）',
+    !!geo.before && !!tab.geo
+      && tab.geo.list.t === geo.before.list.t && tab.geo.body.t === geo.before.body.t
+      && tab.geo.newbox.t === geo.before.newbox.t && tab.geo.newbox.h === geo.before.newbox.h
+      && geo.before.rail.vis !== 'none' && tab.geo.rail.vis === 'none'
+      && tab.newbox.vis === 'hidden' && tab.newbox.disabled === true,
+    { before: geo.before, after: tab.geo, newbox: tab.newbox });
 
   /* ── ⑨ 节点→节点也要就地换 ──
      左栏重做后列表形态**直接摊平**了节点行（不再需要先展开 世界→时间线→种类），
@@ -286,6 +316,7 @@ async function main() {
       bodyCss: body ? anims(body).filter((a) => a.name).map((a) => a.name) : [],
       ghost: !!(body && body.querySelector('.lk-cx-ghost')),
       rowAnims: rows.reduce((n, el) => n + el.getAnimations().filter((a) => !a.animationName).length, 0),
+      geo: window.__geoNow(),
     };
   })()`);
   await sleep(400);
@@ -305,6 +336,12 @@ async function main() {
       && st2.entOn.length === 1 && st2.entOn[0] === '银发少女' && st2.rail === true
       && st2.fields > 0 && String(st2.doc ?? '').includes('雪原独行'),
     { nodeOnBefore, scrollableBefore: sBefore, ...st2 });
+  check('★14d 绕一圈回来（实体 → 节点 → 实体）框的位置与高度与出发时**逐项相同**',
+    !!geo.before && !!back.geo
+      && back.geo.list.t === geo.before.list.t && back.geo.body.t === geo.before.body.t
+      && back.geo.newbox.t === geo.before.newbox.t && back.geo.newbox.h === geo.before.newbox.h
+      && back.geo.rail.vis === geo.before.rail.vis && back.geo.rail.h === geo.before.rail.h,
+    { before: geo.before, after: back.geo });
 
   const errs = await ev(`window.__errs`);
   check('★15 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

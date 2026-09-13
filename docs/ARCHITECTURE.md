@@ -403,7 +403,12 @@
   节点时，事件节点保持选中状态，且面板刷新」）：`renderedMode !== mode` 时不再整块 `render()`，而是
   `mountBody()` —— 只把 `#cx-body` 的 innerHTML 换成 `bodyHtml()` 再 `wireBody()`，骨架、左树与
   `#cx-root` 的滚动位置全留着（`#cx-rail` 改成常驻、节点模式 `display:none`；顶栏 `#cx-newbox` 按 mode
-  显隐），转场照演。相应地 `motion-switch.cjs` ★13/★14 是**反向**守卫：换类别/换条目后 `#cx-root` 与
+  显隐），转场照演。⚠️ **顶栏那组控件只藏不拆**（`syncNewBox()`）：用户 2026-09-13 深夜报「切换时元素 y
+  坐标会变，应该是增加实体按钮的出现与消失导致的」—— 那个「＋新建实体」高 28px 而头行文字只有 21px，
+  `display:none` 会让**下面所有元素跟着跳 7px**；现在节点态只是 `visibility:hidden`（占位照旧），
+  里面的 `button/select/input` 同时 `disabled`（隐藏元素照样吃程序化 `.click()`，不禁用能凭空建出实体）。
+  守卫：`codex-smooth-switch.cjs` ★13b / ★14d（量的是"框的位置"，与 ★13 的"元素身份"是两件事）。
+  相应地 `motion-switch.cjs` ★13/★14 是**反向**守卫：换类别/换条目后 `#cx-root` 与
   `#cx-list` 的子项一个 CSS 动画都不许有，内容区改由**行级 WAAPI 动画**（`animationName === ''`）
   承担；`.lk-swap-in`（`opacity .5 → 1`）如今只剩**减少动效**那一档在用（`prefers-reduced-motion`
   下 DESIGN.md:159 要求"只留短淡入"）；
