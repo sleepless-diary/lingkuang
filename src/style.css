@@ -590,6 +590,15 @@ body {
 /* 计数（小字，右侧）*/
 .ed-tcount { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--fg-2); }
 .ed-tyear { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--fg-2); }
+/* `_设定`（实体）那一层，与「类型」同级但压暗一点，跟节点那一侧区分开 */
+.ed-tset { margin-top: 2px; }
+.ed-tset .ed-tlabel { color: var(--fg-2); font-weight: 600; }
+.ed-tset-type { padding-left: 27px; }
+.ed-tset-type .ed-tlabel { color: var(--fg); font-weight: 500; }
+/* 空的结构体/类型文件夹：留着位置但置灰（树要跟「结构体管理」和硬盘文件夹一一对应） */
+.ed-tnode.is-empty .ed-tlabel, .ed-tnode.is-empty .ed-tcount { opacity: .45; }
+/* 空文件夹展开后的那句人话 */
+.ed-tempty { padding: 2px 8px 2px 36px; font-size: 10px; color: var(--fg-2); opacity: .7; }
 
 /* ── 编辑器属性面板（Obsidian 键值对风格；文字 --fg/--fg-2，不用绿色字体）── */
 .ed-props { display: flex; flex-direction: column; gap: 5px; }

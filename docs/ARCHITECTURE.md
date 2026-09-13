@@ -31,7 +31,7 @@
 | `src/ui/timeline.ts` | 世界沙盘时间线（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针） |
 | `src/ui/inspire.ts` | 灵感触发器（随机角色生成 + 词义联想入口） |
 | `src/ui/assoc.ts` | 词义联想**无限画布**（力导向 + 单线聚焦 + 视窗平移/缩放 + 拖节点贴边自动推视窗 + 手动摆过的节点钉住，钉住上限 `PIN_YIELD = 420`）；拖拽中只免"手里那一格"、线的另一头照常受力（＝线上的拉力）；没有世界边界（`HOME_W/HOME_H` 只是初始落点区与 SVG 作图区），框外连线靠 `.assoc__lines { overflow: visible }`；宿主高度由 `src/ui/inspire.ts` 的 `fitAssocHeight()` 让开 sticky 工具条，滚动容器用 `scrollParent()` 现找 |
-| `src/ui/editor.ts` | 编辑器（tiptap，左侧 sidebar 时间线/实体 tab，右侧文稿编辑）。属性面板**不在这个文件里**了 —— 见 `src/ui/props-panel.ts` |
+| `src/ui/editor.ts` | 编辑器（tiptap，左侧 sidebar 时间线/实体 tab，右侧文稿编辑）。属性面板**不在这个文件里**了 —— 见 `src/ui/props-panel.ts`。⭐ **左树跟硬盘上的文件夹一一对应**（2026-09-13，用户：「编辑器的树现在只能显示事件节点，其他结构体的文件夹没有在树里面」）：时间线页签 = 世界 → 时间线 → **种类** → 节点，种类列的是 **`store.data.formats` 的全部种类 ∪ 这条时间线实际用到的种类**（空的也列、`is-empty` 置灰、展开给一句「这个结构体还没有节点」）；每个世界的时间线之后还有 **`_设定` 分支**（实体；列出 `entityTypes` 的**全部类型**，空的同样置灰），类型下是实体行。⚠️ 在时间线页签点实体行必须**先 `setTab('entity')` 再 `selectEntity(id, world)`** —— 两个页签各记自己那份文档（`lastTarget`），就地换会把节点正文写进实体文件；`selectEntity` 里世界不同要先 `store.setActiveWorld`（树列的是**全部世界**的实体） |
 | `src/ui/props-panel.ts` | **公共属性面板**（节点与实体共用**同一份**「改字段」实现，编辑器和设定库都调它）：`createPropsPanel({ store, host, status?, getTarget, patchTarget })` → `{ render(node, isEntity?), hide() }`；`PropsTarget` 是两边共用的身份联合类型。内含 AE 式 scrub（`createScrubField`）与历法推进的时间控件。⚠️ 面板构建后**刻意不重渲染**（避免销毁拖拽中的 scrub 控件），所以提交要走 `patchTarget`（从 store 取最新 properties 再合并） |
 | `src/ui/ai-workbench.ts` / `roleplay.ts` / `tavern.ts` | AI 工作台 / 角色扮演 / 酒馆剧情推演 |
 | `src/ui/map.ts` | 手绘矢量地图（区域 + 标记） |

@@ -271,6 +271,32 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
     renderSidebar();
   }
 
+  /** 树里的一行"空提示"（没有内容的文件夹展开时给一句人话，而不是一片空白） */
+  function emptyRow(text: string): HTMLElement {
+    const d = document.createElement('div');
+    d.className = 'ed-tempty';
+    d.textContent = text;
+    return d;
+  }
+
+  /** 选中一个实体（「实体」页签的树 + 「时间线」页签树里的 `_设定` 分支共用这一份）。
+   *  ⚠️ 树里列的是**所有世界**的实体，所以点到别的世界那一行时先把活动世界切过去，
+   *  否则 currentWorld(store) 里找不到它（静默无反应）。 */
+  function selectEntity(id: string, world?: string): void {
+    const wName = world ?? store.activeWorld;
+    if (wName !== store.activeWorld && store.data.worldsets[wName]) store.setActiveWorld(wName);
+    const e = currentWorld(store).entities?.[id];
+    if (!e) return;
+    currentEntityId = id;
+    target = { kind: 'entity', world: store.activeWorld, entityId: id };
+    lastTarget.entity = target;
+    setDoc(e.doc ?? '');
+    propsPanel.render(e, true);
+    titleEl.textContent = e.name;
+    status.textContent = '失焦自动保存';
+    renderSidebar();
+  }
+
   function renderSidebar() {
     const ws = currentWorld(store);
     sidebar.innerHTML = '';
@@ -304,24 +330,30 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
               <span class="ed-tcount">${tl?.nodes?.length ?? 0}</span>`;
             frag.appendChild(tRec);
             if (tOpen && tl) {
-              /* 按类型文件夹（kind）分组：世界 → 时间线 → [类型文件夹] → 节点 */
-              const groups = new Map<string, any[]>();
+              /* 种类文件夹 = **结构体（formats）里定义的全部种类** ∪ **这条时间线实际用到的种类**：
+                 空的也列出来（置灰 + 计数 0），让树跟「结构体管理」和硬盘上的文件夹一一对应。
+                 用户 2026-09-13：「编辑器的树现在只能显示事件节点，其他结构体的文件夹没有在树里面」。 */
+              const used = new Map<string, any[]>();
               for (const n of tl.nodes ?? []) {
                 const k = (n as any).kind || '事件';
-                if (!groups.has(k)) groups.set(k, []);
-                groups.get(k)!.push(n);
+                if (!used.has(k)) used.set(k, []);
+                used.get(k)!.push(n);
               }
-              groups.forEach((nodes, k) => {
+              const fmts = store.data.formats ?? {};
+              const kindKeys = [...Object.keys(fmts), ...[...used.keys()].filter((k) => !fmts[k])];
+              kindKeys.forEach((k) => {
+                const nodes = used.get(k) ?? [];
                 const kOpen = expandedKinds.has(wName + '::' + tlId + '::' + k);
                 const kRec = document.createElement('div');
-                kRec.className = 'ed-tnode ed-tkind' + (kOpen ? ' is-open' : '');
+                kRec.className = 'ed-tnode ed-tkind' + (kOpen ? ' is-open' : '') + (nodes.length ? '' : ' is-empty');
                 kRec.dataset.kind = 'tkind';
                 kRec.dataset.world = wName;
                 kRec.dataset.tl = tlId;
                 kRec.dataset.path = k;
-                kRec.innerHTML = `<span class="ed-tcaret"></span><span class="ed-tlabel">${escape(k)}</span><span class="ed-tcount">${nodes.length}</span>`;
+                kRec.innerHTML = `<span class="ed-tcaret"></span><span class="ed-tlabel">${escape(fmts[k]?.name ?? k)}</span><span class="ed-tcount">${nodes.length}</span>`;
                 frag.appendChild(kRec);
                 if (kOpen) {
+                  if (!nodes.length) frag.appendChild(emptyRow('这个结构体还没有节点'));
                   nodes.forEach((n) => {
                     const nRec = document.createElement('div');
                     const isOn = n.id === currentNodeId && currentTlId === tlId;
@@ -337,6 +369,48 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
               });
             }
           });
+          /* ── `_设定`：这个世界里的**实体**（硬盘上是 `<世界>/_设定/<类型>/<名字>.md`） ──
+             用户 2026-09-13：「编辑器的树现在只能显示事件节点，其他结构体的文件夹没有在树里面」
+             ⇒ 树要跟硬盘上的文件夹一一对应：`_设定` 也当一层"结构体文件夹"列出来，
+             类型**全部列出**（哪怕一个实体都没有，空的置灰）。点实体行 = 切到「实体」页签再选中它
+             （页签各自记着自己打开的那份文档，不能就地换，否则正文会串）。 */
+          const ents = Object.values(w.entities ?? {});
+          const setKey = 'setting::' + wName;
+          const sOpen = expandedTls.has(setKey);
+          const sRec = document.createElement('div');
+          sRec.className = 'ed-tnode ed-tset' + (sOpen ? ' is-open' : '');
+          sRec.dataset.kind = 'set';
+          sRec.dataset.world = wName;
+          sRec.dataset.path = '_设定';
+          sRec.innerHTML = `<span class="ed-tcaret"></span><span class="ed-tlabel">_设定</span><span class="ed-tcount">${ents.length}</span>`;
+          frag.appendChild(sRec);
+          if (sOpen) {
+            const ets = Object.entries(w.entityTypes ?? {});
+            if (!ets.length) frag.appendChild(emptyRow('还没有实体类型（左栏「结构体管理 → 实体类型」里加）'));
+            ets.forEach(([tid, t]) => {
+              const kids = ents.filter((e) => e.typeId === tid);
+              const eOpen = expandedTls.has('entity::' + tid);
+              const eRec = document.createElement('div');
+              eRec.className = 'ed-tnode ed-ttype ed-tset-type' + (eOpen ? ' is-open' : '') + (kids.length ? '' : ' is-empty');
+              eRec.dataset.kind = 'etype';
+              eRec.dataset.world = wName;
+              eRec.dataset.path = tid;
+              eRec.innerHTML = `<span class="ed-tcaret"></span><span class="ed-tlabel">${escape(t.name)}</span><span class="ed-tcount">${kids.length}</span>`;
+              frag.appendChild(eRec);
+              if (eOpen) {
+                if (!kids.length) frag.appendChild(emptyRow('这个类型还没有实体'));
+                kids.forEach((e) => {
+                  const nRec = document.createElement('div');
+                  nRec.className = 'ed-tnode ed-tnode-item' + (e.id === currentEntityId ? ' is-on' : '');
+                  nRec.dataset.kind = 'entity';
+                  nRec.dataset.world = wName;
+                  nRec.dataset.path = e.id;
+                  nRec.innerHTML = `<span class="ed-tlabel">${escape(e.name)}</span>`;
+                  frag.appendChild(nRec);
+                });
+              }
+            });
+          }
         }
       });
       frag.querySelectorAll('.ed-tnode').forEach((el) => {
@@ -359,6 +433,22 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
             const key = w + '::' + tl + '::' + k;
             if (expandedKinds.has(key)) expandedKinds.delete(key); else expandedKinds.add(key);
             renderSidebar();
+          } else if (kind === 'set') {
+            /* `_设定` 这一层（实体） */
+            const key = 'setting::' + (el as HTMLElement).dataset.world!;
+            if (expandedTls.has(key)) expandedTls.delete(key); else expandedTls.add(key);
+            renderSidebar();
+          } else if (kind === 'etype') {
+            /* `_设定` 下的类型文件夹：展开态与「实体」页签共用（key = entity::<类型 id>） */
+            const key = 'entity::' + (el as HTMLElement).dataset.path!;
+            if (expandedTls.has(key)) expandedTls.delete(key); else expandedTls.add(key);
+            renderSidebar();
+          } else if (kind === 'entity') {
+            /* 在「时间线」页签的树里点实体：先切到「实体」页签再选中 —— 两个页签各记着自己
+               打开的那份文档（setDoc/lastTarget 那套），就地换会把节点正文写进实体文件。 */
+            const id = (el as HTMLElement).dataset.path!;
+            setTab('entity');
+            selectEntity(id, (el as HTMLElement).dataset.world);
           } else if (kind === 'node') {
             const w = (el as HTMLElement).dataset.world!;
             const tl = (el as HTMLElement).dataset.tl!;
@@ -457,15 +547,7 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
           if (expandedTls.has(key)) expandedTls.delete(key); else expandedTls.add(key);
           renderSidebar();
         } else if (kind === 'entity') {
-          currentEntityId = path;
-          target = { kind: 'entity', world: store.activeWorld, entityId: path };
-          lastTarget.entity = target;
-          const e = currentWorld(store).entities?.[path];
-          setDoc(e?.doc ?? '');
-          propsPanel.render(e ?? undefined, true);
-          titleEl.textContent = e?.name ?? '';
-          status.textContent = '失焦自动保存';
-          renderSidebar();
+          selectEntity(path, (el as HTMLElement).dataset.world);
         }
       });
     });
