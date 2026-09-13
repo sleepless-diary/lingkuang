@@ -23,7 +23,7 @@
 - `src/ui/shell.ts`：壳 UI（世界栏 + 工具栏 + 沙盘 + 工具宿主）
 - `src/ui/timeline.ts`：**世界沙盘时间线**（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针）
 - `src/ui/inspire.ts` / `assoc.ts` / `codex.ts` / `map.ts` / `ai-workbench.ts` / `roleplay.ts` / `tavern.ts` / `settings.ts` / `detail.ts` / `node-form.ts`
-  —— 其中 **`codex.ts` = 设定库工作台**（左栏「列表 / 文件夹树」两形态，实体与时间线节点同框；设置里选默认形态）。
+  —— 其中 **`codex.ts` = 设定库工作台**（左栏一个搜索框 + 一排筛选 pills「全部 / 各实体类型 / 时间线节点」+ 一个视图按钮「列表 ⟷ 文件夹」，点中哪一行就编哪一类；设置里选默认形态）。
   原 `src/ui/editor.ts` 已于 2026-09-13 并入工作台并删除（提示条搬去 `src/ui/vault-notice.ts`）。
 - `src/ui/eyedrop.ts` / `image-ext.ts` / `tag-ext.ts`：吸管 / 编辑器图片 / 标签扩展
 - `data/worldbuilding.js`：种子世界观；`data/character_lib.json`：角色词库（萌百来源 CC BY-NC-SA，勿商用）

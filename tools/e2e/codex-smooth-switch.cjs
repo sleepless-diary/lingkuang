@@ -59,7 +59,7 @@ async function main() {
   /** 点左列某一行的实体，并在**同一个同步块**里把动画状态读出来（隐藏窗口只读得到参数，
    *  见 README 铁律 6：出帧与否会让 currentTime 有/无，参数才是确定的） */
   const clickEntity = (name) => ev(`(() => {
-    const b = [...document.querySelectorAll('[data-cx-id]')].find((x) => x.children[0]?.textContent === ${JSON.stringify(name)});
+    const b = [...document.querySelectorAll('#cx-list [data-cx-id]')].find((x) => x.querySelector('.ed-tlabel')?.textContent === ${JSON.stringify(name)});
     if (!b) return { err: 'no row ' + ${JSON.stringify(name)} };
     b.click();
     const anims = ${ANIMS};
@@ -91,7 +91,7 @@ async function main() {
   const pre = await ev(`(() => {
     const root = document.querySelector('#cx-root');
     return {
-      rows: [...document.querySelectorAll('[data-cx-id]')].map((b) => b.children[0]?.textContent),
+      rows: [...document.querySelectorAll('#cx-list [data-cx-id]')].map((b) => b.querySelector('.ed-tlabel')?.textContent),
       fields: [...document.querySelectorAll('#cx-fields > div')].map((r) => r.firstElementChild?.textContent),
       name: document.querySelector('#cx-name')?.value,
       scrollable: !!root && root.scrollHeight > root.clientHeight + 40,
@@ -132,10 +132,10 @@ async function main() {
   const s1 = await ev(`document.querySelector('#cx-root').scrollTop`);
   check('★6 换实体后滚动位置没回到顶部（旧实现换了滚动容器 ⇒ 恒为 0）', s0 > 100 && s1 >= s0 - 8, { 点前: s0, 点后: s1, anim: r2 });
 
-  /* ── ④ 左列高亮跟过去 ── */
+  /* ── ④ 左列高亮跟过去（新 UI 用 `.is-on` 类高亮，不再是行内背景色） ── */
   const hl = await ev(`(() => {
-    const on = [...document.querySelectorAll('[data-cx-id]')].filter((b) => (b.getAttribute('style') || '').includes('var(--surface-2)'));
-    return { on: on.map((b) => b.children[0]?.textContent), n: on.length };
+    const on = [...document.querySelectorAll('#cx-list [data-cx-id]')].filter((b) => b.classList.contains('is-on'));
+    return { on: on.map((b) => b.querySelector('.ed-tlabel')?.textContent ?? ''), n: on.length };
   })()`);
   check('★7 左列选中高亮只落在新条目上', hl.n === 1 && hl.on[0] === '霜纹剑', hl);
 
@@ -180,10 +180,13 @@ async function main() {
   check('★12 换过去之后正文框显示的是新条目自己的正文',
     String(after ?? '').includes('雪原独行') && !String(after ?? '').includes('霜纹剑补记'), after);
 
-  /* ── ⑧ 换页签（结构真的变了）仍然整块重建 + 错峰：别把"就地换内容"扩到这里 ── */
+  /* ── ⑧ 换**类别**（实体 → 节点，结构真的变了）仍然整块重建 + 错峰：别把"就地换内容"扩到这里 ──
+     左栏重做后没有页签了：点另一个类别的那一行就是这件事（mode 从 entity 变 node ⇒ 骨架换形状）。 */
   await mark();
   const tab = await ev(`(() => {
-    document.querySelector('#cx-tab-node').click();
+    const row = document.querySelector('#cx-list .ed-tnode-item[data-act="node"]');
+    if (!row) return { missing: '#cx-list [data-act=node]' };
+    row.click();
     const anims = ${ANIMS};
     const root = document.querySelector('#cx-root');
     return {
@@ -193,26 +196,16 @@ async function main() {
     };
   })()`);
   await sleep(500);
-  check('★13 换页签仍然是整块重建 + 错峰（结构变了，不该就地换）',
+  check('★13 换类别（实体 → 时间线节点）仍然是整块重建 + 错峰（结构变了，不该就地换）',
     tab.sameRoot === false && tab.stagger === true && tab.wake > 0, tab);
 
-  /* ── ⑨ 节点→节点也要就地换 ── */
-  const expand = async () => {
-    await ev(`(() => {
-      const click = (sel) => { const el = document.querySelector(sel); if (el) el.click(); };
-      click('[data-act="world"]'); return true;
-    })()`);
-    await sleep(150);
-    await ev(`(() => { const el = document.querySelector('[data-act="tl"]'); if (el) el.click(); return true; })()`);
-    await sleep(150);
-    await ev(`(() => { const el = document.querySelector('[data-act="tkind"]'); if (el) el.click(); return true; })()`);
-    await sleep(250);
-  };
+  /* ── ⑨ 节点→节点也要就地换 ──
+     左栏重做后列表形态**直接摊平**了节点行（不再需要先展开 世界→时间线→种类），
+     所以这里不用再点开树，`[data-act="node"]` 就在列表里。 */
   const pickNode = (title) => ev(`(() => {
     const el = [...document.querySelectorAll('[data-act="node"]')].find((r) => r.querySelector('.ed-tlabel')?.textContent === ${JSON.stringify(title)});
     if (!el) return false; el.click(); return true;
   })()`);
-  await expand();
   const picked1 = await pickNode('王国的建立');
   await sleep(400);
   const node1 = await ev(`(() => ({ title: ${ROW('标题')}?.value ?? null, keys: [...document.querySelectorAll('#cx-props .ed-props > div')].map((r) => r.firstElementChild?.textContent).filter(Boolean) }))()`);

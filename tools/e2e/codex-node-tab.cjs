@@ -1,5 +1,6 @@
-/* 设定库「时间线节点」页签（合并方案 A 第 3 步）：
-   左列树 + 搜索、中栏用**公共属性面板**（与编辑器同一份实现）、右栏正文编辑器，
+/* 工作台里编辑**时间线节点**（合并方案 A 第 3 步；文件名是历史遗留 —— 左栏那两个页签已在
+   2026-09-13 的左栏重做里撤掉，现在是「筛选 pills + 一个视图按钮」）：
+   左列筛选/文件夹树 + 搜索、中栏用**公共属性面板**（与编辑器同一份实现）、右栏正文编辑器，
    并且编辑结果要落到节点的 vault `.md`（`#描述：` / `#正文：` 两个 tag）。
    用法：先 reset-entity-vault.cjs + seed-node.cjs，起应用，再跑本脚本。 */
 const fs = require('fs');
@@ -43,27 +44,38 @@ async function main() {
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
   await sleep(1200);
 
-  /* ① 左列有两个页签 */
-  const tabs = await ev(`[...document.querySelectorAll('#cx-tab-entity,#cx-tab-node')].map((b)=>b.textContent.trim())`);
-  check('1 左列有「实体」「时间线节点」两个页签（带计数）', Array.isArray(tabs) && tabs.length === 2 && tabs[0].includes('实体') && tabs[1].includes('时间线节点'), tabs);
+  /* ① 左列只有「筛什么」（chips）与「怎么摆」（一个视图按钮）—— 两个页签已在 2026-09-13 的
+        左栏重做里撤掉（用户报「两个按钮 + 两个开关有点混乱」）。这条断言守着"别再长出第二套开关"。 */
+  const chips = await ev(`[...document.querySelectorAll('#cx-chips [data-cx-chip]')].map((b)=>b.textContent.trim())`);
+  const tabCount = await ev(`document.querySelectorAll('#cx-tab-entity,#cx-tab-node').length`);
+  check('1 左列是「全部 / 各类型 / 时间线节点」筛选 pills（页签已撤掉、没有两套开关）',
+    Array.isArray(chips) && chips.some((c) => c.includes('全部')) && chips.some((c) => c.includes('时间线节点')) && tabCount === 0,
+    { chips, tabCount });
 
-  /* ② 切到节点页签 → 世界→时间线→种类→节点 四级树 */
-  await click('#cx-tab-node');
-  await sleep(600);
+  /* ② 筛「时间线节点」→ 列表摊平（一列条目，**不分世界/时间线层级**） */
+  await ev(`document.querySelector('#cx-chips [data-cx-chip="@node"]').click(); true`);
+  await sleep(400);
+  const flat = await ev(`({ rows: document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]').length,
+                            worlds: document.querySelectorAll('#cx-list .ed-tworld').length })`);
+  check('2 筛到「时间线节点」后是一列平铺条目（没有世界层）', flat.rows > 0 && flat.worlds === 0, flat);
+
+  /* ③ 切成「文件夹」形态 → 世界→时间线→种类→节点 四级树 */
+  await click('#cx-view');
+  await sleep(400);
   const worldOk = await waitFor(() => ev(`!!document.querySelector('#cx-list .ed-tworld')`));
-  check('2 节点页签渲染了世界层（.ed-tworld）', worldOk, await ev(LIST_TEXTS));
+  check('3 文件夹形态渲染了世界层（.ed-tworld）', worldOk, await ev(LIST_TEXTS));
   await click('#cx-list .ed-tworld');
   await sleep(400);
   const tlOk = await waitFor(() => ev(`!!document.querySelector('#cx-list .ed-ttl')`));
-  check('3 展开世界后有「时间线」层', tlOk, await ev(LIST_TEXTS));
+  check('4 展开世界后有「时间线」层', tlOk, await ev(LIST_TEXTS));
   await click('#cx-list .ed-ttl');
   await sleep(400);
   const kindOk = await waitFor(() => ev(`!!document.querySelector('#cx-list .ed-tkind')`));
-  check('4 展开时间线后有「种类」层', kindOk, await ev(LIST_TEXTS));
+  check('5 展开时间线后有「种类」层', kindOk, await ev(LIST_TEXTS));
   await click('#cx-list .ed-tkind');
   await sleep(400);
   const nodeOk = await waitFor(() => ev(`!!document.querySelector('#cx-list .ed-tnode-item')`));
-  check('5 展开种类后有节点条目', nodeOk, await ev(LIST_TEXTS));
+  check('5b 展开种类后有节点条目', nodeOk, await ev(LIST_TEXTS));
 
   /* ③ 选中节点 → 中栏是**公共属性面板**、右栏是正文编辑器 */
   await clickText('#cx-list .ed-tnode-item', '王国的建立');
@@ -117,15 +129,19 @@ async function main() {
   check('12 搜索「王国」命中该节点（树摊平成列表）', Array.isArray(hit) && hit.some((t) => t.includes('王国的建立')) && !hit.some((t) => t.includes('测试世界观')), hit);
   await ev(`(() => { const s=document.querySelector('#cx-search'); s.value='不存在的标题zzz'; s.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`);
   await sleep(500);
-  check('13 搜不到时给出空提示', String(await ev(`document.querySelector('#cx-list')?.textContent ?? ''`)).includes('没有匹配的节点'), await ev(`document.querySelector('#cx-list')?.textContent`));
+  check('13 搜不到时给出空提示', String(await ev(`document.querySelector('#cx-list')?.textContent ?? ''`)).includes('没有匹配的条目'), await ev(`document.querySelector('#cx-list')?.textContent`));
 
-  /* ⑦ 切回实体页签：正文框要换成实体的正文，不能留着节点的（跨页签不串文档） */
+  /* ⑦ 切回看设定（列表形态 + 「全部」）→ 正文框要换成实体的正文，不能留着节点的（跨类别不串文档） */
   await ev(`(() => { const s=document.querySelector('#cx-search'); s.value=''; s.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`);
-  await click('#cx-tab-entity');
+  await click('#cx-view');   /* 回到列表形态 */
+  await sleep(400);
+  await ev(`document.querySelector('#cx-chips [data-cx-chip="all"]').click(); true`);
+  await sleep(300);
+  await ev(`document.querySelector('#cx-list .ed-tnode-item[data-act="entity"]').click(); true`);
   await sleep(900);
   const entView = await ev(`!!document.querySelector('#cx-name')`);
   const docE = await ev(DOC);
-  check('★14 切回实体页签后正文框显示的是实体的正文（没有留给节点的正文）',
+  check('★14 切回设定条目后正文框显示的是实体的正文（没有留给节点的正文）',
     entView && String(docE ?? '').includes('实体自己的正文')
     && !String(docE ?? '').includes('灰烬') && !String(docE ?? '').includes('页签测试补写'),
     { ent: entView, doc: String(docE ?? '').slice(0, 40) });

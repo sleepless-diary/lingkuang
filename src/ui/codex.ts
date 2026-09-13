@@ -49,7 +49,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   host.style.overflow = 'hidden';
   let mode: 'entity' | 'node' = 'entity';
   let query = '';               /* 搜索词：实体按名字过滤，节点按标题过滤（非空时树摊平成列表） */
-  let filterType = '';          /* 实体页签的类型筛选，'' = 全部（只在「列表」视图里有 chips，树视图忽略它） */
+  /* 左栏「列表」形态的筛选（chips）：**跨类别**——'all' 全都要、'@node' 只要时间线节点、其余是实体类型 id。
+     原来这里还有「实体 / 时间线节点」两个页签，与「列表 / 文件夹树」两个开关叠在一起 ⇒ 四个按钮说两件事、
+     用户 2026-09-13 报「功能有点混乱」。现在只剩两个控件：**筛什么**（chips）与**怎么摆**（`#cx-view`），
+     「在编辑哪一类」由用户点中的那一行决定（不再是一个全局页签）。 */
+  const NODE_CHIP = '@node';
+  let chip = 'all';
   /** 左栏形态（用户 2026-09-13：「设定库和编辑器是不是可以做成同一工具的两种不同形式啊」）：
    *  `'list'` = 两个页签的扁平列表 + 类型筛选（原来的设定库）；
    *  `'tree'` = 一棵**文件夹树**，时间线节点与设定条目同框，跟硬盘目录一一对应：
@@ -111,12 +116,15 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   const active = (): Entity | undefined => world().entities?.[activeId];
   const match = (s: string | undefined): boolean => !query || String(s ?? '').toLowerCase().includes(query.toLowerCase());
 
-  /* 类型筛选（chips）只在「列表」视图里存在 —— 树视图里那些 chips 是隐藏的，
-     所以树视图下**必须忽略 filterType**，否则 normalizeEntitySelection 会把用户点中的
-     跨类型条目当成"被筛掉了"而挪走选择。 */
-  const filtered = (): Entity[] => entities()
-    .filter((e) => (listView === 'tree' || !filterType || e.typeId === filterType) && match(e.name))
+  /* 实体：按名字排序的一份（列表与归一都用它）。筛选（chip）不参与排序，见 filteredEntities。 */
+  const sortedEntities = (): Entity[] => entities()
+    .slice()
     .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh'));
+
+  /* 左栏列表里要显示的实体。**树形态下忽略 chip** —— 那棵树的形状就是硬盘目录，
+     与 chips 无关；否则 normalizeEntitySelection 会把用户点中的跨类型条目当成"被筛掉了"而挪走选择。 */
+  const filteredEntities = (): Entity[] => (chip === NODE_CHIP ? [] : sortedEntities()
+    .filter((e) => (listView === 'tree' || chip === 'all' || e.typeId === chip) && match(e.name)));
 
   /* ── 节点页签的数据源：世界 → 时间线 → 种类分组（＝ vault 的目录形状）──────────
      刻意遍历**所有世界**（不只 activeWorld）：左列是一棵树，树就该看得见全部；
@@ -139,24 +147,25 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     }
     return out;
   }
-  const nodeCount = (): number => tlGroups().reduce((n, g) => n + [...g.kinds.values()].reduce((m, l) => m + l.length, 0), 0);
   const activeNode = (): TimelineNode | undefined => {
     const t = nodeTarget;
     if (!t) return undefined;
     return store.data.worldsets[t.world]?.timelines[t.tlId]?.nodes.find((x) => x.id === t.nodeId);
   };
-  /** 搜索命中的节点（摊平）：带上它属于哪个世界/时间线/种类，列表里要显示 */
-  function searchNodes(): { world: string; tlId: string; tlName: string; kind: string; node: TimelineNode }[] {
-    const out: { world: string; tlId: string; tlName: string; kind: string; node: TimelineNode }[] = [];
+  /** 摊平全部世界的节点（带上它属于哪个世界/时间线/种类）—— 列表、搜索、树都用这一份。
+   *  列表形态与搜索都**不看世界/时间线**：一个搜索框管全部条目（用户 2026-09-13 要的「便利性」）。 */
+  interface FlatNode { world: string; tlId: string; tlName: string; kind: string; node: TimelineNode }
+  function flatNodes(): FlatNode[] {
+    const out: FlatNode[] = [];
     for (const g of tlGroups()) {
       for (const [kind, list] of g.kinds) {
-        for (const node of list) {
-          if (match(node.title)) out.push({ world: g.world, tlId: g.tlId, tlName: g.tlName, kind, node });
-        }
+        for (const node of list) out.push({ world: g.world, tlId: g.tlId, tlName: g.tlName, kind, node });
       }
     }
     return out;
   }
+  /** 搜索命中的节点 */
+  const searchNodes = (): FlatNode[] => flatNodes().filter((h) => match(h.node.title));
 
   /* ── 树的 `_设定` 分支：世界 → 类型 → 实体（＝ vault 的 `_设定/<类型>/<名字>.md` 形状）──────
      与 tlGroups 一样刻意遍历**全部世界**。类型清单取 `entityTypes` 的**全部**（含一个实体都没有的：
@@ -467,11 +476,13 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     render();
   }
 
-  /** 实体选择归一（当前这条被筛掉/被删掉 → 落到列表第一条）。render() 与 swapBody() 共用同一规则，
-   *  两处各写一遍就会漂移（比如删除后回退到哪一条）。 */
+  /** 实体选择归一（当前这条被删掉/换世界了 → 落到第一条）。render() 与 swapBody() 共用同一规则，
+   *  两处各写一遍就会漂移（比如删除后回退到哪一条）。
+   *  ⚠️ 对着**全部实体**归一，不是对着筛过的那批 —— 用户把 chips 切到「时间线节点」只是换"看什么"，
+   *     不该把正在编辑的实体清掉（否则中栏会跳成"左边选一个实体看图"）。 */
   function normalizeEntitySelection(): void {
     if (mode !== 'entity') return;
-    if (!active() || !filtered().some((e) => e.id === activeId)) activeId = filtered()[0]?.id ?? '';
+    if (!active()) activeId = sortedEntities()[0]?.id ?? '';
   }
 
   /* ── 就地换内容（用户 2026-09-13：「设定库中点击实体会刷新界面，我希望变成平滑切换」）────────
@@ -530,20 +541,18 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     return true;
   }
 
-  const tabBtn = (id: string, label: string, on: boolean): string =>
-    `<button id="${id}" class="lk-cx-tab" style="background:${on ? 'var(--accent)' : 'var(--surface-2)'};color:${on ? 'var(--accent-on)' : 'var(--fg)'};border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius-pill);padding:3px 12px;font-size:var(--text-xs);cursor:pointer;">${escapeHtml(label)}</button>`;
-
-  /* ── 左栏形态开关：列表 ⟷ 文件夹树 ──────────────────────────────────── */
+  /* ── 左栏「怎么摆」：一个按钮，列表 ⟷ 文件夹（点一下就换，顺手记成下次的默认形态）────────
+     用户 2026-09-13：「时间线节点和实体这两个按钮，列表和文件夹树的功能有点混乱」
+     ⇒ 页签撤掉、两个形态按钮并成**一个**：按钮上写当前形态（「视图 列表」），title 说点下去会变成什么。
+     一个按钮不会跟"筛选"那排 pills 打架（两个并排的按钮才会让人以为是第二种筛选）。 */
   const VIEW_TIP: Record<'list' | 'tree', string> = {
-    list: '列表：按类型筛选、按名字搜（原来的设定库）',
-    tree: '文件夹树：一棵树同时装下时间线节点与设定条目，跟硬盘目录一一对应',
+    list: '当前是列表；点一下换成文件夹（一棵树，跟硬盘目录一一对应）',
+    tree: '当前是文件夹；点一下换成列表（按类别分组的一列）',
   };
-  const viewBtnStyle = (v: 'list' | 'tree'): string =>
-    `flex:1;background:${listView === v ? 'var(--accent)' : 'var(--surface-2)'};color:${listView === v ? 'var(--accent-on)' : 'var(--fg-2)'};border:1px solid ${listView === v ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius-pill);padding:3px 8px;font-size:var(--text-xs);cursor:pointer;`;
-  const viewBtn = (v: 'list' | 'tree', label: string): string =>
-    `<button data-cx-view="${v}" title="${VIEW_TIP[v]}" style="${viewBtnStyle(v)}">${label}</button>`;
-  const searchPlaceholder = (): string =>
-    listView === 'tree' ? '搜索条目…' : (mode === 'entity' ? '搜索实体…' : '搜索节点…');
+  const viewLabel = (): string => (listView === 'tree' ? '视图 文件夹' : '视图 列表');
+  const viewBtnHtml = (): string =>
+    `<button id="cx-view" title="${escapeHtml(VIEW_TIP[listView])}" style="flex-shrink:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-pill);color:var(--fg-2);padding:3px 8px;font-size:10px;white-space:nowrap;cursor:pointer;">${viewLabel()}</button>`;
+  const searchPlaceholder = (): string => '搜索设定与事件…';
 
   /** 正文那一行的标题 + 两个小按钮（H1 / 插入图片）——
    *  这两个动作原来是「编辑器」工具专有的（`src/ui/editor.ts` 的 `#ed-h1` / `#ed-img`），
@@ -636,18 +645,15 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
           <span style="font-size:var(--text-xs);color:var(--fg-2);">「${escapeHtml(store.activeWorld || '（未选世界）')}」的条目 · 字段由模板决定（在左栏「结构体管理」里改模板）</span>
           <span style="margin-left:auto;display:flex;gap:6px;align-items:center;">${newCtl}</span>
         </div>
-        <div style="display:flex;gap:4px;align-items:center;">
-          ${tabBtn('cx-tab-entity', `实体 ${entities().length}`, isEntity)}
-          ${tabBtn('cx-tab-node', `时间线节点 ${nodeCount()}`, !isEntity)}
-          <span style="font-size:var(--text-xs);color:var(--fg-2);margin-left:6px;">${isEntity ? '写设定条目' : '写时间线上的事件节点'}</span>
-        </div>
         <div id="cx-hint" style="display:none;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:rgba(217,101,92,.12);font-size:var(--text-xs);color:var(--fg);line-height:1.5;"></div>
         <div style="display:flex;gap:12px;align-items:flex-start;">
           <div style="width:250px;flex-shrink:0;display:flex;flex-direction:column;gap:6px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;">
-            <div style="display:flex;gap:4px;">${viewBtn('list', '列表')}${viewBtn('tree', '文件夹树')}</div>
-            <input id="cx-search" placeholder="${escapeHtml(searchPlaceholder())}" style="${INP}" value="${escapeHtml(query)}"/>
+            <div style="display:flex;gap:4px;align-items:center;">
+              <input id="cx-search" placeholder="${escapeHtml(searchPlaceholder())}" style="${INP}" value="${escapeHtml(query)}"/>
+              ${viewBtnHtml()}
+            </div>
             <div id="cx-chips" style="display:flex;gap:4px;flex-wrap:wrap;"></div>
-            <div id="cx-list" style="display:flex;flex-direction:column;gap:3px;"></div>
+            <div id="cx-list" style="display:flex;flex-direction:column;gap:1px;"></div>
           </div>
           <div id="cx-body" style="flex:1;min-width:0;border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;">
             ${isEntity ? mainEnt() : mainNode()}
@@ -669,24 +675,17 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
 
     renderList();
 
-    /* 左栏形态开关（列表 ⟷ 文件夹树）：**不整块重建** —— 只换左列 + 开关样式 + 搜索框占位，
+    /* 左栏「怎么摆」：**不整块重建** —— 只换左列 + 按钮文案 + 搜索框占位，
        骨架、滚动位置、tiptap 实例都留着（跟 swapBody 的理由一样）。顺手记成下次的默认形态。 */
-    host.querySelectorAll<HTMLElement>('[data-cx-view]').forEach((el) => {
-      el.addEventListener('click', () => {
-        const v: 'list' | 'tree' = el.dataset.cxView === 'tree' ? 'tree' : 'list';
-        if (v === listView) return;
-        listView = v;
-        const st = loadSettings();
-        st.workbenchView = v;
-        saveSettings(st);
-        host.querySelectorAll<HTMLElement>('[data-cx-view]').forEach((b) => {
-          b.setAttribute('style', viewBtnStyle(b.dataset.cxView === 'tree' ? 'tree' : 'list'));
-        });
-        const si = host.querySelector<HTMLInputElement>('#cx-search');
-        if (si) si.placeholder = searchPlaceholder();
-        renderList();
-        say(v === 'tree' ? '已切到文件夹树（下次打开也是这个形态）' : '已切回列表');
-      });
+    host.querySelector('#cx-view')?.addEventListener('click', () => {
+      listView = listView === 'tree' ? 'list' : 'tree';
+      const st = loadSettings();
+      st.workbenchView = listView;
+      saveSettings(st);
+      const btn = host.querySelector<HTMLElement>('#cx-view');
+      if (btn) { btn.textContent = viewLabel(); btn.title = VIEW_TIP[listView]; }
+      renderList();
+      say(listView === 'tree' ? '已切到文件夹（下次打开也是这个形态）' : '已切回列表');
     });
 
     /* 右栏那条竖线（演变）。只在实体页签有 —— 它按「世界的事件节点」画格子；
@@ -716,7 +715,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
 
     /* 切换才播入场（见 pendingEnter 的说明）。用**一次性错峰**而不是整块淡入 ——
        整块淡入会让整个面板"洗白一下"，还盖掉元素自己的错峰。两级：
-       ① 顶层块：标题行 → 页签行 → 三栏主体 → 提示行；
+       ① 顶层块：标题行 → 三栏主体 → 底部提示行；
        ② 左列条目：等主体那块到位（200ms）之后逐条浮现。
        store 订阅触发的重建仍然不播，避免改个字段就闪一下。 */
     if (pendingEnter) {
@@ -726,8 +725,6 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     }
 
     /* ── 事件 ── */
-    host.querySelector('#cx-tab-entity')?.addEventListener('click', () => switchTarget(() => { mode = 'entity'; query = ''; }));
-    host.querySelector('#cx-tab-node')?.addEventListener('click', () => switchTarget(() => { mode = 'node'; query = ''; }));
     /* 搜索：只重画左列（**不重建整块**）—— 否则每敲一个字都会被重建的输入框丢焦点 */
     host.querySelector('#cx-search')?.addEventListener('input', (ev) => {
       query = (ev.target as HTMLInputElement).value;
@@ -855,132 +852,80 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   }
 
   /** 两个页签上的计数在**骨架**里（不在 renderList 里）—— 单独刷，别为它重建整块。 */
-  function updateTabCounts(): void {
-    const b1 = host.querySelector('#cx-tab-entity');
-    const b2 = host.querySelector('#cx-tab-node');
-    if (b1) b1.textContent = `实体 ${entities().length}`;
-    if (b2) b2.textContent = `时间线节点 ${nodeCount()}`;
+  /** 左栏列表的筛选 pills（**跨类别**：全部 / 各实体类型 / 时间线节点）。
+   *  计数按**当前搜索词**算 —— 搜索时一眼看出命中落在哪一类；点一下就筛。 */
+  function renderChips(el: HTMLElement): void {
+    const ents = sortedEntities().filter((e) => match(e.name));
+    const nodes = flatNodes().filter((h) => match(h.node.title));
+    const items: { id: string; label: string }[] = [{ id: 'all', label: `全部 ${ents.length + nodes.length}` }]
+      .concat(Object.keys(types()).map((k) => ({ id: k, label: `${typeName(k)} ${ents.filter((e) => e.typeId === k).length}` })))
+      .concat([{ id: NODE_CHIP, label: `时间线节点 ${nodes.length}` }]);
+    el.innerHTML = items.map((c) => {
+      const on = chip === c.id;
+      return `<button data-cx-chip="${escapeHtml(c.id)}" style="background:${on ? 'var(--accent)' : 'var(--surface-2)'};color:${on ? 'var(--accent-on)' : 'var(--fg)'};border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius-pill);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;">${escapeHtml(c.label)}</button>`;
+    }).join('');
+    el.querySelectorAll<HTMLElement>('[data-cx-chip]').forEach((b) => {
+      b.addEventListener('click', () => { chip = b.dataset.cxChip ?? 'all'; renderList(); });
+    });
   }
 
-  /** 只重画左列（chips + 列表/树）。搜索框在它外面，所以打字不会被重建、不丢焦点。 */
+  /** 只重画左列（chips + 列表/树）。搜索框在它外面，所以打字不会被重建、不丢焦点。
+   *  **列表 = 一列平铺的条目**（按类别分组：设定 / 时间线节点），点谁就编辑谁；
+   *  **文件夹 = 那棵树**（世界 → 时间线 → 种类 → 节点 ／ 世界 → `_设定` → 类型 → 实体）。
+   *  ⚠️ 列表**不再**按世界/时间线分层 —— 用户 2026-09-13 报「列表和文件夹树的功能有点混乱」，
+   *     根因之一就是"列表"在两个页签下的行为不一致：实体那边是平铺一列，节点那边画出来的却是棵树
+   *     （行长相、点击行为都跟文件夹形态一模一样，只有左栏那一列不同）。现在两种形态各自只有一种长相。 */
   function renderList(): void {
     const chipsEl = host.querySelector('#cx-chips') as HTMLElement | null;
     const listEl = host.querySelector('#cx-list') as HTMLElement | null;
     if (!chipsEl || !listEl) return;
     if (listView === 'tree') { renderTreeList(chipsEl, listEl); return; }
 
-    if (mode === 'entity') {
-      const kinds = Object.keys(types());
-      chipsEl.innerHTML = [{ id: '', label: `全部 ${entities().length}` }]
-        .concat(kinds.map((k) => ({ id: k, label: `${typeName(k)} ${entities().filter((e) => e.typeId === k).length}` })))
-        .map((c) => `<button data-cx-filter="${escapeHtml(c.id)}" style="background:${filterType === c.id ? 'var(--accent)' : 'var(--surface-2)'};color:${filterType === c.id ? 'var(--accent-on)' : 'var(--fg)'};border:1px solid ${filterType === c.id ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius-pill);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;">${escapeHtml(c.label)}</button>`)
-        .join('');
-      const list = filtered();
-      listEl.innerHTML = list.length
-        ? list.map((e) => `<button data-cx-id="${escapeHtml(e.id)}" style="display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:${e.id === activeId ? 'var(--surface-2)' : 'transparent'};border:1px solid ${e.id === activeId ? 'var(--border)' : 'transparent'};border-radius:var(--radius-sm);color:var(--fg);padding:5px 8px;font-size:var(--text-sm);cursor:pointer;">
-            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(e.name || '(未命名)')}</span>
-            <span style="font-size:10px;color:var(--fg-2);">${escapeHtml(typeName(e.typeId))}</span>
-          </button>`).join('')
-        : `<div style="font-size:var(--text-xs);color:var(--fg-2);padding:4px;">${query ? '没有匹配的实体。' : '还没有实体。右上角选类型后点「＋新建实体」。'}</div>`;
-      chipsEl.querySelectorAll<HTMLElement>('[data-cx-filter]').forEach((el) => {
-        el.addEventListener('click', () => { filterType = el.dataset.cxFilter ?? ''; renderList(); });
-      });
-      listEl.querySelectorAll<HTMLElement>('[data-cx-id]').forEach((el) => {
-        el.addEventListener('click', () => { switchTarget(() => { activeId = el.dataset.cxId ?? ''; }); });
-      });
-      return;
-    }
-
-    /* ── 节点页签 ──────────────────────────────────────────────────
-       搜索非空 → 摊平成一条条命中（带上它属于哪个世界/时间线/种类）；
-       否则 → 世界 → 时间线 → 种类 → 节点 四级树（复用 style.css 的 .ed-* 样式）。 */
-    chipsEl.innerHTML = '';
+    renderChips(chipsEl);
+    const ents = filteredEntities();
+    const nodes = chip === 'all' || chip === NODE_CHIP ? flatNodes().filter((h) => match(h.node.title)) : [];
     const frag = document.createElement('div');
     frag.className = 'ed-tree';
-    const row = (cls: string, html: string, ds: Record<string, string>): HTMLElement => {
-      const d = document.createElement('div');
-      d.className = 'ed-tnode ' + cls;
-      d.innerHTML = html;
-      for (const [k, v] of Object.entries(ds)) d.dataset[k] = v;
-      return d;
-    };
-    if (query) {
-      const hits = searchNodes();
-      if (!hits.length) {
-        listEl.innerHTML = '<div style="font-size:var(--text-xs);color:var(--fg-2);padding:4px;">没有匹配的节点。</div>';
-        return;
-      }
-      hits.forEach((h) => {
-        const on = !!nodeTarget && nodeTarget.world === h.world && nodeTarget.tlId === h.tlId && nodeTarget.nodeId === h.node.id;
-        frag.appendChild(row('ed-tnode-item' + (on ? ' is-on' : ''),
-          `<span class="ed-tlabel">${escapeHtml(h.node.title)}</span><span class="ed-tcount">${escapeHtml(h.kind)}</span>`,
-          { act: 'node', nw: h.world, ntl: h.tlId, nid: h.node.id }));
-      });
-    } else {
-      const groups = tlGroups();
-      if (!groups.length) {
-        listEl.innerHTML = '<div style="font-size:var(--text-xs);color:var(--fg-2);padding:4px;">还没有时间线。</div>';
-        return;
-      }
-      for (const g of groups) {
-        const wOpen = expandedWorlds.has(g.world);
-        frag.appendChild(row('ed-tworld' + (wOpen ? ' is-open' : ''),
-          `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(g.world)}</span>`,
-          { act: 'world', nw: g.world }));
-        if (!wOpen) continue;
-        const tlKey = g.world + '::' + g.tlId;
-        const tOpen = expandedTls.has(tlKey);
-        const total = [...g.kinds.values()].reduce((n, l) => n + l.length, 0);
-        frag.appendChild(row('ed-ttl' + (tOpen ? ' is-open' : ''),
-          `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(g.tlName)}</span><span class="ed-tcount">${total}</span>`,
-          { act: 'tl', nw: g.world, ntl: g.tlId }));
-        if (!tOpen) continue;
-        for (const [kind, nodes] of g.kinds) {
-          const kKey = tlKey + '::' + kind;
-          const kOpen = expandedKinds.has(kKey);
-          frag.appendChild(row('ed-tkind' + (kOpen ? ' is-open' : ''),
-            `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(kind)}</span><span class="ed-tcount">${nodes.length}</span>`,
-            { act: 'tkind', nw: g.world, ntl: g.tlId, nk: kind }));
-          if (!kOpen) continue;
-          for (const n of nodes) {
-            const on = !!nodeTarget && nodeTarget.world === g.world && nodeTarget.tlId === g.tlId && nodeTarget.nodeId === n.id;
-            frag.appendChild(row('ed-tnode-item' + (on ? ' is-on' : ''),
-              `<span class="ed-tlabel">${escapeHtml(n.title)}</span>`,
-              { act: 'node', nw: g.world, ntl: g.tlId, nid: n.id }));
-          }
-        }
-      }
+    /* 两个类别一起显示时才要分组小标题；筛到某一类时 chips 已经写着你在看哪一类 */
+    const multi = chip === 'all';
+    if (multi && ents.length) {
+      frag.appendChild(treeRow('ed-tgroup', `<span class="ed-tlabel">设定</span><span class="ed-tcount">${ents.length}</span>`, {}));
+    }
+    for (const e of ents) {
+      const on = mode === 'entity' && e.id === activeId;
+      /* `cx-id` 是这一行的实体 id（列表行 = 平铺的一格，带上 id 便于测试与将来的拖拽）——
+         旧版列表行是 `<button data-cx-id=…>`，很多 e2e 脚本按 `[data-cx-id]` 找行，别去掉。 */
+      frag.appendChild(treeRow('ed-tnode-item ed-tflat' + (on ? ' is-on' : ''),
+        `<span class="ed-tlabel">${escapeHtml(e.name || '(未命名)')}</span><span class="ed-tcount">${escapeHtml(typeName(e.typeId))}</span>`,
+        { act: 'entity', nw: store.activeWorld, nid: e.id, 'cx-id': e.id }));
+    }
+    if (multi && nodes.length) {
+      frag.appendChild(treeRow('ed-tgroup', `<span class="ed-tlabel">时间线节点</span><span class="ed-tcount">${nodes.length}</span>`, {}));
+    }
+    for (const h of nodes) {
+      const on = mode === 'node' && !!nodeTarget && nodeTarget.world === h.world && nodeTarget.tlId === h.tlId && nodeTarget.nodeId === h.node.id;
+      frag.appendChild(treeRow('ed-tnode-item ed-tflat' + (on ? ' is-on' : ''),
+        `<span class="ed-tlabel">${escapeHtml(h.node.title)}</span><span class="ed-tcount">${escapeHtml(h.tlName + ' · ' + h.kind)}</span>`,
+        { act: 'node', nw: h.world, ntl: h.tlId, nid: h.node.id }));
+    }
+    if (!ents.length && !nodes.length) {
+      frag.appendChild(emptyRow(query
+        ? '没有匹配的条目。'
+        : '还没有条目 —— 右上角选类型后点「＋新建实体」；时间线节点在「世界沙盘」里加。'));
     }
     listEl.innerHTML = '';
     listEl.appendChild(frag);
-    frag.querySelectorAll<HTMLElement>('.ed-tnode').forEach((el) => {
-      el.addEventListener('click', () => {
-        const ds = el.dataset;
-        if (ds.act === 'world') {
-          const k = ds.nw!;
-          if (expandedWorlds.has(k)) expandedWorlds.delete(k); else expandedWorlds.add(k);
-          renderList();
-        } else if (ds.act === 'tl') {
-          const k = ds.nw + '::' + ds.ntl;
-          if (expandedTls.has(k)) expandedTls.delete(k); else expandedTls.add(k);
-          renderList();
-        } else if (ds.act === 'tkind') {
-          const k = ds.nw + '::' + ds.ntl + '::' + ds.nk;
-          if (expandedKinds.has(k)) expandedKinds.delete(k); else expandedKinds.add(k);
-          renderList();
-        } else if (ds.act === 'node') {
-          switchTarget(() => { nodeTarget = { world: ds.nw!, tlId: ds.ntl!, nodeId: ds.nid! }; });
-        }
-      });
-    });
+    bindTreeClicks(frag);
   }
 
-  /** 树里的一行（`.ed-*` 类来自 `src/style.css`，跟编辑器那棵树同一套样式） */
+  /** 树/列表里的一行（`.ed-*` 类来自 `src/style.css`，跟编辑器那棵树同一套样式）。
+   *  ⚠️ 用 `setAttribute('data-' + k)` 而不是 `dataset[k]`：带连字符的键（`cx-id`）走 dataset 会抛
+   *  `SyntaxError: 'cx-id' is not a valid property name`（连字符后面跟小写字母是 dataset 的禁区）。 */
   function treeRow(cls: string, html: string, ds: Record<string, string>): HTMLElement {
     const d = document.createElement('div');
     d.className = 'ed-tnode ' + cls;
     d.innerHTML = html;
-    for (const [k, v] of Object.entries(ds)) d.dataset[k] = v;
+    for (const [k, v] of Object.entries(ds)) d.setAttribute('data-' + k, v);
     return d;
   }
   function emptyRow(text: string): HTMLElement {
@@ -1143,7 +1088,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
             if (store.activeWorld !== w) store.setActiveWorld(w);
             mode = 'entity';
             activeId = id;
-            filterType = '';   /* 树视图没有类型 chips，留着旧筛选会把这条又筛掉 */
+            /* chip **不动**：筛选是用户自己选的，跟"点中了谁"是两件事
+               （旧代码在这里把类型筛选清空，是因为当时列表会照着它把这条筛掉；现在归一对着全部实体，
+               筛掉也不影响编辑，所以没有理由偷偷改用户选的筛选）。 */
           });
         }
       });
@@ -1162,8 +1109,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (!host.isConnected || !host.querySelector('#cx-root')) { unsub(); return; }
     /* 物化结果缓存作废：数据可能被外部回扫换过（同一个实体 id，但帧/正文已不同） */
     statesId = '';
-    /* 左列照旧重画：那一列没有编辑器，重建只花 DOM 钱，而且实体/节点增删必须立刻反映 */
-    updateTabCounts();
+    /* 左列照旧重画：那一列没有编辑器，重建只花 DOM 钱，而且实体/节点增删必须立刻反映
+       （页签计数也住在这一列里，跟着一起刷 —— 不再需要单独的 updateTabCounts） */
     renderList();
     /* ★ 中/右栏按**内容签名**决定要不要重建 —— 这是本节最容易踩的坑：
        自动落盘 → vault watcher 回扫 → store.update 这条链**每次编辑后约 360ms 都会走到

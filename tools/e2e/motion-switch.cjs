@@ -144,9 +144,12 @@ async function main() {
      `#cx-msg`、没提示时的 `#cx-hint` 都是 `display:none`），它们不占错峰序号。
      按下标硬读就会读到空数组（2026-09-13 加了 `#cx-hint` 之后本套件当场挂 ★1/★13，就是这个原因）。 */
   const played1 = (a1 || []).filter((x) => x.length);
-  check('★1 切工具：工具的顶层块逐个错峰入场（lk-wake / 640ms / 延迟 0·100·200ms）',
-    Array.isArray(a1) && played1.length >= 3 && played1[0]?.[0]?.name === 'lk-wake' && played1[0]?.[0]?.dur === 640
-      && played1[0]?.[0]?.state === 'running' && played1[1]?.[0]?.delay === 100 && played1[2]?.[0]?.delay === 200, a1);
+  /* ⚠️ 别写死"至少三块"：块数是 UI 结构，会随界面增删变化（2026-09-13 撤掉工作台那一行页签之后，
+     工作台只剩"标题行 + 三栏主体"两块）。要钉的是**节奏**：第 i 块迟 i×100ms。 */
+  const delays1 = played1.map((x) => x[0]?.delay);
+  check('★1 切工具：工具的顶层块逐个错峰入场（lk-wake / 640ms / 延迟 0·100·200…）',
+    Array.isArray(a1) && played1.length >= 2 && played1[0]?.[0]?.name === 'lk-wake' && played1[0]?.[0]?.dur === 640
+      && played1[0]?.[0]?.state === 'running' && delays1.every((d, i) => d === i * 100), a1);
   check('★2 主区容器上**没有**动画（整块淡入正是"闪一下"的来源，也盖掉了元素错峰）',
     Array.isArray(hostAnim) && hostAnim.length === 0, hostAnim);
 
@@ -204,8 +207,11 @@ async function main() {
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
   await waitFor(`!!document.querySelector('#cx-root')`);
   const a2b = await childAnims('#cx-root');
-  check('★8 切回设定库：错峰入场能重播（第 1 块仍是 lk-wake / running）',
-    Array.isArray(a2b) && a2b[0]?.[0]?.name === 'lk-wake' && a2b[0]?.[0]?.state === 'running' && a2b[1]?.[0]?.delay === 100, a2b);
+  /* 只挑**真的播了动画**的块（同上：`#cx-hint`/`#cx-msg` 没内容时是 display:none，不占错峰序号）。 */
+  const played8 = (a2b || []).filter((x) => x.length);
+  check('★8 切回设定库：错峰入场能重播（第 1 块仍是 lk-wake / running，第 2 块 +100ms）',
+    Array.isArray(a2b) && played8.length >= 2 && played8[0]?.[0]?.name === 'lk-wake'
+      && played8[0]?.[0]?.state === 'running' && played8[0]?.[0]?.delay === 0 && played8[1]?.[0]?.delay === 100, a2b);
 
   /* ── ④ 回沙盘：**不再整块淡入**（大块淡入与工具那边同病），沙盘只要求正常显示 ── */
   await ev(`document.querySelector('[data-tool="sandbox"]').click(); true`);
@@ -238,21 +244,27 @@ async function main() {
   check('★12 弹窗动画终态后可正常操作（finish 后 opacity=1；点取消后遮罩消失）',
     s5 && s5.opacity === '1' && cancelOk && !(await ev(`!!document.querySelector('.lk-pop-in')`)), { s5, cancelOk });
 
-  /* ── ⑥ 设定库页签切换 + 换条目：内容块入场 ── */
+  /* ── ⑥ 工作台「换类别」+ 换条目：内容块入场 ──
+     左栏重做后没有页签了（用户 2026-09-13：「两个按钮的功能有点混乱」）——
+     点另一个类别的**那一行**就是"换类别"（mode 从 entity 变 node ⇒ 骨架换形状 ⇒ 整块重建 + 错峰）。
+     套件自足：先把左栏形态复位成 list 再开工具，免得上一次跑剩的 tree/筛选让行选择器落空。 */
+  await ev(`(() => { const k = 'lingkuang-settings'; const s = JSON.parse(localStorage.getItem(k) || '{}'); s.workbenchView = 'list'; localStorage.setItem(k, JSON.stringify(s)); return true; })()`);
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
-  await waitFor(`!!document.querySelector('#cx-tab-node')`);
+  await waitFor(`!!document.querySelector('#cx-list [data-cx-id]')`);
   await sleep(700);
-  const a6 = await clickChildAnims(`document.querySelector('#cx-tab-node').click();`, '#cx-root');
+  const a6 = await clickChildAnims(`document.querySelector('#cx-list .ed-tnode-item[data-act="node"]').click();`, '#cx-root');
   const played6 = (a6 || []).filter((x) => x.length);   /* 同上：跳过的隐藏子项不占序号 */
-  check('★13 换页签后内容块**逐块错峰**浮现（第 1 块 lk-wake/640ms/0ms、第 2 块 100ms、第 3 块 200ms）',
-    Array.isArray(a6) && played6[0]?.[0]?.name === 'lk-wake' && played6[0]?.[0]?.state === 'running' && played6[0]?.[0]?.dur === 640
-      && played6[1]?.[0]?.delay === 100 && played6[2]?.[0]?.delay === 200, a6);
+  /* ⚠️ 别写死"有几块"：顶级可见块的数量会随 UI 增删变化，只断言**节奏**（第 i 块迟 i×100ms）。 */
+  const delays6 = played6.map((x) => x[0]?.delay);
+  check('★13 换类别后内容块**逐块错峰**浮现（第 1 块 lk-wake/640ms/0ms，之后每块 +100ms）',
+    played6.length >= 2 && played6[0]?.[0]?.name === 'lk-wake' && played6[0]?.[0]?.state === 'running'
+      && played6[0]?.[0]?.dur === 640 && delays6.every((d, i) => d === i * 100), a6);
 
   await sleep(700);
-  const a7 = await clickChildAnims(`document.querySelector('#cx-tab-entity').click();`, '#cx-root');
+  const a7 = await clickChildAnims(`document.querySelector('#cx-list [data-cx-id]').click();`, '#cx-root');
   const list7 = await childAnims('#cx-list');
   const okBack = await waitFor(`document.querySelectorAll('#cx-list [data-cx-id]').length >= 1`);
-  check('★14 换回实体页签：再播一次错峰，左列条目还有**第二级**错峰（等 200ms 后逐条 60ms）',
+  check('★14 换回设定条目：再播一次错峰，左列条目还有**第二级**错峰（等 200ms 后逐条 60ms）',
     Array.isArray(a7) && a7[0]?.[0]?.name === 'lk-wake' && a7[0]?.[0]?.state === 'running' && okBack
       && Array.isArray(list7) && list7.length >= 1 && list7[0]?.[0]?.delay === 200
       && (list7.length < 2 || list7[1]?.[0]?.delay === 260), { a7, list7 });
@@ -276,8 +288,9 @@ async function main() {
   check('★15 减少动效：入场降级为 lk-fade/200ms，且错峰延迟全部为 0（含行内延迟）',
     reduced === true
       /* ⚠️ 只挑**真的播了动画**的块：设定库底部那句消息行没消息时是 display:none（不占高度，
-         2026-09-13 修「凭空一条滚动条」时改的），它不作动画 ⇒ 空数组不该让 every 判失败。 */
-      && Array.isArray(a8) && a8.filter((x) => x.length).length >= 3
+         2026-09-13 修「凭空一条滚动条」时改的），它不作动画 ⇒ 空数组不该让 every 判失败。
+         块数也别写死：工作台撤掉页签那行之后只剩 2 个可见块（2026-09-13 左栏重做）。 */
+      && Array.isArray(a8) && a8.filter((x) => x.length).length >= 2
       && a8.filter((x) => x.length).every((x) => x[0]?.name === 'lk-fade' && x[0]?.dur === 200 && x[0]?.delay === 0)
       && delays2.length === 2 && delays2.every((d) => d === 0) && (t2 || []).every((x) => x[0]?.name === 'lk-fade'),
     { reduced, tool: a8, tabs: t2 });

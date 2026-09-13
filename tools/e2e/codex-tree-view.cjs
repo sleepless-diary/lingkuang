@@ -1,17 +1,21 @@
-/* 工作台（设定库）左栏的「文件夹树」形态 —— 用户 2026-09-13：
-   「设定库和编辑器是不是可以做成同一工具的两种不同形式啊（在设置里面切换）」。
+/* 工作台（设定库）左栏的两种形态 —— 用户 2026-09-13：
+   「设定库和编辑器是不是可以做成同一工具的两种不同形式啊（在设置里面切换）」；
+   随后又报「时间线节点和实体这两个按钮，列表和文件夹树的功能有点混乱」⇒ 左栏重做成
+   **两个控件**：一排筛选 pills（全部 / 各实体类型 / 时间线节点，管"筛什么"）+ 一个视图按钮
+   （`#cx-view`，管"怎么摆"）。原来的两个页签已撤掉，`mode` 由用户点中的那一行决定。
 
-   形态一「列表」= 两个页签（实体 / 时间线节点）+ 类型 chips + 搜索（原来的设定库）。
-   形态二「文件夹树」= 一棵树同时装下两类条目，跟硬盘目录一一对应：
+   形态一「列表」= 一列**平铺**条目，按类别分组（设定 / 时间线节点）—— 不再按世界/时间线分层。
+   形态二「文件夹」= 一棵树同时装下两类条目，跟硬盘目录一一对应：
      世界 → 时间线 → 种类 → 节点   ／   世界 → `_设定` → 类型 → 实体
 
    本套件钉住：
-     ① 开关在左栏、切换不重建骨架；
-     ② 树里 `_设定` 分支与时间线分支**同框**（这棵树原来只长在「编辑器」工具里）；
-     ③ 点实体行 / 点节点行都能直接换中栏+右栏的目标；
-     ④ 空类型列出来（置灰 + 一句人话），但**没有节点的种类不列**（用户报过的重名文件夹）；
-     ⑤ 开关会把选择记成"下次打开的默认形态"，设置面板里那组单选跟着显示；
-     ⑥ 全程无未捕获异常。
+      ① 左栏只有一个视图按钮（没有第二套开关）+ 筛选 pills，开机默认列表；
+      ② 列表形态**不分层**（没有世界层），且两类条目分组显示；
+      ③ 树里 `_设定` 分支与时间线分支**同框**（这棵树原来只长在「编辑器」工具里）；
+      ④ 点实体行 / 点节点行都能直接换中栏+右栏的目标；
+      ⑤ 空类型列出来（置灰 + 一句人话），但**没有节点的种类不列**（用户报过的重名文件夹）；
+      ⑥ 视图按钮会把选择记成"下次打开的默认形态"，设置面板里那组单选跟着显示；
+      ⑦ 全程无未捕获异常。
 
    用法：先 reset-entity-vault.cjs + seed-node.cjs，起应用（--remote-debugging-port），
         再 `LK_CDP_PORT=xxxx node tools/e2e/codex-tree-view.cjs`。
@@ -65,26 +69,33 @@ async function main() {
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
   await sleep(1200);
 
-  /* ① 默认形态 = 列表（页签 + chips 都在，没有 `_设定` 行） */
-  const listState = await ev(`({ tabs: document.querySelectorAll('#cx-tab-entity,#cx-tab-node').length,
+  /* ① 默认形态 = 列表：一个视图按钮 + 一排筛选 pills，**没有**页签那一套（重做的重点就是撤掉它） */
+  const listState = await ev(`({ view: document.querySelector('#cx-view')?.textContent.trim() ?? '',
+      viewBtns: document.querySelectorAll('[data-cx-view], #cx-view').length,
+      tabs: document.querySelectorAll('#cx-tab-entity,#cx-tab-node').length,
       chips: document.querySelectorAll('#cx-chips button').length,
-      setRow: document.querySelectorAll('#cx-list .ed-tset').length,
-      toggle: [...document.querySelectorAll('[data-cx-view]')].map((b) => b.textContent.trim()) })`);
-  check('1 左栏有「列表 / 文件夹树」开关，开机默认是列表形态',
-    listState.toggle.join(',') === '列表,文件夹树' && listState.tabs === 2 && listState.chips > 0 && listState.setRow === 0, listState);
+      groups: [...document.querySelectorAll('#cx-list .ed-tgroup .ed-tlabel')].map((e) => e.textContent),
+      worlds: document.querySelectorAll('#cx-list .ed-tworld').length,
+      setRow: document.querySelectorAll('#cx-list .ed-tset').length })`);
+  check('1 左栏 = 一个「视图」按钮 + 一排筛选 pills（不再有第二套开关/页签）',
+    listState.view === '视图 列表' && listState.viewBtns === 1 && listState.tabs === 0 && listState.chips > 0, listState);
+  check('★1b 列表形态**不分层**：两类条目分组平铺（设定 / 时间线节点），没有世界层',
+    listState.groups.includes('设定') && listState.groups.includes('时间线节点')
+    && listState.worlds === 0 && listState.setRow === 0, listState);
 
-  /* ② 切到文件夹树 → `_设定` 行出现、chips 清空、页签仍在（页签说明中栏在看哪一类） */
-  check('2 点「文件夹树」', await ev(`(() => { const b = [...document.querySelectorAll('[data-cx-view]')].find((x) => x.textContent.trim() === '文件夹树'); if (!b) return false; b.click(); return true; })()`));
+  /* ② 切到文件夹 → 世界层出现、chips 让位 */
+  check('2 点视图按钮（列表 → 文件夹）', await click('#cx-view'));
   await sleep(600);
   const treeState = await ev(`({ worlds: document.querySelectorAll('#cx-list .ed-tworld').length,
       chips: document.querySelectorAll('#cx-chips button').length,
       tabs: document.querySelectorAll('#cx-tab-entity,#cx-tab-node').length,
+      view: document.querySelector('#cx-view')?.textContent.trim() ?? '',
       ph: document.querySelector('#cx-search')?.placeholder ?? '' })`);
   /* 注意：`_设定` 行要**展开世界**之后才出现（树的展开态是各层自己的），所以这里只断言"换成了树"，
      同框与 `_设定` 行交给 ★5（展开世界之后）。 */
-  check('★3 换成文件夹树：类型 chips 让位、改出世界层（页签仍在，说明中栏还在看实体/节点）',
-    treeState.worlds >= 1 && treeState.chips === 0 && treeState.tabs === 2, treeState);
-  check('★3b 搜索框的提示跟着换（搜索条目…）', treeState.ph.includes('条目'), treeState.ph);
+  check('★3 换成文件夹：类型 pills 让位、改出世界层（按钮文案跟着换成「视图 文件夹」）',
+    treeState.worlds >= 1 && treeState.chips === 0 && treeState.tabs === 0 && treeState.view === '视图 文件夹', treeState);
+  check('★3b 搜索框一个框管两类（提示：搜索设定与事件…）', treeState.ph.includes('设定与事件'), treeState.ph);
 
   /* ③ 展开世界 → 时间线分支与 `_设定` 分支**同框** */
   check('4 展开世界', await clickRow('world', '测试世界观'));
@@ -118,8 +129,7 @@ async function main() {
   await sleep(900);
   const picked = await ev(`({ name: document.querySelector('#cx-name')?.value ?? '',
       fields: [...document.querySelectorAll('#cx-fields > div')].map((r) => r.firstElementChild?.textContent).filter(Boolean),
-      rail: !!document.querySelector('#cx-rail'),
-      tabEnt: (document.querySelector('#cx-tab-entity')?.textContent ?? '') })`);
+      rail: !!document.querySelector('#cx-rail') })`);
   check('★13 中栏换成该实体（名字 / 字段 / 右栏帧条都在）',
     picked.name === '银发少女' && picked.fields.includes('发色') && picked.rail === true, picked);
   const onRow = await rows('#cx-list [data-act="entity"]');
@@ -167,11 +177,15 @@ async function main() {
     reopened.chips === 0 && reopened.worlds >= 1 && reopened.setting === 'tree', reopened);
 
   /* ⑩ 切回列表并复位（别污染后面在同一实例上跑的套件） */
-  check('26 切回列表', await ev(`(() => { const b = [...document.querySelectorAll('[data-cx-view]')].find((x) => x.textContent.trim() === '列表'); if (!b) return false; b.click(); return true; })()`));
+  check('26 切回列表', await click('#cx-view'));
   await sleep(600);
-  const backList = await ev(`({ setRow: document.querySelectorAll('#cx-list .ed-tset').length, chips: document.querySelectorAll('#cx-chips button').length })`);
-  check('★27 回到列表形态（chips 回来、`_设定` 行消失）+ 默认形态也改回 list',
-    backList.setRow === 0 && backList.chips > 0 && (await setting()) === 'list', { ...backList, setting: await setting() });
+  const backList = await ev(`({ setRow: document.querySelectorAll('#cx-list .ed-tset').length,
+      chips: document.querySelectorAll('#cx-chips button').length,
+      worlds: document.querySelectorAll('#cx-list .ed-tworld').length,
+      flatNodes: document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]').length })`);
+  check('★27 回到列表形态（chips 回来、`_设定` 行消失、世界层消失）+ 默认形态也改回 list',
+    backList.setRow === 0 && backList.chips > 0 && backList.worlds === 0 && (await setting()) === 'list',
+    { ...backList, setting: await setting() });
 
   const errs = await ev(`window.__errs`);
   check('28 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

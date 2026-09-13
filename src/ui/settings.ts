@@ -122,9 +122,9 @@ export function renderSettings(store: Store, host: HTMLElement): void {
       </div>
       <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;display:flex;flex-direction:column;gap:8px;">
         <div style="font-size:var(--text-sm);font-weight:600;color:var(--fg);">设定库（工作台）</div>
-        <div style="font-size:var(--text-xs);color:var(--fg-2);">设定库和编辑器已经并成<b>同一个工作台</b>：左栏、中栏字段、右栏正文都是同一套，只是左栏长什么样可以选。这里选的是<b>打开时默认用哪种</b>；面板左上角那个开关随时能换，换完这里也会跟着变。</div>
-        <label style="font-size:var(--text-xs);color:var(--fg-2);display:flex;align-items:flex-start;gap:6px;"><input type="radio" name="wbView" value="list"${s.workbenchView === 'list' ? ' checked' : ''}/><span><b>列表</b>（默认）：两个页签（实体 / 时间线节点）+ 类型筛选 + 搜索。条目多、想按名字快速找时顺手。</span></label>
-        <label style="font-size:var(--text-xs);color:var(--fg-2);display:flex;align-items:flex-start;gap:6px;"><input type="radio" name="wbView" value="tree"${s.workbenchView === 'tree' ? ' checked' : ''}/><span><b>文件夹树</b>：世界 → 时间线 → 种类 → 节点，以及世界 → <code>_设定</code> → 类型 → 实体，一棵树跟硬盘上的目录一一对应，看得见"东西放在哪"。</span></label>
+        <div style="font-size:var(--text-xs);color:var(--fg-2);">设定库和编辑器已经并成<b>同一个工作台</b>：左栏、中栏字段、右栏正文都是同一套，只是左栏长什么样可以选。这里选的是<b>打开时默认用哪种</b>；面板左栏那个「视图」按钮随时能换，换完这里也会跟着变。</div>
+        <label style="font-size:var(--text-xs);color:var(--fg-2);display:flex;align-items:flex-start;gap:6px;"><input type="radio" name="wbView" value="list"${s.workbenchView === 'list' ? ' checked' : ''}/><span><b>列表</b>（默认）：一列平铺的条目（设定 / 时间线节点两组），配一排筛选（全部 / 某个类型 / 时间线节点）与一个搜索框。条目多、想按名字快速找时顺手。</span></label>
+        <label style="font-size:var(--text-xs);color:var(--fg-2);display:flex;align-items:flex-start;gap:6px;"><input type="radio" name="wbView" value="tree"${s.workbenchView === 'tree' ? ' checked' : ''}/><span><b>文件夹</b>：世界 → 时间线 → 种类 → 节点，以及世界 → <code>_设定</code> → 类型 → 实体，一棵树跟硬盘上的目录一一对应，看得见"东西放在哪"。</span></label>
       </div>
       <button id="set-save" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:8px;font-size:var(--text-sm);cursor:pointer;">保存设置</button>
       <div id="set-msg" style="font-size:var(--text-xs);color:var(--accent);"></div>

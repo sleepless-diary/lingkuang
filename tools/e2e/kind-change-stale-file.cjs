@@ -81,13 +81,11 @@ async function main() {
   await sleep(1500);
   await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); true`);
 
-  /* ① 进设定库的「时间线节点」页签，展开到那个节点并选中 */
+  /* ① 进工作台，筛到「时间线节点」→ 列表里直接点那条。
+     左栏 2026-09-13 重做后没有页签、列表也不再分世界/时间线层级（平铺），所以不必再逐层展开。 */
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
   await sleep(1200);
-  await click('#cx-tab-node'); await sleep(600);
-  await click('#cx-list .ed-tworld'); await sleep(400);
-  await click('#cx-list .ed-ttl'); await sleep(400);
-  await click('#cx-list .ed-tkind'); await sleep(400);
+  await click('#cx-chips [data-cx-chip="@node"]'); await sleep(600);
   await clickText('#cx-list .ed-tnode-item', TITLE);
   await sleep(900);
 

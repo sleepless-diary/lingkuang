@@ -110,8 +110,7 @@ async function main() {
   /* ── ③ 在树里点实体 = **就地**选中，树不许被换掉 ─────────────────── */
   check('20 点实体行', await ev(`(() => { const el = document.querySelector('#cx-list [data-act="entity"][data-nid="e-tree-a"]'); if (!el) return false; el.click(); return true; })()`));
   await sleep(800);
-  const after = await ev(`({ tabEnt: document.querySelector('#cx-tab-entity')?.style.background ?? '',
-      name: document.querySelector('#cx-name')?.value ?? '',
+  const after = await ev(`({ name: document.querySelector('#cx-name')?.value ?? '',
       doc: document.querySelector('#cx-doc .ProseMirror')?.textContent ?? '',
       fields: [...document.querySelectorAll('#cx-fields > div')].map((r) => r.firstElementChild?.textContent).filter(Boolean),
       roles: [...document.querySelectorAll('#cx-list [data-act="world"]')].map((e) => e.dataset.nw),
@@ -132,12 +131,21 @@ async function main() {
   check('★24 中栏是这个实体（名字 = 银发少女）', after.name === '银发少女', after.name);
   check('★25 正文换成实体自己的正文', String(after.doc).includes('雪原独行'), after.doc);
   check('★26 中栏是实体字段（发色）', after.fields.includes('发色'), after.fields);
-  /* 手动切到「实体」页签，打开的应当还是这一个实体 */
-  await click('#cx-tab-entity');
+  /* 切一次视图形态（文件夹 → 列表 → 文件夹）：正在编辑的实体与展开态都不该被弄丢。
+     （原来这里是「手动切到实体页签」；左栏 2026-09-13 重做后页签没了，换成视图按钮这个等价守卫。） */
+  await click('#cx-view');
+  await sleep(600);
+  const inList = await ev(`({ name: document.querySelector('#cx-name')?.value ?? '',
+      chips: document.querySelectorAll('#cx-chips button').length,
+      on: !!document.querySelector('#cx-list [data-cx-id="e-tree-a"]')?.classList.contains('is-on') })`);
+  await click('#cx-view');
   await sleep(600);
   const still = await ev(`({ name: document.querySelector('#cx-name')?.value ?? '',
-      on: !!document.querySelector('#cx-list [data-act="entity"][data-nid="e-tree-a"]')?.classList.contains('is-on') })`);
-  check('★26b 手动切到「实体」页签后仍是这个实体', still.name === '银发少女' && still.on === true, still);
+      on: !!document.querySelector('#cx-list [data-act="entity"][data-nid="e-tree-a"]')?.classList.contains('is-on'),
+      setOpen: !!document.querySelector('#cx-list .ed-tset')?.classList.contains('is-open') })`);
+  check('★26b 切一次视图形态（文件夹 → 列表 → 文件夹）后，还在编辑这个实体、展开态没丢',
+    inList.name === '银发少女' && inList.chips > 0 && inList.on === true
+      && still.name === '银发少女' && still.on === true && still.setOpen === true, { inList, still });
 
   const errs = await ev(`window.__errs`);
   check('27 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
