@@ -21,7 +21,7 @@ async function main() {
   await sleep(2500);
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
   await sleep(1500);
-  const list = await ev(`[...document.querySelectorAll('[data-cx-id]')].map((b) => ({ name: b.children[0]?.textContent, type: b.children[1]?.textContent }))`);
+  const list = await ev(`[...document.querySelectorAll('[data-cx-id]')].map((b) => ({ name: b.children[0]?.textContent, type: b.dataset.cxType ?? b.children[1]?.textContent }))`);
   const files = [];
   const walk = (d, rel = '') => { if (!fs.existsSync(d)) return; for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p, rel + e.name + '/'); else files.push(rel + e.name); } };
   walk(path.join(VAULT, '测试世界观', '_设定'));

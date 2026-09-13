@@ -600,16 +600,9 @@ body {
 .ed-tnode.is-empty .ed-tlabel, .ed-tnode.is-empty .ed-tcount { opacity: .45; }
 /* 空文件夹展开后的那句人话 */
 .ed-tempty { padding: 2px 8px 2px 36px; font-size: 10px; color: var(--fg-2); opacity: .7; }
-/* 工作台左栏的「列表」形态（用户 2026-09-13 要求重新设计后新增）：
-   ① `.ed-tflat` —— 平铺一行，**不缩进**（列表没有层级，36px 的树缩进在这里没有意义）；
-      必须写在 `.ed-tnode-item` 之后：同特异性下后者生效。
-   ② `.ed-tgroup` —— 类别小标题（设定 / 时间线节点），后面拖一条虚线到右边。 */
-.ed-tflat { padding-left: 8px; }
-.ed-tgroup { padding: 8px 6px 2px; font-size: 10px; letter-spacing: .08em; cursor: default; color: var(--fg-2); }
-.ed-tgroup .ed-tlabel { color: var(--fg-2); }
-.ed-tgroup:hover { background: transparent; }
-.ed-tgroup::after { content: ''; flex: 1; border-top: 1px dashed var(--border-soft); margin-left: 2px; }
-.ed-tgroup .ed-tcount { margin-left: 0; }
+/* （原来这里还有 `列表` 形态的两条样式 `.ed-tflat` / `.ed-tgroup`……
+   用户 2026-09-13：「把全部改成文件树的形式，这样子也方便看」⇒ 列表形态整个撤掉，
+   左栏只剩这棵树，那两条样式一起删了。） */
 
 /* ── 编辑器属性面板（Obsidian 键值对风格；文字 --fg/--fg-2，不用绿色字体）── */
 .ed-props { display: flex; flex-direction: column; gap: 5px; }

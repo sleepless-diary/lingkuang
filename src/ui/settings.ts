@@ -15,11 +15,6 @@ interface Settings {
   rulerDensity: number; // 标尺密度
   evolveMode: EvolveMode;   // 改动什么时候变成"一版"（见设置面板里的说明）
   evolveLock: { world: string; tlId: string; nodeId: string } | null;   // 锁定模式锁在哪一格
-  /** 设定库（工作台）左栏的**默认形态**（用户 2026-09-13：「设定库和编辑器是不是可以做成同一
-   *  工具的两种不同形式啊（在设置里面切换）」）：`'list'` = 扁平列表（两个页签 + 类型筛选），
-   *  `'tree'` = 文件夹树（节点与设定条目同框，跟硬盘目录一一对应）。
-   *  面板左上角那个开关会**顺手改写这个值** ⇒ 它记的是"最后一次用的形态"。 */
-  workbenchView: 'list' | 'tree';
 }
 
 const DEFAULTS: Settings = {
@@ -32,7 +27,6 @@ const DEFAULTS: Settings = {
   rulerDensity: 1,
   evolveMode: 'manual',
   evolveLock: null,
-  workbenchView: 'list',
 };
 
 export function loadSettings(): Settings {
@@ -120,12 +114,6 @@ export function renderSettings(store: Store, host: HTMLElement): void {
         </div>
         <div style="font-size:var(--text-xs);color:var(--fg-2);">「${lockWorld || '（未选世界）'}」有 ${lockNodes.length} 个事件节点可选。</div>
       </div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;display:flex;flex-direction:column;gap:8px;">
-        <div style="font-size:var(--text-sm);font-weight:600;color:var(--fg);">设定库（工作台）</div>
-        <div style="font-size:var(--text-xs);color:var(--fg-2);">设定库和编辑器已经并成<b>同一个工作台</b>：左栏、中栏字段、右栏正文都是同一套，只是左栏长什么样可以选。这里选的是<b>打开时默认用哪种</b>；面板左栏那个「视图」按钮随时能换，换完这里也会跟着变。</div>
-        <label style="font-size:var(--text-xs);color:var(--fg-2);display:flex;align-items:flex-start;gap:6px;"><input type="radio" name="wbView" value="list"${s.workbenchView === 'list' ? ' checked' : ''}/><span><b>列表</b>（默认）：一列平铺的条目（设定 / 时间线节点两组），配一排筛选（全部 / 某个类型 / 时间线节点）与一个搜索框。条目多、想按名字快速找时顺手。</span></label>
-        <label style="font-size:var(--text-xs);color:var(--fg-2);display:flex;align-items:flex-start;gap:6px;"><input type="radio" name="wbView" value="tree"${s.workbenchView === 'tree' ? ' checked' : ''}/><span><b>文件夹</b>：世界 → 时间线 → 种类 → 节点，以及世界 → <code>_设定</code> → 类型 → 实体，一棵树跟硬盘上的目录一一对应，看得见"东西放在哪"。</span></label>
-      </div>
       <button id="set-save" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:8px;font-size:var(--text-sm);cursor:pointer;">保存设置</button>
       <div id="set-msg" style="font-size:var(--text-xs);color:var(--accent);"></div>
     </div>`;
@@ -173,13 +161,6 @@ export function renderSettings(store: Store, host: HTMLElement): void {
     const hit = lockNodes.find((n) => n.id === id);
     s.evolveLock = hit ? { world: lockWorld, tlId: hit.tlId, nodeId: hit.id } : null;
     saveNow(hit ? '已锁定到这一格 ✓' : '已取消锁定 ✓');
-  });
-  /* 工作台默认形态：同样立刻存盘 + 广播（工作台若开着，当场换左栏形态） */
-  host.querySelectorAll('input[name="wbView"]').forEach((el) => {
-    (el as HTMLInputElement).addEventListener('change', () => {
-      s.workbenchView = (el as HTMLInputElement).value === 'tree' ? 'tree' : 'list';
-      saveNow('已保存 ✓');
-    });
   });
   host.querySelector('#set-save')?.addEventListener('click', () => {
     saveSettings(s);

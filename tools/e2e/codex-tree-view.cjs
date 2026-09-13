@@ -1,26 +1,24 @@
-/* 工作台（设定库）左栏的两种形态 —— 用户 2026-09-13：
-   「设定库和编辑器是不是可以做成同一工具的两种不同形式啊（在设置里面切换）」；
-   随后又报「时间线节点和实体这两个按钮，列表和文件夹树的功能有点混乱」⇒ 左栏重做成
-   **两个控件**：一排筛选 pills（全部 / 各实体类型 / 时间线节点，管"筛什么"）+ 一个视图按钮
-   （`#cx-view`，管"怎么摆"）。原来的两个页签已撤掉，`mode` 由用户点中的那一行决定。
-
-   形态一「列表」= 一列**平铺**条目，按类别分组（设定 / 时间线节点）—— 不再按世界/时间线分层。
-   形态二「文件夹」= 一棵树同时装下两类条目，跟硬盘目录一一对应：
-     世界 → 时间线 → 种类 → 节点   ／   世界 → `_设定` → 类型 → 实体
+/* 工作台（设定库）左栏的**形态守卫** —— 左栏只有一棵树，没有第二种长相。
+   用户 2026-09-13 的三句话把形态定下来的全过程：
+     ① 「设定库和编辑器是不是可以做成同一工具的两种不同形式啊（在设置里面切换）」
+     ② 「时间线节点和实体这两个按钮，列表和文件夹树的功能有点混乱」⇒ 重做成「筛选 pills + 一个视图按钮」
+     ③ 「**要不这样，把全部改成文件树的形式，这样子也方便看**」⇒ 列表形态整个撤掉，
+        筛选也没了（树的形状本身就是筛选）；树**默认全展开**，打开就看得到全部条目。
 
    本套件钉住：
-      ① 左栏只有一个视图按钮（没有第二套开关）+ 筛选 pills，开机默认列表；
-      ② 列表形态**不分层**（没有世界层），且两类条目分组显示；
-      ③ 树里 `_设定` 分支与时间线分支**同框**（这棵树原来只长在「编辑器」工具里）；
-      ④ 点实体行 / 点节点行都能直接换中栏+右栏的目标；
-      ⑤ 空类型列出来（置灰 + 一句人话），但**没有节点的种类不列**（用户报过的重名文件夹）；
-      ⑥ 视图按钮会把选择记成"下次打开的默认形态"，设置面板里那组单选跟着显示；
-      ⑦ 全程无未捕获异常。
+     ① 左栏**只有一棵树**：没有类别页签、没有形态开关、也没有筛选 pills（守着"别再长出第二套控件"）；
+     ② 树**默认全展开**（时间线/种类/节点/`_设定`/类型/实体 一次点击都不用就都在）；
+     ③ 形态与 `localStorage` 的旧键 `workbenchView` **无关**（设置面板里那组单选已经删掉）；
+     ④ 空类型列出来（置灰 + 一句人话）；**没有节点的种类不列**（用户报过的重名文件夹）；
+     ⑤ 点实体行/节点行都能直接换中栏+右栏，且左树不被换掉；
+     ⑥ 搜索跨类别（节点 + 实体一起命中），非空时摊平、清空后回到树；
+     ⑦ 收起的枝在重画之后**仍然收着**（collapsed 语义），全程无未捕获异常。
 
    用法：先 reset-entity-vault.cjs + seed-node.cjs，起应用（--remote-debugging-port），
         再 `LK_CDP_PORT=xxxx node tools/e2e/codex-tree-view.cjs`。
-   ⚠️ 本套件用的测试世界里只有一条时间线（codex-node-tab 同款前置）。
-   ⚠️ 套件自己是自足的：开头先把 localStorage 里的形态复位成 list（不然上一次跑剩的 tree 会让断言错位）。 */
+   ⚠️ 它需要**有空类型**的前置（`角色` 有 1 个实体，其余类型 0 个）—— 跑到别的目录上会挂 ★5/★6。
+   ⚠️ 套件自己是自足的：开头故意往 localStorage 写 `workbenchView='list'`（旧版的"列表形态"），
+      断言左栏**照样**是那棵树 —— 形态不再由设置决定。 */
 const PORT = process.env.LK_CDP_PORT || '9334';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
@@ -43,7 +41,6 @@ async function main() {
     if (r.result?.exceptionDetails) throw new Error('eval: ' + (r.result.exceptionDetails.exception?.description || ''));
     return r.result?.result?.value;
   };
-  const waitFor = async (fn, ms = 12000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await fn()) return true; await sleep(200); } return false; };
   const click = (sel) => ev(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.click(); return true; })()`);
   /** 点树里那一行：按 data-act 挑（每点一次树会重建，所以每次都得重新查） */
   const clickRow = (act, label) => ev(`(() => {
@@ -54,141 +51,134 @@ async function main() {
   const rows = (sel) => ev(`[...document.querySelectorAll(${JSON.stringify(sel)})].map((e) => ({
     act: e.dataset.act ?? '', label: e.querySelector('.ed-tlabel')?.textContent ?? '',
     count: e.querySelector('.ed-tcount')?.textContent ?? '', empty: e.classList.contains('is-empty'),
-    on: e.classList.contains('is-on') }))`);
+    open: e.classList.contains('is-open'), on: e.classList.contains('is-on') }))`);
   const setSearch = (v) => ev(`(() => {
     const el = document.querySelector('#cx-search');
     el.value = ${JSON.stringify(v)};
     el.dispatchEvent(new Event('input', { bubbles: true }));
     return true; })()`);
-  const setting = () => ev(`(() => { try { return JSON.parse(localStorage.getItem('lingkuang-settings') || '{}').workbenchView ?? null; } catch { return 'ERR'; } })()`);
+  /** 整个左栏的形状（一次问全，免得为了几个数字来好几趟） */
+  const shape = () => ev(`({
+    worlds: document.querySelectorAll('#cx-list .ed-tworld').length,
+    tl: document.querySelectorAll('#cx-list .ed-ttl').length,
+    kind: document.querySelectorAll('#cx-list .ed-tkind').length,
+    node: document.querySelectorAll('#cx-list [data-act="node"]').length,
+    setRow: document.querySelectorAll('#cx-list .ed-tset').length,
+    etype: document.querySelectorAll('#cx-list .ed-ttype').length,
+    ent: document.querySelectorAll('#cx-list [data-act="entity"]').length,
+    chips: document.querySelectorAll('#cx-chips,[data-cx-chip]').length,
+    view: document.querySelectorAll('#cx-view,[data-cx-view]').length,
+    tabs: document.querySelectorAll('#cx-tab-entity,#cx-tab-node').length,
+    wbView: (() => { try { return JSON.parse(localStorage.getItem('lingkuang-settings') || '{}').workbenchView ?? null; } catch { return 'ERR'; } })() })`);
 
   await sleep(1500);
   await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); true`);
-  /* 自足：先把形态复位成 list，再打开工具（renderCodex 是在打开那一刻读设置的） */
+  /* 自足：故意把旧版的"默认形态"写成 list —— 断言左栏照样是那棵树（形态不再由设置决定） */
   await ev(`(() => { const k = 'lingkuang-settings'; const s = JSON.parse(localStorage.getItem(k) || '{}'); s.workbenchView = 'list'; localStorage.setItem(k, JSON.stringify(s)); return true; })()`);
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
   await sleep(1200);
 
-  /* ① 默认形态 = 列表：一个视图按钮 + 一排筛选 pills，**没有**页签那一套（重做的重点就是撤掉它） */
-  const listState = await ev(`({ view: document.querySelector('#cx-view')?.textContent.trim() ?? '',
-      viewBtns: document.querySelectorAll('[data-cx-view], #cx-view').length,
-      tabs: document.querySelectorAll('#cx-tab-entity,#cx-tab-node').length,
-      chips: document.querySelectorAll('#cx-chips button').length,
-      groups: [...document.querySelectorAll('#cx-list .ed-tgroup .ed-tlabel')].map((e) => e.textContent),
-      worlds: document.querySelectorAll('#cx-list .ed-tworld').length,
-      setRow: document.querySelectorAll('#cx-list .ed-tset').length })`);
-  check('1 左栏 = 一个「视图」按钮 + 一排筛选 pills（不再有第二套开关/页签）',
-    listState.view === '视图 列表' && listState.viewBtns === 1 && listState.tabs === 0 && listState.chips > 0, listState);
-  check('★1b 列表形态**不分层**：两类条目分组平铺（设定 / 时间线节点），没有世界层',
-    listState.groups.includes('设定') && listState.groups.includes('时间线节点')
-    && listState.worlds === 0 && listState.setRow === 0, listState);
+  /* ① 左栏只有一棵树 —— 第二套控件一个都不许有 */
+  const s0 = await shape();
+  check('1 左栏只有一棵树：没有类别页签 / 形态开关 / 筛选 pills，世界层 = 1',
+    s0.worlds === 1 && s0.chips === 0 && s0.view === 0 && s0.tabs === 0, s0);
 
-  /* ② 切到文件夹 → 世界层出现、chips 让位 */
-  check('2 点视图按钮（列表 → 文件夹）', await click('#cx-view'));
-  await sleep(600);
-  const treeState = await ev(`({ worlds: document.querySelectorAll('#cx-list .ed-tworld').length,
-      chips: document.querySelectorAll('#cx-chips button').length,
-      tabs: document.querySelectorAll('#cx-tab-entity,#cx-tab-node').length,
-      view: document.querySelector('#cx-view')?.textContent.trim() ?? '',
-      ph: document.querySelector('#cx-search')?.placeholder ?? '' })`);
-  /* 注意：`_设定` 行要**展开世界**之后才出现（树的展开态是各层自己的），所以这里只断言"换成了树"，
-     同框与 `_设定` 行交给 ★5（展开世界之后）。 */
-  check('★3 换成文件夹：类型 pills 让位、改出世界层（按钮文案跟着换成「视图 文件夹」）',
-    treeState.worlds >= 1 && treeState.chips === 0 && treeState.tabs === 0 && treeState.view === '视图 文件夹', treeState);
-  check('★3b 搜索框一个框管两类（提示：搜索设定与事件…）', treeState.ph.includes('设定与事件'), treeState.ph);
+  /* ② 默认全展开：一次点击都不用，各层就都在 */
+  check('2 默认全展开（时间线/种类/节点/_设定/类型/实体 都在，无需点击）',
+    s0.tl > 0 && s0.kind > 0 && s0.node > 0 && s0.setRow === 1 && s0.etype > 0 && s0.ent > 0, s0);
+  check('★2b 形态与设置里的旧键 `workbenchView` 无关（写的 list，看到的还是树）',
+    s0.wbView === 'list' && s0.worlds === 1, { wbView: s0.wbView, worlds: s0.worlds });
 
-  /* ③ 展开世界 → 时间线分支与 `_设定` 分支**同框** */
-  check('4 展开世界', await clickRow('world', '测试世界观'));
-  await sleep(400);
-  const worlds = await rows('#cx-list .ed-tnode');
-  check('★5 同一个世界下：时间线 + `_设定` 都在',
-    worlds.some((r) => r.act === 'tl') && worlds.some((r) => r.act === 'wset'), worlds);
+  /* ③ 层级与顺序 = 硬盘目录（世界 → 时间线 → 种类 → 节点，然后 世界 → _设定 → 类型 → 实体） */
+  const order = await ev(`[...document.querySelectorAll('#cx-list .ed-tree > .ed-tnode')].map((x)=>({cls:x.className, t:(x.querySelector('.ed-tlabel')?.textContent||'')}))`);
+  const at = (pred) => (order || []).findIndex(pred);
+  const iTl = at((r) => r.cls.includes('ed-ttl'));
+  const iKind = at((r) => r.cls.includes('ed-tkind'));
+  const iNode = at((r) => r.cls.includes('ed-tnode-item') && r.t === '王国的建立');
+  const iSet = at((r) => r.cls.includes('ed-tset'));
+  const iType = at((r) => r.cls.includes('ed-ttype'));
+  const iEnt = at((r) => r.cls.includes('ed-tnode-item') && r.t === '银发少女');
+  check('3 时间线分支与 `_设定` 分支同框，顺序 = 硬盘目录',
+    iTl > 0 && iTl < iKind && iKind < iNode && iNode < iSet && iSet < iType && iType < iEnt,
+    { iTl, iKind, iNode, iSet, iType, iEnt, rows: (order || []).map((r) => r.t) });
 
-  /* ④ `_设定` → 类型行（有实体的 + 一个实体都没有的） */
-  check('6 展开 `_设定`', await clickRow('wset', '_设定'));
-  await sleep(400);
+  /* ④ 种类只列真有节点的；类型列全部（含空的、置灰） */
+  const kinds = await rows('#cx-list .ed-tkind');
+  check('★4 种类层只有真有节点的「事件」（没有节点的种类不列 —— 用户报过的重名文件夹）',
+    kinds.length === 1 && kinds[0].label === '事件' && kinds[0].count === '1', kinds);
   const types = await rows('#cx-list .ed-tset-type');
   const role = types.find((r) => r.label === '角色');
   const empty = types.find((r) => r.count === '0');
-  check('★7 类型层：有实体的「角色」与空类型都在，空的置灰', !!role && role.count === '1' && !!empty && empty.empty === true, types);
+  check('★5 类型层：有实体的「角色」与空类型都在，空的置灰',
+    !!role && role.count === '1' && !!empty && empty.empty === true, types);
 
-  /* ⑤ 空类型展开 → 一句人话（不是一片空白） */
-  check('8 展开空类型', await clickRow('etype', empty?.label ?? ''));
-  await sleep(350);
+  /* ⑤ 空类型展开 → 一句人话（默认展开，所以它本来就展开着；这里只查那句话在不在） */
   const hint = await ev(`[...document.querySelectorAll('#cx-list .ed-tempty')].map((e) => e.textContent)`);
-  check('★9 空类型展开后给一句人话', hint.some((t) => String(t).includes('这个类型还没有实体')), hint);
+  check('★6 空类型展开后给一句人话', (hint || []).some((t) => String(t).includes('这个类型还没有实体')), hint);
 
-  /* ⑥ 展开「角色」→ 实体行 → 点它 = 换中栏/右栏目标 */
-  /* ⚠️ 用 `empty?.label ?? ''`：没有类型行时（例如 A/B 跑在没这功能的旧代码上）
-     应当是「后面这些断言 FAIL」，不能让脚本自己抛异常中断 —— 那样后半段的结论就全丢了。 */
-  check('10 展开「角色」', await clickRow('etype', '角色'));
-  await sleep(400);
-  const ents = await rows('#cx-list [data-act="entity"]');
-  check('★11 「角色」下有实体行', ents.some((r) => r.label === '银发少女'), ents);
-  check('12 点这个实体行', await clickRow('entity', '银发少女'));
+  /* ⑥ 点实体行 = 换中栏/右栏目标，且左树没被换掉 */
+  check('7 点实体行「银发少女」', await clickRow('entity', '银发少女'));
   await sleep(900);
   const picked = await ev(`({ name: document.querySelector('#cx-name')?.value ?? '',
       fields: [...document.querySelectorAll('#cx-fields > div')].map((r) => r.firstElementChild?.textContent).filter(Boolean),
-      rail: !!document.querySelector('#cx-rail') })`);
-  check('★13 中栏换成该实体（名字 / 字段 / 右栏帧条都在）',
-    picked.name === '银发少女' && picked.fields.includes('发色') && picked.rail === true, picked);
+      rail: !!document.querySelector('#cx-rail'),
+      worlds: document.querySelectorAll('#cx-list .ed-tworld').length })`);
+  check('★8 中栏换成该实体（名字 / 字段 / 右栏帧条都在），左树还在（没被换掉）',
+    picked.name === '银发少女' && picked.fields.includes('发色') && picked.rail === true && picked.worlds === 1, picked);
   const onRow = await rows('#cx-list [data-act="entity"]');
-  check('★14 树里那一行被高亮（is-on）', onRow.some((r) => r.label === '银发少女' && r.on === true), onRow);
+  check('★9 树里那一行被高亮（is-on）', onRow.some((r) => r.label === '银发少女' && r.on === true), onRow);
 
-  /* ⑦ 时间线分支：种类 → 节点 → 点它 = 换到节点 */
-  check('15 时间线分支展开', await clickRow('tl', '主线'));
-  await sleep(400);
-  const kinds = await rows('#cx-list .ed-tkind');
-  check('★16 种类层只有真有节点的「事件」', kinds.length === 1 && kinds[0].label === '事件' && kinds[0].count === '1', kinds);
-  check('17 展开「事件」', await clickRow('tkind', '事件'));
-  await sleep(400);
-  const nodes = await rows('#cx-list [data-act="node"]');
-  check('★18 节点行在树里', nodes.some((r) => r.label === '王国的建立'), nodes);
-  check('19 点这个节点行', await clickRow('node', '王国的建立'));
+  /* ⑦ 点节点行 = 换到节点，左树同样留着 */
+  check('10 点节点行「王国的建立」', await clickRow('node', '王国的建立'));
   await sleep(900);
   const nodePicked = await ev(`({ path: document.querySelector('#cx-nodepath')?.textContent ?? '',
       props: document.querySelectorAll('#cx-props .ed-props > div').length,
-      treeStill: document.querySelectorAll('#cx-list .ed-tset').length })`);
-  check('★20 中栏换成该节点（面包屑 + 公共属性面板），左树没有被换掉',
-    nodePicked.path.includes('主线') && nodePicked.path.includes('事件') && nodePicked.props > 0 && nodePicked.treeStill === 1, nodePicked);
+      setRow: document.querySelectorAll('#cx-list .ed-tset').length })`);
+  check('★11 中栏换成该节点（面包屑 + 公共属性面板），左树没有被换掉',
+    nodePicked.path.includes('主线') && nodePicked.path.includes('事件') && nodePicked.props > 0 && nodePicked.setRow === 1, nodePicked);
 
-  /* ⑧ 搜索：树视图里节点与实体一起搜 */
+  /* ⑧ 搜索：跨类别命中，非空时摊平（没有世界层），清空后回到树 */
   await setSearch('银发');
   await sleep(500);
   const hits = await rows('#cx-list .ed-tnode');
-  check('★21 搜索在树视图里同时搜节点与实体（命中实体行）', hits.some((r) => r.act === 'entity' && r.label === '银发少女'), hits);
+  const flat = await ev(`document.querySelectorAll('#cx-list .ed-tworld').length`);
+  check('★12 搜索同时搜节点与实体（命中实体行），且摊平成命中列表（没有世界层）',
+    hits.some((r) => r.act === 'entity' && r.label === '银发少女') && flat === 0, { hits, worlds: flat });
   await setSearch('');
   await sleep(400);
-  const back = await ev(`document.querySelectorAll('#cx-list .ed-tset').length`);
-  check('22 清空搜索 → 回到树', back === 1, back);
+  check('13 清空搜索 → 回到那棵树', (await shape()).worlds === 1, await shape());
 
-  /* ⑨ 开关记成"下次打开的默认形态"，设置面板那组单选跟着显示 */
-  check('★23 localStorage 里的默认形态已写入 tree', (await setting()) === 'tree', await setting());
+  /* ⑨ 收起的枝在重画之后仍然收着（collapsed 语义：用户收起过的不该被别人的重画撑开） */
+  check('14 收起 `_设定` 那一枝', await clickRow('wset', '_设定'));
+  await sleep(350);
+  const afterClose = await ev(`document.querySelectorAll('#cx-list .ed-ttype').length`);
+  await setSearch('银');
+  await sleep(400);
+  await setSearch('');
+  await sleep(400);
+  const afterRedraw = await ev(`({ etype: document.querySelectorAll('#cx-list .ed-ttype').length,
+      setOpen: !!document.querySelector('#cx-list .ed-tset.is-open') })`);
+  check('★15 收起的那一枝在左列重画之后仍然收着',
+    afterClose === 0 && afterRedraw.etype === 0 && afterRedraw.setOpen === false, { afterClose, afterRedraw });
+  check('16 再点一次展开回来（收放两个方向都还在）', await clickRow('wset', '_设定'));
+  await sleep(350);
+  check('★17 展开后类型行回来', (await ev(`document.querySelectorAll('#cx-list .ed-ttype').length`)) > 0);
+
+  /* ⑩ 设置面板里**没有**形态单选（形态之争结束后那组控件应该彻底消失） */
   await click('[data-tool="settings"]');
   await sleep(800);
-  const radio = await ev(`(() => { const el = document.querySelector('input[name="wbView"]:checked'); return el ? el.value : null; })()`);
-  check('★24 设置面板里「工作台默认形态」显示成文件夹树', radio === 'tree', radio);
+  const wbRadios = await ev(`document.querySelectorAll('input[name="wbView"]').length`);
+  const wbText = await ev(`!!document.querySelector('#set-body') && (document.querySelector('#lk-module-view')?.textContent || '').includes('设定库（工作台）')`);
+  check('★18 设置面板里不再有「工作台默认形态」那组单选', wbRadios === 0 && wbText === false, { wbRadios, wbText });
   await click('[data-tool="codex"]');
   await sleep(1000);
-  const reopened = await ev(`({ worlds: document.querySelectorAll('#cx-list .ed-tworld').length,
-      chips: document.querySelectorAll('#cx-chips button').length,
-      setting: (() => { try { return JSON.parse(localStorage.getItem('lingkuang-settings') || '{}').workbenchView; } catch { return 'ERR'; } })() })`);
-  check('★25 重开工作台 → 直接就是上次选的文件夹树形态（展开态是新一轮，所以只看形态）',
-    reopened.chips === 0 && reopened.worlds >= 1 && reopened.setting === 'tree', reopened);
-
-  /* ⑩ 切回列表并复位（别污染后面在同一实例上跑的套件） */
-  check('26 切回列表', await click('#cx-view'));
-  await sleep(600);
-  const backList = await ev(`({ setRow: document.querySelectorAll('#cx-list .ed-tset').length,
-      chips: document.querySelectorAll('#cx-chips button').length,
-      worlds: document.querySelectorAll('#cx-list .ed-tworld').length,
-      flatNodes: document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]').length })`);
-  check('★27 回到列表形态（chips 回来、`_设定` 行消失、世界层消失）+ 默认形态也改回 list',
-    backList.setRow === 0 && backList.chips > 0 && backList.worlds === 0 && (await setting()) === 'list',
-    { ...backList, setting: await setting() });
+  check('19 重开工作台 → 还是那棵树（全展开）', (await shape()).worlds === 1 && (await shape()).etype > 0, await shape());
+  /* 把 `_设定` 恢复成展开，别把收起态留给同一实例上后面跑的套件 */
+  await clickRow('wset', '_设定');
+  await sleep(300);
 
   const errs = await ev(`window.__errs`);
-  check('28 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
+  check('20 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 
   const pass = results.filter(Boolean).length;
   console.log(`\n==== ${pass}/${results.length} PASS ====`);

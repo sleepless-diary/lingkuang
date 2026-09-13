@@ -52,7 +52,7 @@ async function main() {
   /* 页面内表达式片段（注意：这些是**字符串**，用 ${} 插进表达式里求值；
      不要把它写成函数再在页面里调用 —— 那样得到的是函数源码字符串） */
   const SEL = (n) => `[...document.querySelectorAll('#cx-fields > div')].find((r) => r.firstElementChild?.textContent === ${JSON.stringify(n)})?.querySelector('input,textarea')`;
-  const LIST = `[...document.querySelectorAll('[data-cx-id]')].map((b) => ({ id: b.dataset.cxId, name: b.children[0]?.textContent, type: b.children[1]?.textContent }))`;
+  const LIST = `[...document.querySelectorAll('[data-cx-id]')].map((b) => ({ id: b.dataset.cxId, name: b.children[0]?.textContent, type: b.dataset.cxType ?? b.children[1]?.textContent }))`;
   const DOC = `document.querySelector('#cx-doc .ProseMirror')?.textContent ?? null`;
   const clickTool = (t) => `document.querySelector('[data-tool=${JSON.stringify(t)}]').click(); true`;
   const confirmDanger = `(() => { const rows=[...document.body.children].filter((el)=>/position:\\s*fixed/.test(el.getAttribute?.('style')||'')); const d=rows[rows.length-1]; const bs=[...d.querySelectorAll('button')]; bs[bs.length-1].click(); return true; })()`;

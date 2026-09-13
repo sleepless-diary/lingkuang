@@ -45,8 +45,8 @@ export function registerAllTools(): void {
     },
   });
   /* 占位模块：素材库
-     （原「编辑器」工具已并入「设定库」工作台：左栏可切「列表 / 文件夹树」两个形态，
-       见 `src/ui/codex.ts` 与「设置 → 设定库（工作台）」。）*/
+     （原「编辑器」工具已并入「设定库」工作台：左栏是**一棵文件夹树**，
+       世界 → 时间线 → 种类 → 节点 ／ 世界 → `_設定` → 类型 → 实体，见 `src/ui/codex.ts`。）*/
   registerTool({ id: 'library', name: '素材库', icon: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>', placeholder: true });
 
   /* ── 管理组（左栏下段，贴着底部；见 registry.ts 的 `Tool.group`）──

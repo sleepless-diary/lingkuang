@@ -49,7 +49,7 @@ async function main() {
   await sleep(3000);
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
   await sleep(1200);
-  const list = await ev(`[...document.querySelectorAll('[data-cx-id]')].map((b) => ({ name: b.children[0]?.textContent, type: b.children[1]?.textContent }))`);
+  const list = await ev(`[...document.querySelectorAll('[data-cx-id]')].map((b) => ({ name: b.children[0]?.textContent, type: b.dataset.cxType ?? b.children[1]?.textContent }))`);
   check('★5 设定库里实体在、类型是「角色」（回扫没把它打回去）', Array.isArray(list) && list.length === 1 && list[0].type === '角色', list);
   check('6 文件没有被重复写成第二份', walk(path.join(VAULT, WS, '_设定')).length === 1, walk(path.join(VAULT, WS, '_设定')));
   const errs = await ev(`window.__errs`);

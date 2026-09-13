@@ -330,7 +330,7 @@
   ② 新加的 `#cx-hint`（平时 `display:none`）**不占错峰序号**，而 `motion-switch.cjs` ★1/★13 是
   按下标硬读子项的 ⇒ 25/25 掉到 23/25（改成 `.filter((x) => x.length)` 后恢复，已写进 README 铁律 12）。
 
-### 十二、左栏重做：撤掉两个页签，只留「筛什么」+「怎么摆」（用户 2026-09-13，**已做**）
+### 十二、左栏重做：撤掉两个页签，只留「筛什么」+「怎么摆」（用户 2026-09-13，**中间站 —— 已由第十三节取代**）
 
 用户原话：「**时间线节点和实体这两个按钮，列表和文件夹树的功能有点混乱，能不能重新设计一下**」
 → 我给了两个模型并问选哪个 → 用户：「**你来决定吧，这是一个创作者的工作台，以便利性为主**」。
@@ -361,6 +361,34 @@
   （`children[0]` = 名字、`children[1]` = 类型）⇒ 十几个按 `[data-cx-id]` 找行的老套件**一行都不用改**。
   ⚠️ `treeRow()` 里的属性写入从 `dataset[k]` 改成 `setAttribute('data-' + k)`：带连字符的键（`cx-id`）
   走 dataset 会抛 `SyntaxError: 'cx-id' is not a valid property name`。
+  ⚠️ 这一节的「两个控件」只活了几十分钟 —— 用户看完就说「把全部改成文件树的形式」，见第十三节。
+
+### 十三、左栏定型：只有一棵树，而且**默认全展开**（用户 2026-09-13，**已做**）
+
+用户原话：「**要不这样，把全部改成文件树的形式，这样子也方便看**」
+⇒ 形态之争到此结束：第十二节那两个控件（筛选 pills + 视图按钮）一起撤掉 —— 它们是中间站，不是终点。
+
+- **撤掉的东西**：列表形态（`listView`）、筛选 pills（`#cx-chips` / `[data-cx-chip]` / `renderChips()` /
+  `filteredEntities()`）、视图按钮（`#cx-view` / `VIEW_TIP` / `viewLabel()` / `viewBtnHtml()`）、
+  设置面板那组「工作台默认形态」单选与 `Settings.workbenchView` 字段（`DEFAULTS` 里那条也删）、
+  `#cx-chips` 那两行骨架、`searchPlaceholder()`、`.ed-tflat` / `.ed-tgroup` 两条 CSS。
+  现在左栏 = 一个搜索框 + 那棵树（`#cx-list`），`renderList()` 就是树本身（原来的 `renderTreeList()`）。
+- **为什么筛选也不需要**：**树的形状本身就是筛选** —— 要看哪一类就展开哪一枝；条目已经按
+  世界 → 时间线 → 种类（或 `_設定` → 类型）分好组，再叠一层 pills 只是把同一件事说两遍。
+  搜索保留，而且**跨类别**（非空时把命中摊平，一个框同时管"设定"和"事件"）。
+- **默认全展开**：`expandedWorlds/Tls/Kinds` 三个 Set **语义反转**成 `collapsedWorlds/Tls/Kinds`
+  （记"被收起来的"那些），配一对一行函数 `isOpen(set, key)` / `toggleOpen(set, key)` ——
+  空 Set（初始状态）就是全展开。用户的话是"方便看"：打开左栏就该看到全部条目，
+  而不是先点三层才看见东西；点一下 = 收起那一枝。收起态**跨重画保持**（`renderList()` 只读不写那几个 Set）。
+- **连带的测试收益**：`[data-cx-id]`（实体行）与 `[data-act="node"]`（节点行）开箱即见 ⇒
+  `codex-smooth-switch` / `kind-change-stale-file` / `motion-switch` 里"先展开再点"的步骤全都不需要了。
+  ⚠️ 反过来，`workbench-tree-folders.cjs` 里原来那些"点一下展开"的步骤**现在会变成收起** ⇒
+  改成 `rowOpen(act, label)` 先读 `is-open` 再决定点不点（★0/1/3/12/★17 都改成"默认就展开"的断言）。
+- **新的稳定抓手**：实体行仍带 `data-cx-id`，另外补了 **`data-cx-type`**（树上**不显示**类型 ——
+  上一层文件夹已经写着它了）；`entity-vault.cjs` / `cold-start-entity-vault.cjs` /
+  `startup-materialize-entity.cjs` 原来读 `children[1]`（旧列表行的第二个 span）当类型，改读 `data-cx-type`。
+- ⚠️ **旧键 `workbenchView` 从此与形态无关**：`codex-tree-view.cjs` 开头故意把它写成 `'list'` 再开工具，
+  断言左栏**照样**是那棵树（守着"形态不再由设置决定"）。
 
 ### 验证（五/六/七/八/九/十/十一）
 
@@ -398,6 +426,23 @@
   文件夹 = 世界文件夹 + 按钮写「视图 文件夹」）。
   ⚠️ 又踩了两次"套件不自足/前提变了"，两次都不是产品问题：`codex-tree-view` 在 `lk-motion` 上跑（那里没有空类型）
   挂 ★7/8/★9；`startup-materialize-entity` 少了 `seed-json-only-entity.cjs` 挂 ★1/2/3。
+
+- 第十三节（左栏定型）—— 全绿，用的都是**干净起点**（播种 + 重启）：
+  `codex-tree-view.cjs` 重写成 **21/21**（原来那套"两种形态 30 项"整段作废）：★1 左栏只有一棵树
+  （没有页签 / 形态开关 / pills）、★2 默认全展开（tl/kind/node/setRow/etype/ent 一次点击都不用）、
+  ★2b 形态与旧键 `workbenchView` 无关、★3 层级顺序 = 硬盘目录、★4 种类只列真有节点的、
+  ★5/★6 空类型在且置灰 + 一句人话、★8/★9 点实体行换中栏且左树没被换掉、★11 点节点行、
+  ★12 搜索跨类别且摊平、★15 收起的那一枝**在左栏重画之后仍然收着**、★17 再展开回来、
+  ★18 设置面板里**没有**形态单选了。
+  `codex-node-tab.cjs` **18/18**（★1 改成"只有一棵树"、★2 改成"打开就是全展开"、★3 改成"点世界行收起/再点展开"、
+  ★4 改成"层级顺序 = 硬盘目录"、★5/★5b 改成"种类只有事件 / 节点就在树里"、★14 去掉切形态那一步）。
+  `workbench-tree-folders.cjs` **29/29**（展开步骤改成幂等的 `rowOpen` 判读；★26b 从"切一次视图形态"
+  改成"收起再展开 `_設定` 后仍在编辑这个实体、高亮与展开态都回来"）。
+  回归：`codex-smooth-switch` **16/16**（多亏 `data-cx-id` 默认可见；★0 的 38 行一次查全）、
+  `kind-change-stale-file` **11/11**（步骤① 去掉 `@node` chip，直接点树里的节点行）、
+  `motion-switch` **25/25**、`entity-evolution` **38/38**（重新播种 + 重启，含以往偶发的 ★5/★5b/★10d/★14b）、
+  `entity-vault` **17/17** + 冷启动 PASS、`startup-materialize-entity` **6/6**、`codex-switch-target` **7/7**、
+  `data-load-clean` **6/6**、`toolbar-groups` **4/4**；`tsc --noEmit` / `vite build` 全 exit 0。
 - 回归（历史）：`codex-node-tab.cjs` 15/15、`editor-props-panel.cjs` 9/9（同一实例接着跑）。
 
 ## 第二十轮（2026-09-12）· 动效层第 A 片（切换类）+ 一条新发现的数据损失

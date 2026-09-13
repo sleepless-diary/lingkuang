@@ -10,7 +10,8 @@
 
    用法：reset + seed-editor-tree.cjs → **重启应用**（formats.json 是启动时读的）→ 跑本脚本。
          `LK_CDP_PORT=xxxx node tools/e2e/workbench-tree-folders.cjs`
-   ⚠️ 套件自足：开头先把 `localStorage` 的 `workbenchView` 写成 'tree'（不然上次跑剩的 list 会让断言错位）。 */
+   ⚠️ 左栏**只有这一棵树**且**默认全展开**（用户 2026-09-13：「把全部改成文件树的形式，这样子也方便看」）
+      ⇒ 这里不再有"点开某一层"的步骤（点了反而会收起）；形态也与设置无关，不用复位 localStorage。 */
 const PORT = process.env.LK_CDP_PORT || '9334';
 const WS = '测试世界观';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -46,23 +47,26 @@ async function main() {
       act: e.dataset.act ?? '', nid: e.dataset.nid ?? '', label: e.querySelector('.ed-tlabel')?.textContent ?? '',
       count: e.querySelector('.ed-tcount')?.textContent ?? '', empty: e.classList.contains('is-empty'),
       on: e.classList.contains('is-on'), open: e.classList.contains('is-open') }))`);
+  /** 某一行现在是不是展开着（默认全展开 ⇒ 点一下是**收起**，别瞎点） */
+  const rowOpen = (act, label) => ev(`(() => {
+    const el = [...document.querySelectorAll('#cx-list .ed-tnode')]
+      .filter((e) => e.dataset.act === ${JSON.stringify(act)})
+      .find((e) => (e.querySelector('.ed-tlabel')?.textContent ?? '') === ${JSON.stringify(label)});
+    return el ? el.classList.contains('is-open') : null; })()`);
   const empties = () => ev(`[...document.querySelectorAll('#cx-list .ed-tempty')].map((e) => e.textContent)`);
 
   await sleep(1500);
   await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); true`);
-  await ev(`(() => { const k = 'lingkuang-settings'; const s = JSON.parse(localStorage.getItem(k) || '{}'); s.workbenchView = 'tree'; localStorage.setItem(k, JSON.stringify(s)); return true; })()`);
   await click('[data-tool="codex"]');
   await sleep(1200);
   const opened = await ev(`({ worlds: document.querySelectorAll('#cx-list .ed-tworld').length, chips: document.querySelectorAll('#cx-chips button').length })`);
-  check('0 工作台打开就是文件夹树形态（左树有世界层、类型 chips 不在）', opened.worlds === 1 && opened.chips === 0, opened);
+  check('0 工作台打开就是文件夹树（左树有世界层、类型 chips 不在）', opened.worlds === 1 && opened.chips === 0, opened);
 
-  /* 展开 世界 → 时间线 */
-  check('1 展开世界', await clickRow('world', WS));
-  await sleep(350);
+  /* 世界/时间线**默认就是展开的**（点一下反而是收起） */
+  check('1 世界默认展开（一次点击都不用）', (await rowOpen('world', WS)) === true, await rowOpen('world', WS));
   const tls = await rowsOf('.ed-ttl');
   check('2 时间线下有这条时间线', tls.some((r) => r.label === '主线'), tls);
-  check('3 展开时间线', await clickRow('tl', '主线'));
-  await sleep(350);
+  check('3 时间线也默认展开（种类层已经在）', tls.every((r) => r.open === true), tls);
 
   /* ── ① 时间线下只列**真的有节点**的种类（= 硬盘上真有的文件夹） ────── */
   const kinds = await rowsOf('.ed-tkind');
@@ -83,8 +87,7 @@ async function main() {
              tl: px(document.querySelector('#cx-list .ed-ttl')),
              world: px(document.querySelector('#cx-list .ed-tworld')) }; })()`);
   check('★11b `_設定` 与时间线同一缩进（不跟世界平级）', indent.set === indent.tl && indent.set !== indent.world, indent);
-  check('12 展开 `_設定`', await clickRow('wset', '_设定'));
-  await sleep(350);
+  check('12 `_設定` 默认展开（类型层已经在）', (await rowOpen('wset', '_设定')) === true, await rowOpen('wset', '_设定'));
   const etypes = await rowsOf('.ed-tset-type');
   const role = etypes.find((r) => r.label === '角色');
   const place = etypes.find((r) => r.label === '地点');
@@ -98,12 +101,9 @@ async function main() {
   })()`);
   check('★15 全树里「角色」只出现一次，且在 `_設定` 下（不是时间线下的种类）',
     roleEverywhere.length === 1 && roleEverywhere[0].includes('ed-tset-type'), roleEverywhere);
-  check('16 展开空的「地点」', await clickRow('etype', '地点'));
-  await sleep(300);
+  /* 空类型**默认就是展开的** ⇒ 那句人话本来就在（点一下反而会把它收起来） */
   const es2 = await empties();
   check('★17 空的类型展开后给一句人话', es2.some((t) => String(t).includes('这个类型还没有实体')), es2);
-  check('18 展开「角色」', await clickRow('etype', '角色'));
-  await sleep(300);
   const ents = await rowsOf('[data-act="entity"]');
   check('★19 「角色」下有实体行（e-tree-a 银发少女）', ents.some((r) => r.nid === 'e-tree-a' && r.label === '银发少女'), ents);
 
@@ -131,21 +131,20 @@ async function main() {
   check('★24 中栏是这个实体（名字 = 银发少女）', after.name === '银发少女', after.name);
   check('★25 正文换成实体自己的正文', String(after.doc).includes('雪原独行'), after.doc);
   check('★26 中栏是实体字段（发色）', after.fields.includes('发色'), after.fields);
-  /* 切一次视图形态（文件夹 → 列表 → 文件夹）：正在编辑的实体与展开态都不该被弄丢。
-     （原来这里是「手动切到实体页签」；左栏 2026-09-13 重做后页签没了，换成视图按钮这个等价守卫。） */
-  await click('#cx-view');
-  await sleep(600);
-  const inList = await ev(`({ name: document.querySelector('#cx-name')?.value ?? '',
-      chips: document.querySelectorAll('#cx-chips button').length,
-      on: !!document.querySelector('#cx-list [data-cx-id="e-tree-a"]')?.classList.contains('is-on') })`);
-  await click('#cx-view');
-  await sleep(600);
+  /* 收起 `_設定` 再展开：正在编辑的实体与它的高亮都不该被弄丢。
+     （原来这里是「切一次视图形态」；左栏 2026-09-13 只剩一棵树后，换成"收放一枝"这个等价守卫。） */
+  await clickRow('wset', '_设定');
+  await sleep(400);
+  const closed = await ev(`({ name: document.querySelector('#cx-name')?.value ?? '',
+      etype: document.querySelectorAll('#cx-list .ed-ttype').length })`);
+  await clickRow('wset', '_设定');
+  await sleep(400);
   const still = await ev(`({ name: document.querySelector('#cx-name')?.value ?? '',
       on: !!document.querySelector('#cx-list [data-act="entity"][data-nid="e-tree-a"]')?.classList.contains('is-on'),
       setOpen: !!document.querySelector('#cx-list .ed-tset')?.classList.contains('is-open') })`);
-  check('★26b 切一次视图形态（文件夹 → 列表 → 文件夹）后，还在编辑这个实体、展开态没丢',
-    inList.name === '银发少女' && inList.chips > 0 && inList.on === true
-      && still.name === '银发少女' && still.on === true && still.setOpen === true, { inList, still });
+  check('★26b 收起再展开 `_設定` 后，还在编辑这个实体、高亮与展开态都回来',
+    closed.name === '银发少女' && closed.etype === 0
+      && still.name === '银发少女' && still.on === true && still.setOpen === true, { closed, still });
 
   const errs = await ev(`window.__errs`);
   check('27 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

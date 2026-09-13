@@ -44,38 +44,57 @@ async function main() {
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
   await sleep(1200);
 
-  /* ① 左列只有「筛什么」（chips）与「怎么摆」（一个视图按钮）—— 两个页签已在 2026-09-13 的
-        左栏重做里撤掉（用户报「两个按钮 + 两个开关有点混乱」）。这条断言守着"别再长出第二套开关"。 */
-  const chips = await ev(`[...document.querySelectorAll('#cx-chips [data-cx-chip]')].map((b)=>b.textContent.trim())`);
-  const tabCount = await ev(`document.querySelectorAll('#cx-tab-entity,#cx-tab-node').length`);
-  check('1 左列是「全部 / 各类型 / 时间线节点」筛选 pills（页签已撤掉、没有两套开关）',
-    Array.isArray(chips) && chips.some((c) => c.includes('全部')) && chips.some((c) => c.includes('时间线节点')) && tabCount === 0,
-    { chips, tabCount });
-
-  /* ② 筛「时间线节点」→ 列表摊平（一列条目，**不分世界/时间线层级**） */
-  await ev(`document.querySelector('#cx-chips [data-cx-chip="@node"]').click(); true`);
-  await sleep(400);
-  const flat = await ev(`({ rows: document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]').length,
+  /* ① 左栏**只有一棵树** —— 没有类别页签、没有形态开关、也没有筛选 pills。
+        形态之争到此结束（用户 2026-09-13 的两句话）：
+          「时间线节点和实体这两个按钮，列表和文件夹树的功能有点混乱」→ 重做成「筛选 + 一个视图开关」
+          → 又说「把全部改成文件树的形式，这样子也方便看」。
+        这条断言守着"别再长出第二套控件 / 第二种长相"。 */
+  const ctl = await ev(`({ chips: document.querySelectorAll('#cx-chips,[data-cx-chip]').length,
+                            view: document.querySelectorAll('#cx-view').length,
+                            tabs: document.querySelectorAll('#cx-tab-entity,#cx-tab-node').length,
                             worlds: document.querySelectorAll('#cx-list .ed-tworld').length })`);
-  check('2 筛到「时间线节点」后是一列平铺条目（没有世界层）', flat.rows > 0 && flat.worlds === 0, flat);
+  check('1 左栏只有一棵树（没有类别页签 / 形态开关 / 筛选 pills）',
+    ctl.chips === 0 && ctl.view === 0 && ctl.tabs === 0 && ctl.worlds === 1, ctl);
 
-  /* ③ 切成「文件夹」形态 → 世界→时间线→种类→节点 四级树 */
-  await click('#cx-view');
-  await sleep(400);
-  const worldOk = await waitFor(() => ev(`!!document.querySelector('#cx-list .ed-tworld')`));
-  check('3 文件夹形态渲染了世界层（.ed-tworld）', worldOk, await ev(LIST_TEXTS));
+  /* ② 树**默认全展开**：一次点击都不用，各层就都在（"方便看"就是这个意思） */
+  const open0 = await ev(`({ tl: document.querySelectorAll('#cx-list .ed-ttl').length,
+                              kind: document.querySelectorAll('#cx-list .ed-tkind').length,
+                              node: document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]').length,
+                              set: document.querySelectorAll('#cx-list .ed-tset').length,
+                              etype: document.querySelectorAll('#cx-list .ed-ttype').length,
+                              ent: document.querySelectorAll('#cx-list .ed-tnode-item[data-act="entity"]').length,
+                              worldOpen: !!document.querySelector('#cx-list .ed-tworld.is-open') })`);
+  check('2 打开就是全展开（时间线/种类/节点/设定/类型/实体 都在，无需点击）',
+    open0.worldOpen && open0.tl > 0 && open0.kind > 0 && open0.node > 0 && open0.set > 0 && open0.etype > 0 && open0.ent > 0, open0);
+
+  /* ③ 收放都还在：点世界行收起它这一枝，再点展开回来 */
   await click('#cx-list .ed-tworld');
-  await sleep(400);
-  const tlOk = await waitFor(() => ev(`!!document.querySelector('#cx-list .ed-ttl')`));
-  check('4 展开世界后有「时间线」层', tlOk, await ev(LIST_TEXTS));
-  await click('#cx-list .ed-ttl');
-  await sleep(400);
-  const kindOk = await waitFor(() => ev(`!!document.querySelector('#cx-list .ed-tkind')`));
-  check('5 展开时间线后有「种类」层', kindOk, await ev(LIST_TEXTS));
-  await click('#cx-list .ed-tkind');
-  await sleep(400);
-  const nodeOk = await waitFor(() => ev(`!!document.querySelector('#cx-list .ed-tnode-item')`));
-  check('5b 展开种类后有节点条目', nodeOk, await ev(LIST_TEXTS));
+  await sleep(300);
+  const closed = await ev(`({ tl: document.querySelectorAll('#cx-list .ed-ttl').length,
+                               set: document.querySelectorAll('#cx-list .ed-tset').length })`);
+  await click('#cx-list .ed-tworld');
+  await sleep(300);
+  const reopened = await ev(`({ tl: document.querySelectorAll('#cx-list .ed-ttl').length,
+                                set: document.querySelectorAll('#cx-list .ed-tset').length })`);
+  check('3 点世界行收起、再点展开（默认展开 ≠ 不能收）',
+    closed.tl === 0 && closed.set === 0 && reopened.tl > 0 && reopened.set > 0, { closed, reopened });
+
+  /* ④ 层级与顺序 = 硬盘目录：世界 → 时间线 → 种类 → 节点，然后 世界 → _设定 → 类型 → 实体 */
+  const order = await ev(`[...document.querySelectorAll('#cx-list .ed-tree > .ed-tnode')].map((x)=>({cls:x.className, t:(x.querySelector('.ed-tlabel')?.textContent||'')}))`);
+  const at = (pred) => (order || []).findIndex(pred);
+  const iTl = at((r) => r.cls.includes('ed-ttl'));
+  const iKind = at((r) => r.cls.includes('ed-tkind'));
+  const iNode = at((r) => r.cls.includes('ed-tnode-item') && r.t === '王国的建立');
+  const iSet = at((r) => r.cls.includes('ed-tset'));
+  const iType = at((r) => r.cls.includes('ed-ttype'));
+  const iEnt = at((r) => r.cls.includes('ed-tnode-item') && r.t === '银发少女');
+  check('4 层级顺序 = 硬盘目录（时间线 → 种类 → 节点，然后 _设定 → 类型 → 实体）',
+    iTl > 0 && iTl < iKind && iKind < iNode && iNode < iSet && iSet < iType && iType < iEnt,
+    { iTl, iKind, iNode, iSet, iType, iEnt, rows: (order || []).map((r) => r.t) });
+  check('5 种类层是「事件」（节点种类只列真有节点的，跟实体类型不撞名）',
+    (order || []).some((r) => r.cls.includes('ed-tkind') && r.t === '事件'), (order || []).map((r) => r.t));
+  check('5b 节点条目就在树里（不用展开也能点）',
+    (order || []).some((r) => r.cls.includes('ed-tnode-item') && r.t === '王国的建立'), (order || []).map((r) => r.t));
 
   /* ③ 选中节点 → 中栏是**公共属性面板**、右栏是正文编辑器 */
   await clickText('#cx-list .ed-tnode-item', '王国的建立');
@@ -131,12 +150,9 @@ async function main() {
   await sleep(500);
   check('13 搜不到时给出空提示', String(await ev(`document.querySelector('#cx-list')?.textContent ?? ''`)).includes('没有匹配的条目'), await ev(`document.querySelector('#cx-list')?.textContent`));
 
-  /* ⑦ 切回看设定（列表形态 + 「全部」）→ 正文框要换成实体的正文，不能留着节点的（跨类别不串文档） */
+  /* ⑦ 切回看设定 → 正文框要换成实体的正文，不能留着节点的（跨类别不串文档） */
   await ev(`(() => { const s=document.querySelector('#cx-search'); s.value=''; s.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`);
-  await click('#cx-view');   /* 回到列表形态 */
   await sleep(400);
-  await ev(`document.querySelector('#cx-chips [data-cx-chip="all"]').click(); true`);
-  await sleep(300);
   await ev(`document.querySelector('#cx-list .ed-tnode-item[data-act="entity"]').click(); true`);
   await sleep(900);
   const entView = await ev(`!!document.querySelector('#cx-name')`);

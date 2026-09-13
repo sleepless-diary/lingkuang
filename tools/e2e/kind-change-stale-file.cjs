@@ -81,12 +81,12 @@ async function main() {
   await sleep(1500);
   await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); true`);
 
-  /* ① 进工作台，筛到「时间线节点」→ 列表里直接点那条。
-     左栏 2026-09-13 重做后没有页签、列表也不再分世界/时间线层级（平铺），所以不必再逐层展开。 */
+  /* ① 进工作台，在左树里直接点那条节点。
+     左栏 2026-09-13 定型：**只有一棵树、默认全展开**（没有页签、没有筛选 pills、没有形态开关），
+     也不再有"平铺列表"那套 —— 节点行本来就在树里，一次点击都不用先展开。 */
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
   await sleep(1200);
-  await click('#cx-chips [data-cx-chip="@node"]'); await sleep(600);
-  await clickText('#cx-list .ed-tnode-item', TITLE);
+  await clickText('#cx-list .ed-tnode-item[data-act="node"]', TITLE);
   await sleep(900);
 
   check('1 选中节点后「种类」显示为旧种类（文件夹名当权威）', (await kindNow()) === OLD_KIND, await kindNow());
