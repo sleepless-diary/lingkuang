@@ -493,11 +493,24 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
      而同一页签内换条目，**真正该变的只有三样**：名字/类型/字段行、正文、左列那条高亮。
      所以这里保住骨架，只换这三样，再给内容区一次轻淡入（`.lk-swap-in` 从 0.5 不透明度落位 —— 
      不是从透明开始：从 0 出来就是"闪一下白"，那是用户报过的老毛病，别再犯）。
-     返回 false = 这次不该走这条路（换页签 / 换世界 / 条目被删空 / 骨架还没建好）⇒ 调用方整块 render()。 */
+     返回 false = 这次不该走这条路（骨架还没建好 / 一条实体都没有那种空条目版）⇒ 调用方整块 render()。
+     **换类别**（节点 ↔ 实体）也走这里：见下面 `renderedMode !== mode` 那一支与 `mountBody()`。 */
   function swapBody(): boolean {
-    if (renderedMode !== mode || !host.querySelector('#cx-root')) return false;
+    if (!host.querySelector('#cx-root')) return false;
     const body = host.querySelector<HTMLElement>('#cx-body');
     if (!body) return false;
+    /* **换类别**（时间线节点 ↔ 设定条目）：中栏结构不同，但骨架不用动 —— 只重造 `#cx-body`
+       （见 mountBody），左树、顶栏、帧条元素与 `#cx-root` 的滚动位置全留着。 */
+    if (renderedMode !== mode) {
+      if (mode === 'entity') { normalizeEntitySelection(); ensureRailSelection(); }
+      if (!mountBody()) return false;
+      renderList();          /* 左列只动高亮 —— 那一列同时装着两类条目，不用重建 */
+      rail?.render();        /* 帧条跟着换（节点模式它藏着，重画无害） */
+      pendingEnter = false;  /* 骨架没重建 ⇒ 不该有整块错峰 */
+      bodySig = bodySignature();
+      enter(body, 'lk-swap-in');
+      return true;
+    }
     let next: DocTarget;
     let md: string;
     if (mode === 'entity') {
@@ -574,19 +587,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     }
   }
 
-  function render(): void {
-    /* 切条目 / 换页签 / 重渲染前先把正文结算掉（未失焦的编辑也在里面），再销毁旧实例。
-       结算用的是**旧** docTarget，所以清空它必须排在这一步之后。 */
-    if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }
-    docTarget = null;
-    propsPanel = null;   /* 旧面板的宿主元素马上要被换掉，留着没用 */
-    /* 目标没了（外部删掉 / 换世界）→ 清掉，免得面板显示一条不存在的数据 */
-    if (nodeTarget && !activeNode()) nodeTarget = null;
-    const isEntity = mode === 'entity';
-    normalizeEntitySelection();
-    ensureRailSelection();   /* 实体页签：把"站在哪个事件上看"与各版本的样子准备好 */
+  /** 中/右栏那一块的 HTML（按当前 mode）。
+   *  `render()` 建骨架时用它；**换类别**（实体 ↔ 节点）时也用它 —— 那时只把 `#cx-body` 里这一块
+   *  换掉，骨架、左树与滚动位置都留着（见 mountBody）。写在 render() 外面就是为了能两处共用。 */
+  function bodyHtml(): string {
     const kinds = Object.keys(types());
-    const mainEnt = (): string => {
+    if (mode === 'entity') {
       const st = viewState();
       if (!st) return '<div style="font-size:var(--text-xs);color:var(--fg-2);">左边选一个实体看图。</div>';
       return `
@@ -604,21 +610,33 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
           ${docBar('正文（Markdown · 失焦自动保存 · 落在 vault 的 <code>_设定/&lt;类型&gt;/&lt;名字&gt;.md</code>）')}
           <div id="cx-doc"></div>
         </div>`;
-    };
-    const mainNode = (): string => {
-      const t = nodeTarget;
-      const n = activeNode();
-      if (!t || !n) return '<div style="font-size:var(--text-xs);color:var(--fg-2);">左边选一个时间线节点看图。</div>';
-      const tlName = store.data.worldsets[t.world]?.timelines[t.tlId]?.name ?? t.tlId;
-      const kind = n.kind || '事件';
-      return `
-        <div id="cx-nodepath" style="font-size:var(--text-xs);color:var(--fg-2);margin-bottom:8px;">${escapeHtml(t.world)} · ${escapeHtml(tlName)} · ${escapeHtml(kind)}</div>
-        <div id="cx-props" style="display:flex;flex-direction:column;gap:5px;"></div>
-        <div style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
-          ${docBar('正文（Markdown · 失焦自动保存）')}
-          <div id="cx-doc"></div>
-        </div>`;
-    };
+    }
+    const t = nodeTarget;
+    const n = activeNode();
+    if (!t || !n) return '<div style="font-size:var(--text-xs);color:var(--fg-2);">左边选一个时间线节点看图。</div>';
+    const tlName = store.data.worldsets[t.world]?.timelines[t.tlId]?.name ?? t.tlId;
+    const kind = n.kind || '事件';
+    return `
+      <div id="cx-nodepath" style="font-size:var(--text-xs);color:var(--fg-2);margin-bottom:8px;">${escapeHtml(t.world)} · ${escapeHtml(tlName)} · ${escapeHtml(kind)}</div>
+      <div id="cx-props" style="display:flex;flex-direction:column;gap:5px;"></div>
+      <div style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
+        ${docBar('正文（Markdown · 失焦自动保存）')}
+        <div id="cx-doc"></div>
+      </div>`;
+  }
+
+  function render(): void {
+    /* 切条目 / 换页签 / 重渲染前先把正文结算掉（未失焦的编辑也在里面），再销毁旧实例。
+       结算用的是**旧** docTarget，所以清空它必须排在这一步之后。 */
+    if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }
+    docTarget = null;
+    propsPanel = null;   /* 旧面板的宿主元素马上要被换掉，留着没用 */
+    /* 目标没了（外部删掉 / 换世界）→ 清掉，免得面板显示一条不存在的数据 */
+    if (nodeTarget && !activeNode()) nodeTarget = null;
+    const isEntity = mode === 'entity';
+    normalizeEntitySelection();
+    ensureRailSelection();   /* 实体页签：把"站在哪个事件上看"与各版本的样子准备好 */
+    const kinds = Object.keys(types());
     const newCtl = isEntity && kinds.length
       ? `<select id="cx-new-type" title="新实体的类型" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 6px;font-size:var(--text-xs);outline:none;">${kinds.map((k) => `<option value="${escapeHtml(k)}">${escapeHtml(typeName(k))}</option>`).join('')}</select>
          <button id="cx-new" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:6px 14px;font-size:var(--text-xs);cursor:pointer;">＋新建实体</button>`
@@ -629,7 +647,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <div style="font-size:17px;font-weight:600;color:var(--fg);">设定库</div>
           <span style="font-size:var(--text-xs);color:var(--fg-2);">「${escapeHtml(store.activeWorld || '（未选世界）')}」的条目 · 字段由模板决定（在左栏「结构体管理」里改模板）</span>
-          <span style="margin-left:auto;display:flex;gap:6px;align-items:center;">${newCtl}</span>
+          <span id="cx-newbox" style="margin-left:auto;gap:6px;align-items:center;${isEntity ? 'display:flex;' : 'display:none;'}">${newCtl}</span>
         </div>
         <div id="cx-hint" style="display:none;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:rgba(217,101,92,.12);font-size:var(--text-xs);color:var(--fg);line-height:1.5;"></div>
         <div style="display:flex;gap:12px;align-items:flex-start;">
@@ -638,9 +656,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
             <div id="cx-list" style="display:flex;flex-direction:column;gap:1px;"></div>
           </div>
           <div id="cx-body" style="flex:1;min-width:0;border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;">
-            ${isEntity ? mainEnt() : mainNode()}
+            ${bodyHtml()}
           </div>
-          ${isEntity ? '<div id="cx-rail" class="lk-rail" title="演变：站在某个事件上看这条设定"></div>' : ''}
+          <!-- 右栏那条竖线**常驻**（节点模式只是藏起来）—— 换类别时就不用动骨架，见 mountBody -->
+          <div id="cx-rail" class="lk-rail" title="演变：站在某个事件上看这条设定" style="${isEntity ? '' : 'display:none;'}"></div>
         </div>
         <div id="cx-msg" style="font-size:var(--text-xs);display:none;"></div>
       </div>`;
@@ -707,6 +726,21 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       switchTarget(() => { activeId = id; });
       say('已新建，改个名字吧');
     });
+    /* 外部改动提示条：宿主刚被整块重建，把已有提示重画进来（提示是累积的，不因切条目而丢） */
+    vaultNotices?.refresh();
+    /* 中/右栏那一块的接线（编辑器 / 属性面板 / 字段行 / 各按钮）—— 与换类别时共用，见 wireBody */
+    wireBody();
+    /* 骨架重建完就把签名对齐，免得下一次 store 变化因为签名过期而白重建一次 */
+    bodySig = bodySignature();
+    /* 记下这版骨架是按哪一类建的：相同类别内换条目才敢走"只换内容"那条轻路径 */
+    renderedMode = mode;
+  }
+
+  /** 把中/右栏那一块接上（建 tiptap、属性面板、字段行、各按钮）。
+   *  `render()` 建完骨架调它；**换类别**只重造 `#cx-body` 之后也调它（见 mountBody）。
+   *  两处各写一遍必漂移 —— 这一课抽公共属性面板时吃过。 */
+  function wireBody(): void {
+    const isEntity = mode === 'entity';
     host.querySelector('#cx-name')?.addEventListener('change', () => {
       const inp = host.querySelector('#cx-name') as HTMLInputElement;
       /* 改名走**当前那一版**：初稿就改实体自己（文件名跟着变），某一帧上就记进那帧的差异
@@ -790,10 +824,29 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         say('已删除');
       });
     });
-    /* 骨架重建完就把签名对齐，免得下一次 store 变化因为签名过期而白重建一次 */
-    bodySig = bodySignature();
-    /* 记下这版骨架是按哪个页签建的：同页签内换条目才敢走就地换内容（中栏结构相同） */
+  }
+
+  /** 换**类别**（时间线节点 ↔ 设定条目）时只重造 `#cx-body` 那一块。
+   *  用户 2026-09-13：「从事件节点切换到实体节点时，事件节点保持选中状态，**且面板刷新**」——
+   *  旧写法（`renderedMode !== mode` 就整块 `render()`）一次点击要付三样代价：左列那棵树重播一遍错峰、
+   *  `#cx-root`（滚动容器）被换掉 ⇒ 滚动回顶、tiptap 重建。而中/右栏之外的东西**本来就不用动**：
+   *  左树同时装着两类条目、顶栏只有那个「＋新建实体」要显隐、帧条元素常驻（节点模式藏起来）。
+   *  所以这里只换内容 + 重新接线。返回 false = 骨架不在（调用方整块 render()）。 */
+  function mountBody(): boolean {
+    const body = host.querySelector<HTMLElement>('#cx-body');
+    if (!body) return false;
+    /* 旧编辑器/面板都住在这一块里：先结算正文（用旧 docTarget），再销毁 */
+    if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }
+    docTarget = null;
+    propsPanel = null;   /* 旧面板跟着旧 DOM 一起没了 */
+    body.innerHTML = bodyHtml();
+    const railHost = host.querySelector<HTMLElement>('#cx-rail');
+    if (railHost) railHost.style.display = mode === 'entity' ? '' : 'none';
+    const newBox = host.querySelector<HTMLElement>('#cx-newbox');
+    if (newBox) newBox.style.display = mode === 'entity' ? 'flex' : 'none';
+    wireBody();
     renderedMode = mode;
+    return true;
   }
 
   /** 中/右栏「该显示什么」的内容签名（目标身份 + 字段 + 正文）。
@@ -867,7 +920,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         return;
       }
       nodeHits.forEach((h) => {
-        const on = !!nodeTarget && nodeTarget.world === h.world && nodeTarget.tlId === h.tlId && nodeTarget.nodeId === h.node.id;
+        const on = mode === 'node' && !!nodeTarget && nodeTarget.world === h.world && nodeTarget.tlId === h.tlId && nodeTarget.nodeId === h.node.id;
         frag.appendChild(treeRow('ed-tnode-item' + (on ? ' is-on' : ''),
           `<span class="ed-tlabel">${escapeHtml(h.node.title)}</span><span class="ed-tcount">${escapeHtml(h.kind)}</span>`,
           { act: 'node', nw: h.world, ntl: h.tlId, nid: h.node.id }));
@@ -915,7 +968,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
             { act: 'tkind', nw: g.world, ntl: g.tlId, nk: kind }));
           if (!kOpen) continue;
           for (const n of nodes) {
-            const on = !!nodeTarget && nodeTarget.world === g.world && nodeTarget.tlId === g.tlId && nodeTarget.nodeId === n.id;
+            /* ⚠️ 高亮必须**同时**看「选的是谁」和「现在在编哪一类」——只是 nodeTarget 匹配的话，
+               切到实体后这一行还亮着（用户 2026-09-13：「从事件节点切换到实体节点时，事件节点保持选中状态」）。 */
+            const on = mode === 'node' && !!nodeTarget && nodeTarget.world === g.world && nodeTarget.tlId === g.tlId && nodeTarget.nodeId === n.id;
             frag.appendChild(treeRow('ed-tnode-item' + (on ? ' is-on' : ''),
               `<span class="ed-tlabel">${escapeHtml(n.title)}</span>`,
               { act: 'node', nw: g.world, ntl: g.tlId, nid: n.id }));

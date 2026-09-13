@@ -244,30 +244,43 @@ async function main() {
   check('★12 弹窗动画终态后可正常操作（finish 后 opacity=1；点取消后遮罩消失）',
     s5 && s5.opacity === '1' && cancelOk && !(await ev(`!!document.querySelector('.lk-pop-in')`)), { s5, cancelOk });
 
-  /* ── ⑥ 工作台「换类别」+ 换条目：内容块入场 ──
-     左栏重做后没有页签了（用户 2026-09-13：「两个按钮的功能有点混乱」）——
-     点另一个类别的**那一行**就是"换类别"（mode 从 entity 变 node ⇒ 骨架换形状 ⇒ 整块重建 + 错峰）。
-     套件自足：先把左栏形态复位成 list 再开工具，免得上一次跑剩的 tree/筛选让行选择器落空。 */
+  /* ── ⑥ 工作台「换类别」+ 换条目：**不再**整块重建（用户 2026-09-13 报的「面板刷新」）──
+     两条都只重造 `#cx-body` 那一块，所以这里守的是"整块错峰不许再出现"（★13/★14）。
+     左栏重做后没有页签了：点另一类别的**那一行**就是"换类别"。套件自足：先把左栏形态复位成
+     list 再开工具，免得上一次跑剩的 tree/筛选让行选择器落空。 */
   await ev(`(() => { const k = 'lingkuang-settings'; const s = JSON.parse(localStorage.getItem(k) || '{}'); s.workbenchView = 'list'; localStorage.setItem(k, JSON.stringify(s)); return true; })()`);
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
   await waitFor(`!!document.querySelector('#cx-list [data-cx-id]')`);
   await sleep(700);
-  const a6 = await clickChildAnims(`document.querySelector('#cx-list .ed-tnode-item[data-act="node"]').click();`, '#cx-root');
-  const played6 = (a6 || []).filter((x) => x.length);   /* 同上：跳过的隐藏子项不占序号 */
-  /* ⚠️ 别写死"有几块"：顶级可见块的数量会随 UI 增删变化，只断言**节奏**（第 i 块迟 i×100ms）。 */
-  const delays6 = played6.map((x) => x[0]?.delay);
-  check('★13 换类别后内容块**逐块错峰**浮现（第 1 块 lk-wake/640ms/0ms，之后每块 +100ms）',
-    played6.length >= 2 && played6[0]?.[0]?.name === 'lk-wake' && played6[0]?.[0]?.state === 'running'
-      && played6[0]?.[0]?.dur === 640 && delays6.every((d, i) => d === i * 100), a6);
+  /** 点一行 + 同一同步块里读「容器子项 / `#cx-body` / 左列子项」三处的动画 */
+  const swapProbe = (clickExpr) => ev(`(() => {
+    ${clickExpr}
+    const map = (els) => [...els].map((el) => el.getAnimations().map((a) => ({ name: a.animationName, dur: a.effect.getTiming().duration, delay: a.effect.getTiming().delay, state: a.playState })));
+    const root = document.querySelector('#cx-root');
+    const list = document.querySelector('#cx-list');
+    if (!root || !list) return { missing: true };
+    return {
+      root: map(root.children).filter((x) => x.length),
+      list: map(list.children).filter((x) => x.length),
+      stagger: root.classList.contains('lk-enter-stagger'),
+      body: (document.querySelector('#cx-body')?.getAnimations() ?? []).filter((a) => a.animationName)
+        .map((a) => ({ name: a.animationName, dur: a.effect.getTiming().duration, state: a.playState })),
+    };
+  })()`);
+  const a6 = await swapProbe(`document.querySelector('#cx-list .ed-tnode-item[data-act="node"]').click();`);
+  /* 用户 2026-09-13：「从事件节点切换到实体节点时，事件节点保持选中状态，**且面板刷新**」
+     ⇒ 换类别现在只重造 `#cx-body` 那一块（见 codex.ts 的 mountBody），整块错峰不该再出现。
+     整块错峰的**节奏**断言由 ★1/★8（切工具）覆盖 —— 那条路仍然整块重建。 */
+  check('★13 工作台换类别（设定条目 → 时间线节点）**不重播整块错峰**，内容区只播一次 lk-swap 淡入',
+    !a6.missing && a6.root.length === 0 && a6.list.length === 0 && a6.stagger === false
+      && a6.body.length === 1 && a6.body[0].name === 'lk-swap' && a6.body[0].state === 'running' && a6.body[0].dur === 320, a6);
 
   await sleep(700);
-  const a7 = await clickChildAnims(`document.querySelector('#cx-list [data-cx-id]').click();`, '#cx-root');
-  const list7 = await childAnims('#cx-list');
-  const okBack = await waitFor(`document.querySelectorAll('#cx-list [data-cx-id]').length >= 1`);
-  check('★14 换回设定条目：再播一次错峰，左列条目还有**第二级**错峰（等 200ms 后逐条 60ms）',
-    Array.isArray(a7) && a7[0]?.[0]?.name === 'lk-wake' && a7[0]?.[0]?.state === 'running' && okBack
-      && Array.isArray(list7) && list7.length >= 1 && list7[0]?.[0]?.delay === 200
-      && (list7.length < 2 || list7[1]?.[0]?.delay === 260), { a7, list7 });
+  const a7 = await swapProbe(`document.querySelector('#cx-list [data-cx-id]').click();`);
+  const backName = await waitFor(`!!document.querySelector('#cx-name')`);
+  check('★14 换回设定条目同样只换内容（无整块错峰 + 一次 lk-swap），且中栏真的换成实体版',
+    !a7.missing && a7.root.length === 0 && a7.list.length === 0 && a7.stagger === false
+      && a7.body.length === 1 && a7.body[0].name === 'lk-swap' && backName === true, { a7, backName });
 
   /* ── ⑦ 减少动效降级：DESIGN.md:159（关掉错峰，只留短淡入） ── */
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });

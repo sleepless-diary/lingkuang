@@ -6,11 +6,15 @@
  *   ② 每次重建都播整块错峰入场 ⇒ 点开的东西又一个个冒出来（#cx-root 上挂 .lk-enter-stagger、子项有 lk-wake）；
  *   ③ #cx-root 就是滚动容器，被换掉 ⇒ **滚动位置回到顶部**。
  * 修法：同页签内换条目走 `swapBody()` —— 保住骨架，只换「名字/类型 + 字段行 + 正文」，内容区播一次
- * `.lk-swap-in`（从 .5 不透明度落位，不是从透明）。换页签（结构真的变了）仍然整块重建 + 错峰，
- * 这条也断言（★11）—— 免得以后有人把"就地换内容"扩到不该扩的地方。
+ * `.lk-swap-in`（从 .5 不透明度落位，不是从透明）。
+ * **换类别**（时间线节点 ↔ 设定条目，中栏结构真的不同）原本仍走整块重建；用户 2026-09-13 又报
+ * 「从事件节点切换到实体节点时，事件节点保持选中状态，且面板刷新」⇒ 两条都改掉了：换类别也只重造
+ * `#cx-body` 那一块（`mountBody()`，骨架/左树/滚动位置都留着），并且**节点行的高亮要看 mode**
+ * （原来只比 nodeTarget，切到实体后那一行还亮着）。★13 / ★14b / ★14c 钉住这两条。
  *
  * 用法：先 `node tools/e2e/seed-smooth-switch.cjs`，起应用，再跑本脚本。
- * ⚠️ 换页签之后本套件会一路在节点页签上收尾；重跑请重启实例（或重新播种）。
+ * ⚠️ 本套件在★11 会往「霜纹剑」的正文里打一行字（落到 vault 里），收尾停在「银发少女」上；
+ *   重跑请重新播种并重启实例（★0 要求面板可滚，那是靠 seed 里那批配角撑出来的）。
  */
 const fs = require('fs');
 const path = require('path');
@@ -180,8 +184,8 @@ async function main() {
   check('★12 换过去之后正文框显示的是新条目自己的正文',
     String(after ?? '').includes('雪原独行') && !String(after ?? '').includes('霜纹剑补记'), after);
 
-  /* ── ⑧ 换**类别**（实体 → 节点，结构真的变了）仍然整块重建 + 错峰：别把"就地换内容"扩到这里 ──
-     左栏重做后没有页签了：点另一个类别的那一行就是这件事（mode 从 entity 变 node ⇒ 骨架换形状）。 */
+  /* ── ⑧ 换**类别**（实体 → 节点）也**就地**换 —— 骨架不用动：左树装着两类条目、顶栏只需显隐、
+     帧条元素常驻。这里逐条断言"没有整块重建"的三个症状（换新元素 / 重播错峰 / 内容区动画）。 */
   await mark();
   const tab = await ev(`(() => {
     const row = document.querySelector('#cx-list .ed-tnode-item[data-act="node"]');
@@ -193,11 +197,16 @@ async function main() {
       sameRoot: document.querySelector('#cx-root') === window.__s.root,
       stagger: root.classList.contains('lk-enter-stagger'),
       wake: [...root.children].flatMap((c) => anims(c)).filter((a) => a.name === 'lk-wake').length,
+      delayed: [...root.children].filter((c) => c.style && c.style.animationDelay).length,
+      body: anims(document.querySelector('#cx-body')).filter((a) => a.name).map((a) => a.name),
+      entOnAfter: [...document.querySelectorAll('#cx-list [data-cx-id]')].filter((b) => b.classList.contains('is-on')).length,
+      nodeOnAfter: [...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]')].filter((b) => b.classList.contains('is-on')).length,
     };
   })()`);
   await sleep(500);
-  check('★13 换类别（实体 → 时间线节点）仍然是整块重建 + 错峰（结构变了，不该就地换）',
-    tab.sameRoot === false && tab.stagger === true && tab.wake > 0, tab);
+  check('★13 换类别（实体 → 时间线节点）也**就地**换：骨架同一元素、不重播整块错峰、内容区播 lk-swap',
+    tab.sameRoot === true && tab.stagger === false && tab.wake === 0 && tab.delayed === 0
+      && tab.body.includes('lk-swap') && tab.entOnAfter === 0 && tab.nodeOnAfter === 1, tab);
 
   /* ── ⑨ 节点→节点也要就地换 ──
      左栏重做后列表形态**直接摊平**了节点行（不再需要先展开 世界→时间线→种类），
@@ -225,6 +234,43 @@ async function main() {
       && String(node2.desc ?? '').includes('魔潮') && String(node2.doc ?? '').includes('森林被冻住')
       && !String(node2.doc ?? '').includes('基石落地') && sameRoot && sameProps,
     { node1, node2, sameRoot, sameProps });
+
+  /* ── ⑨b 换回实体（节点 → 实体）：**用户 2026-09-13 报的那一条** ──
+     「从事件节点切换到实体节点时，事件节点保持选中状态，且面板刷新」：
+       · 高亮：节点行的 `is-on` 只比 nodeTarget、没看 mode ⇒ 切到实体后那一行还亮着；
+       · 刷新：跨类别走整块 render ⇒ 左树重播错峰 + 滚动回顶 + tiptap 重建。 */
+  const nodeOnBefore = await ev(`[...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]')].filter((b) => b.classList.contains('is-on')).length`);
+  const sBefore = await ev(`(() => { const r = document.querySelector('#cx-root'); r.scrollTop = 0; return r.scrollHeight > r.clientHeight + 40; })()`);
+  await mark();
+  const back = await ev(`(() => {
+    const b = [...document.querySelectorAll('#cx-list [data-cx-id]')].find((x) => x.querySelector('.ed-tlabel')?.textContent === '银发少女');
+    if (!b) return { err: 'no entity row 银发少女' };
+    b.click();
+    const anims = ${ANIMS};
+    const root = document.querySelector('#cx-root');
+    return {
+      sameRoot: document.querySelector('#cx-root') === window.__s.root,
+      stagger: root.classList.contains('lk-enter-stagger'),
+      delayed: [...root.children].filter((c) => c.style && c.style.animationDelay).length,
+      body: anims(document.querySelector('#cx-body')).filter((a) => a.name).map((a) => a.name),
+    };
+  })()`);
+  await sleep(400);
+  const st2 = await ev(`(() => ({
+    name: document.querySelector('#cx-name')?.value ?? null,
+    nodeOn: [...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]')].filter((b) => b.classList.contains('is-on')).map((b) => b.querySelector('.ed-tlabel')?.textContent ?? ''),
+    entOn: [...document.querySelectorAll('#cx-list [data-cx-id]')].filter((b) => b.classList.contains('is-on')).map((b) => b.querySelector('.ed-tlabel')?.textContent ?? ''),
+    rail: (() => { const r = document.querySelector('#cx-rail'); return r ? getComputedStyle(r).display !== 'none' : null; })(),
+    doc: document.querySelector('#cx-doc .ProseMirror')?.textContent ?? null,
+    fields: [...document.querySelectorAll('#cx-fields > div')].length,
+  }))()`);
+  check('★14b 换回实体：骨架同一元素、不重播整块错峰、内容区播 lk-swap（旧实现整块重建）',
+    back.sameRoot === true && back.stagger === false && back.delayed === 0 && back.body.includes('lk-swap'), back);
+  check('★14c 换回实体后**节点行的高亮必须消失**，高亮落到实体行、帧条回来、中右栏换成该实体',
+    nodeOnBefore > 0 && st2.nodeOn.length === 0 && st2.name === '银发少女'
+      && st2.entOn.length === 1 && st2.entOn[0] === '银发少女' && st2.rail === true
+      && st2.fields > 0 && String(st2.doc ?? '').includes('雪原独行'),
+    { nodeOnBefore, scrollableBefore: sBefore, ...st2 });
 
   const errs = await ev(`window.__errs`);
   check('★15 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

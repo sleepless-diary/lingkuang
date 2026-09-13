@@ -973,6 +973,59 @@ if (dragGroup && (dragGroup.has(a.id) !== dragGroup.has(b.id))) return;     // �
 - ⚠️ `entity-vault` 第一次跑出 **11/17**：同一实例里先跑了 `codex-switch-target`（它建了「甲」「乙」），
   断言于是看到多余的实体 —— 按铁律 4（先怀疑目录脏）重来：**reset + 重启后 17/17**。
 
+### 十四、换类别时的两件事：节点高亮不消失 + 面板刷新（2026-09-13，**本轮已修**）
+
+> **用户原话**：「**从事件节点切换到实体节点时，事件节点保持选中状态，且面板刷新**」。
+
+**两件事两个根因，都在 `src/ui/codex.ts`：**
+
+1. **高亮不消失（一行）**：树的节点行原来只比"选的是谁"，没看"现在在编哪一类" ——
+   `const on = !!nodeTarget && nodeTarget.world === g.world && …`（`renderList()` 里树分支与搜索命中
+   分支各一处）。切到实体后 `nodeTarget` 照旧指着一个节点 ⇒ 那一行**还亮着**，看上去像没切过去。
+   修法：条件前面加 `mode === 'node' &&`（实体行那边本来就有 `mode === 'entity'`，两边对齐）。
+
+2. **面板刷新**：`swapBody()` 开头 `if (renderedMode !== mode || !host.querySelector('#cx-root')) return false;`
+   ⇒ **换类别一律整块 `render()`**（左树与骨架重播错峰、`#cx-root` 滚动容器被换掉 ⇒ 滚动回顶、
+   tiptap 重建）—— 就是用户看到的"刷新"。可中/右栏之外的东西**本来就不用动**：
+   左树同时装着两类条目、顶栏只有那个「＋新建实体」要显隐、帧条元素可以常驻（节点模式藏起来）。
+
+**修法：把"就地换"扩到换类别**（仍然是 `swapBody()`，新增 `mountBody()`）：
+
+- 中/右栏那一块的 HTML 抽成 `bodyHtml()`（写在 `render()` 外面，两处共用）；
+  它的接线（建 tiptap / 属性面板 / 字段行 / `#cx-name` `#cx-type` `#cx-del` `#cx-h1` `#cx-img`）
+  抽成 `wireBody()`。
+- `mountBody()`：结算旧正文 → 销毁旧编辑器/面板 → `#cx-body` 的 innerHTML 换成 `bodyHtml()` →
+  切 `#cx-rail` 与 `#cx-newbox` 的显隐 → `wireBody()` → `renderedMode = mode`。
+- `swapBody()` 里 `renderedMode !== mode` 那一支改成走 `mountBody()`：只重造 **`#cx-body`**，
+  骨架（顶栏、左树、`#cx-root` 的滚动位置）全留着，内容区照旧播一次 `.lk-swap-in`。
+- 骨架里 `#cx-rail` 改成**常驻**（节点模式 `display:none`）、顶栏那个「类型下拉 + ＋新建实体」
+  包进 `#cx-newbox` 按 mode 显隐 —— 这两样原来靠骨架重建来切换。
+- `pendingEnter` 那条路（整块重建 + 两级错峰）保留，但如今只在"骨架不在 / 最后一个实体被删空"
+  时才走到；换类别与换条目都不再经过它。
+
+**A/B（同一 `%TEMP%\lk-smooth` 目录、`git checkout -- src/ui/codex.ts` + `vite build` 复跑）**：
+**未修复 15/18**，挂的正是 ★13/★14b/★14c —— 而且 ★14c 的 dump 直接把用户报的现象打了出来：
+`{"sameRoot":false,"stagger":true,"wake":2,"delayed":2,"body":[],"nodeOn":["第一次魔潮"]}`
+（切到实体后节点行**还亮着**、还整块重建 + 错峰）；**修复后 18/18**。
+
+### 验证（十四）
+
+- `tools/e2e/codex-smooth-switch.cjs` 16 → **18 项**：★13 从"换类别仍然整块重建 + 错峰"**反转**成
+  "换类别也**就地**换（骨架同一元素、无 `.lk-enter-stagger`/`lk-wake`/行内延迟、内容区播一次
+  `lk-swap`、实体行高亮清零、节点行高亮正好 1 个）"；新增 ★14b（换回实体同样就地换）、
+  ★14c（**节点行的高亮必须消失**、高亮落到实体行、帧条重新出现、中栏字段与正文都是该实体的）。
+  **修复后 18/18 · 修复前 15/18**。
+- `tools/e2e/motion-switch.cjs` **25/25**：★13/★14 原来断言"换类别后内容块逐块错峰（第 i 块迟 i×100ms）"
+  与"左列第二级错峰（200/260ms）"—— 这两个触发点随这次修改消失，改成**反向守卫**
+  （换类别/换条目后 `#cx-root` 与 `#cx-list` 的子项**一个动画都没有**、内容区只播 `lk-swap`）。
+  整块错峰的**节奏**断言仍由 ★1/★8（切工具）覆盖 —— 那条路照旧整块重建。
+- 回归（各自干净起点）：`codex-node-tab` **18/18**、`codex-tree-view` **21/21**、
+  `codex-switch-target` **7/7**、`kind-change-stale-file` **11/11**、`workbench-tree-folders` **29/29**、
+  `entity-evolution` **38/38**、`entity-vault` **17/17**、`data-load-clean` **6/6**、
+  `toolbar-groups` **4/4**；`npx tsc --noEmit` / `npx vite build` 全 exit 0。
+- ⚠️ `entity-evolution` 在同一实例里连跑第二遍是 **31/38**（脏状态），重新播种 + 重启后 38/38 ——
+  与上一轮同一回事，别当成回归。
+
 ## 第十八轮（2026-09-12）· 数据判损护栏 + 两个静默失效
 
 > **目的**：`main.js` 里那条注释早就写下了后果 —— 解析不了的 `worldbuilding.json`
