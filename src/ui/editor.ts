@@ -444,10 +444,16 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
             if (expandedTls.has(key)) expandedTls.delete(key); else expandedTls.add(key);
             renderSidebar();
           } else if (kind === 'entity') {
-            /* 在「时间线」页签的树里点实体：先切到「实体」页签再选中 —— 两个页签各记着自己
-               打开的那份文档（setDoc/lastTarget 那套），就地换会把节点正文写进实体文件。 */
+            /* 在「时间线」页签的树里点实体：**就地**把右边打开的文档换成这个实体，
+               **不切页签** —— 用户 2026-09-13 反馈：「点到设定里面的实体文件时
+               测试世界观文件夹会消失，事件文件夹也没了」（切页签 = 左栏整棵树换成
+               「实体」页签那套类型列表，世界的层级与展开态全没了）。
+               安全性：先把当前文档落盘再换 target（与 setTab 同一条纪律）；
+               `lastTarget.tl` **不动**（时间线页签"上次打开的节点"照旧），
+               `selectEntity` 里会把 `lastTarget.entity` 指向这个实体，所以
+               之后手动切到「实体」页签时打开的正是它。 */
             const id = (el as HTMLElement).dataset.path!;
-            setTab('entity');
+            flushDoc();
             selectEntity(id, (el as HTMLElement).dataset.world);
           } else if (kind === 'node') {
             const w = (el as HTMLElement).dataset.world!;

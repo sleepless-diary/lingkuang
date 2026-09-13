@@ -590,8 +590,9 @@ body {
 /* 计数（小字，右侧）*/
 .ed-tcount { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--fg-2); }
 .ed-tyear { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--fg-2); }
-/* `_设定`（实体）那一层，与「类型」同级但压暗一点，跟节点那一侧区分开 */
-.ed-tset { margin-top: 2px; }
+/* `_设定`（实体）那一层：它是**世界下面的一层**（跟时间线平级、不是跟世界平级），
+   所以缩进必须与 `.ed-ttl` 一致（18px）—— 用户 2026-09-13：「设定文件夹和世界观文件夹处于同一缩进」 */
+.ed-tset { padding-left: 18px; margin-top: 2px; }
 .ed-tset .ed-tlabel { color: var(--fg-2); font-weight: 600; }
 .ed-tset-type { padding-left: 27px; }
 .ed-tset-type .ed-tlabel { color: var(--fg); font-weight: 500; }

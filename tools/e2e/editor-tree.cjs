@@ -6,9 +6,11 @@
  *
  * 本套件钉住的四件事：
  *   ① 空的结构体文件夹**也在树里**（置灰 + 计数 0，展开给一句人话）；
- *   ② `_设定` 分支列出**全部实体类型**（包括一个实体都没有的），空的同样置灰；
- *   ③ 在「时间线」页签的树里点实体行 = **切到「实体」页签再选中它**（两个页签各记自己那份文档，
- *      就地换会把节点正文写进实体文件）；
+ *   ② `_设定` 分支列出**全部实体类型**（包括一个实体都没有的），空的同样置灰，
+ *      且它是**世界下面的一层** —— 缩进与时间线一致；
+ *   ③ 在「时间线」页签的树里点实体行 = **就地**把右边打开的文档换成它，
+ *      **不切页签**（切了左栏整棵树会换成「实体」页签那套类型列表 —— 用户 2026-09-13：
+ *      「点到设定里面的实体文件时测试世界观文件夹会消失，事件文件夹也没了」）；
  *   ④ 全程无未捕获异常。
  *
  * 用法：先 `node tools/e2e/seed-editor-tree.cjs`（配 LINGKUANG_TEST_DATA / LINGKUANG_VAULT），
@@ -89,6 +91,14 @@ async function main() {
   const setRow = await rowInfo('set', '_设定');
   check('★10 时间线页签的树里有 `_设定`（实体）分支', !!setRow && setRow.label === '_设定', setRow);
   check('★11 `_设定` 计数 = 实体数 1', !!setRow && setRow.count === '1', setRow);
+  /* `_设定` 是**世界下面的一层**（跟时间线平级），缩进必须与时间线一致 ——
+     用户 2026-09-13：「设定文件夹和世界观文件夹处于同一缩进」 */
+  const indent = await ev(`(() => {
+    const px = (el) => (el ? getComputedStyle(el).paddingLeft : null);
+    return { set: px(document.querySelector('#ed-sidebar .ed-tset')),
+             tl: px(document.querySelector('#ed-sidebar .ed-ttl')),
+             world: px(document.querySelector('#ed-sidebar .ed-tworld')) }; })()`);
+  check('★11b `_设定` 与时间线同一缩进（不跟世界平级）', indent.set === indent.tl && indent.set !== indent.world, indent);
   check('12 展开 `_设定`', await clickRow('set', '_设定'));
   await sleep(300);
   const etypes = await listRows('.ed-tset-type');
@@ -107,22 +117,37 @@ async function main() {
   const ents = await listRows('[data-kind="entity"]');
   check('★19 「角色」下有实体行（e-tree-a 银发少女）', ents.some((r) => r.path === 'e-tree-a' && r.label === '银发少女'), ents);
 
-  /* ── ③ 在时间线页签的树里点实体 = 切页签 + 选中 ─────────────── */
+  /* ── ③ 在时间线页签的树里点实体 = **就地**选中，树不许被换掉 ───────── */
   const before = await ev(`document.querySelector('#ed-tab-entity')?.style.background ?? ''`);
   check('20 点之前还停在「时间线」页签', before === 'none' || before === '', before);
   check('21 点实体行', await clickRow('entity', 'e-tree-a'));
   await sleep(700);
-  const after = await ev(`({ bg: document.querySelector('#ed-tab-entity')?.style.background ?? '',
+  const after = await ev(`({ bgEntity: document.querySelector('#ed-tab-entity')?.style.background ?? '',
+      bgTl: document.querySelector('#ed-tab-tl')?.style.background ?? '',
       title: document.querySelector('#ed-title')?.textContent ?? '',
       doc: document.querySelector('#ed-doc .ProseMirror')?.textContent ?? '',
       fields: [...document.querySelectorAll('#ed-props .ed-props > div')].map((r) => r.firstElementChild?.textContent).filter(Boolean),
-      inEntityTab: !!document.querySelector('#ed-sidebar #ed-entity-list'),
-      onRow: !!document.querySelector('#ed-sidebar #ed-entity-list [data-kind="entity"][data-path="e-tree-a"].is-on') })`);
-  check('★22 页签切到了「实体」', after.bg !== 'none' && after.bg !== '', after.bg);
-  check('★23 标题是实体名（银发少女）', after.title === '银发少女', after.title);
-  check('★24 正文换成实体自己的正文', String(after.doc).includes('雪原独行'), after.doc);
-  check('★25 中栏是实体字段（发色）', after.fields.includes('发色'), after.fields);
-  check('★26 实体页签的树里该行已选中（is-on）', after.inEntityTab === true && after.onRow === true, { inEntityTab: after.inEntityTab, onRow: after.onRow });
+      worldRows: [...document.querySelectorAll('#ed-sidebar [data-kind="world"]')].map((e) => e.dataset.path),
+      kindRows: [...document.querySelectorAll('#ed-sidebar .ed-tkind')].map((e) => e.dataset.path),
+      setRows: [...document.querySelectorAll('#ed-sidebar .ed-tset')].map((e) => e.dataset.path),
+      tlRows: [...document.querySelectorAll('#ed-sidebar .ed-ttl')].map((e) => e.dataset.path),
+      setOpen: !!document.querySelector('#ed-sidebar [data-kind="set"]')?.classList.contains('is-open'),
+      entityList: !!document.querySelector('#ed-sidebar #ed-entity-list'),
+      entOn: !!document.querySelector('#ed-sidebar [data-kind="entity"][data-path="e-tree-a"].is-on') })`);
+  check('★22 **不切页签**（还是「时间线」，切了左树就整棵换掉了）', after.bgEntity === 'none' && after.bgTl !== 'none', { bgEntity: after.bgEntity, bgTl: after.bgTl });
+  check('★23 世界文件夹还在（测试世界观）', after.worldRows.includes(WS), after.worldRows);
+  check('★23b 时间线还在（主线）', after.tlRows.includes('tl-主线'), after.tlRows);
+  check('★23c 种类文件夹还在（事件 + 战斗）', after.kindRows.includes('事件') && after.kindRows.includes('战斗'), after.kindRows);
+  check('★23d `_设定` 仍是展开的（展开态没被重置）', after.setOpen === true && after.setRows.includes('_设定'), { setOpen: after.setOpen, setRows: after.setRows });
+  check('★23e 树里这个实体行已高亮（而且确实在时间线那棵树里、不是实体页签那套）', after.entOn === true && after.entityList === false, { entOn: after.entOn, entityList: after.entityList });
+  check('★24 标题是实体名（银发少女）', after.title === '银发少女', after.title);
+  check('★25 正文换成实体自己的正文', String(after.doc).includes('雪原独行'), after.doc);
+  check('★26 中栏是实体字段（发色）', after.fields.includes('发色'), after.fields);
+  /* 之后手动切到「实体」页签时，打开的应当还是这一个实体 */
+  await click('#ed-tab-entity');
+  await sleep(600);
+  const onRow = await ev(`!!document.querySelector('#ed-sidebar #ed-entity-list [data-kind="entity"][data-path="e-tree-a"].is-on')`);
+  check('★26b 手动切到「实体」页签后仍是这个实体', onRow === true, onRow);
 
   const errs = await ev(`window.__errs`);
   check('27 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
