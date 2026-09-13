@@ -755,6 +755,32 @@ body {
 }
 .lk-rail__row--base .lk-rail__dot { background: var(--fg-2); border-color: var(--fg-2); }
 .lk-rail__row.is-frame .lk-rail__dot { background: var(--accent); border-color: var(--accent); }
+/* 虚化行（展开后露出来的"还没版本的事件"）：整格压暗 + 空心点，一眼能分清
+   「这是历史」和「这只是个可以记版本的地方」。悬停时提亮，表示它可点。 */
+.lk-rail__row.is-ghost { opacity: 0.4; }
+.lk-rail__row.is-ghost .lk-rail__dot { background: transparent; border-style: dashed; }
+.lk-rail__row.is-ghost:hover { opacity: 0.85; }
+/* 「记到」那一格：左侧一道亮边 + 名字后一个小标签（＝底部下拉选框的当前值） */
+.lk-rail__row.is-anchor { border-left-color: var(--accent); }
+.lk-rail__tag {
+  margin-left: 5px;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-pill);
+  color: var(--accent);
+  font-size: 9px;
+  vertical-align: 1px;
+}
+/* 展开/收起那一行：不属于「等距格子」（那类高 46px 钉死），所以单独一个类、高度自适应 */
+.lk-rail__more {
+  padding: 6px 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 10px;
+  color: var(--fg-2);
+  cursor: pointer;
+  text-align: center;
+}
+.lk-rail__more:hover { color: var(--accent); background: var(--surface); }
 .lk-rail__row:hover { background: var(--surface); }
 .lk-rail__row.is-on { background: var(--surface); border-left-color: var(--accent); }
 .lk-rail__t { font-size: 10px; color: var(--fg-2); }

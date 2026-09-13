@@ -513,7 +513,10 @@ export function mountTimeline(
   if (!TL_HEAD) return;
 
   let storyMode: 'focus' | 'full' = 'focus';        // 默认聚焦剧情线
-  let activeLineId: string | null = null;            // 聚焦的剧情线
+  let activeLineId: string | null = null;            // 聚焦的剧情线；**null = 世界历史（不聚焦）**
+  /* 用户是否**显式**动过这个下拉（含选中「— 世界历史 —」）。
+     没有它就没法把「用户选了世界历史」和「还没选过」区分开 —— 详见 renderStoryUI 里的注释。 */
+  let linePinned = false;
   let brushing = false;                              // 笔刷模式
   let pendingSegs: { start: number; end: number | null }[] = [];  // 累积段
   const brushSel = document.createElement('div');
@@ -547,8 +550,16 @@ export function mountTimeline(
   function renderStoryUI() {
     if (!TL_HEAD) return;
     const lines = linesOf();
-    const active = activeLineId && lines.some((l) => l.id === activeLineId) ? activeLineId : lines[0]?.id ?? null;
-    if (active !== activeLineId) activeLineId = active;
+    /* 只在「用户还没选过」或「聚焦的那条线已经不存在了」时，才自动落到第一条线。
+       ⚠️ 不能写成 `activeLineId || lines[0]?.id` —— `null` 是用户**显式选的「— 世界历史 —」**，
+       那样写等于每次重画都把它打回剧情线：用户 2026-09-13 报的「从剧情线切到世界历史，
+       一动指针就跳回剧情线」就是这么来的（下拉的 change 处理器里紧接着的那次 renderStoryUI()
+       当场就把选择改回去了，指针都不用动）。 */
+    const ids = new Set(lines.map((l) => l.id));
+    if (!linePinned || (activeLineId !== null && !ids.has(activeLineId))) {
+      activeLineId = lines[0]?.id ?? null;
+    }
+    linePinned = true;   /* 走过一次就当作"已初始化"，之后世界历史/空世界都保持用户的选择 */
     const lineOpts = lines
       .map((l) => `<option value="${escapeHtml(l.id)}"${l.id === activeLineId ? ' selected' : ''}>${escapeHtml(l.name)}</option>`)
       .join('');
@@ -574,7 +585,10 @@ export function mountTimeline(
     });
     ui.querySelector('#lk-line-sel')?.addEventListener('change', (e) => {
       const v = (e.target as HTMLSelectElement).value;
+      /* 空串 = 「— 世界历史 —」，是一个**选择**（不聚焦任何剧情线），不是"没选"。
+         下面的 renderStoryUI() 认得这个区别（见那里的 linePinned）。 */
       activeLineId = v || null;
+      linePinned = true;
       render();
       renderStoryUI();
       renderSegPanel();

@@ -15,6 +15,10 @@
  *
  * 用法：`node tools/e2e/seed-evolution.cjs` → 起应用 → `node tools/e2e/entity-evolution.cjs`
  * ⚠️ 会改测试数据（新增帧）。重跑请重新播种并重启实例。
+ * ⚠️ **已知偶发**（2026-09-13，约 2/10 次）：★5/★5b/★10d/★14b 会一起挂 —— 逐 150ms 采样可见
+ *   「中栏 t+0/150/300 = 19、t+450 变回 17，而 .md 从头到尾没拿到 19」＝ **内存里的改动被一次
+ *   旧快照回扫盖掉了**（不是本套件的问题、也不是虚化块引起的：同场景的独立探针 3/3 通过）。
+ *   机制与调查见 `docs/BUGS.md` 第二十一轮「七」；重跑前请重新播种 + 重启实例，别拿脏目录复跑。
  */
 const fs = require('fs');
 const path = require('path');
@@ -73,6 +77,13 @@ async function main() {
 
   await sleep(1500);
   await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); true`);
+  /* ── 起点必须自足：设置存在 localStorage 里，而 ★12 会把模式改成「锁定」且从不复位 ⇒
+     同一个 userdata 跑第二遍时开局就不是手动模式（README 铁律 2 / SKILL seed-must-be-self-contained）。
+     在**打开工具之前**复位，保证「改动落到哪一版」这条主线从头到尾确定。 ── */
+  await ev(`(() => { const s = JSON.parse(localStorage.getItem('lingkuang-settings') || '{}');
+    s.evolveMode = 'manual'; s.evolveLock = null;
+    localStorage.setItem('lingkuang-settings', JSON.stringify(s));
+    window.dispatchEvent(new CustomEvent('lingkuang-settings')); return s.evolveMode; })()`);
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
   /* 等工具打开那一次错峰收手（否则后面点格子的判断会被上一次的行内延迟污染） */
   const clean = `(() => { const r = document.querySelector('#cx-root');
@@ -88,16 +99,19 @@ async function main() {
     if (!b) return 'no row';
     b.click(); return 'ok';
   })()`);
-  /** 帧条：每格 { id, t, n, on, frame } + 底部按钮/提示 */
+  /** 帧条：每格 { id, t, n, on, frame, ghost, anchor } + 底部按钮/提示 + 展开行文字 */
   const rail = () => ev(`(() => {
     const rows = [...document.querySelectorAll('#cx-rail .lk-rail__row')].map((r) => ({
       id: r.dataset.rail || '', on: r.classList.contains('is-on'), frame: r.classList.contains('is-frame'),
+      ghost: r.classList.contains('is-ghost'), anchor: r.classList.contains('is-anchor'),
       t: (r.querySelector('.lk-rail__t') || {}).textContent || '', n: (r.querySelector('.lk-rail__n') || {}).textContent || '',
       s: (r.querySelector('.lk-rail__s') || {}).textContent || '',
     }));
     const add = document.querySelector('[data-rail-add]');
     const del = document.querySelector('[data-rail-del]');
+    const more = document.querySelector('.lk-rail__more');
     return { n: rows.length, rows, add: add ? add.dataset.railAdd : null, del: del ? del.dataset.railDel : null,
+      more: more ? more.textContent.trim() : null,
       mode: (document.querySelector('.lk-rail__mode') || {}).textContent || '',
       hints: [...document.querySelectorAll('.lk-rail__hint')].map((h) => h.textContent).filter(Boolean) };
   })()`);
@@ -154,6 +168,62 @@ async function main() {
   })()`);
   check('★0d 面板外壳开销 ≤130px（用户那条"凭空出现的滚动条"就是这里多占了 27px 空行 + 16px 松内边距）',
     budget.chrome <= 130 && budget.msgDisplay === 'none' && budget.msgH === 0, budget);
+
+  /* ══════════ ★0e~★0h 展开：把"还没版本的事件"虚化列出来 ══════════════
+     用户 2026-09-13 下午原话：「我希望在右侧时间线加一个展开的功能，能展开未创建 git 的节点，
+     但虚化显示」→ 随后补一句：「我那个展开时间线其实就是【记到】后面的下拉选框，
+     不过和时间线一起显示，更直观一点」。
+     所以这一段的语义是：**虚化行 = 下拉选框长在时间线上**，点它换「记到」，
+     它没有版本可看 ⇒ **不动正在看的版本**。 */
+  const ghostInfo = () => ev(`(() => {
+    const rows = [...document.querySelectorAll('#cx-rail .lk-rail__row')];
+    return { ghosts: rows.filter((r) => r.classList.contains('is-ghost')).map((r) => r.dataset.rail),
+      ghostTexts: rows.filter((r) => r.classList.contains('is-ghost')).map((r) => (r.querySelector('.lk-rail__t') || {}).textContent),
+      frames: rows.filter((r) => r.classList.contains('is-frame')).length,
+      more: (document.querySelector('.lk-rail__more') || {}).textContent || null,
+      opacity: rows.filter((r) => r.classList.contains('is-ghost')).map((r) => getComputedStyle(r).opacity) };
+  })()`);
+  const clickMore = () => ev(`(() => { const m = document.querySelector('.lk-rail__more'); if (!m) return 'no more row'; m.click(); return 'ok'; })()`);
+  const clickGhost = (id) => ev(`(() => {
+    const r = [...document.querySelectorAll('#cx-rail .lk-rail__row.is-ghost')].find((x) => x.dataset.rail === ${JSON.stringify(id)});
+    if (!r) return 'no ghost row';
+    r.click(); return 'ok';
+  })()`);
+
+  const g0 = await ghostInfo();
+  check('★0e 默认收起：帧条上没有虚化行，底部写着「还有 N 个没版本」（上午那句"没有版本的不显示"没有被推翻）',
+    g0.ghosts.length === 0 && /还有 3 个没版本/.test(g0.more || ''), g0);
+
+  await clickMore();
+  await sleep(300);
+  const g1 = await ghostInfo();
+  check('★0f 点展开 → 3 个没版本的事件**按时间**插进帧条（315/327/350），且都不是"有版本"的格子',
+    g1.ghosts.length === 3 && g1.ghosts.join(',') === 'n-evo-1,n-evo-2,n-evo-3' && g1.frames === 0
+      && JSON.stringify(g1.ghostTexts) === JSON.stringify(['315', '327', '350']),
+    { ghosts: g1.ghosts, texts: g1.ghostTexts, frames: g1.frames, more: (g1.more || '').trim() });
+  check('★0f2 虚化是**真的**虚化（整格半透明，不是只是换个颜色/点点）',
+    g1.opacity.length === 3 && g1.opacity.every((o) => Number(o) < 0.6), g1.opacity);
+
+  /* 点虚化行 = 换「记到」。先把锚点挪到 n-evo-1，再点 n-evo-3 那一行：
+     这样既证明"点得动"，又让锚点**回到**原值 n-evo-3（后面 ★2 还要断言它）。 */
+  const noteBefore = await versionNote();
+  await setAnchor('n-evo-1');
+  await sleep(200);
+  await clickGhost('n-evo-3');
+  await sleep(300);
+  const aG = await anchorInfo();
+  const gOn = await ev(`(() => { const r = [...document.querySelectorAll('#cx-rail .lk-rail__row')].find((x) => x.dataset.rail === 'n-evo-3');
+    return { anchor: !!r && r.classList.contains('is-anchor'), tag: r ? (r.querySelector('.lk-rail__tag') || {}).textContent : null }; })()`);
+  check('★0g 点虚化行 = 换「记到」（下拉跟着变），那一行标上「记到」',
+    aG.val === 'n-evo-3' && gOn.anchor === true && gOn.tag === '记到', { val: aG.val, ...gOn });
+  check('★0g2 点虚化行**不动正在看的版本**（它没有版本可看：版本行小字一字未变）',
+    (await versionNote()) === noteBefore, { before: noteBefore, after: await versionNote() });
+
+  await clickMore();
+  await sleep(300);
+  const g2 = await ghostInfo();
+  check('★0h 再点一次收起：虚化行消失，锚点照旧（n-evo-3）',
+    g2.ghosts.length === 0 && (await anchorInfo()).val === 'n-evo-3' && /展开全部事件/.test(g2.more || ''), g2);
 
   /* ── ★1 还没有版本时默认落在初稿 ─────────────────────────────────── */
   check('★1 一条版本都没有时，默认落在「初稿」那一格', r0.rows[0].on && (await versionNote()).includes('初稿'),

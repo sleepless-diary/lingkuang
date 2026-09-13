@@ -56,6 +56,13 @@ const ROW_H = 46;   /* 等距：每一格固定高度（用户要的"等距时�
 
 export function createEvolutionRail(deps: RailDeps): Rail {
   const { store, host } = deps;
+  /* 「展开全部事件」（用户 2026-09-13 下午）：
+     默认仍只列**有版本的**格子（上午那句「没有版本的节点就不显示」），
+     点底部的展开行就把**还没版本的事件**也按时间插进来 —— **虚化**显示；
+     点虚化那一行 = 换「记到」（＝底部下拉选框的同一件事，只是长在时间线上，更直观），
+     **不改**正在看的版本（那一版还不存在，没什么可看）。
+     状态放这里而不是 render 里重建，否则一重画就弹回收起。 */
+  let showAll = false;
   /* 节点 epoch 只按世界缓存：拖帧条、改字段都会重画这一条，不必每次都算年表 */
   let cacheWorld = '';
   let cacheEpoch: Map<string, number> = new Map();
@@ -87,7 +94,7 @@ export function createEvolutionRail(deps: RailDeps): Rail {
   }
 
   /** 帧条上真正显示的格子 = **有版本的节点**（用户 2026-09-13 上午：「没有版本的节点就不显示」）。
-   *  没有版本的节点仍在下拉里可选（那是"给谁记版本"的入口），只是不占这条线的位置。 */
+   *  没有版本的节点仍在下拉里可选（那是"给谁记版本"的入口），**展开后**也会以虚化行的形式列在这里。 */
   function rows(): Row[] {
     return allRows().filter((r) => r.hasFrame);
   }
@@ -146,14 +153,26 @@ export function createEvolutionRail(deps: RailDeps): Rail {
       const note = frame?.note && frame.note !== r.node.title
         ? `${r.node.title}（${frame.note}）`
         : (r.node.title || frame?.note || '');
-      const sum = isEmptyPatch(frame?.patch) ? '（只是标记）' : patchSummary(frame?.patch);
-      return `<div class="lk-rail__row${on ? ' is-on' : ''} is-frame" data-rail="${escapeHtml(r.nodeId)}" title="${escapeHtml(r.tlName + ' · ' + timeText(r.node) + ' ' + note)}">
+      const sum = r.hasFrame
+        ? (isEmptyPatch(frame?.patch) ? '（只是标记）' : patchSummary(frame?.patch))
+        : '还没版本';
+      const isAnchor = r.nodeId === anchor;
+      /* 虚化行：还没版本的事件（只在"展开"时出现）。样式见 .lk-rail__row.is-ghost */
+      const cls = `lk-rail__row${on ? ' is-on' : ''}${r.hasFrame ? ' is-frame' : ' is-ghost'}${isAnchor ? ' is-anchor' : ''}`;
+      const tip = r.hasFrame
+        ? `${r.tlName} · ${timeText(r.node)} ${note}`
+        : `${r.tlName} · ${timeText(r.node)} ${note}（还没版本 —— 点它 = 把新版本记到这个事件）`;
+      return `<div class="${cls}" data-rail="${escapeHtml(r.nodeId)}"${r.hasFrame ? '' : ' data-ghost="1"'} title="${escapeHtml(tip)}">
         <span class="lk-rail__dot"></span>
         <span class="lk-rail__t">${escapeHtml(timeText(r.node))}</span>
-        <span class="lk-rail__n">${escapeHtml(note)}</span>
+        <span class="lk-rail__n">${escapeHtml(note)}${isAnchor ? '<span class="lk-rail__tag">记到</span>' : ''}</span>
         <span class="lk-rail__s">${escapeHtml(sum)}</span>
       </div>`;
     };
+    /* 展开/收起那一行 —— 它**不是** .lk-rail__row（那类高 46px 钉死，是"等距"的承诺） */
+    const moreHtml = (n: number): string => (n === 0 && !showAll ? '' : `<div class="lk-rail__more" data-rail-toggle="1" title="${showAll ? '收起，只看有版本的事件' : '把还没版本的事件也列出来（虚化显示，点它换「记到」）'}">
+      ${showAll ? `▴ 只看有版本的（${rs.length}）` : `▾ 展开全部事件（还有 ${n} 个没版本）`}
+    </div>`);
 
     host.innerHTML = `
       <div class="lk-rail__head">
@@ -167,13 +186,14 @@ export function createEvolutionRail(deps: RailDeps): Rail {
           <span class="lk-rail__n">初稿</span>
           <span class="lk-rail__s">${e ? `${Object.keys(e.properties ?? {}).length} 个字段` : ''}</span>
         </div>
-        ${rs.map(rowHtml).join('')}
+        ${(showAll ? all : rs).map(rowHtml).join('')}
         ${orphans.map((o) => `<div class="lk-rail__row${o.nodeId === sel ? ' is-on' : ''} is-frame" data-rail="${escapeHtml(o.nodeId)}" title="这一帧锚的节点已经被删掉了（历史仍保留）">
           <span class="lk-rail__dot"></span>
           <span class="lk-rail__t">孤立</span>
           <span class="lk-rail__n">节点已删除</span>
           <span class="lk-rail__s">${escapeHtml(patchSummary((e?.frames ?? [])[o.version - 1]?.patch))}</span>
         </div>`).join('')}
+        ${moreHtml(all.length - rs.length)}
         ${rs.length + orphans.length ? '' : '<div class="lk-rail__empty">还没有版本<br>选好事件，点下面的 ＋</div>'}
       </div>
       <div class="lk-rail__foot">
@@ -222,10 +242,15 @@ export function createEvolutionRail(deps: RailDeps): Rail {
     if (add) { deps.onAddFrame(add.dataset.railAdd || ''); return; }
     const del = el.closest<HTMLElement>('[data-rail-del]');
     if (del) { deps.onDeleteFrame(del.dataset.railDel || ''); return; }
+    if (el.closest('[data-rail-toggle]')) { showAll = !showAll; render(); return; }
     const row = el.closest<HTMLElement>('[data-rail]');
     if (row) {
       if (loadSettings().evolveMode === 'locked') return;   /* 锁定模式：视图也钉在锁定点（见设置里的说明） */
-      deps.onSelect(row.dataset.rail || null);
+      const id = row.dataset.rail || null;
+      /* 虚化行（还没版本的事件）= 只换「记到」，**不动正在看的版本** ——
+         这一版还不存在，没有"跳过去看"可谈；用户要的就是"下拉选框长在时间线上"这件事。 */
+      if (id && row.dataset.ghost) { deps.onAnchor(id); return; }
+      deps.onSelect(id);
     }
   });
   /* 底部的「记到」下拉：换锚点 = 换"新版本记在哪个事件上"（不碰数据，只记在 codex 里） */
