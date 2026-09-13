@@ -300,6 +300,16 @@
   **点虚化行 = 换「记到」（`deps.onAnchor`），不动正在看的版本**；点有版本的行才换版本（`deps.onSelect`）。
   ⚠️ 展开行**不要用 `.lk-rail__row`**（那一类 46px 钉死是"等距"承诺）；`showAll` 是闭包状态，
   面板重建（`render()`）会回到收起 —— 可接受，别为它引入全局状态。
+- ⭐ **帧条的出入场是"演"的，不是硬切**（用户 2026-09-13 深夜：「演变窗口消失时编辑页的切换很生硬，
+  顺便再给演变做一下出入场动画」）：原来节点模式 `#cx-rail` 走 `style.display = 'none' | ''`，
+  面板宽度瞬间变化。现在 `#cx-rail` **常驻在骨架里**，只 `.classList.toggle('is-off', mode !== 'entity')`
+  （`mountBody()` 里那一处），配合 `src/style.css` 的 `.lk-rail.is-off { width:0; height:0; margin-left:-12px;
+  opacity:0; transform:translateX(14px); border-width:0; pointer-events:none }` 与 `.lk-rail` 上的
+  `transition`（宽/高/外边距/透明度 320ms + 位移 640ms）。
+  ⚠️ **高度也要一起收**：三栏那行是 `align-items:flex-start`，帧条高度由内容决定 —— 只收宽度的话内容被
+  挤成一列反而更高，把这一行撑高（`#cx-root` 多一个像素就长滚动条，见下面那条预算）；
+  ⚠️ `height: auto → 0` **过渡不了**（不是可插值长度），所以高度是瞬时收的 —— 布局上看不出来（帧条比中栏矮，
+  行高由中栏定），★13b 钉的是"框不动"。守卫：`codex-smooth-switch.cjs` ★13c（+ ★13b/★14d 比帧条的 top/宽/高）。
 - ⚠️ **回扫与写盘的竞态**（未修，机制最可能是"写盘在飞时来的扫描用旧快照覆盖内存"）：
   见 `docs/BUGS.md` 第二十一轮「七」，`entity-evolution.cjs` 约 2/10 次会因此挂 ★5 那组；
   动这块之前先读那一条，别把红灯当成本地回归。
@@ -402,8 +412,8 @@
   ⭐ **换类别（时间线节点 ↔ 设定条目）也走就地换**（2026-09-13 下午，用户：「从事件节点切换到实体
   节点时，事件节点保持选中状态，且面板刷新」）：`renderedMode !== mode` 时不再整块 `render()`，而是
   `mountBody()` —— 只把 `#cx-body` 的 innerHTML 换成 `bodyHtml()` 再 `wireBody()`，骨架、左树与
-  `#cx-root` 的滚动位置全留着（`#cx-rail` 改成常驻、节点模式 `display:none`；顶栏那两组控件按类别
-  显隐），转场照演。⚠️ **顶栏那组控件只藏不拆**（`syncNewBox()`）：用户 2026-09-13 深夜报「切换时元素 y
+  `#cx-root` 的滚动位置全留着（`#cx-rail` **常驻**，节点模式只加 `.is-off` 把宽/高收到 0 —— 见下面那条
+  「帧条出入场」；顶栏那两组控件按类别显隐），转场照演。⚠️ **顶栏那组控件只藏不拆**（`syncNewBox()`）：用户 2026-09-13 深夜报「切换时元素 y
   坐标会变，应该是增加实体按钮的出现与消失导致的」—— 那个「＋新建实体」高 28px 而头行文字只有 21px，
   `display:none` 会让**下面所有元素跟着跳 7px**；现在骨架里**两组都在**（实体态「类型 ▾ + ＋新建实体」／
   节点态「时间线 ▾ + ＋新建节点」，两组的形状与样式完全一样 ⇒ 行高恒 28px），只切组自身的 `display`，
@@ -412,6 +422,18 @@
   ⭐ **节点态那个「＋新建节点」是直接建**（用户：「添加节点就直接添加节点吧，就像添加实体一样」）：
   落进「时间线 ▾ 里选的那条」的「跟正在看的那条同种类」的文件夹（`newTimelines()` / `nodeNewTlId()` /
   `nodeNewKind(tlId)`），建完 `switchTarget()` 选中它。守卫：`tools/e2e/workbench-add-node.cjs`。
+  ⭐ **顶栏那两组都会"跟着你正在编的走" + 一次能建多个**（用户 2026-09-13 深夜：「我想要当前选中的是哪个
+  分类就自动在当前分类下创建实体，还有我希望能同时创建多个未填数据的实体或者节点（**强调显示一下就行**）」）：
+  · **跟随** —— `syncNewType()`（实体态把 `#cx-new-type` 对齐到 `active()?.typeId`；只在 `syncNewBox()` 末尾
+    调，也就是 `render()` 与 `mountBody()` 两条路上跑，**手动改选之后只要不换目标就保持你选的**）；
+    时间线那侧同理（`nodeNewTlId()` 默认 = 正在看的节点所在那条）。
+  · **批量** —— 每组一个数量框 `#cx-new-count` / `#cx-new-node-count`（`readCount(sel)`，夹 1..`NEW_MAX = 20`；
+    样式常量 `NEWNUM` 的高度**必须与 `NEWSEL`/`NEWBTN` 一致**，否则又跳 7px），点一下建 N 个、选中**第一个**。
+    名字靠 `uniqueName(base, taken)` 保证唯一（新实体 / 新实体 2 / …）—— 同名会写进**同一个 `.md` 路径**
+    互相覆盖（`entityPath`/`nodePath` 都按名字定路径）。
+  · **「待填」强调** —— `isStub(name)`（`/^新(?:实体|节点)(?:[ ]?\d+)?$/`）命中的行在 `treeRow()` 里加
+    `is-stub` 类 + `stubTag()` 那颗 `.ed-ttag` 小药丸（名字用 accent 绿，四个行渲染处共用 `itemCls(on, name)`）；
+    改过名/填了字段就自动消失（不存状态，只看名字）。
   相应地 `motion-switch.cjs` ★13/★14 是**反向**守卫：换类别/换条目后 `#cx-root` 与
   `#cx-list` 的子项一个 CSS 动画都不许有，内容区改由**行级 WAAPI 动画**（`animationName === ''`）
   承担；`.lk-swap-in`（`opacity .5 → 1`）如今只剩**减少动效**那一档在用（`prefers-reduced-motion`

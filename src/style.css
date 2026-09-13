@@ -598,6 +598,20 @@ body {
 .ed-tset-type .ed-tlabel { color: var(--fg); font-weight: 500; }
 /* 空的结构体/类型文件夹：留着位置但置灰（树要跟「结构体管理」和硬盘文件夹一一对应） */
 .ed-tnode.is-empty .ed-tlabel, .ed-tnode.is-empty .ed-tcount { opacity: .45; }
+/* 「刚建出来还没填」的条目：名字用强调色 + 后面挂一个「待填」小药丸（改名/填了字段就自动消失）。
+   批量新建时一眼能看出哪几条还没动过（用户 2026-09-13：「我希望能同时创建多个未填数据的
+   实体或者节点（**强调显示一下就行**）」）。样式与帧条的 `.lk-rail__tag` 同款。 */
+.ed-tnode-item.is-stub .ed-tlabel { color: var(--accent); }
+.ed-tnode-item.is-stub.is-on .ed-tlabel { color: var(--fg-inverse); }
+.ed-ttag {
+  margin-left: 5px;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-pill);
+  color: var(--accent);
+  font-size: 9px;
+  vertical-align: 1px;
+}
 /* 空文件夹展开后的那句人话 */
 .ed-tempty { padding: 2px 8px 2px 36px; font-size: 10px; color: var(--fg-2); opacity: .7; }
 /* （原来这里还有 `列表` 形态的两条样式 `.ed-tflat` / `.ed-tgroup`……
@@ -723,6 +737,29 @@ body {
   border-radius: var(--radius-sm);
   background: var(--surface-2);
   overflow: hidden;
+  /* 出入场：帧条原来在节点模式下是 `display:none` 硬切 ⇒ 面板宽度瞬间变化、观感生硬
+     （用户 2026-09-13：「演变窗口消失时编辑页的切换很生硬…顺便再给演变做一下出入场动画」）。
+     改成常驻 + `.is-off`，靠 width/opacity/位移过渡演一遍收起/展开。
+     `margin-left:-12px` 抵掉三栏那行的 `gap:12px` —— 不收的话收起了还留 12px 空档。 */
+  margin-left: 0;
+  transition: width var(--motion-base) var(--ease-standard),
+              height var(--motion-base) var(--ease-standard),
+              margin-left var(--motion-base) var(--ease-standard),
+              opacity var(--motion-base) var(--ease-standard),
+              transform var(--motion-enter) var(--ease-standard),
+              border-width var(--motion-base) var(--ease-standard),
+              border-color var(--motion-base) var(--ease-standard);
+}
+.lk-rail.is-off {
+  width: 0;
+  /* 高度也要一起收：三栏那行是 `align-items:flex-start`，帧条高度由内容决定 —— 只收宽度的话
+     内容被挤成一列、反而更高，把这一行撑高（`#cx-root` 是 overflow:auto，多一像素就长滚动条）。 */
+  height: 0;
+  margin-left: -12px;
+  opacity: 0;
+  transform: translateX(14px);
+  border-width: 0;
+  pointer-events: none;
 }
 .lk-rail__head {
   display: flex;

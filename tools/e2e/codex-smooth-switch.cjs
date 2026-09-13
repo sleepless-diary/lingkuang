@@ -57,22 +57,44 @@ async function main() {
   const mark = () => ev(`(() => {
     window.__s = { root: document.querySelector('#cx-root'), search: document.querySelector('#cx-search'),
       list: document.querySelector('#cx-list'), doc: document.querySelector('#cx-doc .ProseMirror'),
-      props: document.querySelector('#cx-props') };
+      props: document.querySelector('#cx-props'), rail: document.querySelector('#cx-rail') };
     /* ⚠️ #cx-root 自己就是滚动容器：直接读 getBoundingClientRect().top 会把**滚动位置**算进来
        （★6 刚滚过 260px，基线就整体高 260 ⇒ 回程时对不上，实测假挂一次）。
-       所以换算成「面板内容原点」里的坐标：top 减去 rootRect.top 再加上 root.scrollTop ⇒ 与滚动无关。 */
+       所以换算成「面板内容原点」里的坐标：top 减去 rootRect.top 再加上 root.scrollTop ⇒ 与滚动无关。
+       ⚠️ 帧条自 2026-09-13 起是**过渡**出场（宽/高/位移/透明度），而隐藏窗口里过渡不会自己走完
+       ⇒ 量之前先把过渡推到终态（finish()），否则量到的是起点（"收起了却还是 176px 宽"）。 */
     window.__geoNow = () => {
       const root = document.querySelector('#cx-root');
       const rr = root ? root.getBoundingClientRect() : { top: 0 };
       const st = root ? root.scrollTop : 0;
-      const g = (sel) => { const el = document.querySelector(sel); if (!el) return null; const r = el.getBoundingClientRect();
-        return { t: Math.round(r.top - rr.top + st), h: Math.round(r.height),
+      const g = (sel) => { const el = document.querySelector(sel); if (!el) return null;
+        void el.getBoundingClientRect();                  /* 先强制重算 ⇒ 过渡对象才存在 */
+        el.getAnimations().forEach((a) => a.finish());
+        const r = el.getBoundingClientRect();
+        return { t: Math.round(r.top - rr.top + st), h: Math.round(r.height), w: Math.round(r.width),
+          off: el.classList.contains('is-off'),
           vis: getComputedStyle(el).display === 'none' ? 'none' : getComputedStyle(el).visibility }; };
       return { list: g('#cx-list'), rail: g('#cx-rail'), body: g('#cx-body'), newbox: g('#cx-newbox') };
     };
+    /* 帧条那次出入场动画的**规格**（过渡属性 / 时长 / 起点与终态）—— 见 ★13c。 */
+    window.__railProbe = () => {
+      const r = document.querySelector('#cx-rail');
+      if (!r) return { missing: true };
+      const cs = getComputedStyle(r);
+      const trans = cs.transitionProperty;
+      const anims = r.getAnimations();
+      const tr = anims.map((a) => ({ prop: a.transitionProperty || null, dur: Math.round(a.effect.getTiming().duration) }));
+      const off = r.classList.contains('is-off');
+      const w0 = Math.round(r.getBoundingClientRect().width);
+      const o0 = Number(cs.opacity);
+      anims.forEach((a) => a.finish());
+      return { off, trans, tr, w0, o0,
+        w1: Math.round(r.getBoundingClientRect().width), h1: Math.round(r.getBoundingClientRect().height),
+        o1: Number(getComputedStyle(r).opacity), inDom: r.isConnected };
+    };
     return Object.fromEntries(Object.entries(window.__s).map(([k, v]) => [k, !!v]));
   })()`);
-  const same = (key) => ev(`document.querySelector(${JSON.stringify({ root: '#cx-root', search: '#cx-search', list: '#cx-list', doc: '#cx-doc .ProseMirror', props: '#cx-props' }[key])}) === window.__s.${key}`);
+  const same = (key) => ev(`document.querySelector(${JSON.stringify({ root: '#cx-root', search: '#cx-search', list: '#cx-list', doc: '#cx-doc .ProseMirror', props: '#cx-props', rail: '#cx-rail' }[key])}) === window.__s.${key}`);
 
   /** 点左列某一行的实体，并在**同一个同步块**里把动画状态读出来（隐藏窗口只读得到参数，
    *  见 README 铁律 6：出帧与否会让 currentTime 有/无，参数才是确定的）。
@@ -245,6 +267,10 @@ async function main() {
       rowAnims: rows.reduce((n, el) => n + el.getAnimations().filter((a) => !a.animationName).length, 0),
       entOnAfter: [...document.querySelectorAll('#cx-list [data-cx-id]')].filter((b) => b.classList.contains('is-on')).length,
       nodeOnAfter: [...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]')].filter((b) => b.classList.contains('is-on')).length,
+      /* ⚠️ 顺序有讲究：geoNow() 会把过渡 finish() 到终态 ⇒ 必须先读 railProbe()
+         （它要抓"过渡正在飞"的那一刻：属性名/时长/起点）。反过来读就永远拿到空数组、宽度已经是 0。 */
+      rail: window.__railProbe(),
+      railSame: document.querySelector('#cx-rail') === window.__s.rail,
       geo: window.__geoNow(),
       newbox: (() => {
         const box = document.querySelector('#cx-newbox');
@@ -274,11 +300,26 @@ async function main() {
       && tab.geo.list.t === geo.before.list.t && tab.geo.body.t === geo.before.body.t
       && tab.geo.newbox.t === geo.before.newbox.t && tab.geo.newbox.h === geo.before.newbox.h
       && tab.newbox.h === geo.before.newbox.h
-      && geo.before.rail.vis !== 'none' && tab.geo.rail.vis === 'none'
+      && tab.geo.rail.t === geo.before.rail.t
+      && geo.before.rail.off === false && geo.before.rail.w > 100
       && tab.newbox.entVis === false && tab.newbox.nodeVis === true
       && tab.newbox.entOff.every((d) => d === true) && tab.newbox.nodeOff.every((d) => d === false)
       && String(tab.newbox.label).includes('新建节点'),
     { before: geo.before, after: tab.geo, newbox: tab.newbox });
+
+  /* ── 帧条（演变）的**出入场动画** ──
+     用户 2026-09-13：「演变窗口消失时编辑页的切换很生硬，顺便再给演变做一下出入场动画」。
+     旧写法是 `rail.style.display = 'none' | ''` 硬切 ⇒ 面板宽度瞬间变化。现在帧条**常驻**，
+     只加 `.is-off`（宽/高/位移/透明度过渡），元素绝不离开 DOM。 */
+  check('★13c 帧条是**演**着收起来的，不是硬切：元素常驻 + `.is-off` + 宽/位移/透明度过渡（176px→0、不透明→透明）',
+    tab.railSame === true && tab.rail.inDom === true
+      && tab.rail.off === true
+      && String(tab.rail.trans).includes('width') && String(tab.rail.trans).includes('height')
+      && tab.rail.tr.some((x) => x.prop === 'width') && tab.rail.tr.some((x) => x.prop === 'margin-left')
+      && tab.rail.tr.every((x) => x.dur > 0) && tab.rail.tr.length >= 3
+      && tab.rail.w0 > 100 && tab.rail.o0 === 1
+      && tab.rail.w1 === 0 && tab.rail.h1 === 0 && tab.rail.o1 === 0,
+    { rail: tab.rail, trans: tab.rail.trans });
 
   /* ── ⑨ 节点→节点也要就地换 ──
      左栏重做后列表形态**直接摊平**了节点行（不再需要先展开 世界→时间线→种类），
@@ -337,7 +378,7 @@ async function main() {
     name: document.querySelector('#cx-name')?.value ?? null,
     nodeOn: [...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]')].filter((b) => b.classList.contains('is-on')).map((b) => b.querySelector('.ed-tlabel')?.textContent ?? ''),
     entOn: [...document.querySelectorAll('#cx-list [data-cx-id]')].filter((b) => b.classList.contains('is-on')).map((b) => b.querySelector('.ed-tlabel')?.textContent ?? ''),
-    rail: (() => { const r = document.querySelector('#cx-rail'); return r ? getComputedStyle(r).display !== 'none' : null; })(),
+    rail: (() => { const r = document.querySelector('#cx-rail'); return r ? { off: r.classList.contains('is-off'), w: (() => { r.getAnimations().forEach((a) => a.finish()); return Math.round(r.getBoundingClientRect().width); })() } : null; })(),
     doc: document.querySelector('#cx-doc .ProseMirror')?.textContent ?? null,
     fields: [...document.querySelectorAll('#cx-fields > div')].length,
   }))()`);
@@ -346,14 +387,16 @@ async function main() {
       && back.bodyCss.length === 0 && back.ghost === true && back.rowAnims > 0, back);
   check('★14c 换回实体后**节点行的高亮必须消失**，高亮落到实体行、帧条回来、中右栏换成该实体',
     nodeOnBefore > 0 && st2.nodeOn.length === 0 && st2.name === '银发少女'
-      && st2.entOn.length === 1 && st2.entOn[0] === '银发少女' && st2.rail === true
+      && st2.entOn.length === 1 && st2.entOn[0] === '银发少女'
+      && st2.rail && st2.rail.off === false && st2.rail.w > 100
       && st2.fields > 0 && String(st2.doc ?? '').includes('雪原独行'),
     { nodeOnBefore, scrollableBefore: sBefore, ...st2 });
-  check('★14d 绕一圈回来（实体 → 节点 → 实体）框的位置与高度与出发时**逐项相同**',
+  check('★14d 绕一圈回来（实体 → 节点 → 实体）框的位置与高度与出发时**逐项相同**（帧条也回到原宽原高）',
     !!geo.before && !!back.geo
       && back.geo.list.t === geo.before.list.t && back.geo.body.t === geo.before.body.t
       && back.geo.newbox.t === geo.before.newbox.t && back.geo.newbox.h === geo.before.newbox.h
-      && back.geo.rail.vis === geo.before.rail.vis && back.geo.rail.h === geo.before.rail.h,
+      && back.geo.rail.t === geo.before.rail.t && back.geo.rail.w === geo.before.rail.w
+      && back.geo.rail.h === geo.before.rail.h && back.geo.rail.off === false,
     { before: geo.before, after: back.geo });
 
   const errs = await ev(`window.__errs`);

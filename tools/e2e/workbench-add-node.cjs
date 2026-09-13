@@ -110,8 +110,89 @@ async function main() {
   const treeNow = await ev(nodeLabels);
   check('★6 左树那行也跟着改成新名字', treeNow.includes('雪原之夜') && !treeNow.includes('新节点'), treeNow);
 
+  /* ── 2026-09-13 四条新需求里的三条（类型跟随 / 批量新建 / 「待填」强调）───────────────
+     用户原话：「我想要当前选中的是哪个分类就自动在当前分类下创建实体，还有我希望能同时创建
+     多个未填数据的实体或者节点（强调显示一下就行）」。第四条（帧条出入场动画）在
+     `codex-smooth-switch.cjs` ★13c 里断言。 */
+  const entLabels = `[...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="entity"]')].map((x)=>(x.querySelector('.ed-tlabel')?.textContent||''))`;
+  const stubRows = `[...document.querySelectorAll('#cx-list .ed-tnode-item.is-stub')].map((x)=>(x.querySelector('.ed-tlabel')?.textContent||''))`;
+  const typeSel = `document.querySelector('#cx-new-type')?.value ?? null`;
+  const firstType = `[...document.querySelectorAll('#cx-new-type option')].map((o)=>o.value)[0] ?? null`;
+  const setCount = (sel, n) => ev(`(() => { const i = document.querySelector(${JSON.stringify(sel)}); if (!i) return false; i.value = ${JSON.stringify(String(n))}; return true; })()`);
+  const setType = (v) => ev(`(() => { const s = document.querySelector('#cx-new-type'); if (!s) return false; s.value = ${JSON.stringify(v)}; s.dispatchEvent(new Event('change', { bubbles: true })); return s.value; })()`);
+
+  /* ① 类型跟随：把**正在编的那条**的类型改掉（中栏 `#cx-type`）⇒ 顶栏新建的类型要跟着变。
+     判别力在于：跟随到的类型**不是**下拉的第一个选项（否则"没跟随"也读得到第一项）。 */
+  await clkText('#cx-list .ed-tnode-item[data-act="entity"]', '银发少女');
+  await sleep(700);
+  const firstOpt = await ev(firstType);
+  const itsType = await ev(`(() => { const s = document.querySelector('#cx-type'); return s ? s.value : null; })()`);
+  const otherType = await ev(`[...document.querySelectorAll('#cx-type option')].map((o)=>o.value).find((v)=>v !== ${JSON.stringify(itsType)}) ?? null`);
+  await ev(`(() => { const s = document.querySelector('#cx-type'); if (!s) return false; s.value = ${JSON.stringify(otherType)}; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  await sleep(900);
+  const followed = await ev(typeSel);
+  check('★8 顶栏的新建类型**跟着正在编的那条走**（那条的类型是「' + otherType + '」，下拉就跟到它；而第一个选项是「' + firstOpt + '」）',
+    !!otherType && followed === otherType && followed !== firstOpt, { firstOpt, itsType, otherType, followed });
+
+  /* ② 批量新建：「一次建几个」填 3 ⇒ 树里多 3 行，名字自动唯一（同名会撞同一个 .md 路径） */
+  const entBefore = await ev(entLabels);
+  await setCount('#cx-new-count', 3);
+  await clk('#cx-new');
+  await sleep(900);
+  const batch = await ev(`({ labels: ${entLabels}, stubs: ${stubRows},
+    tags: [...document.querySelectorAll('#cx-list .ed-tnode-item.is-stub')].map((x)=>(x.querySelector('.ed-ttag')?.textContent||'')),
+    on: [...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="entity"]')].filter((x)=>x.classList.contains('is-on')).map((x)=>(x.querySelector('.ed-tlabel')?.textContent||'')),
+    newType: ${typeSel} })`);
+  const added = batch.labels.filter((x) => !entBefore.includes(x));
+  check('★9 一次建 3 个：树里多 3 行、名字各不相同（新实体 / 新实体 2 / 新实体 3）',
+    added.length === 3 && new Set(added).size === 3 && added.includes('新实体') && added.includes('新实体 2') && added.includes('新实体 3'),
+    { added });
+  check('★10 这 3 条都带「待填」强调（is-stub 类 + 名字后面的小药丸）',
+    batch.stubs.length === 3 && batch.tags.length === 3 && batch.tags.every((t) => t === '待填') && batch.on.length === 1 && batch.on[0] === '新实体',
+    { stubs: batch.stubs, tags: batch.tags, on: batch.on });
+
+  const EDIR = path.join(VAULT, WS, '_设定', String(otherType));
+  const entFiles = ['新实体.md', '新实体 2.md', '新实体 3.md'];
+  const landedAll = await waitFor(() => entFiles.every((f) => read(path.join(EDIR, f)).includes('name:')));
+  check('★11 三条都真的落进 vault：_设定/' + otherType + '/新实体{ ,2,3}.md',
+    landedAll, { EDIR, files: entFiles.map((f) => exists(path.join(EDIR, f))) });
+
+  /* ③ 跟随也发生在**换条目**时：手动把下拉拨到别的类型，再点回「银发少女」⇒ 要跟回它自己的类型 */
+  const manual = await setType(String(otherType === '角色' ? '物品' : '角色'));
+  await clkText('#cx-list .ed-tnode-item[data-act="entity"]', '银发少女');
+  await sleep(900);
+  const back = await ev(`({ type: ${typeSel}, its: (() => { const s = document.querySelector('#cx-type'); return s ? s.value : null; })() })`);
+  check('★12 换条目时也跟上：手动把下拉拨到「' + manual + '」，点回「银发少女」⇒ 下拉回到它自己的类型',
+    back.type === back.its && back.type === otherType && manual !== otherType, { manual, back });
+
+  /* ④ 改了名字 ⇒ 「待填」自动消失（这条不是新条目了） */
+  await ev(`(() => { const r=[...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="entity"]')].find((x)=>(x.querySelector('.ed-tlabel')?.textContent||'')==='新实体'); if(!r) return false; r.click(); return true; })()`);
+  await sleep(700);
+  await ev(`(() => { const i = document.querySelector('#cx-name'); if (!i) return false; i.value = '待填守卫'; i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  await sleep(900);
+  const afterRename = await ev(`({ stubs: ${stubRows}, labels: ${entLabels} })`);
+  check('★13 改过名之后就不算「待填」了（小药丸消失，另外两条还在）',
+    afterRename.labels.includes('待填守卫') && !afterRename.stubs.includes('待填守卫') && afterRename.stubs.length === 2,
+    { stubs: afterRename.stubs });
+
+  /* ⑤ 节点侧也能量产（「一次建几个」是两套顶栏各一个框） */
+  await clkText('#cx-list .ed-tnode-item[data-act="node"]', '王国的建立');
+  await sleep(700);
+  const nodeBefore = await ev(nodeLabels);
+  await setCount('#cx-new-node-count', 2);
+  await clk('#cx-new-node-btn');
+  await sleep(900);
+  const nodeBatch = await ev(`({ labels: ${nodeLabels}, stubs: ${stubRows},
+    path: document.querySelector('#cx-nodepath')?.textContent ?? null })`);
+  const nodeAdded = nodeBatch.labels.filter((x) => !nodeBefore.includes(x));
+  const nodeLanded = await waitFor(() => exists(path.join(NODE_DIR, '新节点.md')) && exists(path.join(NODE_DIR, '新节点 2.md')));
+  check('★14 节点侧一次建 2 个：树里多 2 行、名字唯一、都落进 ' + path.join(TL, KIND),
+    nodeAdded.length === 2 && nodeAdded.includes('新节点') && nodeAdded.includes('新节点 2')
+      && nodeBatch.stubs.filter((x) => x.startsWith('新节点')).length === 2 && nodeLanded,
+    { nodeAdded, stubs: nodeBatch.stubs, nodeLanded });
+
   const errs = await ev(`window.__errs`);
-  check('★7 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
+  check('★20 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 
   const n = results.filter(Boolean).length;
   console.log(`\n==== ${n}/${results.length} PASS ====`);

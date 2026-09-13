@@ -143,17 +143,62 @@
   **A/B（改动前 = `git checkout -- src/ui/codex.ts` + 重建）3/8**：★0/★1/★2/★3/★5 全挂，
   且 ★1 dump 直接看到树里只有「王国的建立」一行 ⇒ 断言有判别力。
 
+### 六、新建的三件事：类型跟随 / 一次建多个 / 「待填」强调（用户 2026-09-13 深夜）
+
+- 原话（一条消息里三件）：「**我想要当前选中的是哪个分类就自动在当前分类下创建实体，还有我希望
+  能同时创建多个未填数据的实体或者节点（强调显示一下就行）**」。
+- **类型跟随**：`syncNewType()` —— 实体态把 `#cx-new-type` 对齐到 `active()?.typeId`（选项里没有这个类型
+  就不动，别硬写 value）。调用点只有 `syncNewBox()` 的末尾一处，于是 `render()` 与 `mountBody()` 两条路
+  都覆盖到，`swapBody()` 的同类轻路径里另调一次（换条目 = 换目标，必须跟上）。
+  **手动改选之后只要不换目标就保持你选的** —— 所以它不是在每次渲染都无条件覆盖。
+- **一次建多个**：每组顶栏加一个数量框（`#cx-new-count` / `#cx-new-node-count`，`readCount(sel)` 夹
+  1..`NEW_MAX = 20`，样式常量 `NEWNUM` 的高度必须与 `NEWSEL`/`NEWBTN` 一致，否则又回到第四节那个跳 7px）。
+  点一下建 N 个，`switchTarget()` 选**第一个**（按顺序往下填最顺手）。
+  名字必须唯一：`uniqueName(base, taken: Set<string>)` ⇒ 新实体 / 新实体 2 / 新实体 3 —— 同名会写进
+  **同一个 `.md` 路径**互相覆盖（`entityPath`/`nodePath` 都按名字定路径，这是既有设计）。
+- **「待填」强调**：`isStub(name)` = `/^新(?:实体|节点)(?:[ ]?\d+)?$/`；命中就在 `treeRow()` 里加 `is-stub`
+  类 + 名字后挂一颗 `.ed-ttag` 小药丸「待填」（`.ed-tlabel` 走 accent 绿；样式与帧条的 `.lk-rail__tag` 同款）。
+  四出行渲染处共用 `itemCls(on, name)` / `stubTag(name)`。**不存状态**，只看名字 —— 改过名/自己填了名字自动消失。
+- 测试：`tools/e2e/workbench-add-node.cjs` **8 → 15 项**（★8 类型跟随 / ★9 批量 3 个且名字唯一 / ★10 三条都带
+  「待填」/ ★11 三条都落 `_设定/<类型>/` / ★12 换条目时也跟上 / ★13 改过名就不再是「待填」/ ★14 节点侧也能量产）。
+  ⚠️ ★8 的断言特意比「**不等于第一个选项**」：那条实体的类型（地点）不是下拉首项（角色），
+  否则"没跟随"也能读到第一项 = 假绿。**A/B（改动前）8/15**，挂的正是 ★8~★14 七条。
+
+### 七、帧条（演变）的出入场：原来是硬切（用户 2026-09-13 深夜）
+
+- 原话：「（用户上一条消息的第三件）**演变窗口消失时编辑页的切换很生硬，顺便再给演变做一下出入场动画**」。
+- 机制：`mountBody()` 里原来是 `railHost.style.display = mode === 'entity' ? '' : 'none'` —— 节点模式下
+  `display:none` 让右栏**瞬间**消失，中栏随之变宽，整块布局"啪"地跳一下。
+- 修法：`#cx-rail` **常驻骨架**，只 `classList.toggle('is-off', mode !== 'entity')`；CSS 侧
+  `.lk-rail` 加 `transition`（宽/高/外边距/透明度 320ms + 位移 640ms），`.lk-rail.is-off` 收到
+  `width:0; height:0; margin-left:-12px; opacity:0; transform:translateX(14px); border-width:0`。
+  - `margin-left:-12px` 抵掉三栏那行的 `gap:12px`，否则收起了还留 12px 空档；
+  - **高度必须一起收**：那行是 `align-items:flex-start`，帧条高度由内容决定，只收宽度的话内容被挤成
+    一列、反而更高，把整行撑高（`#cx-root` 多一像素就长滚动条）。实测收起来是 0×0、展开回来 176×(自然高)。
+  - ⚠️ `height: auto → 0` **过渡不了**（`auto` 不是可插值长度）⇒ 高度是瞬时收的。这在布局上看不出来
+    （帧条比中栏矮，行高由中栏决定），★13b 钉的是"框不动"。
+- 测试：`codex-smooth-switch.cjs` **20 → 21 项**，新增 **★13c**（元素常驻 + `.is-off` + `transitionProperty`
+  含 width/height + 过渡对象里有 width/margin-left 且时长 > 0 + 起点 176px/不透明、终态 0×0/透明）、
+  ★13b 与 ★14d 改成比帧条的 top/宽/高（原来比的是 `display`，实现改了就得跟着改）。
+  **A/B（改动前）19/21**：★13b（`display:none` ⇒ 帧条 rect 全 0、top 对不上）与 ★13c
+  （`off:false, transitionProperty:'all', 过渡对象 0 个`）精确复现。
+
 ### 验证（二十二）
 
 - `codex-swap-motion` **14/14**（A/B 改动前 6 FAIL）；`settings-panel` **12/12**（A/B 4/12）；
-- 换类别 y 跳 7px（第四节）：`codex-smooth-switch` **20/20**，A/B（退回 `display` 切换）时 ★13b 挂、
-  其余 19 项照旧（判别力坐实）；
-- 顶栏按类别换 + 直接建节点（第五节）：新增 `workbench-add-node` **8/8**，A/B（改动前）**3/8**；
+- 换类别 y 跳 7px（第四节）：`codex-smooth-switch` **21/21**，A/B（退回 `display` 切换）时 ★13b 挂、
+  其余照旧（判别力坐实）；
+- 顶栏按类别换 + 直接建节点（第五节）：新增 `workbench-add-node`，第六节扩到 **15/15**，A/B（改动前）**8/15**；
+- 帧条出入场（第七节）：`codex-smooth-switch` ★13c 新增，A/B（改动前）**19/21**（★13b/★13c 挂）；
 - 回归全绿（都在**这个构建**上跑过，各自干净起点）：
-  `codex-smooth-switch` **20/20**、`codex-swap-motion` 14/14、`codex-node-tab` 18/18、
-  `codex-tree-view` 22/22、`codex-switch-target` 7/7、`motion-switch` 25/25、
+  `codex-smooth-switch` **21/21**、`workbench-add-node` **15/15**、`codex-swap-motion` 14/14、
+  `codex-node-tab` 18/18、`codex-tree-view` 22/22、`codex-switch-target` 7/7、`motion-switch` 25/25、
   `toolbar-groups` 5/5、`settings-panel` 12/12、`workbench-tree-folders` 29/29、
   `entity-evolution` 38/38、`entity-vault` 17/17；
+- ⚠️ **踩到的假红灯**：`codex-node-tab` 16/18、`codex-tree-view` 21/22 曾同时挂，真因不是本轮改动，
+  而是**上一个测试实例（A/B 用的 9782）没杀干净** —— 它的 store 里还留着上一轮改名/改类型的实体，
+  我 reset+seed 之后它一次回扫就把旧实体写回 vault（`_设定/地点/银发少女.md` 复活，文件为源 ⇒ 类型被顶掉）。
+  杀掉 9782、重新播种后两个套件立刻 18/18、22/22。**收尾务必按端口杀干净（可先 `Get-CimInstance` 列一遍）。**
   `tsc --noEmit` / `vite build` exit 0。
 - ⚠️ 两条测试环境教训：① `toolbar-groups` **必须用全新实例** —— `codex-tree-view` 会把悬浮设置面板
   留在开着的状态，同实例接着跑时 ★3 点那一下变成"关"，且主区已被前一个套件改过

@@ -41,6 +41,11 @@ const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var
    换类别时头行高度才不会变（用户 2026-09-13 深夜报过"切换时元素上下跳 7px"）。 */
 const NEWSEL = 'background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 6px;font-size:var(--text-xs);outline:none;';
 const NEWBTN = 'background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:6px 14px;font-size:var(--text-xs);cursor:pointer;';
+/** 一次建几个（用户 2026-09-13：「我希望能同时创建多个未填数据的实体或者节点」）。
+ *  高度必须与 NEWSEL/NEWBTN 一致，否则又会长出"换类别跳 7px"那种问题。 */
+const NEWNUM = 'width:46px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 6px;font-size:var(--text-xs);outline:none;text-align:center;';
+/** 批量上限：一次建太多会一次落一屏 .md，也没人这么用 */
+const NEW_MAX = 20;
 
 /** 正文写回哪个目标（编辑器跨条目复用，目标会变，所以是**读时取值**不是创建时捕获）。
  *  安全性由 `switchTarget` 保证：它一定先 `flush()`（此时 docTarget 还是旧目标）再改 docTarget。 */
@@ -181,6 +186,31 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     }
     const fmts = Object.keys(store.data.formats ?? {});
     return fmts.length && !fmts.includes('事件') ? fmts[0] : '事件';
+  }
+  /** 「刚建出来还没填」的条目：名字还是 ＋新建 时给的占位名 ⇒ 左树里标一个「待填」，
+   *  改过名（或者自己填了字段）就自动不当它是新的了。用户 2026-09-13：「我希望能同时创建多个
+   *  未填数据的实体或者节点（**强调显示一下就行**）」。 */
+  const isStub = (name: string | undefined): boolean => /^新(?:实体|节点)(?:[ ]?\d+)?$/.test(String(name ?? '').trim());
+  /** 名字后面那个「待填」小标 —— 强调「这一条是刚建出来还没填的」 */
+  const stubTag = (name: string | undefined): string => (isStub(name) ? '<span class="ed-ttag">待填</span>' : '');
+  /** 条目行的类名：选中 + 待填，四处置（搜索命中两处 / 树上两处）都用它，免得各写一份 */
+  const itemCls = (on: boolean, name: string | undefined): string =>
+    'ed-tnode-item' + (on ? ' is-on' : '') + (isStub(name) ? ' is-stub' : '');
+  /** 占位名要**唯一**：同名会写进同一个 `.md` 路径互相覆盖（`entityPath`/`nodePath` 都按名字定路径）。
+   *  批量建 N 个时也靠它保证 新实体 1 / 2 / 3… 各不相同。 */
+  function uniqueName(base: string, taken: Set<string>): string {
+    if (!taken.has(base)) { taken.add(base); return base; }
+    for (let i = 2; i < 9999; i++) {
+      const n = base + ' ' + i;
+      if (!taken.has(n)) { taken.add(n); return n; }
+    }
+    return base + ' ' + Date.now();
+  }
+  /** 顶栏那个「一次建几个」的输入框：1..NEW_MAX，读不出来就当 1 */
+  function readCount(sel: string): number {
+    const el = host.querySelector<HTMLInputElement>(sel);
+    const n = Math.floor(Number(el?.value ?? 1));
+    return Number.isFinite(n) && n >= 1 ? Math.min(n, NEW_MAX) : 1;
   }
   const activeNode = (): TimelineNode | undefined => {
     const t = nodeTarget;
@@ -660,6 +690,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (docEditor) docEditor.setDoc(md);   /* 同一个 tiptap 实例换文档，不销毁不重建 */
     renderList();                          /* 左列只动高亮：那一列没有编辑器，重建只花 DOM 钱 */
     rail?.render();                        /* 右栏那条竖线：换实体/换版本要重画高亮与摘要 */
+    syncNewType();                         /* 顶栏「新建的类型」跟着换到的这条走（见 syncNewType） */
     pendingEnter = false;                  /* 骨架没重建 ⇒ 不该有整块错峰 */
     bodySig = bodySignature();             /* 签名立刻对齐，否则下一次 store 变化会白重建一次 */
     playSwap(body, prevHtml);
@@ -761,13 +792,15 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
        添加事件节点要在世界沙盒怎么办」⇒ 节点态换成同一套长相的「时间线 ▾ + ＋新建节点」，
        两组都是「一个下拉 + 一个按钮」，高度一样，所以换类别时头行高度不变（那条不变量有测试钉着）。 */
     const newCtl = kinds.length
-      ? `<select id="cx-new-type" title="新实体的类型" style="${NEWSEL}">${kinds.map((k) => `<option value="${escapeHtml(k)}">${escapeHtml(typeName(k))}</option>`).join('')}</select>
+      ? `<select id="cx-new-type" title="新实体的类型（默认跟着你正在编的那条走）" style="${NEWSEL}">${kinds.map((k) => `<option value="${escapeHtml(k)}">${escapeHtml(typeName(k))}</option>`).join('')}</select>
+         <input id="cx-new-count" type="number" min="1" max="${NEW_MAX}" step="1" value="1" title="一次建几个（最多 ${NEW_MAX}）" style="${NEWNUM}"/>
          <button id="cx-new" style="${NEWBTN}">＋新建实体</button>`
       : '';
     const tlNewOpts = newTimelines();
-    const nodeCtl = `<select id="cx-new-tl" title="新节点放进哪条时间线" style="${NEWSEL}">${
+    const nodeCtl = `<select id="cx-new-tl" title="新节点放进哪条时间线（默认跟着你正在编的那条走）" style="${NEWSEL}">${
       tlNewOpts.map((t) => `<option value="${escapeHtml(t.id)}"${t.id === nodeNewTlId() ? ' selected' : ''}>${escapeHtml(t.name)}</option>`).join('')
     }</select>
+      <input id="cx-new-node-count" type="number" min="1" max="${NEW_MAX}" step="1" value="1" title="一次建几个（最多 ${NEW_MAX}）" style="${NEWNUM}"/>
       <button id="cx-new-node-btn" style="${NEWBTN}"${tlNewOpts.length ? '' : ' data-off="1" disabled title="这个世界还没有时间线 —— 先去世界沙盘建一条"'}>＋新建节点</button>`;
 
     host.innerHTML = `
@@ -790,7 +823,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
             ${bodyHtml()}
           </div>
           <!-- 右栏那条竖线**常驻**（节点模式只是藏起来）—— 换类别时就不用动骨架，见 mountBody -->
-          <div id="cx-rail" class="lk-rail" title="演变：站在某个事件上看这条设定" style="${isEntity ? '' : 'display:none;'}"></div>
+          <div id="cx-rail" class="lk-rail${isEntity ? '' : ' is-off'}" title="演变：站在某个事件上看这条设定"></div>
         </div>
         <div id="cx-msg" style="font-size:var(--text-xs);display:none;"></div>
       </div>`;
@@ -849,13 +882,19 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       query = (ev.target as HTMLInputElement).value;
       renderList();
     });
+    /* 实体态那个「＋新建实体」：类型默认跟着**你正在编的那条**（`syncNewType()`），
+       点一下建 1..NEW_MAX 个占位条目（用户 2026-09-13：「我希望能同时创建多个未填数据的实体」），
+       名字自动取唯一（新实体 / 新实体 2 / …）—— 同名会写进同一个 `.md` 路径互相覆盖。 */
     host.querySelector('#cx-new')?.addEventListener('click', () => {
       const sel = host.querySelector('#cx-new-type') as HTMLSelectElement | null;
       const typeId = sel?.value ?? '';
       if (!typeId) return;
-      const id = addEntity(store, { typeId, name: '新实体' });
-      switchTarget(() => { activeId = id; });
-      say('已新建，改个名字吧');
+      const n = readCount('#cx-new-count');
+      const taken = new Set(entities().map((e) => e.name || ''));
+      const ids: string[] = [];
+      for (let i = 0; i < n; i++) ids.push(addEntity(store, { typeId, name: uniqueName('新实体', taken) }));
+      switchTarget(() => { activeId = ids[0]; });   /* 选**第一个**：按顺序往下填 */
+      say(n > 1 ? `已新建 ${n} 个，改个名字吧` : '已新建，改个名字吧');
     });
     /* 节点态那个「＋新建节点」：**直接建**（和「＋新建实体」同一套手感 —— 用户 2026-09-13：
        「添加节点就直接添加节点吧，就像添加实体一样」），建完在工作台里选中它，
@@ -865,12 +904,16 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       const sel = host.querySelector('#cx-new-tl') as HTMLSelectElement | null;
       const tlId = sel?.value ?? '';
       if (!tlId) return;
-      const id = addNode(store, tlId, { title: '新节点', kind: nodeNewKind(tlId) });
+      const n = readCount('#cx-new-node-count');
+      const kind = nodeNewKind(tlId);
+      const taken = new Set((store.data.worldsets[store.activeWorld]?.timelines[tlId]?.nodes ?? []).map((x) => x.title || ''));
+      const ids: string[] = [];
+      for (let i = 0; i < n; i++) ids.push(addNode(store, tlId, { title: uniqueName('新节点', taken), kind }));
       switchTarget(() => {
         mode = 'node';
-        nodeTarget = { world: store.activeWorld, tlId, nodeId: id };
+        nodeTarget = { world: store.activeWorld, tlId, nodeId: ids[0] };
       });
-      say('已新建，改个名字吧');
+      say(n > 1 ? `已新建 ${n} 个，改个名字吧` : '已新建，改个名字吧');
     });
     /* 外部改动提示条：宿主刚被整块重建，把已有提示重画进来（提示是累积的，不因切条目而丢） */
     vaultNotices?.refresh();
@@ -994,6 +1037,17 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         el.disabled = !on || el.hasAttribute('data-off');
       }
     }
+    syncNewType();
+  }
+
+  /** 顶栏那个「类型 ▾」跟着**你正在编的那条**走：换条目 / 换类别 / 换了它的类型之后自动对上。
+   *  用户 2026-09-13：「我想要当前选中的是哪个分类就自动在当前分类下创建实体」。
+   *  你手动改选之后只要不换目标就保持你选的（同步只在 `render()` 与 `mountBody()` 这两条路上跑）。 */
+  function syncNewType(): void {
+    const sel = host.querySelector<HTMLSelectElement>('#cx-new-type');
+    if (!sel || mode !== 'entity') return;
+    const cur = active()?.typeId ?? '';
+    if (cur && Array.from(sel.options).some((o) => o.value === cur)) sel.value = cur;
   }
 
   /** 换**类别**（时间线节点 ↔ 设定条目）时只重造 `#cx-body` 那一块。
@@ -1013,8 +1067,11 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     docTarget = null;
     propsPanel = null;   /* 旧面板跟着旧 DOM 一起没了 */
     body.innerHTML = bodyHtml();
+    /* 帧条改成**常驻 + .is-off**（原来是 `display:none` 硬切 —— 面板宽度瞬间变化，
+       用户 2026-09-13：「演变窗口消失时编辑页的切换很生硬…顺便再给演变做一下出入场动画」）。
+       常驻还顺手让"展开/收起"有过渡可演（CSS 在 `.lk-rail` / `.lk-rail.is-off`）。 */
     const railHost = host.querySelector<HTMLElement>('#cx-rail');
-    if (railHost) railHost.style.display = mode === 'entity' ? '' : 'none';
+    if (railHost) railHost.classList.toggle('is-off', mode !== 'entity');
     syncNewBox();
     wireBody();
     renderedMode = mode;
@@ -1096,14 +1153,14 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       }
       nodeHits.forEach((h) => {
         const on = mode === 'node' && !!nodeTarget && nodeTarget.world === h.world && nodeTarget.tlId === h.tlId && nodeTarget.nodeId === h.node.id;
-        frag.appendChild(treeRow('ed-tnode-item' + (on ? ' is-on' : ''),
-          `<span class="ed-tlabel">${escapeHtml(h.node.title)}</span><span class="ed-tcount">${escapeHtml(h.kind)}</span>`,
+        frag.appendChild(treeRow(itemCls(on, h.node.title),
+          `<span class="ed-tlabel">${escapeHtml(h.node.title)}</span>${stubTag(h.node.title)}<span class="ed-tcount">${escapeHtml(h.kind)}</span>`,
           { act: 'node', nw: h.world, ntl: h.tlId, nid: h.node.id }));
       });
       entHits.forEach((h) => {
         const on = mode === 'entity' && store.activeWorld === h.world && h.entity.id === activeId;
-        frag.appendChild(treeRow('ed-tnode-item' + (on ? ' is-on' : ''),
-          `<span class="ed-tlabel">${escapeHtml(h.entity.name)}</span><span class="ed-tcount">${escapeHtml(typeNameOf(h.world, h.entity.typeId))}</span>`,
+        frag.appendChild(treeRow(itemCls(on, h.entity.name),
+          `<span class="ed-tlabel">${escapeHtml(h.entity.name)}</span>${stubTag(h.entity.name)}<span class="ed-tcount">${escapeHtml(typeNameOf(h.world, h.entity.typeId))}</span>`,
           { act: 'entity', nw: h.world, nid: h.entity.id, 'cx-id': h.entity.id, 'cx-type': typeNameOf(h.world, h.entity.typeId) }));
       });
       listEl.innerHTML = '';
@@ -1146,8 +1203,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
             /* ⚠️ 高亮必须**同时**看「选的是谁」和「现在在编哪一类」——只是 nodeTarget 匹配的话，
                切到实体后这一行还亮着（用户 2026-09-13：「从事件节点切换到实体节点时，事件节点保持选中状态」）。 */
             const on = mode === 'node' && !!nodeTarget && nodeTarget.world === g.world && nodeTarget.tlId === g.tlId && nodeTarget.nodeId === n.id;
-            frag.appendChild(treeRow('ed-tnode-item' + (on ? ' is-on' : ''),
-              `<span class="ed-tlabel">${escapeHtml(n.title)}</span>`,
+            frag.appendChild(treeRow(itemCls(on, n.title),
+              `<span class="ed-tlabel">${escapeHtml(n.title)}</span>${stubTag(n.title)}`,
               { act: 'node', nw: g.world, ntl: g.tlId, nid: n.id }));
           }
         }
@@ -1176,8 +1233,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
               const on = mode === 'entity' && store.activeWorld === wName && e.id === activeId;
               /* `cx-id` / `cx-type` 是给测试与将来拖拽用的稳定抓手（树上不显示类型 —— 上一层文件夹
                  已经写着它了）；`[data-cx-id]` 这个属性名是历史约定，十几条 e2e 都按它找实体行。 */
-              frag.appendChild(treeRow('ed-tnode-item' + (on ? ' is-on' : ''),
-                `<span class="ed-tlabel">${escapeHtml(e.name)}</span>`,
+              frag.appendChild(treeRow(itemCls(on, e.name),
+                `<span class="ed-tlabel">${escapeHtml(e.name)}</span>${stubTag(e.name)}`,
                 { act: 'entity', nw: wName, nid: e.id, 'cx-id': e.id, 'cx-type': typeNameOf(wName, e.typeId) }));
             }
           }
