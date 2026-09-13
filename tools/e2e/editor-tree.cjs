@@ -1,20 +1,26 @@
 /* 编辑器文件树：树的文件夹要跟**硬盘上的文件夹**一一对应。
  *
- * 用户 2026-09-13 原话：「就是编辑器的树现在只能显示事件节点，其他结构体的文件夹没有在树里面」
- * 旧行为：种类文件夹是从「这条时间线已有的节点」反推出来的 ⇒ 一个节点都没有的结构体
- * （战斗 / 地点 / 组织…）在树里**根本不存在**；`_设定`（实体）也完全不在「时间线」页签的树里。
+ * 用户 2026-09-13 原话（按时间）：
+ *   ① 「就是编辑器的树现在只能显示事件节点，其他结构体的文件夹没有在树里面」
+ *   ② 「点到设定里面的实体文件时测试世界观文件夹会消失，事件文件夹也没了」
+ *   ③ 「设定文件夹和世界观文件夹处于同一缩进」
+ *   ④ 「我指的是角色，地点，物品等文件夹同时存在于主线与设定文件夹下，是bug」
  *
- * 本套件钉住的四件事：
- *   ① 空的结构体文件夹**也在树里**（置灰 + 计数 0，展开给一句人话）；
- *   ② `_设定` 分支列出**全部实体类型**（包括一个实体都没有的），空的同样置灰，
+ * 本套件钉住的五件事：
+ *   ① 时间线下面只列**真的有节点**的种类（= 硬盘上真有的目录）——「结构体管理」里定义了、
+ *      但一个节点都没有的种类（战斗 / 角色）**不许**凭空画出来；⚠️ 第一版是"把 formats 里的
+ *      种类全列出来（空的也列）"，被用户报回 ④ 后推翻（内建默认种类名跟实体类型重名，
+ *      于是「主线」和「_设定」下面各挂一个「角色」）；
+ *   ② `_设定` 分支列出**全部实体类型**（包括一个实体都没有的 —— 空的置灰 + 一句人话），
  *      且它是**世界下面的一层** —— 缩进与时间线一致；
  *   ③ 在「时间线」页签的树里点实体行 = **就地**把右边打开的文档换成它，
- *      **不切页签**（切了左栏整棵树会换成「实体」页签那套类型列表 —— 用户 2026-09-13：
- *      「点到设定里面的实体文件时测试世界观文件夹会消失，事件文件夹也没了」）；
- *   ④ 全程无未捕获异常。
+ *      **不切页签**（切了左栏整棵树会换成「实体」页签那套类型列表 —— 用户 ②）；
+ *   ④ 全树里每个名字只许出现一次（④ 的守卫：`角色` 只该在 `_设定` 那边）；
+ *   ⑤ 全程无未捕获异常。
  *
  * 用法：先 `node tools/e2e/seed-editor-tree.cjs`（配 LINGKUANG_TEST_DATA / LINGKUANG_VAULT），
- *       起应用（带 --remote-debugging-port），再 `LK_CDP_PORT=xxxx node tools/e2e/editor-tree.cjs`。
+ *       起应用（带 --remote-debugging-port；formats.json 是启动时读的 ⇒ 播种后要重启），
+ *       再 `LK_CDP_PORT=xxxx node tools/e2e/editor-tree.cjs`。
  */
 const PORT = process.env.LK_CDP_PORT || '9704';
 const WS = process.env.LK_WS || '测试世界观';
@@ -73,19 +79,15 @@ async function main() {
   check('3 展开时间线', await clickRow('tl', 'tl-主线'));
   await sleep(300);
 
-  /* ── ① 空的结构体文件夹也在树里 ─────────────────────────────── */
+  /* ── ① 时间线下只列**真的有节点**的种类（= 硬盘上真有的文件夹） ────── */
   const kinds = await listRows('.ed-tkind');
   const ev1 = kinds.find((r) => r.path === '事件');
-  const bt = kinds.find((r) => r.path === '战斗');
   check('★4 「事件」在树里且计数 2', !!ev1 && ev1.count === '2', kinds);
-  check('★5 「战斗」也在树里（一个节点都没有，但仍要出现）', !!bt, kinds);
-  check('★6 「战斗」计数 0 且置灰（is-empty）', !!bt && bt.count === '0' && bt.empty === true, bt);
-  const btInfo = await rowInfo('tkind', '战斗');
-  check('★7 置灰是真的半透明（label opacity .45）', !!btInfo && btInfo.opacity === '0.45', btInfo);
-  check('8 展开空的「战斗」', await clickRow('tkind', '战斗'));
-  await sleep(250);
-  const es1 = await empties();
-  check('★9 空的种类展开后给一句人话（不是一片空白）', es1.some((t) => String(t).includes('这个结构体还没有节点')), es1);
+  /* 用户 2026-09-13：「我指的是角色，地点，物品等文件夹同时存在于主线与设定文件夹下，是bug」
+     ⇒ 「结构体管理」里定义了、但**一个节点都没有**的种类（战斗 / 角色）不许凭空画在时间线下。 */
+  check('★5 「战斗」（有定义、没节点）**不在**时间线下', !kinds.some((r) => r.path === '战斗'), kinds);
+  check('★5b 「角色」（有定义、没节点，且与实体类型重名）**不在**时间线下', !kinds.some((r) => r.path === '角色'), kinds);
+  check('★5c 时间线下的种类**只有**真有节点的那些', kinds.length === 1 && kinds[0].path === '事件', kinds);
 
   /* ── ② `_设定` 分支（实体） ─────────────────────────────────── */
   const setRow = await rowInfo('set', '_设定');
@@ -108,6 +110,14 @@ async function main() {
   check('★14 空的「地点」也在（计数 0 + 置灰）', !!place && place.count === '0', etypes);
   const placeInfo = await rowInfo('etype', '地点');
   check('★15 「地点」置灰（is-empty）', !!placeInfo && placeInfo.empty === true, placeInfo);
+  /* 用户报的「同名文件夹挂在两处」：整棵树里「角色」只许出现一次，且必须是在 `_设定` 那边 */
+  const roleEverywhere = await ev(`(() => {
+    const hit = [...document.querySelectorAll('#ed-sidebar .ed-tnode')]
+      .filter((el) => el.querySelector('.ed-tlabel')?.textContent === '角色');
+    return hit.map((el) => el.className);
+  })()`);
+  check('★15b 全树里「角色」只出现一次，且在 `_设定` 下（不是时间线下的种类）',
+    roleEverywhere.length === 1 && roleEverywhere[0].includes('ed-tset-type'), roleEverywhere);
   check('16 展开空的「地点」', await clickRow('etype', '地点'));
   await sleep(250);
   const es2 = await empties();
@@ -137,7 +147,8 @@ async function main() {
   check('★22 **不切页签**（还是「时间线」，切了左树就整棵换掉了）', after.bgEntity === 'none' && after.bgTl !== 'none', { bgEntity: after.bgEntity, bgTl: after.bgTl });
   check('★23 世界文件夹还在（测试世界观）', after.worldRows.includes(WS), after.worldRows);
   check('★23b 时间线还在（主线）', after.tlRows.includes('tl-主线'), after.tlRows);
-  check('★23c 种类文件夹还在（事件 + 战斗）', after.kindRows.includes('事件') && after.kindRows.includes('战斗'), after.kindRows);
+  check('★23c 种类文件夹还在（真有节点的「事件」），空的「战斗/角色」仍不出现',
+    after.kindRows.includes('事件') && !after.kindRows.includes('战斗') && !after.kindRows.includes('角色'), after.kindRows);
   check('★23d `_设定` 仍是展开的（展开态没被重置）', after.setOpen === true && after.setRows.includes('_设定'), { setOpen: after.setOpen, setRows: after.setRows });
   check('★23e 树里这个实体行已高亮（而且确实在时间线那棵树里、不是实体页签那套）', after.entOn === true && after.entityList === false, { entOn: after.entOn, entityList: after.entityList });
   check('★24 标题是实体名（银发少女）', after.title === '银发少女', after.title);

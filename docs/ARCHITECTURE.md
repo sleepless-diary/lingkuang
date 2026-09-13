@@ -31,7 +31,7 @@
 | `src/ui/timeline.ts` | 世界沙盘时间线（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针） |
 | `src/ui/inspire.ts` | 灵感触发器（随机角色生成 + 词义联想入口） |
 | `src/ui/assoc.ts` | 词义联想**无限画布**（力导向 + 单线聚焦 + 视窗平移/缩放 + 拖节点贴边自动推视窗 + 手动摆过的节点钉住，钉住上限 `PIN_YIELD = 420`）；拖拽中只免"手里那一格"、线的另一头照常受力（＝线上的拉力）；没有世界边界（`HOME_W/HOME_H` 只是初始落点区与 SVG 作图区），框外连线靠 `.assoc__lines { overflow: visible }`；宿主高度由 `src/ui/inspire.ts` 的 `fitAssocHeight()` 让开 sticky 工具条，滚动容器用 `scrollParent()` 现找 |
-| `src/ui/editor.ts` | 编辑器（tiptap，左侧 sidebar 时间线/实体 tab，右侧文稿编辑）。属性面板**不在这个文件里**了 —— 见 `src/ui/props-panel.ts`。⭐ **左树跟硬盘上的文件夹一一对应**（2026-09-13，用户：「编辑器的树现在只能显示事件节点，其他结构体的文件夹没有在树里面」）：时间线页签 = 世界 → 时间线 → **种类** → 节点，种类列的是 **`store.data.formats` 的全部种类 ∪ 这条时间线实际用到的种类**（空的也列、`is-empty` 置灰、展开给一句「这个结构体还没有节点」）；每个世界的时间线之后还有 **`_设定` 分支**（实体；列出 `entityTypes` 的**全部类型**，空的同样置灰），类型下是实体行。`_设定` 是**世界下面的一层**（与时间线同级）⇒ 缩进必须跟 `.ed-ttl` 一样是 `padding-left: 18px`（用户：「设定文件夹和世界观文件夹处于同一缩进」）。⚠️ 在时间线页签点实体行 = **就地换右栏文档，绝不 `setTab('entity')`**（切页签会把左栏整棵树换成「实体」页签那套类型列表 —— 用户：「点到设定里面的实体文件时测试世界观文件夹会消失，事件文件夹也没了」）；换 target 前先 `flushDoc()`，`lastTarget.tl` 不动，`selectEntity` 会写好 `lastTarget.entity`，所以之后手动切「实体」页签打开的正是它。`selectEntity(id, world?)` 里世界不同要先 `store.setActiveWorld`（树列的是**全部世界**的实体） |
+| `src/ui/editor.ts` | 编辑器（tiptap，左侧 sidebar 时间线/实体 tab，右侧文稿编辑）。属性面板**不在这个文件里**了 —— 见 `src/ui/props-panel.ts`。⭐ **左树跟硬盘上的文件夹一一对应**（2026-09-13，用户：「编辑器的树现在只能显示事件节点，其他结构体的文件夹没有在树里面」）：时间线页签 = 世界 → 时间线 → **种类** → 节点，种类**只列这条时间线里真的有节点的种类**（= 硬盘上真有的目录，`[...used.keys()]`）。⚠️ **不要**改成「`store.data.formats` 的全部种类」（第一版就是那样，被用户报回：「我指的是角色，地点，物品等文件夹同时存在于主线与设定文件夹下，是bug」—— `main.js` 的 `DEFAULT_FORMATS` 曾用 `角色/地点/物品/组织/事件`，前四个与实体类型 `BUILTIN_ENTITY_TYPES` 重名，列出来就会在「主线」和「_设定」下各挂一个同名文件夹；现在默认值只留 `事件`/`战斗`）；每个世界的时间线之后还有 **`_设定` 分支**（实体；列出 `entityTypes` 的**全部类型**，空的 `is-empty` 置灰 + 展开一句「这个类型还没有实体」），类型下是实体行。`_设定` 是**世界下面的一层**（与时间线同级）⇒ 缩进必须跟 `.ed-ttl` 一样是 `padding-left: 18px`（用户：「设定文件夹和世界观文件夹处于同一缩进」）。⚠️ 在时间线页签点实体行 = **就地换右栏文档，绝不 `setTab('entity')`**（切页签会把左栏整棵树换成「实体」页签那套类型列表 —— 用户：「点到设定里面的实体文件时测试世界观文件夹会消失，事件文件夹也没了」）；换 target 前先 `flushDoc()`，`lastTarget.tl` 不动，`selectEntity` 会写好 `lastTarget.entity`，所以之后手动切「实体」页签打开的正是它。`selectEntity(id, world?)` 里世界不同要先 `store.setActiveWorld`（树列的是**全部世界**的实体） |
 | `src/ui/props-panel.ts` | **公共属性面板**（节点与实体共用**同一份**「改字段」实现，编辑器和设定库都调它）：`createPropsPanel({ store, host, status?, getTarget, patchTarget })` → `{ render(node, isEntity?), hide() }`；`PropsTarget` 是两边共用的身份联合类型。内含 AE 式 scrub（`createScrubField`）与历法推进的时间控件。⚠️ 面板构建后**刻意不重渲染**（避免销毁拖拽中的 scrub 控件），所以提交要走 `patchTarget`（从 store 取最新 properties 再合并） |
 | `src/ui/ai-workbench.ts` / `roleplay.ts` / `tavern.ts` | AI 工作台 / 角色扮演 / 酒馆剧情推演 |
 | `src/ui/map.ts` | 手绘矢量地图（区域 + 标记） |
@@ -61,7 +61,10 @@
 用户 2026-09-12 的定位：**数据像接口一样，自带一套模版，然后自己设定内容**。落到代码上：
 
 - **种类（kind）= 模板/接口**：定义「这个种类有哪些字段」。存在 `%APPDATA%\lingkuang\formats.json`
-  （`main.js` 的 `DEFAULT_FORMATS` 是内建 5 个：角色/地点/物品/组织/事件；`formats:load/save` 读写）。
+  （`main.js` 的 `DEFAULT_FORMATS` 是内建 **2 个：事件 / 战斗**；`formats:load/save` 读写）。
+  ⚠️ **节点种类的名字不许跟实体类型（`BUILTIN_ENTITY_TYPES`：角色/地点/物品/组织/种族）撞车** ——
+  种类名就是 vault 里的**文件夹名**，撞了就会在世界下同时出现 `<时间线>/角色/` 与 `_设定/角色/`
+  （用户 2026-09-13 报为 bug；旧默认值正是 `角色/地点/物品/组织/事件`，已改）。
   字段类型：`text`（短文本）/ `longtext`（长文本）/ `number`（数值）/ `boolean`（开关）/ `list`（列表，值是数组）。
 - **节点 = 模板的实现**：每个节点属于一个种类，字段值放在 `node.properties`。**节点属于哪个种类由它在
   vault 里的文件夹名承载** —— `vault:scan` 用 `n.kind = sub.name` 回填，`vault:write` 按 `kind` 建目录

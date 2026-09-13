@@ -1,13 +1,16 @@
 /* 前置：给「编辑器文件树」套件（editor-tree.cjs）播一份**确定起点**的测试数据。
  *
  * 用户 2026-09-13 的原话：「就是编辑器的树现在只能显示事件节点，其他结构体的文件夹没有在树里面」
- * ⇒ 树要跟**硬盘上的文件夹**一一对应，所以这份种子必须让「有内容的」和「空着的」两类都在场：
- *   ① 节点结构体（formats.json）：`事件`（有 2 个节点）+ `战斗`（**一个节点都没有**）；
- *   ② 实体类型（entityTypes）：`角色`（1 个实体）+ `地点`（**一个实体都没有**）；
- *   ③ 两个节点放在同一个种类文件夹里（`<世界>/主线/事件/`），战斗文件夹**不建**（没节点就不该有目录）。
+ * 随后又报：「我指的是角色，地点，物品等文件夹同时存在于主线与设定文件夹下，是bug」
+ * ⇒ 现在树 = **硬盘上真有的文件夹**，所以这份种子必须让三类都在场，才能验出「谁该出现、谁不该出现」：
+ *   ① 节点种类（formats.json）：`事件`（**有 2 个节点** ⇒ 该出现在时间线下）
+ *      + `战斗`（一个节点都没有 ⇒ **不该**出现）+ `角色`（没有节点、且与实体类型同名 ⇒ **不该**出现）；
+ *   ② 实体类型（entityTypes）：`角色`（1 个实体）+ `地点`（**一个实体都没有** ⇒ 该出现，设定侧列全部类型）；
+ *   ③ 两个节点放在同一个种类文件夹里（`<世界>/主线/事件/`），战斗/角色文件夹**不建**（没节点就不该有目录）。
  *
  * ⚠️ 只许跑在测试目录上（LINGKUANG_TEST_DATA / LINGKUANG_VAULT 指向 %TEMP% 的副本）。
  * ⚠️ 全新目录要**先起一次应用**写出 worldbuilding.json 再来播种（否则第一步 readFileSync 就 ENOENT）。
+ * ⚠️ formats.json 是启动时读的 ⇒ 播完必须**重启应用**再跑套件。
  */
 const fs = require('fs');
 const path = require('path');
@@ -20,11 +23,15 @@ const KIND = '事件';
 if (!DATA || !VAULT) { console.log('FAIL 需要 LINGKUANG_TEST_DATA / LINGKUANG_VAULT'); process.exit(1); }
 
 /* 节点结构体：整份写出（main.js 的 loadFormatsRaw 只要文件能解析就**直接用**，不跟内建合并）
-   ⇒ 「战斗」这个空种类能不能出现在树里，完全取决于这份文件里有没有它。 */
+   ⇒ 这两个"空种类"在不在树里，正是本套件要验的：**定义了但没节点 ⇒ 不许画出来**。
+   ⚠️ 这里**故意**放一个叫「角色」的节点种类（一个节点都没有）+ 一个也叫「角色」的实体类型：
+   内建默认值当初就是这么撞的名，用户 2026-09-13 报过
+   「我指的是角色，地点，物品等文件夹同时存在于主线与设定文件夹下，是bug」。 */
 const FORMATS = path.join(path.dirname(DATA), 'formats.json');
 fs.writeFileSync(FORMATS, JSON.stringify({
   [KIND]: { id: KIND, name: KIND, fields: [{ name: '地点', type: 'text' }, { name: '规模', type: 'text' }] },
-  '战斗': { id: '战斗', name: '战斗', fields: [{ name: '交战方', type: 'text' }] },
+  战斗: { id: '战斗', name: '战斗', fields: [{ name: '交战方', type: 'text' }] },
+  角色: { id: '角色', name: '角色', fields: [{ name: '性别', type: 'text' }] },
 }, null, 2), 'utf8');
 
 /* 确定起点：清掉上一轮残留（同 id 两份 .md 会互相覆盖 —— README 铁律 4） */
@@ -83,7 +90,7 @@ tl.storylines = [];
 d.activeWorld = WS;
 fs.writeFileSync(DATA, JSON.stringify(d, null, 2), 'utf8');
 
-console.log('结构体  ' + FORMATS + '  （事件 ✓ 有节点 / 战斗 ✓ 空）');
+console.log('结构体  ' + FORMATS + '  （事件 ✓ 有节点 / 战斗 ✗ 空 / 角色 ✗ 空且与实体类型重名）');
 console.log('实体    ' + ENT);
 console.log('节点    ×2  ' + kindDir);
-console.log('已播种：节点结构体 2（其中 战斗 为空）· 实体类型 2（其中 地点 为空）· 实体 1 · 节点 2');
+console.log('已播种：节点种类 3（只有 事件 有节点）· 实体类型 2（其中 地点 为空）· 实体 1 · 节点 2');

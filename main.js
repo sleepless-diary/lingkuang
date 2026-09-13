@@ -1370,24 +1370,18 @@ ipcMain.handle('settings:load', () => {
 
 /* ── 内建默认格式定义（kind 直接对应格式；用户可在 formats.json 增改）── */
 /* 字段允许的类型（与 src/store/types.ts 的 FieldType 对齐）。
-   'list' 的值是数组，补默认值时必须给 [] 而不是 ''，否则编辑器按字符串渲染出空输入框。 */
+   'list' 的值是数组，补默认值时必须给 [] 而不是 ''，否则编辑器按字符串渲染出空输入框。
+   ⚠️ 这里的键是**节点种类**，跟**实体类型**（`src/store/entities.ts` 的 BUILTIN_ENTITY_TYPES：
+   角色/地点/物品/组织/种族）是两套东西。名字一旦撞车，同一台机器上就会出现
+   「主线/角色/」和「_设定/角色/」两个同名文件夹（用户 2026-09-13 报过：「我指的是角色，地点，
+   物品等文件夹同时存在于主线与设定文件夹下，是bug」）——所以这里只留**事件类**的名字。 */
 const FORMAT_TYPES = ['text', 'longtext', 'number', 'boolean', 'list'];
 const DEFAULT_FORMATS = {
-  角色: { id: '角色', name: '角色', fields: [
-    { name: '性别', type: 'text' }, { name: '种族', type: 'text' }, { name: '发色', type: 'text' },
-    { name: '瞳色', type: 'text' }, { name: '身高', type: 'number' }, { name: '性格', type: 'longtext' },
-  ] },
-  地点: { id: '地点', name: '地点', fields: [
-    { name: '所属区域', type: 'text' }, { name: '规模', type: 'text' }, { name: '描述', type: 'longtext' },
-  ] },
-  物品: { id: '物品', name: '物品', fields: [
-    { name: '种类', type: 'text' }, { name: '持有者', type: 'text' }, { name: '说明', type: 'longtext' },
-  ] },
-  组织: { id: '组织', name: '组织', fields: [
-    { name: '性质', type: 'text' }, { name: '首领', type: 'text' }, { name: '简介', type: 'longtext' },
-  ] },
   事件: { id: '事件', name: '事件', fields: [
     { name: '起因', type: 'longtext' }, { name: '影响', type: 'longtext' },
+  ] },
+  战斗: { id: '战斗', name: '战斗', fields: [
+    { name: '交战方', type: 'text' }, { name: '结果', type: 'text' },
   ] },
 };
 

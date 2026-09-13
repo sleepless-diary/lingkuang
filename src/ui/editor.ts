@@ -330,9 +330,12 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
               <span class="ed-tcount">${tl?.nodes?.length ?? 0}</span>`;
             frag.appendChild(tRec);
             if (tOpen && tl) {
-              /* 种类文件夹 = **结构体（formats）里定义的全部种类** ∪ **这条时间线实际用到的种类**：
-                 空的也列出来（置灰 + 计数 0），让树跟「结构体管理」和硬盘上的文件夹一一对应。
-                 用户 2026-09-13：「编辑器的树现在只能显示事件节点，其他结构体的文件夹没有在树里面」。 */
+              /* 种类文件夹 = **这条时间线里真的有节点的种类**（= 硬盘上真有的文件夹，一一对应）。
+                 ⚠️ 不要再从「结构体管理」（`store.data.formats`）里把**没节点的种类也列出来**：
+                 内建默认里那几个种类名（角色/地点/物品/组织）跟**实体类型**重名，凭空画出来会
+                 让「主线」和「_设定」下面同时挂一个「角色」文件夹 —— 用户 2026-09-13 报：
+                 「我指的是角色，地点，物品等文件夹同时存在于主线与设定文件夹下，是bug」。
+                 想知道有哪些种类可用，看左栏「结构体管理」；想新建节点，在沙盘里建。 */
               const used = new Map<string, any[]>();
               for (const n of tl.nodes ?? []) {
                 const k = (n as any).kind || '事件';
@@ -340,12 +343,11 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
                 used.get(k)!.push(n);
               }
               const fmts = store.data.formats ?? {};
-              const kindKeys = [...Object.keys(fmts), ...[...used.keys()].filter((k) => !fmts[k])];
-              kindKeys.forEach((k) => {
+              [...used.keys()].forEach((k) => {
                 const nodes = used.get(k) ?? [];
                 const kOpen = expandedKinds.has(wName + '::' + tlId + '::' + k);
                 const kRec = document.createElement('div');
-                kRec.className = 'ed-tnode ed-tkind' + (kOpen ? ' is-open' : '') + (nodes.length ? '' : ' is-empty');
+                kRec.className = 'ed-tnode ed-tkind' + (kOpen ? ' is-open' : '');
                 kRec.dataset.kind = 'tkind';
                 kRec.dataset.world = wName;
                 kRec.dataset.tl = tlId;
@@ -353,7 +355,6 @@ export function renderEditor(store: Store, host: HTMLElement): () => void {
                 kRec.innerHTML = `<span class="ed-tcaret"></span><span class="ed-tlabel">${escape(fmts[k]?.name ?? k)}</span><span class="ed-tcount">${nodes.length}</span>`;
                 frag.appendChild(kRec);
                 if (kOpen) {
-                  if (!nodes.length) frag.appendChild(emptyRow('这个结构体还没有节点'));
                   nodes.forEach((n) => {
                     const nRec = document.createElement('div');
                     const isOn = n.id === currentNodeId && currentTlId === tlId;
