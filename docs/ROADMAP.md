@@ -201,6 +201,18 @@
   节点中栏的公共属性面板同样复用；换页签/换世界仍整块重建。
   验证：新增 `tools/e2e/codex-smooth-switch.cjs` **16/16**（A/B：未修复版 **8/16**），详见 BUGS 第二十轮十三。
   顺带产出的测试数据见 `tools/e2e/seed-smooth-switch.cjs`（3 类型实体 + 2 节点 + 20 配角）。
+- [x] **换条目转场（2026-09-13 深夜落地）· 做法 P**：用户在演示页 `docs/motion-demo/doc-slide.html`
+  （已入库，当规格档）里逐轮谈定的那版：**旧内容做一层幽灵往左退场**（慢→快）→ **新内容延后 300ms
+  从右淡入**（快→慢，`fill:'both'` 保证延迟期间不透明度为 0）→ **每行 +10ms 错峰** → **只走左右**
+  （用户：「不是入场后左右弹动一下」）。框/左树/滚动位置一律不动，动的只有 `#cx-body` 里的行。
+  实现在 `src/ui/codex.ts` 的 `playSwap()`（幽灵层 + `snapshotForSwap()` + `dropGhost()`）与
+  `src/ui/motion.ts` 的 `rowsLeave()` / `rowsEnter()`（WAAPI，每行一个 delay + 镜像曲线）。
+  四个旋钮进了设置面板「换条目转场」卡片（开 / 速度 / 行错峰 / 入场距离），改完立刻生效。
+  验证：新增 `tools/e2e/codex-swap-motion.cjs` **14/14**（A/B 改动前 6 FAIL）；详见 BUGS 第二十二轮。
+- [x] **设置改成悬浮面板（2026-09-13 深夜）**：用户「我希望设置面板是悬浮面板，而不是单开一个标签页」⇒
+  `Tool.panel = true`（面板型工具）+ `src/ui/settings-panel.ts`（挂 body、fixed、主区一动不动，
+  ×/Esc/点遮罩三种关法，`lingkuang-panel` 事件同步左栏按钮高亮）。验证：`settings-panel.cjs` **12/12**
+  （A/B 4/12），`toolbar-groups.cjs` 5/5。
 - [ ] **第 B 片 · 列表变化（剩下的一半）**：条目**增删**时其余项**让位**（CSS 表达不了，
   要用 Anime.js 或手写 FLIP）。⚠️ 别把错峰挂在每次 `renderList()` 上 —— 搜索框每敲一个字都会重画左列
   （左列条目那种"显式切换才播"的做法可以照 `src/ui/codex.ts` 的 `pendingEnter` 抄）。

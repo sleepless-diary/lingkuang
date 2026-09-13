@@ -61,20 +61,33 @@ async function main() {
   const same = (key) => ev(`document.querySelector(${JSON.stringify({ root: '#cx-root', search: '#cx-search', list: '#cx-list', doc: '#cx-doc .ProseMirror', props: '#cx-props' }[key])}) === window.__s.${key}`);
 
   /** 点左列某一行的实体，并在**同一个同步块**里把动画状态读出来（隐藏窗口只读得到参数，
-   *  见 README 铁律 6：出帧与否会让 currentTime 有/无，参数才是确定的） */
+   *  见 README 铁律 6：出帧与否会让 currentTime 有/无，参数才是确定的）。
+   *  换内容的动效自 2026-09-13 起是**行级转场**（做法 P）：旧内容做成一层幽灵往左退场、
+   *  新内容延后从右淡入，逐行错峰 —— 参数（关键帧/时长/延迟/曲线）都由 `el.animate()` 给，
+   *  CSS 那边一条动画都没有（`animationName` 为空就是"不是 CSS 动画"）。 */
   const clickEntity = (name) => ev(`(() => {
     const b = [...document.querySelectorAll('#cx-list [data-cx-id]')].find((x) => x.querySelector('.ed-tlabel')?.textContent === ${JSON.stringify(name)});
     if (!b) return { err: 'no row ' + ${JSON.stringify(name)} };
     b.click();
     const anims = ${ANIMS};
     const root = document.querySelector('#cx-root');
+    const body = document.querySelector('#cx-body');
     const subs = [...root.children].flatMap((c) => anims(c));
+    const ghost = body ? body.querySelector('.lk-cx-ghost') : null;
+    const info = (el) => (el ? el.getAnimations().filter((a) => !a.animationName).map((a) => ({
+      kf: a.effect.getKeyframes().map((k) => ({ o: k.opacity, t: k.transform })),
+      dur: a.effect.getTiming().duration, delay: a.effect.getTiming().delay, ease: a.effect.getTiming().easing,
+    })) : []);
     return {
       stagger: root.classList.contains('lk-enter-stagger'),
       listStagger: (document.querySelector('#cx-list') || {}).classList?.contains?.('lk-enter-stagger') ?? null,
       wake: subs.filter((a) => a.name === 'lk-wake').length,
       delayed: [...root.children].filter((c) => c.style && c.style.animationDelay).length,
-      body: anims(document.querySelector('#cx-body')).filter((a) => a.name),
+      bodyCss: body ? anims(body).filter((a) => a.name) : [],
+      ghost: !!ghost,
+      ghostIds: ghost ? ghost.querySelectorAll('[id]').length : 0,
+      out: info(ghost ? ghost.querySelector('[data-cx-row]') : null),
+      in: info(body ? [...body.querySelectorAll('[data-cx-row]')].find((el) => !el.closest('.lk-cx-ghost')) : null),
     };
   })()`);
 
@@ -143,21 +156,32 @@ async function main() {
   })()`);
   check('★7 左列选中高亮只落在新条目上', hl.n === 1 && hl.on[0] === '霜纹剑', hl);
 
-  /* ── ⑤ 没有整块错峰重播，但内容区有一次轻淡入 ── */
+  /* ── ⑤ 没有整块错峰重播，改成行级转场（旧内容往左退 → 新内容从右入） ── */
   check('★8 换实体**不再**重播整块错峰（无 .lk-enter-stagger、子项无 lk-wake、无行内延迟）',
     r1.stagger === false && r1.listStagger === false && r1.wake === 0 && r1.delayed === 0, r1);
-  check('★9 内容区播了一次 lk-swap 淡入（同同步块读到 running）',
-    r1.body.length > 0 && r1.body[0].name === 'lk-swap' && r1.body[0].play === 'running', r1.body);
+  /* ⚠️ `getKeyframes()` 里的数值是**字符串**（'1'/'0'），别用严格相等 —— 会假挂 */
+  check('★9 内容区改播行级转场：旧内容做了一层幽灵、新内容从右淡入（同同步块读到参数）',
+    r1.bodyCss.length === 0 && r1.ghost === true
+      && r1.out.length === 1 && String(r1.out[0].kf?.[0]?.o) === '1' && String(r1.out[0].kf?.[1]?.t ?? '').includes('-32px')
+      && r1.in.length === 1 && String(r1.in[0].kf?.[0]?.o) === '0' && String(r1.in[0].kf?.[0]?.t ?? '').includes('32px')
+      && r1.in[0].delay >= 300, { out: r1.out, in: r1.in, ghost: r1.ghost, bodyCss: r1.bodyCss });
 
-  /* ── ⑥ 淡入的终态（推到结尾再读计算样式） ── */
+  /* ── ⑥ 转场终态：行落到原位、幽灵层自己消失（推到结尾再读计算样式） ── */
   const end = await ev(`(() => {
     const b = document.querySelector('#cx-body');
     if (!b) return null;   /* 修复前的骨架里根本没有这个元素 → 直接判 FAIL，别让脚本崩在这里 */
-    b.getAnimations().forEach((a) => a.finish());
-    const cs = getComputedStyle(b);
-    return { opacity: cs.opacity, transform: cs.transform };
+    const rows = [...b.querySelectorAll('[data-cx-row]')].filter((el) => !el.closest('.lk-cx-ghost'));
+    rows.forEach((el) => el.getAnimations().forEach((a) => a.finish()));
+    const cs = getComputedStyle(rows[0] ?? b);
+    return { rows: rows.length, opacity: cs.opacity, transform: cs.transform };
   })()`);
-  check('★10 淡入终态是不透明且无位移', !!end && end.opacity === '1' && (end.transform === 'none' || end.transform === 'matrix(1, 0, 0, 1, 0, 0)'), end);
+  const ghostGone = await (async () => {
+    for (let i = 0; i < 20; i++) { if (!(await ev(`!!document.querySelector('#cx-body .lk-cx-ghost')`))) return true; await sleep(200); }
+    return false;
+  })();
+  check('★10 转场终态：行落回原位（不透明无位移），且幽灵层演完自己消失',
+    !!end && end.rows > 0 && end.opacity === '1' && (end.transform === 'none' || end.transform === 'matrix(1, 0, 0, 1, 0, 0)') && ghostGone,
+    { end, ghostGone });
 
   /* ── ⑦ 编辑器复用之后，正文归属仍然不能串（这是复用带来的新风险） ── */
   const typeNoBlur = async (text) => {
@@ -193,20 +217,25 @@ async function main() {
     row.click();
     const anims = ${ANIMS};
     const root = document.querySelector('#cx-root');
+    const body = document.querySelector('#cx-body');
+    const rows = body ? [...body.querySelectorAll('[data-cx-row]')].filter((el) => !el.closest('.lk-cx-ghost')) : [];
     return {
       sameRoot: document.querySelector('#cx-root') === window.__s.root,
       stagger: root.classList.contains('lk-enter-stagger'),
       wake: [...root.children].flatMap((c) => anims(c)).filter((a) => a.name === 'lk-wake').length,
       delayed: [...root.children].filter((c) => c.style && c.style.animationDelay).length,
-      body: anims(document.querySelector('#cx-body')).filter((a) => a.name).map((a) => a.name),
+      bodyCss: body ? anims(body).filter((a) => a.name).map((a) => a.name) : [],
+      ghost: !!(body && body.querySelector('.lk-cx-ghost')),
+      rowAnims: rows.reduce((n, el) => n + el.getAnimations().filter((a) => !a.animationName).length, 0),
       entOnAfter: [...document.querySelectorAll('#cx-list [data-cx-id]')].filter((b) => b.classList.contains('is-on')).length,
       nodeOnAfter: [...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]')].filter((b) => b.classList.contains('is-on')).length,
     };
   })()`);
   await sleep(500);
-  check('★13 换类别（实体 → 时间线节点）也**就地**换：骨架同一元素、不重播整块错峰、内容区播 lk-swap',
+  check('★13 换类别（实体 → 时间线节点）也**就地**换：骨架同一元素、不重播整块错峰、改播行级转场',
     tab.sameRoot === true && tab.stagger === false && tab.wake === 0 && tab.delayed === 0
-      && tab.body.includes('lk-swap') && tab.entOnAfter === 0 && tab.nodeOnAfter === 1, tab);
+      && tab.bodyCss.length === 0 && tab.ghost === true && tab.rowAnims > 0
+      && tab.entOnAfter === 0 && tab.nodeOnAfter === 1, tab);
 
   /* ── ⑨ 节点→节点也要就地换 ──
      左栏重做后列表形态**直接摊平**了节点行（不再需要先展开 世界→时间线→种类），
@@ -248,11 +277,15 @@ async function main() {
     b.click();
     const anims = ${ANIMS};
     const root = document.querySelector('#cx-root');
+    const body = document.querySelector('#cx-body');
+    const rows = body ? [...body.querySelectorAll('[data-cx-row]')].filter((el) => !el.closest('.lk-cx-ghost')) : [];
     return {
       sameRoot: document.querySelector('#cx-root') === window.__s.root,
       stagger: root.classList.contains('lk-enter-stagger'),
       delayed: [...root.children].filter((c) => c.style && c.style.animationDelay).length,
-      body: anims(document.querySelector('#cx-body')).filter((a) => a.name).map((a) => a.name),
+      bodyCss: body ? anims(body).filter((a) => a.name).map((a) => a.name) : [],
+      ghost: !!(body && body.querySelector('.lk-cx-ghost')),
+      rowAnims: rows.reduce((n, el) => n + el.getAnimations().filter((a) => !a.animationName).length, 0),
     };
   })()`);
   await sleep(400);
@@ -264,8 +297,9 @@ async function main() {
     doc: document.querySelector('#cx-doc .ProseMirror')?.textContent ?? null,
     fields: [...document.querySelectorAll('#cx-fields > div')].length,
   }))()`);
-  check('★14b 换回实体：骨架同一元素、不重播整块错峰、内容区播 lk-swap（旧实现整块重建）',
-    back.sameRoot === true && back.stagger === false && back.delayed === 0 && back.body.includes('lk-swap'), back);
+  check('★14b 换回实体：骨架同一元素、不重播整块错峰、改播行级转场（旧实现整块重建）',
+    back.sameRoot === true && back.stagger === false && back.delayed === 0
+      && back.bodyCss.length === 0 && back.ghost === true && back.rowAnims > 0, back);
   check('★14c 换回实体后**节点行的高亮必须消失**，高亮落到实体行、帧条回来、中右栏换成该实体',
     nodeOnBefore > 0 && st2.nodeOn.length === 0 && st2.name === '银发少女'
       && st2.entOn.length === 1 && st2.entOn[0] === '银发少女' && st2.rail === true

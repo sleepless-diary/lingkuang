@@ -124,6 +124,75 @@ export function stopCascade(container: HTMLElement | null): void {
   for (const el of Array.from(container.children) as HTMLElement[]) el.style.animationDelay = '';
 }
 
+/* ── 行级转场（换条目：旧内容往左走、新内容从右淡入）────────────────────────────────────────
+   规格由用户在演示页 `docs/motion-demo/doc-slide.html` 里逐轮定稿（做法 P），照抄过来：
+    · 两个关键帧：a = 不透明度 0 + 位置在终点**右边** `dx`，b = 不透明度 1 + 原位；入场曲线**快→慢**；
+    · 出场是同一条动画反过来：不透明度 1 + 原位 → 0 + 往**左** `dx`，曲线**慢→快**；
+    · **一行比一行晚** `step`（默认 10ms）；出场整体排完，入场才起步（`start` = 出场时长）⇒ 先出后进；
+    · 只有**左右**位移，**没有上下** —— 上下位移会被看成"弹了一下"（用户 2026-09-13 的原话）。
+   为什么用 Web Animations API 而不是 CSS 类：需要每行一个 delay、两条镜像曲线、还要能中途取消
+   （快速连点时），CSS 类的行内延迟那套（`cascadeIn`）表达不了；而且这里必须 `fill:'both'`，
+   否则入场在延迟期间会以**正常不透明度**显示 = 用户报过的"文字先出现，然后才演动画"。 */
+
+/** 行级转场的公共参数：`dx` 入场距离(px)、`step` 行错峰(ms)、`dur` 单行时长(ms)、`start` 入场整体延后(ms) */
+export interface RowMotionOpts {
+  dx?: number;
+  step?: number;
+  dur?: number;
+  start?: number;
+}
+
+/** 出场曲线：慢 → 快 */
+const EASE_ACCEL = 'cubic-bezier(0.7, 0, 0.84, 0)';
+/** 入场曲线：快 → 慢 */
+const EASE_DECEL = 'cubic-bezier(0.16, 1, 0.3, 1)';
+/** 单行时长基准（速度倍率在调用处除） */
+export const ROW_DUR = 300;
+
+/** 动画跑完就**取消**（不是留在那儿吃 fill）—— 取消后元素回到自然样式，与动画终点完全一样，
+ *  但 `getAnimations()` 是干净的。隐藏窗口里动画不推进、`finished` 永不 resolve，所以另有一条
+ *  按参数算出来的兜底定时器（与 `cascadeIn` 的 `maxDelay + 2000` 同一个理由）。 */
+function autoRelease(anims: Animation[], totalMs: number): void {
+  const release = (): void => { for (const a of anims) { try { a.cancel(); } catch { /* 已取消 */ } } };
+  if (!anims.length) return;
+  Promise.all(anims.map((a) => a.finished)).then(release).catch(() => { /* 被取消过 */ });
+  window.setTimeout(release, totalMs + 800);
+}
+
+/** 行级**出场**：每行 `1 / 原位` → `0 / 往左 dx`（慢→快），按序号错峰。返回动画对象（调用方可取消）。 */
+export function rowsLeave(rows: HTMLElement[], o: RowMotionOpts = {}): Animation[] {
+  if (motionReduced()) return [];
+  const dx = o.dx ?? 32;
+  const step = o.step ?? 10;
+  const dur = o.dur ?? ROW_DUR;
+  const anims = rows.map((el, i) =>
+    el.animate(
+      [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `translateX(${-dx}px)` }],
+      { duration: dur, delay: i * step, easing: EASE_ACCEL, fill: 'both' }
+    )
+  );
+  autoRelease(anims, dur + step * rows.length);
+  return anims;
+}
+
+/** 行级**入场**：每行 `0 / 从右 dx` → `1 / 原位`（快→慢），按序号错峰，整体延后 `start`。
+ *  `fill:'both'` ⇒ 延迟期间**保持不透明度 0**（用户明确要求：动画开始前不许先亮出来）。 */
+export function rowsEnter(rows: HTMLElement[], o: RowMotionOpts = {}): Animation[] {
+  if (motionReduced()) return [];
+  const dx = o.dx ?? 32;
+  const step = o.step ?? 10;
+  const dur = o.dur ?? ROW_DUR;
+  const start = o.start ?? dur;
+  const anims = rows.map((el, i) =>
+    el.animate(
+      [{ opacity: 0, transform: `translateX(${dx}px)` }, { opacity: 1, transform: 'none' }],
+      { duration: dur, delay: start + i * step, easing: EASE_DECEL, fill: 'both' }
+    )
+  );
+  autoRelease(anims, start + dur + step * rows.length);
+  return anims;
+}
+
 /** 量下容器每个子项此刻的高度（**重建之前**调，结果喂给 `smoothHeights`）。
  *  高度只在"改 DOM 之前"才量得到旧值，所以是两步 API，不能合成一个函数。 */
 export function childHeights(container: HTMLElement | null): number[] {

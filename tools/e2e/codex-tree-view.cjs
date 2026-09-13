@@ -165,11 +165,22 @@ async function main() {
   check('★17 展开后类型行回来', (await ev(`document.querySelectorAll('#cx-list .ed-ttype').length`)) > 0);
 
   /* ⑩ 设置面板里**没有**形态单选（形态之争结束后那组控件应该彻底消失） */
+  const cxBefore = await ev(`(() => { window.__cx = document.querySelector('#cx-root'); return !!window.__cx; })()`);
   await click('[data-tool="settings"]');
   await sleep(800);
   const wbRadios = await ev(`document.querySelectorAll('input[name="wbView"]').length`);
-  const wbText = await ev(`!!document.querySelector('#set-body') && (document.querySelector('#lk-module-view')?.textContent || '').includes('设定库（工作台）')`);
-  check('★18 设置面板里不再有「工作台默认形态」那组单选', wbRadios === 0 && wbText === false, { wbRadios, wbText });
+  /* 「工作台默认形态」那张卡片的标题/文案也必须没了 —— 在面板文本里找（面板现在挂在 body 上） */
+  const wbText = await ev(`(document.getElementById('lk-settings-panel')?.textContent || '').includes('设定库（工作台）')`);
+  const setPanel = await ev(`(() => { const p = document.getElementById('lk-settings-panel');
+      return { exists: !!p, inBody: p ? p.parentElement === document.body : false, sameRoot: document.querySelector('#cx-root') === window.__cx }; })()`);
+  check('★18 设置里没有「工作台默认形态」那组单选，而且设置是**悬浮层**（不接管主区）',
+    cxBefore === true && wbRadios === 0 && wbText === false && setPanel.exists === true
+      && setPanel.inBody === true && setPanel.sameRoot === true, { wbRadios, wbText, setPanel });
+  await ev(`document.getElementById('lk-set-close').click(); true`);
+  await sleep(400);
+  check('18b 关掉设置后工作台还站在原地（那棵树没被重建）',
+    (await ev(`document.querySelector('#cx-root') === window.__cx`)) === true);
+  await sleep(300);
   await click('[data-tool="codex"]');
   await sleep(1000);
   check('19 重开工作台 → 还是那棵树（全展开）', (await shape()).worlds === 1 && (await shape()).etype > 0, await shape());

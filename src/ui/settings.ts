@@ -15,6 +15,12 @@ interface Settings {
   rulerDensity: number; // 标尺密度
   evolveMode: EvolveMode;   // 改动什么时候变成"一版"（见设置面板里的说明）
   evolveLock: { world: string; tlId: string; nodeId: string } | null;   // 锁定模式锁在哪一格
+  /* 换条目转场（用户 2026-09-13 在演示页 `docs/motion-demo/doc-slide.html` 里定稿的旋钮，
+     落地后原样搬进设置面板）。默认值 = 演示页里那套：速度 1×、错峰 10ms、入场距离 32px。 */
+  motionSwap: boolean;      // 开启转场（关掉 = 立刻换，不做任何动画）
+  motionSpeed: number;      // 速度倍率（改的是时长：300ms ÷ 倍率）
+  motionStagger: number;    // 行错峰 ms（一行比上一行晚多少）
+  motionEnterDx: number;    // 入场距离 px（同时是出场距离，往左走同样的量）
 }
 
 const DEFAULTS: Settings = {
@@ -27,6 +33,10 @@ const DEFAULTS: Settings = {
   rulerDensity: 1,
   evolveMode: 'manual',
   evolveLock: null,
+  motionSwap: true,
+  motionSpeed: 1,
+  motionStagger: 10,
+  motionEnterDx: 32,
 };
 
 export function loadSettings(): Settings {
@@ -44,7 +54,10 @@ export function saveSettings(s: Settings) {
   localStorage.setItem('lingkuang-settings', JSON.stringify(s));
 }
 
-export function renderSettings(store: Store, host: HTMLElement): void {
+/** 把设置表单画进**给定的元素**里（用户 2026-09-13：「我希望设置面板是悬浮面板，而不是单开一个标签页」）。
+ *  以前这个函数直接把宿主当整页接管（`host.style.overflow='auto'` + 写 innerHTML），
+ *  现在宿主由 `src/ui/settings-panel.ts` 的悬浮层提供，它自己管尺寸与滚动。 */
+export function renderSettingsInto(host: HTMLElement, store: Store): void {
   const s = loadSettings();
   /* 锁定模式下要选"锁在哪一格"：列出当前世界的时间线节点（按时间排） */
   const lockWorld = store.activeWorld || '';
@@ -60,7 +73,6 @@ export function renderSettings(store: Store, host: HTMLElement): void {
   host.style.overflow = 'auto';
   host.innerHTML = `
     <div style="max-width:520px;margin:0 auto;padding:20px 16px;display:flex;flex-direction:column;gap:14px;">
-      <div style="font-size:17px;font-weight:600;color:var(--fg);">设置</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;display:flex;flex-direction:column;gap:8px;">
         <div style="font-size:var(--text-sm);font-weight:600;color:var(--fg);">联想引擎</div>
         <div style="display:flex;gap:8px;">
@@ -96,6 +108,26 @@ export function renderSettings(store: Store, host: HTMLElement): void {
           <span style="font-size:var(--text-xs);color:var(--fg-2);width:90px;">标尺密度</span>
           <input id="set-ruler" type="range" min="0.5" max="2" step="0.1" value="${s.rulerDensity}" style="flex:1;"/>
           <span id="set-ruler-v" style="font-size:var(--text-xs);color:var(--fg-2);width:30px;text-align:right;">${s.rulerDensity}</span>
+        </div>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;display:flex;flex-direction:column;gap:10px;">
+        <div style="font-size:var(--text-sm);font-weight:600;color:var(--fg);">换条目转场</div>
+        <div style="font-size:var(--text-xs);color:var(--fg-2);">在设定库里点另一条条目时，旧内容先往左退场，新内容再从右淡入；<b>一行比一行晚一点</b>。改完立刻生效（点一下条目就能看出区别）。</div>
+        <label style="font-size:var(--text-xs);color:var(--fg-2);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="set-motion-on"${s.motionSwap ? ' checked' : ''}/>开启转场（关掉＝立刻换，不做任何动画）</label>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="font-size:var(--text-xs);color:var(--fg-2);width:90px;">速度</span>
+          <input id="set-motion-speed" type="range" min="0.3" max="1.6" step="0.1" value="${s.motionSpeed}" style="flex:1;"/>
+          <span id="set-motion-speed-v" style="font-size:var(--text-xs);color:var(--fg-2);width:38px;text-align:right;">${s.motionSpeed}×</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="font-size:var(--text-xs);color:var(--fg-2);width:90px;">行与行错峰</span>
+          <input id="set-motion-stagger" type="range" min="0" max="60" step="1" value="${s.motionStagger}" style="flex:1;"/>
+          <span id="set-motion-stagger-v" style="font-size:var(--text-xs);color:var(--fg-2);width:38px;text-align:right;">${s.motionStagger}ms</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="font-size:var(--text-xs);color:var(--fg-2);width:90px;">入场距离</span>
+          <input id="set-motion-dx" type="range" min="0" max="80" step="1" value="${s.motionEnterDx}" style="flex:1;"/>
+          <span id="set-motion-dx-v" style="font-size:var(--text-xs);color:var(--fg-2);width:38px;text-align:right;">${s.motionEnterDx}px</span>
         </div>
       </div>
       <div style="font-size:var(--text-xs);color:var(--fg-2);">⚠️ 灵框本体免费开源。AI 联想为可选能力——本地部署（自付电费）或第三方 API（费用由提供商收取），均与灵框无关。</div>
@@ -155,6 +187,24 @@ export function renderSettings(store: Store, host: HTMLElement): void {
       }
       saveNow('已保存 ✓');
     });
+  });
+  /* 换条目转场：四个旋钮都**立刻存盘并广播**，用户在设定库里接着点条目就能看出区别 */
+  const onEl = host.querySelector('#set-motion-on') as HTMLInputElement | null;
+  onEl?.addEventListener('change', () => { s.motionSwap = onEl.checked; saveNow('已保存 ✓'); });
+  bind('#set-motion-speed', (v) => {
+    s.motionSpeed = parseFloat(v);
+    (host.querySelector('#set-motion-speed-v') as HTMLElement).textContent = v + '×';
+    saveNow('已保存 ✓');
+  });
+  bind('#set-motion-stagger', (v) => {
+    s.motionStagger = parseFloat(v);
+    (host.querySelector('#set-motion-stagger-v') as HTMLElement).textContent = v + 'ms';
+    saveNow('已保存 ✓');
+  });
+  bind('#set-motion-dx', (v) => {
+    s.motionEnterDx = parseFloat(v);
+    (host.querySelector('#set-motion-dx-v') as HTMLElement).textContent = v + 'px';
+    saveNow('已保存 ✓');
   });
   host.querySelector('#set-evolve-lock')?.addEventListener('change', (ev) => {
     const id = (ev.target as HTMLSelectElement).value;

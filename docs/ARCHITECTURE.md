@@ -37,7 +37,8 @@
 | `src/ui/ai-workbench.ts` / `roleplay.ts` / `tavern.ts` | AI 工作台 / 角色扮演 / 酒馆剧情推演 |
 | `src/ui/map.ts` | 手绘矢量地图（区域 + 标记） |
 | `src/ui/detail.ts` / `node-form.ts` | 节点详情 / 新建节点表单（详情面板里的「模板字段」区按节点种类渲染该种类的结构化字段，直接可填） |
-| `src/ui/settings.ts` | 设置（AI 引擎 / 偏好项，存 localStorage） |
+| `src/ui/settings.ts` | 设置项的**存储与表单**（AI 引擎 / 画布偏好 / 设定演变 / **换条目转场**四组旋钮，存 localStorage `lingkuang-settings`；`loadSettings()` / `saveSettings()` / `renderSettingsInto(el, store)`）。转场那四个键：`motionSwap`(开) / `motionSpeed`(1×，除以时长) / `motionStagger`(10ms) / `motionEnterDx`(32px)，`codex.ts` 的 `playSwap()` 每次读取 |
+| `src/ui/settings-panel.ts` | **悬浮设置面板**（用户 2026-09-13：「我希望设置面板是悬浮面板，而不是单开一个标签页」）：`openSettingsPanel(store)` / `closeSettingsPanel()` / `isSettingsPanelOpen()`。挂在 `document.body`、`position:fixed`、**主区一动不动**（正在编的条目与滚动位置都留着）；关法三种（× / Esc / 点遮罩空白），开关都广播 `lingkuang-panel` 让左栏按钮同步高亮。它对应 `src/tools/registry.ts` 里的 **`Tool.panel = true`**（面板型工具）—— 见 §工具宿主 |
 | `src/ui/eyedrop.ts` / `image-ext.ts` / `tag-ext.ts` | 吸管 / 编辑器图片扩展 / 标签扩展 |
 | `src/ui/confirm.ts` | 确认 / 输入弹层（`confirmDialog` / `promptDialog`）。**不要用 `window.confirm`**：同步阻塞渲染进程（卡 tiptap 与 rAF），且无法用 tokens 配色 |
 | `src/ui/trash.ts` | 回收站面板（`vault/.trash` 的列出 / 恢复 / 彻底清空；孤儿项需用户指定世界与格式） |
@@ -45,8 +46,8 @@
 | `src/ui/keys.ts` / `html.ts` | `isImeEnter(e)`（中文输入法回车守卫）/ `escapeHtml(s)`（外部文本进 innerHTML 前必过） |
 | `src/ui/alert.ts` | **壳级横幅**（`#lk-alerts` 通栏，`showShellAlert`/`removeShellAlert`/`hasShellAlert`）：放「必须被看见、且要用户做选择」的状态（数据文件判损、自动保存已暂停）。与编辑器内部的 `addHint` 不同 —— 那条活在编辑器工具里、切走就没了，这条挂壳上，任何工具下都在 |
 | `src/ui/schema.ts` | **结构体管理**面板（两个分区：**节点种类** / **实体类型**）。保存 → 节点种类写 `formats`（`formats.json`）或实体类型写 `worldsets[active].entityTypes` → 派发 `lingkuang-formats-changed`，由 `src/main.ts` 的 `ensureAllFormatFields` / `ensureEntityLayer` 补空值、清模板外的字段 |
-| `src/ui/motion.ts` | **动效层**（`enter(el, cls='lk-enter')` 重放入场 / `staggerIn(container)` 常驻错峰（页签栏）/ `cascadeIn(container, step, maxDelay, start)` 一次性错峰（工具打开、换页签、换条目）/ `stopCascade(container)` 取消一次性错峰（"这次不许播"的分支要显式调）/ `childHeights(container)` + `smoothHeights(container, before)` 高度平滑（重排类）/ `motionReduced()`）：keyframes 在 `src/style.css` 末尾「动效层」一节，时长走 `--motion-*` 令牌。⚠️ 只挂**显式切换**（切工具/开面板/换页签/弹窗），别挂 store 订阅触发的重渲染；⚠️ **不给整块容器挂**（会"洗白一下"且盖掉元素错峰） |
-| `src/ui/codex.ts` | **设定库 = 工作台**（合并方案 A 第 3 步 + 2026-09-13 的形态合并与左栏定型）：左列**一棵文件夹树**、中栏档案字段、右栏正文编辑器、右边缘演变帧条，外加**外部改动提示条**（`src/ui/vault-notice.ts`，见那一行）。节点中栏用 `src/ui/props-panel.ts`（与实体共用同一份）、实体用 `src/ui/fields.ts`、正文用 `src/ui/doc-editor.ts`。⭐ **左栏只有那棵树，没有第二种长相、也没有第二套控件** —— 这是用户 2026-09-13 三句话收敛出来的终态：①「设定库和编辑器是不是可以做成同一工具的两种不同形式啊（在设置里面切换）」→ ②「时间线节点和实体这两个按钮，列表和文件夹树的功能有点混乱，能不能重新设计一下」（重做成「筛选 pills + 一个视图按钮」）→ ③「**要不这样，把全部改成文件树的形式，这样子也方便看**」⇒ 列表形态整个撤掉，筛选 pills、视图按钮 `#cx-view`、类别页签 `#cx-tab-*`、设置里那组 `workbenchView` 单选全部删除。树的形状**本身就是筛选**（看哪一类就展开哪一枝），`mode`（编辑实体还是节点）由**点中的那一行**决定，两条路都走 `switchTarget()`。树与硬盘目录一一对应：世界 → 时间线 → 种类 → 节点 ／ 世界 → `_设定` → 类型 → 实体（`data-act` = world/tl/tkind/wset/etype/node/entity），行渲染走 `treeRow()` + 一份点击处理 `bindTreeClicks()`。⭐ **默认全展开**：三个 Set 记的是「**被用户收起来的**」（`collapsedWorlds` / `collapsedTls` / `collapsedKinds`，键分别是世界名、`<世界>::<时间线 id>` 与 `setting::<世界>`、`<世界>::<时间线 id>::<种类>` 与 `etype::<世界>::<类型 id>`），`isOpen(set, key)` / `toggleOpen(set, key)` 两个一行函数是唯一入口 —— 语义反转过来是为了「打开就看到全部条目」，也让按 `[data-cx-id]` 找实体行的十几个老套件不必先展开。实体行带 **`data-cx-id`**（旧版是 `<button data-cx-id>`，十几个老套件按它找行）与 **`data-cx-type`**（树上不显示类型 —— 上一层文件夹已经写着它了；`entity-vault` / `cold-start-entity-vault` / `startup-materialize-entity` 靠它读类型）。⚠️ `treeRow()` 用 `setAttribute('data-' + k)` 而不是 `dataset[k]`：`cx-id` 这种带连字符的键走 dataset 会抛 `SyntaxError: 'cx-id' is not a valid property name`。⚠️ 两类"空"**待遇不同，别顺手统一**：节点**种类**只列真有节点的（= 硬盘上真有的目录，`[...used.keys()]`）—— 改成「`store.data.formats` 的全部种类」会被用户报回来（「我指的是角色，地点，物品等文件夹同时存在于主线与设定文件夹下，是bug」；`main.js` 的 `DEFAULT_FORMATS` 曾与实体类型 `BUILTIN_ENTITY_TYPES` 重名，现在只留 `事件`/`战斗`）；实体**类型**列**全部**（含一个实体都没有的，空的 `is-empty` 置灰 + 展开一句「这个类型还没有实体」）。`_设定` 是**世界下面的一层**（与时间线同级）⇒ 缩进跟 `.ed-ttl` 一样 `padding-left: 18px`。⚠️ 换条目必须走 `switchTarget()`（先 flush 再改选择）。⚠️ `normalizeEntitySelection()` 对着**全部实体**归一（不是"左栏此刻画出来的那批"）：搜索词会把树收窄，那也不该把正在编辑的实体清空。⭐ **同类别内换条目走「就地换内容」**（`swapBody()`，2026-09-13）：保住骨架，只换「名字/类型 + 字段行 + 正文」，内容区（`#cx-body`）播一次 `.lk-swap-in` 轻淡入 —— 整块 `render()` 会把左列错峰重播一遍、**把滚动位置打回顶部**（`#cx-root` 就是滚动容器）、还把 tiptap 销毁重建（用户描述为「点击实体会刷新界面」）。**换类别**（实体 ↔ 节点）也走这条路（`mountBody()`，2026-09-13 下午：只重造 `#cx-body` 的 innerHTML 再 `wireBody()`，骨架/左树/滚动位置都留着；`#cx-rail` 常驻、节点模式 `display:none`，顶栏 `#cx-newbox` 按 mode 显隐）；只有"骨架不在 / 最后一个实体被删空"才 `render()`。⚠️ 树里节点行的高亮必须**同时**看「选的是谁」和「现在在编哪一类」（`mode === 'node' && !!nodeTarget && …`）—— 只比 nodeTarget 的话，切到实体后那一行还亮着（用户 2026-09-13：「从事件节点切换到实体节点时，事件节点保持选中状态」）。⭐ 编辑器的写回目标是**读时取值**的模块级 `docTarget`（编辑器跨条目复用），安全性由 `switchTarget` 的顺序保证：先 flush（旧目标）再改 `docTarget`。⚠️ store 订阅**按 `bodySignature()` 决定要不要重建**中/右栏 —— 无条件 `render()` 会 dispose 掉 tiptap，而「自动落盘 → vault 回扫」每次编辑后约 360ms 就会走一趟订阅，实测每换一次 DOM 就有丢击键/焦点/IME 的风险（第十八轮）。⚠️ 面板**高度预算**：`#cx-root` 是 `height:100%` + `overflow:auto`，内容比窗口高 1px 就长滚动条（实测只差 3px）⇒ `#cx-msg`/`#cx-hint` 没内容时 `display:none`（守卫：`entity-evolution.cjs` ★0d 外壳开销 ≤130px） |
+| `src/ui/motion.ts` | **动效层**（`enter(el, cls='lk-enter')` 重放入场 / `staggerIn(container)` 常驻错峰（页签栏）/ `cascadeIn(container, step, maxDelay, start)` 一次性错峰（工具打开、换页签、换条目）/ `stopCascade(container)` 取消一次性错峰（"这次不许播"的分支要显式调）/ `childHeights(container)` + `smoothHeights(container, before)` 高度平滑（重排类）/ `motionReduced()` / **`rowsLeave(rows, {dx, step, dur})` + `rowsEnter(rows, {dx, step, dur, start})`**（换条目的**行级转场**，Web Animations API：出场 `1/原位 → 0/往左 dx` 慢→快、入场 `0/从右 dx → 1/原位` 快→慢，逐行错峰，`fill:'both'` 保证延迟期间**不透明度为 0**；跑完 `autoRelease` 自己取消，隐藏窗口有兜底定时器））：keyframes 在 `src/style.css` 末尾「动效层」一节，时长走 `--motion-*` 令牌。⚠️ 只挂**显式切换**（切工具/开面板/换页签/弹窗），别挂 store 订阅触发的重渲染；⚠️ **不给整块容器挂**（会"洗白一下"且盖掉元素错峰） |
+| `src/ui/codex.ts` | **设定库 = 工作台**（合并方案 A 第 3 步 + 2026-09-13 的形态合并与左栏定型）：左列**一棵文件夹树**、中栏档案字段、右栏正文编辑器、右边缘演变帧条，外加**外部改动提示条**（`src/ui/vault-notice.ts`，见那一行）。节点中栏用 `src/ui/props-panel.ts`（与实体共用同一份）、实体用 `src/ui/fields.ts`、正文用 `src/ui/doc-editor.ts`。⭐ **左栏只有那棵树，没有第二种长相、也没有第二套控件** —— 这是用户 2026-09-13 三句话收敛出来的终态：①「设定库和编辑器是不是可以做成同一工具的两种不同形式啊（在设置里面切换）」→ ②「时间线节点和实体这两个按钮，列表和文件夹树的功能有点混乱，能不能重新设计一下」（重做成「筛选 pills + 一个视图按钮」）→ ③「**要不这样，把全部改成文件树的形式，这样子也方便看**」⇒ 列表形态整个撤掉，筛选 pills、视图按钮 `#cx-view`、类别页签 `#cx-tab-*`、设置里那组 `workbenchView` 单选全部删除。树的形状**本身就是筛选**（看哪一类就展开哪一枝），`mode`（编辑实体还是节点）由**点中的那一行**决定，两条路都走 `switchTarget()`。树与硬盘目录一一对应：世界 → 时间线 → 种类 → 节点 ／ 世界 → `_设定` → 类型 → 实体（`data-act` = world/tl/tkind/wset/etype/node/entity），行渲染走 `treeRow()` + 一份点击处理 `bindTreeClicks()`。⭐ **默认全展开**：三个 Set 记的是「**被用户收起来的**」（`collapsedWorlds` / `collapsedTls` / `collapsedKinds`，键分别是世界名、`<世界>::<时间线 id>` 与 `setting::<世界>`、`<世界>::<时间线 id>::<种类>` 与 `etype::<世界>::<类型 id>`），`isOpen(set, key)` / `toggleOpen(set, key)` 两个一行函数是唯一入口 —— 语义反转过来是为了「打开就看到全部条目」，也让按 `[data-cx-id]` 找实体行的十几个老套件不必先展开。实体行带 **`data-cx-id`**（旧版是 `<button data-cx-id>`，十几个老套件按它找行）与 **`data-cx-type`**（树上不显示类型 —— 上一层文件夹已经写着它了；`entity-vault` / `cold-start-entity-vault` / `startup-materialize-entity` 靠它读类型）。⚠️ `treeRow()` 用 `setAttribute('data-' + k)` 而不是 `dataset[k]`：`cx-id` 这种带连字符的键走 dataset 会抛 `SyntaxError: 'cx-id' is not a valid property name`。⚠️ 两类"空"**待遇不同，别顺手统一**：节点**种类**只列真有节点的（= 硬盘上真有的目录，`[...used.keys()]`）—— 改成「`store.data.formats` 的全部种类」会被用户报回来（「我指的是角色，地点，物品等文件夹同时存在于主线与设定文件夹下，是bug」；`main.js` 的 `DEFAULT_FORMATS` 曾与实体类型 `BUILTIN_ENTITY_TYPES` 重名，现在只留 `事件`/`战斗`）；实体**类型**列**全部**（含一个实体都没有的，空的 `is-empty` 置灰 + 展开一句「这个类型还没有实体」）。`_设定` 是**世界下面的一层**（与时间线同级）⇒ 缩进跟 `.ed-ttl` 一样 `padding-left: 18px`。⚠️ 换条目必须走 `switchTarget()`（先 flush 再改选择）。⚠️ `normalizeEntitySelection()` 对着**全部实体**归一（不是"左栏此刻画出来的那批"）：搜索词会把树收窄，那也不该把正在编辑的实体清空。⭐ **同类别内换条目走「就地换内容」**（`swapBody(animate = true)`，2026-09-13）：保住骨架，只换「名字/类型 + 字段行 + 正文」，内容区演一次**换文件转场**（`playSwap()`，做法 P：旧内容做成一层 `.lk-cx-ghost` 幽灵往左退场、新内容**延后一个出场时长**从右淡入，逐行错峰 `motionStagger`；旋钮在设置面板「换条目转场」卡片里 —— 开关 / 速度 / 错峰 / 入场距离）—— 整块 `render()` 会把左列错峰重播一遍、**把滚动位置打回顶部**（`#cx-root` 就是滚动容器）、还把 tiptap 销毁重建（用户描述为「点击实体会刷新界面」）。转场的三条纪律：① 快照（`snapshotForSwap()`）必须在**改 DOM 之前**取，且先 `dropGhost()` 收掉上一轮那层（它也在 `#cx-body` 里，留着会被写进快照）；② 幽灵里的 `[id]` 全部摘掉，否则会出现第二个 `#cx-doc`/`#cx-fields` 把 `querySelector` 引错；③ `rowsOf(root, skipGhost)` —— 扫 `#cx-body` 时排除幽灵里的行（同一份旧内容不该在"出场"和"入场"里各演一遍），扫幽灵自己时要传 `false`（否则 `.closest('.lk-cx-ghost')` 会把幽灵的每一行都滤掉，`exits` 空 ⇒ `Promise.all([])` 立刻 resolve ⇒ 幽灵当场消失）。**换类别**（实体 ↔ 节点）也走这条路（`mountBody()`，2026-09-13 下午：只重造 `#cx-body` 的 innerHTML 再 `wireBody()`，骨架/左树/滚动位置都留着；`#cx-rail` 常驻、节点模式 `display:none`，顶栏 `#cx-newbox` 按 mode 显隐）；只有"骨架不在 / 最后一个实体被删空"才 `render()`。⚠️ 树里节点行的高亮必须**同时**看「选的是谁」和「现在在编哪一类」（`mode === 'node' && !!nodeTarget && …`）—— 只比 nodeTarget 的话，切到实体后那一行还亮着（用户 2026-09-13：「从事件节点切换到实体节点时，事件节点保持选中状态」）。⭐ 编辑器的写回目标是**读时取值**的模块级 `docTarget`（编辑器跨条目复用），安全性由 `switchTarget` 的顺序保证：先 flush（旧目标）再改 `docTarget`。⚠️ store 订阅**按 `bodySignature()` 决定要不要重建**中/右栏 —— 无条件 `render()` 会 dispose 掉 tiptap，而「自动落盘 → vault 回扫」每次编辑后约 360ms 就会走一趟订阅，实测每换一次 DOM 就有丢击键/焦点/IME 的风险（第十八轮）。⚠️ 面板**高度预算**：`#cx-root` 是 `height:100%` + `overflow:auto`，内容比窗口高 1px 就长滚动条（实测只差 3px）⇒ `#cx-msg`/`#cx-hint` 没内容时 `display:none`（守卫：`entity-evolution.cjs` ★0d 外壳开销 ≤130px） |
 | `src/ui/fields.ts` | 模板字段控件的**公共渲染**（`fieldRow(field, value, onChange, labelWidth)` / `parseFieldInput` / `formatFieldValue`），按模板声明的类型决定形态。约定：只在 `change`（失焦/回车）提交 |
 | `src/ui/doc-editor.ts` | 极简文稿编辑器（tiptap，工作台两个形态共用这一份）：`createDocEditor(el, onFlush)` → `{ setDoc, getDoc, flush, dispose, toggleHeading(level), insertImage(src) }`。⚠️ 切条目必须 flush 再 dispose；⭐ 但**同页签内换条目**（codex）刻意**不 dispose**：`setDoc(md)` 换文档、实例留着，省掉"正文区先空一帧"（`setDoc` 会同步 `last`，所以换文档本身不会触发一次多余的写回） |
 | `src/store/entities.ts` | 实体层基础：`BUILTIN_ENTITY_TYPES`（角色/地点/物品/组织/种族）、`ensureEntityTypes`（世界没有类型时**播种一次**）、`ensureEntityFields`（按类型补字段）、`entityTypeOf` |
@@ -330,15 +331,27 @@
 - **每个工具写进自己那一格**：`openTool` 在 `#lk-module-view` 里新建一个 `.lk-tool-slot` 并把它当 `host`
   交给工具；渲染完若仍是当前工具 → 保留这一格 + 挂块级错峰；若中途被切走 → 摘掉这一格 + 跑它的清理函数。
 - ⚠️ **为什么不能让所有工具直接写 `#lk-module-view`**（实测出来的竞态，别退回去）：工具是「先渲染进
-  host、再把清理函数交回来」，而且像 `src/ui/settings.ts` 那样**函数内部还有自己的一层异步渲染**。
+  host、再把清理函数交回来」，而且有的工具**函数内部还有自己的一层异步渲染**（`src/ui/settings.ts`
+  当年就是这样：交回清理函数时 DOM 还没写完 —— 它 2026-09-13 改成悬浮面板后不再走工具格，
+  但同类工具（`schema`/`trash`/`backup`）仍是动态 import + 内部异步）。
   于是「打开 A → 立刻打开 B」时，慢的 A 完全可能在 B 渲染完之后才落地，把 B 盖掉：**工具栏亮着 B、
-  主区却是 A**（实测：同一个同步块里连点 settings + codex，2.5 秒后主区仍停在 settings）。
+  主区却是 A**（实测：同一个同步块里连点两个工具，2.5 秒后主区仍停在先点的那个）。
   格子法把「写哪儿」钉在**打开那一刻** ⇒ 晚到多久都无害（它写的是已被摘掉的格子）。
 - 布局：`.lk-tool-slot { height: 100% }`（`src/style.css`）—— 必须把「百分比高度撑得住」这条链传下去，
   否则工具根部写 `height: 100%` 会因为父元素高度 auto 塌成 0（`#lk-module-view` 是 `.lk-main` 的
   flex 项，高度确定）。工具对 host 自己的设置（如 `host.style.overflow = 'auto'`）现在落在格子上，
   语义与原来写在 `#lk-module-view` 上一致；`closest('.lk-module-view')` 这类查询依旧能穿过格子。
 - 打开失败**不再静默**：`.catch` 里 `console.warn`（以前静默吞掉，"点了没反应"很难查）。
+- **面板型工具**（`Tool.panel = true`，2026-09-13 起只有「设置」）：`openTool` 见到它**完全不碰主区** ——
+  不结算当前工具（你正在编的条目要留在后面）、不摘工具格、不写 `#lk-module-view`，而是把 `open()`
+  的返回值单独记为 `disposePanel`（与 `disposeCurrent` 分开：开设置不该把主区的工具关掉），
+  由工具自己往 `document.body` 挂悬浮层（`src/ui/settings-panel.ts`）。判定标准是
+  「用它的时候需要**同时看着**主区内容吗」：设置要边看边调 ⇒ 面板；设定库/沙盘要占满 ⇒ 普通工具。
+  `Tool.isOpen()` / `Tool.close()` 给壳用：左栏那个按钮是**开关**（再点一次＝关），
+  高亮跟着"面板开着没开着"走；面板自己关掉（× / Esc / 点遮罩）时广播 `lingkuang-panel`，
+  `src/ui/shell.ts` 的 `syncPanelButtons()` 跟着同步。守卫：`tools/e2e/settings-panel.cjs`。
+  ⚠️ 面板模块在 `register.ts` 里是**静态 import**（别的工具都是动态的）：左栏高亮要同步问它
+  `isOpen()`，同时静态 + 动态 import 同一模块只会让 Vite 报 `INEFFECTIVE_DYNAMIC_IMPORT` 警告。
 
 ### 动效（`src/ui/motion.ts` + `src/style.css` 末尾「动效层」）
 - 令牌：`--motion-fast 180ms`（hover / 选中变色，点一下要立刻有反馈）/ `--motion-base 320ms`（弹窗卡片）/
@@ -378,16 +391,24 @@
   重建不播，否则改一个字段整块淡入一次；两级 `cascadeIn`：顶层块 0/100/200/300 + 左列条目 200ms 起逐条 60ms
   —— 但这条路如今只在"骨架不在 / 最后一个实体被删空"时才走到，换条目与换类别都不再经过它）；
   ⭐ **设定库换条目 = 不重建骨架**（2026-09-13，见 `src/ui/codex.ts` 的 `swapBody()`）：
-  只换「名字/类型 + 字段行 + 正文」，中/右栏那块容器 `#cx-body` 播
-  `.lk-swap-in`（`@keyframes lk-swap`：`opacity .5 → 1`，`--motion-base`）。
-  **不从 0 起淡、也不加 transform**：从 0 出来就是"闪一下白"（就是本节开头那个被否掉的整块淡入），
-  而 transform 会让套着 contenteditable 的那块成为 fixed 的包含块、还会让过渡期的光标位置跟着位移。
+  只换「名字/类型 + 字段行 + 正文」，中/右栏那块**演一次换文件转场**（`playSwap()`，用户 2026-09-13
+  在演示页 `docs/motion-demo/doc-slide.html` 里逐轮定稿的「做法 P」，参数逐条对应他的原话）：
+  ① 旧内容做一层 `.lk-cx-ghost` 幽灵，逐行 `1/原位 → 0/往左 32px`（曲线**慢→快**
+  `cubic-bezier(0.7,0,0.84,0)`）；② 新内容**延后一个出场时长**（默认 300ms）逐行 `0/从右 32px → 1/原位`
+  （曲线**快→慢** `cubic-bezier(0.16,1,0.3,1)`）—— 「应该先出场再入场」；③ 每行比上一行晚
+  `motionStagger`（默认 10ms）；④ **只走左右**，关键帧里没有 `translateY`（用户：「不是入场后左右弹动
+  一下」）；⑤ `fill:'both'` ⇒ 入场延迟期间**保持不透明度 0**（否则"下一张的文字会先出现"）；
+  ⑥ 框、左树、滚动位置一律不动 —— 动的只有框里的行。
   ⭐ **换类别（时间线节点 ↔ 设定条目）也走就地换**（2026-09-13 下午，用户：「从事件节点切换到实体
   节点时，事件节点保持选中状态，且面板刷新」）：`renderedMode !== mode` 时不再整块 `render()`，而是
   `mountBody()` —— 只把 `#cx-body` 的 innerHTML 换成 `bodyHtml()` 再 `wireBody()`，骨架、左树与
   `#cx-root` 的滚动位置全留着（`#cx-rail` 改成常驻、节点模式 `display:none`；顶栏 `#cx-newbox` 按 mode
-  显隐）。相应地 `motion-switch.cjs` ★13/★14 是**反向**守卫：换类别/换条目后 `#cx-root` 与 `#cx-list`
-  的子项一个动画都不许有；
+  显隐），转场照演。相应地 `motion-switch.cjs` ★13/★14 是**反向**守卫：换类别/换条目后 `#cx-root` 与
+  `#cx-list` 的子项一个 CSS 动画都不许有，内容区改由**行级 WAAPI 动画**（`animationName === ''`）
+  承担；`.lk-swap-in`（`opacity .5 → 1`）如今只剩**减少动效**那一档在用（`prefers-reduced-motion`
+  下 DESIGN.md:159 要求"只留短淡入"）；
+  四个旋钮在设置面板「换条目转场」卡片（开 / 速度 / 行错峰 / 入场距离），`playSwap` 每次现读
+  `loadSettings()`；关掉开关＝瞬时换（真正不做动画）。守卫：`tools/e2e/codex-swap-motion.cjs`；
   **灵感触发器卡片** = `src/ui/inspire.ts` 的 `renderChar(combo, animate)` 末尾
   `if (animate) cascadeIn(result, 50, 720, 120); else stopCascade(result);`
   （`#insp-result` 是卡片网格，13 张卡排 `120…720ms` 阶梯；**只有初次进入**（`renderChar(null, true)`）

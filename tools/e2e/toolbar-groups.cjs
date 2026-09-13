@@ -66,22 +66,46 @@ async function main() {
     !!g1 && geo.bar.bottom - g1.bottom <= 10 && geo.bar.bottom - g1.bottom >= 0 && g1.top - g0.bottom > 40,
     { gapToBottom: geo.bar?.bottom - (g1?.bottom ?? 0), gapBetween: (g1?.top ?? 0) - (g0?.bottom ?? 0) });
 
-  /* 最底下那个 = 设置：点了要真的开设置面板（分组改了 DOM 结构，别把点击/高亮一起弄坏） */
+  /* 最底下那个 = 设置：点了要真的**开出一层悬浮面板**（分组改了 DOM 结构，别把点击/高亮一起弄坏）。
+     自 2026-09-13 起设置是**面板型工具**（`src/ui/settings-panel.ts`）：它**不接管主区**
+     ——`#lk-module-view` 里原来是什么就还是什么，面板挂在 document.body 上。 */
   const opened = await ev(`(() => {
     const btn = [...document.querySelectorAll('#lk-toolbar .lk-tool-btn')].pop();
     const id = btn.dataset.tool;
+    const before = document.getElementById('lk-module-view')?.innerHTML ?? '';
+    window.__mvBefore = before;
     btn.click();
     return { id, active: btn.classList.contains('is-active') };
   })()`);
   await sleep(900);
   const panel = await ev(`(() => {
+    const p = document.getElementById('lk-settings-panel');
+    const card = p?.querySelector('.lk-set-card');
+    const txt = (p?.textContent || '').slice(0, 300);
     const mv = document.getElementById('lk-module-view');
-    const txt = (mv?.textContent || '').slice(0, 200);
-    return { shown: mv?.style.display !== 'none', hasSettingsWord: /设置|AI 引擎|引擎|偏好/.test(txt), txt };
+    return {
+      exists: !!p, floating: p ? getComputedStyle(p).position : null,
+      inBody: p ? p.parentElement === document.body : false,
+      hasSettingsWord: /设置/.test(txt),
+      hasMotionCard: !!document.querySelector('#set-motion-on'),
+      cardDur: card ? (card.getAnimations()[0]?.effect.getTiming().duration ?? null) : null,
+      moduleUntouched: (mv?.innerHTML ?? '') === window.__mvBefore,
+      head: txt.slice(0, 60),
+    };
   })()`);
-  check('★3 最底下那个按钮就是「设置」，点了能打开设置面板（高亮 + 面板出现）',
-    opened?.id === 'settings' && opened.active === true && panel.shown === true && panel.hasSettingsWord === true,
-    { opened, panel: { shown: panel.shown, head: (panel.txt || '').slice(0, 60) } });
+  check('★3 最底下那个按钮就是「设置」：点它开出一层**悬浮**面板（固定定位挂 body、主区一动不动）',
+    opened?.id === 'settings' && opened.active === true && panel.exists === true && panel.floating === 'fixed'
+      && panel.inBody === true && panel.hasSettingsWord === true && panel.hasMotionCard === true
+      && panel.moduleUntouched === true, { opened, panel });
+
+  /* 再点一次 = 关掉（按钮是开关），高亮也跟着灭 */
+  const closed = await ev(`(() => {
+    const btn = [...document.querySelectorAll('#lk-toolbar .lk-tool-btn')].pop();
+    btn.click();
+    return { panel: !!document.getElementById('lk-settings-panel'), active: btn.classList.contains('is-active') };
+  })()`);
+  check('★3b 再点一次设置按钮 = 关掉面板，高亮同步熄灭',
+    closed.panel === false && closed.active === false, closed);
 
   const errs = await ev(`window.__errs`);
   check('★4 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

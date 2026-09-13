@@ -34,7 +34,7 @@ import { loadSettings } from './settings';
 import {
   epochOfNodes, frameDiff, nearestVersion, normalizeFrames, statesOf, versionAtNode, type EntityState,
 } from '../store/evolution';
-import { cascadeIn, enter } from './motion';
+import { cascadeIn, enter, motionReduced, rowsEnter, rowsLeave } from './motion';
 
 const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;font-family:inherit;user-select:text;';
 
@@ -84,6 +84,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
      store 订阅触发的重建（外部改 vault 回扫、字段提交后签名变化）**不播** ——
      否则改一个字段整块面板块淡入一次，看着像闪。 */
   let pendingEnter = false;
+  /* 换条目转场里那层"旧内容幽灵"（用户 2026-09-13 定稿的做法 P，见 playSwap）。
+     同一时刻最多一层：新的一轮开始时**复用**它，而不是把"其实还没露过脸"的新内容再快照一遍。 */
+  let swapGhost: HTMLElement | null = null;
   /* ── 演变（版本历史，2026-09-13）─────────────────────────────────
      中/右栏显示的**不是实体身上那一份**，而是「你现在站在哪个事件上看它」那一版：
      `statesOf(实体)` 一次算出初稿 + 每一帧之后的全部样子，换版本就是换个下标取数组（O(1)）。
@@ -484,6 +487,82 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (!active()) activeId = sortedEntities()[0]?.id ?? '';
   }
 
+  /* ── 换条目转场（用户 2026-09-13 定稿的「做法 P」）──────────────────────────────────────────
+     规格从演示页 `docs/motion-demo/doc-slide.html` 里逐轮谈出来的（用户当时的话）：
+       ·「我想要的是……关键帧 a 时不透明度 0、位置在 b 位置右边；b 时不透明度 100、速度快到慢；
+          每行都是这个动画，但是每行比上一行慢一点（错峰）」；
+       ·「出场也是一样的动画，但是是慢到快」+「应该先出场再入场」；
+       ·「执行入场动画之前能不能不透明度调为 0」（⇒ 必须 fill:'both'，否则延迟期间会先亮出来）；
+       ·「我指的是从右向左入场时要错分，不是入场后左右弹动一下」（⇒ 只走左右，不走上下）。
+     实现要点：
+       ① 旧内容做成一层**幽灵**（`#cx-body` 里的绝对定位克隆）往左退场、演完自己消失；
+          新内容待在原地、延后一个出场时长再从右淡入 —— 框、左树、滚动位置一律不动；
+       ② 快照必须在**改 DOM 之前**取（`body.innerHTML`），而且要把克隆里的 `id` 全摘掉 ——
+          否则会多出第二个 `#cx-doc`/`#cx-fields`，`host.querySelector('#cx-fields')` 会抓到幽灵里那个；
+       ③ 已经有一轮在飞时**复用**那层幽灵（它才是用户最后看见的那份内容），并把它的动画重头再来；
+          否则连点两下时会把"还没显形的新内容"当成旧内容再演一遍 ⇒ 闪。 */
+  const ROW_SEL = '[data-cx-row], #cx-props .ed-props > *';
+
+  /** 转场要逐行动画的行。`skipGhost=true`（对 `#cx-body` 用）时**排除幽灵层里的行** ——
+   *  否则同一份旧内容会在"出场"和"入场"里各演一遍。给幽灵层自己用时要传 false，
+   *  不然那个 `.closest('.lk-cx-ghost')` 会把幽灵的每一行都滤掉（踩过：幽灵当场被收掉，
+   *  `exits` 为空 ⇒ `Promise.all([])` 立刻 resolve ⇒ 看起来根本没建幽灵）。 */
+  function rowsOf(root: HTMLElement, skipGhost = true): HTMLElement[] {
+    return (Array.from(root.querySelectorAll(ROW_SEL)) as HTMLElement[]).filter(
+      (el) => (!skipGhost || !el.closest('.lk-cx-ghost')) && el.getClientRects().length > 0
+    );
+  }
+
+  /** 收掉幽灵层（关掉转场、整块重建、工具切走时都要） */
+  function dropGhost(): void {
+    if (!swapGhost) return;
+    for (const a of swapGhost.getAnimations()) { try { a.cancel(); } catch { /* 已取消 */ } }
+    swapGhost.remove();
+    swapGhost = null;
+  }
+
+  /** 取"旧内容"的快照（**必须在改 DOM 之前调**）。
+   *  先收掉上一轮那层幽灵：它也是 `#cx-body` 的子元素，留着会被一起写进快照
+   *  （快照里嵌一层幽灵 ⇒ 新幽灵里凭空多一块旧内容）。连点两下时这一收就是"上一轮的出场被截断"，
+   *  换来的是"每一轮都是拿**当前看得见的那份**内容去演"，与演示页里那个循环模型一致。 */
+  function snapshotForSwap(body: HTMLElement): string {
+    dropGhost();
+    return body.innerHTML;
+  }
+
+  /** 演一次换内容的转场。`prevHtml` = 改动**之前**的 `#cx-body.innerHTML`（本轮不演就传 null）。
+   *  一轮只演一层幽灵：进来先把上一轮那层收掉，避免连点时越堆越多。 */
+  function playSwap(body: HTMLElement, prevHtml: string | null): void {
+    const s = loadSettings();
+    dropGhost();
+    if (s.motionSwap === false) return;
+    /* 系统「减少动态效果」：只留一次短淡入（DESIGN.md:159），不摆行、不建幽灵层
+       —— motion.ts 那两个函数在 reduced 下会返回空数组，幽灵层会留在屏幕上没人收，所以这里先拦。 */
+    if (motionReduced()) { enter(body, 'lk-swap-in'); return; }
+    const speed = Math.max(0.2, s.motionSpeed || 1);
+    const dur = Math.round(300 / speed);
+    const step = Math.max(0, s.motionStagger ?? 10);
+    const dx = Math.max(0, s.motionEnterDx ?? 32);
+    if (prevHtml !== null) {
+      const ghost = document.createElement('div');
+      ghost.className = 'lk-cx-ghost';
+      ghost.setAttribute('aria-hidden', 'true');
+      ghost.innerHTML = prevHtml;
+      /* ⚠️ 克隆体里的 id 全部摘掉：`#cx-doc`/`#cx-fields`/`#cx-name` 各多出一份的话，
+         `host.querySelector('#cx-fields')` 就可能抓到幽灵里那一份（接线/断言全线错位）。 */
+      for (const el of Array.from(ghost.querySelectorAll('[id]'))) el.removeAttribute('id');
+      body.appendChild(ghost);
+      swapGhost = ghost;
+      const exits = rowsLeave(rowsOf(ghost, false), { dx, step, dur });
+      const kill = (): void => { if (swapGhost === ghost) dropGhost(); };
+      /* 没有可动画的行（全被 display:none 滤掉）时别留一层静止的重复内容 —— 直接收掉 */
+      Promise.all(exits.map((a) => a.finished)).then(kill).catch(() => { /* 被取消 */ });
+      /* 兜底：隐藏窗口里动画不推进，`finished` 永远不来（README 铁律 6），这层幽灵不能留着 */
+      window.setTimeout(kill, dur + step * 80 + 600);
+    }
+    rowsEnter(rowsOf(body), { dx, step, dur, start: dur });
+  }
+
   /* ── 就地换内容（用户 2026-09-13：「设定库中点击实体会刷新界面，我希望变成平滑切换」）────────
      旧路径：点条目 → switchTarget → render() → `host.innerHTML = …`，把**整个面板**（标题行、页签行、
      左列、中栏、右栏）重造一遍。一次点击要付三样代价，眼睛看到的就是"界面刷新了一下"：
@@ -495,20 +574,21 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
      不是从透明开始：从 0 出来就是"闪一下白"，那是用户报过的老毛病，别再犯）。
      返回 false = 这次不该走这条路（骨架还没建好 / 一条实体都没有那种空条目版）⇒ 调用方整块 render()。
      **换类别**（节点 ↔ 实体）也走这里：见下面 `renderedMode !== mode` 那一支与 `mountBody()`。 */
-  function swapBody(): boolean {
+  function swapBody(animate = true): boolean {
     if (!host.querySelector('#cx-root')) return false;
     const body = host.querySelector<HTMLElement>('#cx-body');
     if (!body) return false;
+    /* 幽灵层的素材必须在**改 DOM 之前**取（`snapshotForSwap` 会先收掉上一轮那层） */
+    const prevHtml = animate ? snapshotForSwap(body) : null;
     /* **换类别**（时间线节点 ↔ 设定条目）：中栏结构不同，但骨架不用动 —— 只重造 `#cx-body`
        （见 mountBody），左树、顶栏、帧条元素与 `#cx-root` 的滚动位置全留着。 */
     if (renderedMode !== mode) {
       if (mode === 'entity') { normalizeEntitySelection(); ensureRailSelection(); }
-      if (!mountBody()) return false;
+      if (!mountBody(prevHtml, animate)) return false;
       renderList();          /* 左列只动高亮 —— 那一列同时装着两类条目，不用重建 */
       rail?.render();        /* 帧条跟着换（节点模式它藏着，重画无害） */
       pendingEnter = false;  /* 骨架没重建 ⇒ 不该有整块错峰 */
       bodySig = bodySignature();
-      enter(body, 'lk-swap-in');
       return true;
     }
     let next: DocTarget;
@@ -549,7 +629,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     rail?.render();                        /* 右栏那条竖线：换实体/换版本要重画高亮与摘要 */
     pendingEnter = false;                  /* 骨架没重建 ⇒ 不该有整块错峰 */
     bodySig = bodySignature();             /* 签名立刻对齐，否则下一次 store 变化会白重建一次 */
-    enter(body, 'lk-swap-in');
+    playSwap(body, prevHtml);
     return true;
   }
 
@@ -580,10 +660,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       el.appendChild(hint);
     }
     for (const f of t?.fields ?? []) {
-      el.appendChild(fieldRow(f, st.properties?.[f.name], (v) => {
+      const row = fieldRow(f, st.properties?.[f.name], (v) => {
         patchVersion((s) => { s.properties = { ...s.properties, [f.name]: v }; });
         say('已保存 ✓');
-      }));
+      });
+      row.dataset.cxRow = '';   /* 转场的一行：换条目时这一行跟着错峰淡入（见 playSwap） */
+      el.appendChild(row);
     }
   }
 
@@ -596,17 +678,17 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       const st = viewState();
       if (!st) return '<div style="font-size:var(--text-xs);color:var(--fg-2);">左边选一个实体看图。</div>';
       return `
-        <div style="display:flex;align-items:center;gap:8px;">
+        <div data-cx-row style="display:flex;align-items:center;gap:8px;">
           <input id="cx-name" value="${escapeHtml(st.name)}" style="${INP}font-size:15px;font-weight:600;"/>
           <span style="font-size:var(--text-xs);color:var(--fg-2);flex-shrink:0;">类型</span>
           <select id="cx-type" style="flex-shrink:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-xs);outline:none;">${kinds.map((k) => `<option value="${escapeHtml(k)}"${k === st.typeId ? ' selected' : ''}>${escapeHtml(typeName(k))}</option>`).join('')}</select>
           <button id="cx-del" style="margin-left:auto;flex-shrink:0;background:transparent;border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;">删除</button>
         </div>
-        <div id="cx-vnote" style="font-size:var(--text-xs);color:var(--fg-2);margin-top:4px;">${escapeHtml(versionNoteText())}</div>
+        <div id="cx-vnote" data-cx-row style="font-size:var(--text-xs);color:var(--fg-2);margin-top:4px;">${escapeHtml(versionNoteText())}</div>
         <div style="display:flex;flex-direction:column;gap:5px;margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
           <div id="cx-fields" style="display:flex;flex-direction:column;gap:5px;"></div>
         </div>
-        <div style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
+        <div data-cx-row style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
           ${docBar('正文（Markdown · 失焦自动保存 · 落在 vault 的 <code>_设定/&lt;类型&gt;/&lt;名字&gt;.md</code>）')}
           <div id="cx-doc"></div>
         </div>`;
@@ -617,15 +699,18 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     const tlName = store.data.worldsets[t.world]?.timelines[t.tlId]?.name ?? t.tlId;
     const kind = n.kind || '事件';
     return `
-      <div id="cx-nodepath" style="font-size:var(--text-xs);color:var(--fg-2);margin-bottom:8px;">${escapeHtml(t.world)} · ${escapeHtml(tlName)} · ${escapeHtml(kind)}</div>
+      <div id="cx-nodepath" data-cx-row style="font-size:var(--text-xs);color:var(--fg-2);margin-bottom:8px;">${escapeHtml(t.world)} · ${escapeHtml(tlName)} · ${escapeHtml(kind)}</div>
       <div id="cx-props" style="display:flex;flex-direction:column;gap:5px;"></div>
-      <div style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
+      <div data-cx-row style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
         ${docBar('正文（Markdown · 失焦自动保存）')}
         <div id="cx-doc"></div>
       </div>`;
   }
 
   function render(): void {
+    /* 整块重建会把 `#cx-body` 连它里面的幽灵层一起换掉 ⇒ 先把那层收干净（否则它挂在已脱离文档的
+       节点上，`swapGhost` 那个引用还指着它，下一轮转场会"复用"一个看不见的东西） */
+    dropGhost();
     /* 切条目 / 换页签 / 重渲染前先把正文结算掉（未失焦的编辑也在里面），再销毁旧实例。
        结算用的是**旧** docTarget，所以清空它必须排在这一步之后。 */
     if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }
@@ -655,7 +740,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
             <input id="cx-search" placeholder="搜索设定与事件…" style="${INP}" value="${escapeHtml(query)}"/>
             <div id="cx-list" style="display:flex;flex-direction:column;gap:1px;"></div>
           </div>
-          <div id="cx-body" style="flex:1;min-width:0;border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;">
+          <div id="cx-body" style="flex:1;min-width:0;border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;position:relative;">
             ${bodyHtml()}
           </div>
           <!-- 右栏那条竖线**常驻**（节点模式只是藏起来）—— 换类别时就不用动骨架，见 mountBody -->
@@ -832,11 +917,14 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
    *  `#cx-root`（滚动容器）被换掉 ⇒ 滚动回顶、tiptap 重建。而中/右栏之外的东西**本来就不用动**：
    *  左树同时装着两类条目、顶栏只有那个「＋新建实体」要显隐、帧条元素常驻（节点模式藏起来）。
    *  所以这里只换内容 + 重新接线。返回 false = 骨架不在（调用方整块 render()）。 */
-  function mountBody(): boolean {
+  function mountBody(prevHtml: string | null = null, animate = true): boolean {
     const body = host.querySelector<HTMLElement>('#cx-body');
     if (!body) return false;
-    /* 旧编辑器/面板都住在这一块里：先结算正文（用旧 docTarget），再销毁 */
+    /* 旧编辑器/面板都住在这一块里：先结算正文（用旧 docTarget），再销毁。
+       顺手收掉上一轮的幽灵层：它也在这一块里，留着会被 `body.innerHTML = …` 一起带走，
+       而 `swapGhost` 还指着那个已被摘掉的节点（下一轮转场就会复用一个看不见的东西）。 */
     if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }
+    dropGhost();
     docTarget = null;
     propsPanel = null;   /* 旧面板跟着旧 DOM 一起没了 */
     body.innerHTML = bodyHtml();
@@ -846,6 +934,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (newBox) newBox.style.display = mode === 'entity' ? 'flex' : 'none';
     wireBody();
     renderedMode = mode;
+    /* 换类别也是"换文件"：同一套转场（旧内容往左退 → 新内容从右入）。放在 wireBody 之后 ——
+       tiptap 得先建好，正文那一块才有东西可以逐行淡入。 */
+    if (animate) playSwap(body, prevHtml);
     return true;
   }
 
@@ -1086,7 +1177,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
      （左栏形态不再由设置决定：左栏只有一棵树，见文件顶部那段说明。） */
   const onSettings = (): void => {
     if (!railKey || !active()) return;
-    if (!swapBody()) render();   /* swapBody 内部会 ensureRailSelection + 重画帧条 */
+    /* `swapBody(false)`：改设置触发的重画**不演转场** —— 用户没在换文件，那一下动起来反而莫名 */
+    if (!swapBody(false)) render();   /* swapBody 内部会 ensureRailSelection + 重画帧条 */
   };
   window.addEventListener('lingkuang-settings', onSettings);
   /* 外部改动提示条（原来长在「编辑器」工具里，工具下线时搬到 `src/ui/vault-notice.ts`）。
@@ -1102,6 +1194,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   return () => {
     torn = true;
     unsub();
+    dropGhost();   /* 转场里的幽灵层跟着工具一起收（它还挂在 #cx-body 上） */
     window.removeEventListener('lingkuang-settings', onSettings);
     vaultNotices?.dispose();
     vaultNotices = null;

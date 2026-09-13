@@ -12,6 +12,15 @@ export interface Tool {
    *  用户 2026-09-12 的整理要求：「设置放到左侧栏最底下」+ 干活的和管理别混着排。
    *  只在左栏（`src/ui/shell.ts` 的 `renderToolbar`）生效，世界栏那排 `.lk-tool-btn` 不受影响。 */
   group?: 'create' | 'manage';
+  /** `true` = **面板型**工具：点它**不接管主区**（不隐藏右区、不建工具格），由它自己挂一层
+   *  悬浮面板（见 `src/ui/settings-panel.ts`）。用户 2026-09-13：「我希望设置面板是悬浮面板，
+   *  而不是单开一个标签页」—— 判定标准是「用它的时候需要**同时看着**主区内容吗」：
+   *  设置要边看边调，所以是面板；设定库/沙盘那种要占满主区的仍是普通工具。 */
+  panel?: boolean;
+  /** 面板型：此刻开着没开着（左栏按钮据此显示高亮）。普通工具不用实现。 */
+  isOpen?: () => boolean;
+  /** 面板型：关掉它（再点一次按钮＝关）。普通工具不用实现。 */
+  close?: () => void;
   /** 打开工具。可返回清理函数（或它的 Promise，因为各工具用动态 import 懒加载）：
    *  收到的 host 是**本次打开专属的工具格**（`.lk-tool-slot`，长生命周期容器的子元素）——
    *  往它里面写就好，切走时整格连 DOM 一起摘掉，所以**晚到的渲染不会盖掉后来打开的工具**。
@@ -32,6 +41,8 @@ export function listTools(): Tool[] {
 
 /** 当前工具的清理函数；以及打开序号（动态 import 是异步的，用它丢弃过期回调） */
 let disposeCurrent: (() => void) | null = null;
+/** 当前**面板型**工具的关闭函数（与 disposeCurrent 分开：开设置面板不该把主区的工具关掉） */
+let disposePanel: (() => void) | null = null;
 let openSeq = 0;
 
 /** ⚠️ 为什么每个工具都要有自己的**工具格**（踩过的坑，务必别退回去）：
@@ -44,6 +55,15 @@ let openSeq = 0;
 export function openTool(id: string, host: HTMLElement, store?: Store): void {
   const tool = tools.get(id);
   if (!tool) return;
+  /* 面板型（设置）：**主区一动不动** —— 不结算当前工具（你正在编的东西要留在后面）、
+     不摘格子、不写 `#lk-module-view`。它自己往 document.body 挂悬浮层，返回的清理函数是"关面板"。 */
+  if (tool.panel) {
+    disposePanel?.();
+    disposePanel = null;
+    const ret = tool.open ? tool.open(host, store) : undefined;
+    if (typeof ret === 'function') disposePanel = ret;
+    return;
+  }
   disposeCurrent?.();
   disposeCurrent = null;
   host.innerHTML = '';               /* 摘掉上一格（连同那个工具的 DOM） */
@@ -86,6 +106,8 @@ export function openTool(id: string, host: HTMLElement, store?: Store): void {
 export function disposeCurrentTool(): void {
   disposeCurrent?.();
   disposeCurrent = null;
+  disposePanel?.();   /* 悬浮面板也一起收（切到世界沙盘 / 退出前不该留一层遮罩） */
+  disposePanel = null;
   openSeq++;   /* 让还在飞的动态 import 回调作废 */
 }
 function renderPlaceholder(host: HTMLElement, tool: Tool): void {

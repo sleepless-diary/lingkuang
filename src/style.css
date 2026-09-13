@@ -649,6 +649,20 @@ body {
    还会让过渡期间的光标位置跟着位移。 */
 @keyframes lk-swap { from { opacity: .5; } to { opacity: 1; } }
 .lk-swap-in { animation: lk-swap var(--motion-base) var(--ease-standard) both; }
+/* 换条目转场里那层"旧内容幽灵"（`src/ui/codex.ts` 的 playSwap，做法 P）：
+   它是旧 `#cx-body.innerHTML` 的一份克隆，绝对定位盖在原内容上，演完"往左淡出"自己消失。
+   ① `inset:0` + `padding:12px` 与 `#cx-body` 的 padding 对齐（克隆出来的行才不会整体偏一格）；
+   ② `overflow:hidden` 是必须的：出场往左走，不裁的话行会**压到左栏那棵树上面**去
+      （演示页里就是因为这个才从"整块面板位移"改成"框不动、只让框里的内容动"）；
+   ③ `pointer-events:none`：这只是一张画，不许抢点击；`[id]` 在 JS 里全摘掉了，
+      否则会出现第二个 `#cx-doc`/`#cx-fields`，把 `querySelector` 引到幽灵里去。 */
+.lk-cx-ghost {
+  position: absolute;
+  inset: 0;
+  padding: 12px;
+  overflow: hidden;
+  pointer-events: none;
+}
 /* 错峰容器：子项按序号依次浮现。两种用法共用这一个类，区别是**类留不留**：
    ① 常驻（页签栏：`staggerIn()`，容器长期活着、子项随时被换掉 ⇒ 新子项自动有错峰）；
    ② 一次性（工具打开 / 换页签 / 换条目：`cascadeIn()`，跑完把类摘掉，否则工具下次整块重渲染

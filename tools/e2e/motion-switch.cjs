@@ -197,9 +197,12 @@ async function main() {
   check('★6 错峰播完自动收手（类与行内延迟都已清掉、动画对象归零）',
     cleaned && cleaned.cls === false && cleaned.delays.every((d) => d === '') && cleaned.anims === 0, cleaned);
 
-  /* ── ② 换个工具：容器一样不许播（每个工具都不闪） ── */
-  const a2 = await clickAnims(`document.querySelector('[data-tool="settings"]').click();`, '#lk-module-view');
-  check('★7 换工具时主区容器依然无动画（设置面板也不会闪）', Array.isArray(a2) && a2.length === 0, a2);
+  /* ── ② 换个工具：容器一样不许播（每个工具都不闪） ──
+      ⚠️ 这里以前点的是 `settings`。自 2026-09-13 起**设置是面板型工具**（悬浮面板，不接管主区，
+      `src/ui/settings-panel.ts`），点它根本不会切工具 ⇒ 换成同样走动态 import 的 `schema`。
+      「设置不改主区」那条不变量由 `tools/e2e/settings-panel.cjs` 守。 */
+  const a2 = await clickAnims(`document.querySelector('[data-tool="schema"]').click();`, '#lk-module-view');
+  check('★7 换工具时主区容器依然无动画（结构体管理也不会闪）', Array.isArray(a2) && a2.length === 0, a2);
 
   /* ── ③ 切回设定库：错峰要能**重播**（同一处连续切换最容易只播一次）。
      顺带守着「慢工具在切走之后才渲染完 → 把新工具盖掉」那条竞态：这里的 settings 是"刚点完
@@ -252,35 +255,53 @@ async function main() {
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
   await waitFor(`!!document.querySelector('#cx-list [data-cx-id]')`);
   await sleep(700);
-  /** 点一行 + 同一同步块里读「容器子项 / `#cx-body` / 左列子项」三处的动画 */
+  /* ⚠️ 必须**轮询等到"工具打开那一次"错峰自己收手**再往下走：隐藏窗口里 animationend 不来，
+     类只能等 cascadeIn 的兜底定时器（maxDelay 500 + 2000ms）摘；不干净的基线上
+     `#cx-root` 的子项还挂着 `lk-wake`（且类还在），★13/★14 的"不许有整块错峰"就会被它误判 ——
+     实测踩到（第一次跑 ★13 报 `stagger:true` + 子项 lk-wake）。同 codex-smooth-switch 的 ★0 做法。 */
+  const cleanBase = `(() => { const r = document.querySelector('#cx-root');
+    return !!r && !r.classList.contains('lk-enter-stagger')
+      && [...r.children].every((c) => !c.style.animationDelay)
+      && [...r.children].every((c) => c.getAnimations().length === 0); })()`;
+  for (let i = 0; i < 24; i++) { if (await ev(cleanBase)) break; await sleep(250); }
+  /** 点一行 + 同一同步块里读「容器子项 / 左列子项 / 内容区行级转场」三处。
+   *  ⚠️ CSS 动画与 WAAPI 动画都出现在 `getAnimations()` 里，用 `animationName` 区分：
+   *  有名字的是 CSS 类动画（`lk-wake` 那套，这里**不许**有），没名字的是 `el.animate()` 建的行级转场。 */
   const swapProbe = (clickExpr) => ev(`(() => {
     ${clickExpr}
     const map = (els) => [...els].map((el) => el.getAnimations().map((a) => ({ name: a.animationName, dur: a.effect.getTiming().duration, delay: a.effect.getTiming().delay, state: a.playState })));
     const root = document.querySelector('#cx-root');
     const list = document.querySelector('#cx-list');
-    if (!root || !list) return { missing: true };
+    const body = document.querySelector('#cx-body');
+    if (!root || !list || !body) return { missing: true };
+    const rows = [...body.querySelectorAll('[data-cx-row], #cx-props .ed-props > *')].filter((el) => !el.closest('.lk-cx-ghost'));
     return {
       root: map(root.children).filter((x) => x.length),
       list: map(list.children).filter((x) => x.length),
       stagger: root.classList.contains('lk-enter-stagger'),
-      body: (document.querySelector('#cx-body')?.getAnimations() ?? []).filter((a) => a.animationName)
-        .map((a) => ({ name: a.animationName, dur: a.effect.getTiming().duration, state: a.playState })),
+      ghost: !!body.querySelector('.lk-cx-ghost'),
+      bodyCssAnims: body.getAnimations().filter((a) => a.animationName).map((a) => a.animationName),
+      rowN: rows.length,
+      rowAnims: rows.reduce((n, el) => n + el.getAnimations().filter((a) => !a.animationName).length, 0),
+      rowDelays: rows.map((el) => el.getAnimations().filter((a) => !a.animationName).map((a) => a.effect.getTiming().delay)).filter((x) => x.length),
     };
   })()`);
   const a6 = await swapProbe(`document.querySelector('#cx-list .ed-tnode-item[data-act="node"]').click();`);
   /* 用户 2026-09-13：「从事件节点切换到实体节点时，事件节点保持选中状态，**且面板刷新**」
      ⇒ 换类别现在只重造 `#cx-body` 那一块（见 codex.ts 的 mountBody），整块错峰不该再出现。
-     整块错峰的**节奏**断言由 ★1/★8（切工具）覆盖 —— 那条路仍然整块重建。 */
-  check('★13 工作台换类别（设定条目 → 时间线节点）**不重播整块错峰**，内容区只播一次 lk-swap 淡入',
+     整块错峰的**节奏**断言由 ★1/★8（切工具）覆盖 —— 那条路仍然整块重建。
+     换内容的动效本身改成**行级转场**（旧内容幽灵往左退 → 新内容从右淡入，一行比一行晚 10ms），
+     参数与设置旋钮由 `tools/e2e/codex-swap-motion.cjs` 细查，这里只守"接力棒交到了它手上"。 */
+  check('★13 工作台换类别（设定条目 → 时间线节点）**不重播整块错峰**，改播行级转场（幽灵层 + 行动画）',
     !a6.missing && a6.root.length === 0 && a6.list.length === 0 && a6.stagger === false
-      && a6.body.length === 1 && a6.body[0].name === 'lk-swap' && a6.body[0].state === 'running' && a6.body[0].dur === 320, a6);
+      && a6.bodyCssAnims.length === 0 && a6.ghost === true && a6.rowAnims > 0, a6);
 
   await sleep(700);
   const a7 = await swapProbe(`document.querySelector('#cx-list [data-cx-id]').click();`);
   const backName = await waitFor(`!!document.querySelector('#cx-name')`);
-  check('★14 换回设定条目同样只换内容（无整块错峰 + 一次 lk-swap），且中栏真的换成实体版',
+  check('★14 换回设定条目同样只换内容（无整块错峰 + 行级转场），且中栏真的换成实体版',
     !a7.missing && a7.root.length === 0 && a7.list.length === 0 && a7.stagger === false
-      && a7.body.length === 1 && a7.body[0].name === 'lk-swap' && backName === true, { a7, backName });
+      && a7.bodyCssAnims.length === 0 && a7.ghost === true && a7.rowAnims > 0 && backName === true, { a7, backName });
 
   /* ── ⑦ 减少动效降级：DESIGN.md:159（关掉错峰，只留短淡入） ── */
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });

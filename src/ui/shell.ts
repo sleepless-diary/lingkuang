@@ -214,6 +214,7 @@ function renderTimelineTabs(store: Store): void {
 }
 
 function renderToolbar(store: Store): void {
+  bindPanelEvents();
   const bar = document.getElementById('lk-toolbar');
   const toolHost = document.getElementById('lk-tool-host');
   if (!bar || !toolHost) return;
@@ -231,9 +232,18 @@ function renderToolbar(store: Store): void {
     (manage.length ? `<div class="lk-tool-group is-bottom">${manage.map(btn).join('')}</div>` : '');
   bar.querySelectorAll('.lk-tool-btn').forEach((el) => {
     el.addEventListener('click', () => {
+      const id = (el as HTMLElement).dataset.tool!;
+      /* 面板型工具（设置）：**不碰主区** —— 不开模块视图、不隐藏沙盘，只开关那一层悬浮面板。
+         按钮高亮跟着"面板开着没开着"走（× / Esc / 点遮罩关掉时由 `lingkuang-panel` 同步）。 */
+      const t = all.find((x) => x.id === id);
+      if (t?.panel) {
+        if (t.isOpen?.()) t.close?.();
+        else openTool(id, document.getElementById('lk-module-view') as HTMLElement, store);
+        syncPanelButtons();
+        return;
+      }
       bar.querySelectorAll('.lk-tool-btn').forEach((b) => b.classList.remove('is-active'));
       el.classList.add('is-active');
-      const id = (el as HTMLElement).dataset.tool!;
       const moduleView = document.getElementById('lk-module-view');
       const toolHost = document.getElementById('lk-tool-host');
       const right = document.querySelector('.lk-right') as HTMLElement | null;
@@ -257,4 +267,25 @@ function renderToolbar(store: Store): void {
       }
     });
   });
+  syncPanelButtons();
+}
+
+/** 面板型工具（设置）的按钮高亮 = 那一层悬浮面板此刻开着没开着。
+ *  × / Esc / 点遮罩关掉时面板会广播 `lingkuang-panel`，这里跟着同步（不然按钮会一直亮着）。 */
+function syncPanelButtons(): void {
+  const bar = document.getElementById('lk-toolbar');
+  if (!bar) return;
+  for (const b of Array.from(bar.querySelectorAll<HTMLElement>('.lk-tool-btn'))) {
+    const t = listTools().find((x) => x.id === b.dataset.tool);
+    if (!t?.panel) continue;
+    b.classList.toggle('is-active', !!t.isOpen?.());
+  }
+}
+
+/* 只挂一次：`renderToolbar` 每次重建工具栏都会走一遍，重复注册会把同一个回调堆起来 */
+let panelEvtBound = false;
+function bindPanelEvents(): void {
+  if (panelEvtBound) return;
+  panelEvtBound = true;
+  window.addEventListener('lingkuang-panel', () => syncPanelButtons());
 }

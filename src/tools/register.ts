@@ -1,5 +1,6 @@
 /** 灵框 · 工具栏工具注册（全功能占位，功能逐个填） */
 import { registerTool } from './registry';
+import { isSettingsPanelOpen, closeSettingsPanel, openSettingsPanel } from '../ui/settings-panel';
 
 /** Lucide 风格图标（内联 SVG，线性） */
 const IC = {
@@ -77,10 +78,20 @@ export function registerAllTools(): void {
       return import('../ui/backup').then((m) => m.renderBackup(store, host));
     },
   });
+  /* 设置是**面板型**工具（`panel: true`）：点它不接管主区，自己挂一层悬浮面板 ——
+     用户 2026-09-13：「我希望设置面板是悬浮面板，而不是单开一个标签页」。
+     与别的工具不同，这里**静态 import**（不 `.then(import(...))`）：面板很轻（只依赖 settings.ts），
+     而左栏按钮的高亮要问它 `isOpen()`、再点一次要问它 `close()` —— 两者都需要一个同步的模块引用，
+     同时静态 + 动态 import 同一个模块只会让 Vite 报 "dynamic import will not move module into another
+     chunk" 的无效动态导入警告。 */
   registerTool({
     id: 'settings', name: '设置', icon: IC.settings, group: 'manage',
-    open(host, store) {
-      if (store) import('../ui/settings').then((m) => m.renderSettings(store, host));
+    panel: true,
+    isOpen: () => isSettingsPanelOpen(),
+    close: () => closeSettingsPanel(),
+    open(_host, store) {
+      if (!store) return;
+      return openSettingsPanel(store);
     },
   });
 }

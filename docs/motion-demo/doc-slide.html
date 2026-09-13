@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>换文件转场 · 演示（灵框）</title>
+<style>
+  /* 颜色/时长照抄 design-system/tokens.css，免得演示跟应用是两个世界 */
+  :root {
+    --bg: #c5c2ba; --surface: #cecbc7; --surface-2: #d6d3ca;
+    --fg: #3a3a34; --fg-2: #6b6a5f;
+    --border: rgba(58,58,52,0.16); --border-soft: rgba(58,58,52,0.10); --border-strong: rgba(58,58,52,0.30);
+    --accent: #9ec262; --accent-on: #20241c;
+    --text-xs: 12px; --text-sm: 13.5px; --text-base: 15px; --text-lg: 18px;
+    --radius-sm: 8px; --radius-lg: 12px;
+    --ease-standard: cubic-bezier(0.22, 0.75, 0.25, 1);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 26px 30px 80px; background: var(--bg); color: var(--fg);
+    font: var(--text-base)/1.6 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  }
+  h1 { font-size: 19px; margin: 0 0 6px; font-weight: 600; }
+  .sub { color: var(--fg-2); font-size: var(--text-sm); margin-bottom: 14px; max-width: 940px; }
+  .sub b { color: var(--fg); }
+  .bar {
+    display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;
+    padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-lg);
+    background: var(--surface); margin-bottom: 10px; max-width: 1040px;
+  }
+  button {
+    font: inherit; font-size: var(--text-sm); padding: 6px 14px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--fg); cursor: pointer;
+  }
+  button:hover { border-color: var(--fg-2); }
+  button.primary { background: var(--accent); color: var(--accent-on); border-color: transparent; }
+  button:disabled { opacity: .45; cursor: default; }
+  label { font-size: var(--text-sm); color: var(--fg-2); display: inline-flex; gap: 6px; align-items: center; }
+  input[type=range] { width: 110px; vertical-align: middle; }
+  fieldset { border: 1px solid var(--border-soft); border-radius: var(--radius-sm); padding: 6px 10px 8px; margin: 0; }
+  legend { font-size: var(--text-xs); color: var(--fg-2); padding: 0 4px; }
+  .vrow { display: flex; gap: 12px; align-items: center; font-size: var(--text-sm); }
+  .vrow .k { color: var(--fg-2); font-size: var(--text-xs); width: 52px; flex-shrink: 0; }
+  select { font: inherit; font-size: var(--text-sm); padding: 4px 6px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); color: var(--fg); }
+
+  /* ── 两种形态共用：舞台 ── */
+  .stage { position: relative; width: 620px; max-width: 100%; margin-top: 8px; }
+
+  /* A. 面板换页：**框不动**，只有框里的内容动，而且裁在框里（所以不会盖到左边那棵树） */
+  .panel {
+    position: relative; overflow: hidden; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius-lg);
+    transition: height 320ms var(--ease-standard);
+  }
+  .sheet { position: absolute; left: 0; top: 0; width: 100%; padding: 14px 16px 16px; transform-origin: 50% 100%; will-change: transform, opacity; }
+
+  /* B. 文档堆（原来的做法，留作对照）：裁掉外溢，只露一条边；左右留出移动空间 */
+  .clip { position: relative; overflow: hidden; height: 0; margin: 0 -170px; transition: height 320ms var(--ease-standard); }
+  .card {
+    position: absolute; left: 170px; top: 0; width: 620px; padding: 14px 16px 16px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    transform-origin: 50% 100%; will-change: transform;
+  }
+
+  /* 内容长相（两种形态共用） */
+  h2 { font-size: var(--text-lg); margin: 0 0 2px; font-weight: 600; }
+  .meta { font-size: var(--text-xs); color: var(--fg-2); margin-bottom: 10px; }
+  .row { display: flex; gap: 8px; align-items: baseline; font-size: var(--text-sm); margin-bottom: 5px; }
+  .row .k { width: 62px; flex-shrink: 0; color: var(--fg-2); font-size: var(--text-xs); }
+  .row .v { flex: 1; border-bottom: 1px solid var(--border-soft); padding-bottom: 2px; }
+  .doc { margin-top: 12px; border-top: 1px dashed var(--border-soft); padding-top: 10px; font-size: var(--text-sm); }
+  .doc .dh { font-size: var(--text-xs); color: var(--fg-2); margin-bottom: 6px; }
+  .tag { display: inline-block; font-size: var(--text-xs); padding: 1px 7px; border-radius: 9999px; border: 1px solid var(--accent); margin-left: 6px; }
+  .now { margin-top: 20px; font-size: var(--text-sm); min-height: 46px; max-width: 900px; }
+  .now b { background: var(--surface-2); padding: 0 4px; border-radius: 4px; font-weight: 600; }
+  .hint { color: var(--fg-2); font-size: var(--text-xs); max-width: 900px; }
+</style>
+</head>
+<body>
+  <h1>换文件时的转场 · 演示</h1>
+  <div class="sub">
+    对比两种方向：<b>A 面板换页</b> —— 面板那个框<b>不动</b>，只有框里的内容动，而且裁在框里头；
+    <b>B 文档堆</b> —— 原来的做法（整块面板移动 + 旋转 + 沉到下面 + 反向回位），留在这里当对照。
+    两种形态里，面板高度都会平滑长/缩 —— 这就是你在「设定」与「事件节点」之间切换时看到的那一下"跳"。
+  </div>
+
+  <div class="bar">
+    <button id="prev">← 上一条</button>
+    <button id="next" class="primary">下一条 →</button>
+    <button id="replay">重播这一次</button>
+    <button id="rush">快速连点 ×8</button>    <label>速度 <input id="speed" type="range" min="0.3" max="1.6" step="0.1" value="1"/> <span id="speedTxt">1.0×</span></label>
+    <label>错峰 <input id="stagger" type="range" min="0" max="60" step="5" value="10"/> <span id="staggerTxt">10ms</span></label>
+    <label>入场距离 <input id="enterDx" type="range" min="0" max="80" step="4" value="32"/> <span id="enterDxTxt">32px</span></label>
+    <label><input id="smoothH" type="checkbox" checked/> 面板高度平滑</label>
+    <label><input id="fadeIn" type="checkbox" checked/> 入场渐显（透明度）</label>
+    <div class="vrow">
+      <span class="k">形态</span>
+      <select id="mode">
+        <option value="frame">A 面板换页（框不动，推荐）</option>
+        <option value="stack">B 文档堆（原版，对照）</option>
+      </select>
+    </div>
+    <div class="vrow">
+      <span class="k">做法</span>
+      <select id="variant"></select>
+    </div>
+  </div>
+  <div class="hint" id="hint"></div>
+
+  <div class="stage" id="stage"></div>
+
+  <div class="now" id="now"></div>
+
+<script>
+/* 五条演示条目（三条设定 / 两条事件节点），高度故意差得多：约 499 / 302 / 331 / 302 / 302 */
+const DOCS = [
+  { kind: '设定', title: '银发少女', meta: '角色 · 测试世界观', fields: [['性别','女'],['种族','霜精灵'],['年龄','17'],['发色','银白'],['瞳色','冰蓝'],['身高','168'],['外貌','长发及腰，雪色'],['性格','寡言，认死理'],['能力','霜语'],['所属','守夜人'],['别名','北境的雪']],
+    doc: '雪原独行：她一个人走了很多天。雪没到膝盖，风从北边来。第一天她还数着脚印，第二天就不数了。第九天，她看见了远处的灯。' },
+  { kind: '事件', title: '王国的建立', meta: '主线 · 事件 · 327年1月1日', fields: [['时间','327年1月1日'],['精度','日'],['类型','世界事件'],['种类','事件'],['描述','安德希亚王国正式建国。']],
+    doc: '第一块基石落地。那天没有下雨。' },
+  { kind: '设定', title: '霜纹剑', meta: '物品 · 测试世界观', fields: [['材质','霜铁'],['来历','北境旧物'],['长度','三尺'],['状况','刃口有缺口'],['持有者','银发少女'],['别名','旧刃']],
+    doc: '剑身上有细密的霜纹。握久了，纹路会亮一下，像有人在里面呼吸。' },
+  { kind: '事件', title: '第一次魔潮', meta: '主线 · 事件 · 452年7月', fields: [['时间','452年7月'],['精度','月'],['类型','世界事件'],['种类','事件'],['描述','魔潮从北境涌来。']],
+    doc: '整片森林被冻住了。幸存者说，风里带着铁锈味。' },
+  { kind: '设定', title: '雪原驿站', meta: '地点 · 测试世界观', fields: [['所属区域','北境'],['规模','小'],['气候','常年风雪'],['描述','通往北境前有人烟的地方。'],['别名','三盏灯']],
+    doc: '驿站里只有一盏灯还亮着。掌柜不问来客的名字，只问要不要热水。天亮之前，风会停一小会儿。' },
+];
+
+/* 做法清单：frame = 框不动，只动内容；stack = 整块面板移动（原版） */
+const VARIANTS = {
+  frame: [
+    { id: 'P', name: 'P 逐行入位（你说的那版）', tip: '框和整页**都不动**。**先**出场：每行 不透明度 100 → 0 + 位置往左 32px，曲线**慢到快**；出场走完**再**入场：每行 不透明度 0 → 1 + 位置从右边 32px 滑回原位，曲线**快到慢**。两边都是每行比上一行晚 10ms。连点：一轮演完整，点在看入场的时候会接着演"刚进来那份的出场"。' },
+    { id: 'D', name: 'D 推移（整页翻页）', tip: '整页向左推出框外，下一页紧跟着从右边推进来；框里的行再做一次错峰。对照用：整页一推，行的那点位移就看不出了。' },
+    { id: 'E', name: 'E 纵深', tip: '旧内容原地微微缩进去并淡出；新内容从 1.5% 放大落定（动得最少），行同样在落定过程中一个个显形。' },
+    { id: 'F', name: 'F 只滑不淡（对照）', tip: '框和页面都不动，每一整行从右边 200px 处滑进来，错峰 —— 但没有透明度变化。对比 P：有渐显的版本柔得多。' },
+    { id: 'G', name: 'G 轻倾角', tip: '你原来的想法收小：上页左移 40px + 1.4° 淡出，下页晚 140ms 从右推入。' },
+    { id: 'H', name: 'H 沉到下面（你的原版，收小）', tip: '内容左移 60px + 1.6° → 图层沉到下面 → 反向回位，在下一张底下留 13px 一条边。' },
+  ],
+  stack: [
+    { id: 'A', name: 'A 原版大动作', tip: '整块面板左移 20% 宽 + 2.8° → 沉下去 → 反向回位；新的一块从右下滑上来。' },
+    { id: 'B', name: 'B 沉下去不回位', tip: '同上，但出场那块转完就停在旁边。' },
+    { id: 'C', name: 'C 只平移不旋转', tip: '整块面板平移，不转。' },
+  ],
+};
+
+const SLIVER = 13;
+const stage = document.getElementById('stage');
+let mode = 'frame';
+let variant = 'P';
+let cur = 0, prevDoc = null;
+let last = null;                          /* 上一次演的那一轮 { from, to }，给"重播"用 */
+
+const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+const speed = () => Number(document.getElementById('speed').value);
+const smoothH = () => document.getElementById('smoothH').checked;
+const fadeIn = () => document.getElementById('fadeIn').checked;
+const D = (ms) => Math.max(40, Math.round(ms / speed()));
+const staggerMs = () => Number(document.getElementById('stagger').value);
+const enterDx = () => Number(document.getElementById('enterDx').value);
+const EASE = 'cubic-bezier(0.22, 0.75, 0.25, 1)';
+/** 渐显用的曲线：**快到慢**（expo-out —— 一开始几乎立刻出现大半，尾巴慢慢收干净） */
+const EASE_OUT = 'cubic-bezier(0.16, 1, 0.3, 1)';
+/** 出场用的曲线：**慢到快**（就是上面那条的镜像：(0.7,0,0.84,0)） */
+const EASE_IN = 'cubic-bezier(0.7, 0, 0.84, 0)';
+const say = (html) => { document.getElementById('now').innerHTML = html; };
+const layerOf = (i) => stage.firstElementChild.children[i];   /* 第 i 条的 DOM（sheet 或 card） */
+
+function contentHtml(d) {
+  return `<h2>${d.title}${d.kind === '事件' ? '<span class="tag">事件节点</span>' : ''}</h2>
+    <div class="meta">${d.meta}</div>
+    ${d.fields.map(([k, v]) => `<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('')}
+    <div class="doc"><div class="dh">正文（Markdown · 失焦自动保存）</div>${d.doc}</div>`;
+}
+
+function build() {
+  const list = VARIANTS[mode];
+  if (!list.some((v) => v.id === variant)) variant = list[0].id;
+  const sel = document.getElementById('variant');
+  sel.innerHTML = list.map((v) => `<option value="${v.id}"${v.id === variant ? ' selected' : ''}>${v.name}</option>`).join('');
+
+  const cls = mode === 'frame' ? 'sheet' : 'card';
+  const box = mode === 'frame' ? '<div class="panel" id="box"></div>' : '<div class="clip" id="box"></div>';
+  stage.innerHTML = box;
+  const boxEl = document.getElementById('box');
+  DOCS.forEach((d) => {
+    const el = document.createElement('div');
+    el.className = cls;
+    el.innerHTML = contentHtml(d);
+    boxEl.appendChild(el);
+  });
+  prevDoc = null;
+  layout(false);
+}
+
+function layout(animate) {
+  /* 只有"文档堆"和 H 才留一条边；面板换页时旧内容必须收干净，否则会跟新内容叠影 */
+  const keepStrip = mode === 'stack' || variant === 'H';
+  DOCS.forEach((_, i) => {
+    const el = layerOf(i);
+    /* ⚠️ 摆位之前先把这张页（连同子孙）身上残留的动画清掉：
+       `fill: forwards` 的动画会**压住行内样式**，否则会出现"旧的一页还亮着、位置对不上"这种
+       脏状态（实测踩到：两张页同时 op=1/z=100，而且旧的还盖在新的上面）。 */
+    const clear = (root) => {
+      root.getAnimations().forEach((a) => { try { a.cancel(); } catch (e) {} });
+      root.querySelectorAll('*').forEach((x) => x.getAnimations().forEach((a) => { try { a.cancel(); } catch (e) {} }));
+    };
+    clear(el);
+    if (i === cur) { el.style.zIndex = '100'; el.style.transform = 'translate(0px, 0px) scale(1)'; el.style.opacity = '1'; }
+    else if (i === prevDoc && keepStrip) { el.style.zIndex = '99'; el.style.transform = `translate(0px, ${SLIVER}px) scale(0.985)`; el.style.opacity = '1'; }
+    else { el.style.zIndex = '90'; el.style.transform = `translate(0px, ${SLIVER * 3}px) scale(0.96)`; el.style.opacity = '0'; }
+  });
+  sizeBox(animate);
+  document.getElementById('hint').textContent =
+    `${VARIANTS[mode].find((v) => v.id === variant).tip}` +
+    `　｜　第 ${cur + 1} / ${DOCS.length} 条 · 面板可见高 ${Math.round(boxH())}px` +
+    (mode === 'stack' ? ` · 底下露一条边的是「${prevDoc === null ? '（还没有）' : DOCS[prevDoc].title}」` : '');
+}
+
+/** 面板高度 = 最上面那张的高度（+ 露出来的一条边） */
+const boxH = () => {
+  const h = layerOf(cur).offsetHeight;
+  const strip = (mode === 'stack' || variant === 'H') && prevDoc !== null ? SLIVER : 0;
+  return h + strip;
+};
+
+/** 高度平滑：从当前高度过渡到新高度（"跳一下"要修的就是这一下） */
+function sizeBox(animate) {
+  const box = document.getElementById('box');
+  const h = boxH();
+  if (!animate || !smoothH() || reduced()) { box.style.transition = 'none'; box.style.height = h + 'px'; return; }
+  const from = box.offsetHeight;
+  box.style.transition = 'none';
+  box.style.height = from + 'px';
+  void box.offsetHeight;                       /* 强制重排，让起点生效 */
+  box.style.transition = `height ${D(320)}ms ${EASE}`;
+  box.style.height = h + 'px';
+}
+
+/* ⚠️ `fill: 'both'`（不是 'forwards'）：延迟期间也套用**第一帧**。
+   否则"先出场再入场"这种带延迟的动画，会在等待那段时间里以**正常不透明度**显示出来 ——
+   看起来就是"下一张的文字先出现，然后才开始演入场动画"（用户 2026-09-13 报的）。
+   'both' = backwards（延迟期间用第一帧）+ forwards（结束后保持最后一帧）。 */
+const anim = (el, frames, ms, delay) => el.animate(frames, { duration: D(ms), delay: delay ? D(delay) : 0, easing: EASE, fill: 'both' });
+const wait = (ms) => new Promise((r) => setTimeout(r, D(ms)));
+
+/** 「入场本身就是错峰的」：新内容的每一行比最终位置**多带 dx 像素**（在右边），
+ *  归零的时间比上一行晚 step 毫秒 —— 而且是跟整页/整块的运动**同时跑**（同一个时间窗），
+ *  所以错峰发生在**从右往左进来的这个过程里**，不是等页面到位之后再单独弹一下。
+ *  ⚠️ 只走左右，**不走上下、也不动透明度**：
+ *    · 走上下 = 用户说的「上下出现了弹动」（还跟面板高度动画叠一起更晃）；
+ *    · 动透明度 = 会跟旧内容叠字（踩过）。
+ *  ⚠️ 延迟用**原值**，不跟速度滑块缩放 —— 否则标签写 10ms、实际 17ms（踩过）。 */
+const rowSlide = (el, dur, dx, base = 0) => [...el.querySelectorAll('h2, .meta, .row, .doc')]
+  .map((r, i) => r.animate([{ transform: `translateX(${dx}px)` }, { transform: 'none' }],
+    { duration: dur, delay: base + i * staggerMs(), easing: EASE, fill: 'both' }));
+
+/** 渐显：每一行**透明度 0 → 1**，曲线快到慢（EASE_OUT），比上一行晚 step 毫秒。
+ *  ⚠️ 不动位置（用户 2026-09-13：「看起来还是像入场时弹了一下，能不能加上透明度渐显入场啊」）——
+ *  位置只由整页推移 / 整块移动负责，行的错峰只体现在"谁先显形"。 */
+const fadeRows = (el, base = 0) => [...el.querySelectorAll('h2, .meta, .row, .doc')]
+  .map((r, i) => r.animate([{ opacity: 0 }, { opacity: 1 }],
+    { duration: D(240), delay: base + i * staggerMs(), easing: EASE_OUT, fill: 'both' }));
+
+/** 入场时的行错峰：勾了「入场渐显」= 渐显；取消勾选 = 换回"每行多带 dx 像素从右边归位"（看着像弹一下）。 */
+const rowEnter = (el, dur, base = 0, dx = 52) => (fadeIn() ? fadeRows(el, base) : rowSlide(el, dur, dx, base));
+
+/** ⭐ 用户亲口描述的目标效果（2026-09-13）：
+ *  「有两个关键帧 a 和 b，a 时不透明度为 0、位置在 b 位置的**右边**，b 时不透明度为 100，
+ *    曲线**快到慢**；每行都是这个动画，但是每行比上一行慢一点（错峰）」
+ *  ⇒ 这一条就是逐行入场，**框和整页都不动** —— 入场完全由行自己承担。
+ *  为什么之前都不对：整页一起推的时候，行自己那点位移会被整页运动盖住，只在收尾露一下（看着像"弹"）；
+ *  只给透明度不给位移，就变成一道自上而下的透明波（看着像"闪"）。 */
+const rowsCascade = (el, dur, dx = enterDx(), base = 0) => [...el.querySelectorAll('h2, .meta, .row, .doc')]
+  .map((r, i) => r.animate([{ opacity: 0, transform: `translateX(${dx}px)` }, { opacity: 1, transform: 'none' }],
+    { duration: dur, delay: base + i * staggerMs(), easing: EASE_OUT, fill: 'both' }));
+
+/** 出场：**同一个动画的镜像** —— 关键帧 a = 不透明度 100、原位；b = 不透明度 0、位置往**左**挪 dx。
+ *  曲线反过来：**慢到快**（EASE_IN = EASE_OUT 的镜像曲线），每行比上一行晚 step 毫秒。
+ *  ⚠️ 方向往左而不是往右：入场是从右边来的，出场如果也往右，两层字会在同一个位置叠着糊一会儿；
+ *  一进一出（左出右进）才是干净的一条流。 */
+const rowsLeave = (el, dur, dx = enterDx(), base = 0) => [...el.querySelectorAll('h2, .meta, .row, .doc')]
+  .map((r, i) => r.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `translateX(${-dx}px)` }],
+    { duration: dur, delay: base + i * staggerMs(), easing: EASE_IN, fill: 'both' }));
+
+/* ── 出场 / 进场 ──────────────────────────────────────────────────────── */
+async function playFrame(outEl, inEl, dir) {
+  const s = dir > 0 ? 1 : -1;
+  const done = [];
+  if (variant === 'P') {
+    /* ⭐ 你说的那版：框和整页都不动，入场全部交给行。
+       目标关键帧 a = 不透明度 0、位置在最终位置右边 dx；b = 不透明度 100、原位。曲线快到慢。 */
+    const dx = enterDx(), step = staggerMs();
+    /* ⚠️ 首尾相接，不是同时跑（用户 2026-09-13：「应该先出场再入场，顺序反了」）。
+       两边同时跑时，因为入场是"快到慢"（一上来就出现大半）、出场是"慢到快"（慢慢才走），
+       看起来就像入场先动、出场拖着 —— 顺序感是反的。
+       这里让入场的整体起始 = 出场的时长：第 i 行**刚走完，同一行的新内容立刻开始进**，
+       所以既没有两层字叠着，也没有一段空页。 */
+    const EXIT = D(300);
+    say(`<b>①</b> 旧内容**先**逐行出场：位置往左挪 ${dx}px、不透明度 100 → 0，曲线<b>慢到快</b>。<b>②</b> 出场走完，新内容**再**逐行入场：不透明度 0 → 1、位置从右边 ${dx}px 处滑回原位，曲线<b>快到慢</b>。两边都是每行比上一行晚 ${step}ms；框和整页都不动。`);
+    done.push(...rowsLeave(outEl, EXIT, dx));
+    done.push(...rowsCascade(inEl, D(300), dx, EXIT));
+  } else if (variant === 'D') {
+    /* 整页推移：两面**都不淡**（同时淡出 + 位移会让两张字叠在一起糊成一片），
+       两页并排一起走，框把两侧裁掉 —— 所以看着像一整页被推出去、下一页跟着上来。 */
+    say('<b>①</b> 这一页整页向左推出框外，下一页紧跟着从右边推进来（两面都不淡，不会有叠字）。');
+    done.push(anim(outEl, [{ transform: 'translateX(0%)' }, { transform: `translateX(${-100 * s}%)` }], 460));
+    done.push(anim(inEl, [{ transform: `translateX(${100 * s}%)` }, { transform: 'translateX(0%)' }], 460));
+  } else if (variant === 'G') {
+    const rot = variant === 'G' ? ` rotate(${-1.4 * s}deg)` : '';
+    const dx = 40;
+    say('<b>①</b> 这一页向左移 40px、带 1.4° 倾角，然后淡出。<b>②</b> 下一页晚 140ms 从右侧推入（它先是很淡的，落位时才实）。');
+    done.push(anim(outEl, [{ transform: 'none', opacity: 1 }, { transform: `translateX(${-dx * s}px)${rot}`, opacity: 0 }], 260));
+    done.push(anim(inEl, [{ transform: `translateX(${dx * s}px)rotate(${1.4 * s}deg)`, opacity: .25 }, { transform: 'none', opacity: 1 }], 380, 140));
+  } else if (variant === 'E') {
+    say('<b>①</b> 旧内容微微缩进去并淡出。<b>②</b> 新内容从 1.5% 放大落定（晚 60ms）。');
+    done.push(anim(outEl, [{ transform: 'scale(1)', opacity: 1 }, { transform: 'scale(0.985)', opacity: 0 }], 220));
+    done.push(anim(inEl, [{ transform: 'scale(1.015)', opacity: .35 }, { transform: 'scale(1)', opacity: 1 }], 340, 60));
+  } else if (variant === 'F') {
+    const step = staggerMs();
+    say(`<b>①</b> 旧内容淡出（框和页面本身不动）。<b>②</b> 每一整行从右边 200px 处滑进来，每行迟 ${step}ms —— **没有透明度变化**，用来跟 P 对比。`);
+    done.push(anim(outEl, [{ opacity: 1 }, { opacity: 0 }], 160));
+    done.push(anim(inEl, [{ opacity: 0 }, { opacity: 1 }], 200, 40));
+    done.push(...rowSlide(inEl, D(440), 200));
+  } else if (variant === 'H') {
+    const tilt = `translateX(${-60 * s}px) rotate(${-1.6 * s}deg)`;
+    say('<b>①</b> 内容向左移 60px、绕底边转 1.6°。<b>②</b> 图层沉到下面（发生在旁边，看不出跳）。<b>③</b> 反向回位，在下一张底下留一条边。');
+    await anim(outEl, [{ transform: 'none' }, { transform: tilt }], 260).finished;
+    outEl.style.zIndex = '99';
+    done.push(anim(outEl, [{ transform: tilt }, { transform: `translate(0px, ${SLIVER}px) scale(0.985)` }], 340));
+    done.push(anim(inEl, [{ transform: `translate(30px, ${Math.max(70, document.getElementById('box').offsetHeight - 40)}px)`, opacity: .5 }, { transform: 'none', opacity: 1 }], 480, 60));
+  }
+  /* 其它做法的行错峰：跟上面的运动**同时跑**（变体 F/P 自己就是"行担当入场"，不重复加） */
+  if (variant !== 'F' && variant !== 'P') done.push(...rowEnter(inEl, D(variant === 'D' ? 460 : variant === 'G' ? 380 : variant === 'E' ? 340 : 480), variant === 'G' ? 140 : variant === 'E' ? 60 : variant === 'H' ? 60 : 0));
+  await Promise.all(done.map((a) => a.finished));
+}
+
+async function playStack(outEl, inEl, dir) {
+  const dx = Math.round(outEl.offsetWidth * 0.20) * (dir > 0 ? -1 : 1);
+  const rot = variant === 'C' ? 0 : (dir > 0 ? -2.8 : 2.8);
+  const tilt = `translate(${dx}px, 6px) rotate(${rot}deg)`;
+  outEl.style.zIndex = '120';
+  say(`<b>①</b> 整块往${dir > 0 ? '左' : '右'}移 ${Math.abs(dx)}px 并转 ${Math.abs(rot)}°。<b>②</b> 沉到下一张下面。<b>③</b> 反向回位（露一条边）。`);
+  await anim(outEl, [{ transform: outEl.style.transform }, { transform: tilt }], 260).finished;
+  outEl.style.zIndex = '99';
+  if (variant !== 'B') await anim(outEl, [{ transform: tilt }, { transform: `translate(0px, ${SLIVER}px) scale(0.985)` }], 340).finished;
+  const y0 = Math.max(70, document.getElementById('box').offsetHeight - 40);
+  const x0 = Math.round(inEl.offsetWidth * 0.24) * (dir > 0 ? 1 : -1);
+  const rot0 = variant === 'C' ? 0 : (dir > 0 ? 2.6 : -2.6);
+  inEl.style.zIndex = '100';
+  say('<b>④</b> 新的一块从斜下方升上来，落到最上面（每一行比上一行晚一点点归位，错峰在这个上升过程里）。');
+  const settle = rowEnter(inEl, D(520));
+  await Promise.all([anim(inEl, [{ transform: `translate(${x0}px, ${y0}px) rotate(${rot0}deg)`, opacity: .6 }, { transform: 'none', opacity: 1 }], 520).finished,
+    ...settle.map((a) => a.finished)]);
+}
+
+/** 清掉**全部页（连同子孙行）**身上的动画。
+ *  ⚠️ 不能只用 `getAnimations({subtree:true})`：实测这个 Electron 里它没收进子孙（剩 11 个），逐层遍历最稳。 */
+function clearAllAnims() {
+  const clear = (root) => {
+    root.getAnimations().forEach((a) => { try { a.cancel(); } catch (e) {} });
+    root.querySelectorAll('*').forEach((el) => el.getAnimations().forEach((a) => { try { a.cancel(); } catch (e) {} }));
+  };
+  DOCS.forEach((_, i) => clear(layerOf(i)));
+}
+
+/* ── 快速连点：一轮循环演完整，点击只改目的地 ─────────────────────────────
+   用户 2026-09-13 定的规矩（原话）：
+   「完整动画其实入场和出场是一体的，当执行入场动画时用户点击就执行出场动画，否则就停下」
+   ⇒
+   ① 一轮 = **出场 → 入场**（一体）。再快也要演，**不做"瞬间切"**，也不取消正在演的动画；
+   ② 点在看**出场**阶段 → 只把"要去哪张"记下来（want），这轮演完直接进最新那个（不另起动作 =「否则就停下」）；
+   ③ 点在看**入场**阶段 → 说明刚进来的这份又要走 ⇒ 这轮结束后**接着演它的出场**，再进新目的地
+      （=「执行入场动画时用户点击就执行出场动画」）；
+   ④ 永远"最后一次点击说了算"：`want` 会被后来的点击覆盖。 */
+let want = null;        /* 用户最后点的目的地（null = 没有新要求） */
+let running = false;    /* 循环是否在跑 */
+
+/** 点某个目的地（左栏点条目 / 上一条下一条都走这里） */
+function request(idx) {
+  if (idx === cur && !running) return;     /* 点的就是现在这份：什么都不做 */
+  want = idx;
+  if (!running) drive();
+}
+
+/** 一轮 = 出场（from）→ 入场（to）。变体 P 就是这个形状；别的变体是"一次性演完"，同样只演一轮。 */
+async function playOne(fromIdx, toIdx) {
+  const outEl = layerOf(fromIdx), inEl = layerOf(toIdx);
+  const dir = toIdx > fromIdx ? 1 : -1;
+  prevDoc = fromIdx; cur = toIdx;          /* 顺序先改：动画只负责演出来，终点由 layout 落实 */
+  if (mode === 'frame') {
+    inEl.style.zIndex = '100';
+    inEl.style.opacity = '1';
+    /* ⚠️ 进场这一页**先摆到最终位置**再演：它此刻还带着上一轮的候场姿势（缩到 0.96、往下偏 39px），
+       如果就这么演，行的动画是在歪掉的位置上跑的，等演完 layout() 才摆正 ⇒ 最后会"啪"地瞬移一下
+       （用户 2026-09-13 报的「最后动画停留的位置和文字最后显示的位置之间会瞬移一下」）。
+       变体自己会动这一页的（D/G/E/H）不受影响：它们的第一帧会盖过这里的行内值。 */
+    inEl.style.transform = 'translate(0px, 0px) scale(1)';
+    sizeBox(true);                         /* 高度与内容同时开始动 */
+    await playFrame(outEl, inEl, dir);
+  } else {
+    outEl.style.transform = 'translate(0px, 0px) scale(1)';
+    inEl.style.opacity = '1';
+    const p = playStack(outEl, inEl, dir);
+    sizeBox(true);
+    await p;
+  }
+}
+
+/** 循环：只要还有"没去过的新目的地"就再来一轮（每轮都完整演出来） */
+async function drive() {
+  running = true;
+  let from = cur;
+  while (want !== null && want !== cur) {
+    const to = want; want = null;
+    from = cur;
+    if (reduced()) {                       /* 系统"减少动效"：直接换，不演 */
+      say('系统开了"减少动效"：直接换，不播动画。');
+      prevDoc = from; cur = to; clearAllAnims(); layout(true);
+    } else {
+      await playOne(cur, to);
+    }
+    last = { from, to };
+  }
+  running = false;
+  clearAllAnims();
+  layout(true);
+}
+
+/* 上一条 / 下一条：目的地要接在"还没去成的那个"后面 —— 连点下一条才是每次 +1 而不是原地打转 */
+async function step(delta) {
+  const base = want !== null ? want : cur;
+  request((base + (delta > 0 ? 1 : DOCS.length - 1)) % DOCS.length);
+}
+
+/* ── 控件 ── */
+document.getElementById('next').addEventListener('click', () => step(1));
+document.getElementById('prev').addEventListener('click', () => step(-1));
+document.getElementById('rush').addEventListener('click', () => {
+  /* 45ms 一次连点 8 次 = 人手达不到的连点压测：每一轮都完整演出来，最后停在"往后 8 张"，不留任何动画对象 */
+  for (let i = 0; i < 8; i++) setTimeout(() => step(1), i * 45);
+});
+document.getElementById('replay').addEventListener('click', () => {
+  if (!last) return;
+  cur = last.from; prevDoc = null;
+  clearAllAnims(); layout(false);
+  want = null; running = false;
+  setTimeout(() => request(last.to), 120);
+});
+document.getElementById('speed').addEventListener('input', (e) => {
+  document.getElementById('speedTxt').textContent = Number(e.target.value).toFixed(1) + '×';
+});
+document.getElementById('stagger').addEventListener('input', (e) => {
+  document.getElementById('staggerTxt').textContent = Number(e.target.value) + 'ms';
+});
+document.getElementById('enterDx').addEventListener('input', (e) => {
+  document.getElementById('enterDxTxt').textContent = Number(e.target.value) + 'px';
+});
+document.getElementById('smoothH').addEventListener('change', () => layout(false));
+document.getElementById('mode').addEventListener('change', (e) => {
+  mode = e.target.value; cur = 0; prevDoc = null; build();
+  say(mode === 'frame'
+    ? '面板换页：面板那个框不动（所以不会盖到左边的树），只有框里的内容动，而且裁在框里。'
+    : '文档堆：整块面板在移动 + 旋转 —— 这是原来的做法，对照用的。');
+});
+document.getElementById('variant').addEventListener('change', (e) => {
+  variant = e.target.value; layout(false);
+  say(VARIANTS[mode].find((v) => v.id === variant).tip);
+});
+document.getElementById('mode').value = mode;
+window.addEventListener('resize', () => layout(false));
+
+build();
+say('默认就是 P（你说的那版）：出场逐行往左淡出，然后入场逐行从右边滑进来 + 渐显，一行比一行晚 10ms。连点随便点 —— 每一轮都会完整演出来，只有最后一次点击决定去哪张。');
+</script>
+</body>
+</html>

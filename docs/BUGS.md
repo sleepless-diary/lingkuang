@@ -15,6 +15,82 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第二十二轮（2026-09-13 深夜）· 换条目转场落地 + 设置改成悬浮面板
+
+> **需求**（用户原话）：「算了，就这样吧，**直接落地吧**，相关设置写入设置面板，对了，
+> **我希望设置面板是悬浮面板，而不是单开一个标签页**」。
+> 半句是"把演示页里谈定的转场做进应用 + 把旋钮放进设置"，后半句是"设置不能再顶掉主区"。
+> 转场的规格是用户在 `docs/motion-demo/doc-slide.html`（演示页，随本轮一起入库当规格档）里
+> 逐轮谈出来的，落地时逐条对应他的原话 —— 完整清单见 `docs/ARCHITECTURE.md` 的「动效」一节。
+
+### 一、换条目转场（做法 P）
+
+- **实现**：`src/ui/motion.ts` 新增 `rowsLeave(rows, {dx, step, dur})` / `rowsEnter(rows, {dx, step, dur, start})`
+  （Web Animations API，`fill:'both'`）；`src/ui/codex.ts` 新增 `playSwap(body, prevHtml)` +
+  `snapshotForSwap(body)` + `dropGhost()` + `rowsOf(root, skipGhost)`，`swapBody(animate = true)` 与
+  `mountBody(prevHtml, animate)` 两条路都演；行由 `data-cx-row` 标出（实体：名字行 / 版本注 / 每个字段行 /
+  正文块；节点：面包屑 + `#cx-props .ed-props > *` + 正文块）。CSS 只在 `src/style.css` 加了一条
+  `.lk-cx-ghost`（`position:absolute; inset:0; padding:12px; overflow:hidden; pointer-events:none`）。
+- **参数**（默认值 = 用户在演示页里点头的那套）：出场 `1/原位 → 0/translateX(-32px)`，
+  `cubic-bezier(0.7,0,0.84,0)`（慢→快），300ms；入场 `0/translateX(32px) → 1/原位`，
+  `cubic-bezier(0.16,1,0.3,1)`（快→慢），300ms，**整体延后 300ms**（先出后进）；每行 +10ms 错峰。
+- **四个旋钮**（设置面板「换条目转场」卡片，改完立刻生效）：`motionSwap` 开 / `motionSpeed` 1× /
+  `motionStagger` 10ms / `motionEnterDx` 32px；关掉＝瞬时换（真的不做动画）。减少动效偏好下退化成
+  `.lk-swap-in` 一次短淡入（DESIGN.md:159）。
+
+**自己写出来的三个坑（都已在代码里写清理由）**：
+
+1. **`rowsOf` 的排除条件把幽灵的每一行也滤掉了**：`el.closest('.lk-cx-ghost')` 对幽灵内部的行**恒为真**
+   ⇒ `exits` 是空数组 ⇒ `Promise.all([]).then(kill)` **立刻 resolve** ⇒ 幽灵当场被收掉。现象是
+   「幽灵层存在过一瞬，读不到」——套件 ★1/★3 就是这么 FAIL 的（`ghost:false, outN:0`），
+   而入场动画一切正常。修法：`rowsOf(root, skipGhost = true)`，扫 `#cx-body` 时排除、扫幽灵时传 `false`。
+2. **`getKeyframes()` 里的数值是字符串**（`'1'`/`'0'`）：断言写 `kf[0].o === 1` 会**假挂**。
+   两个套件都踩了（`codex-swap-motion` ★3/★4、`codex-smooth-switch` ★9），统一 `String(...)` 比。
+3. **快照会把上一轮的幽灵一起拍进去**：幽灵也是 `#cx-body` 的子元素。第一版让"有幽灵时复用旧幽灵、
+   不取新快照"，结果换类别走 `mountBody()` 时 `body.innerHTML = …` 会把旧幽灵**连 DOM 一起换掉**，
+   而 `swapGhost` 还指着它 ⇒ 下一轮既没幽灵也没快照（`ghost:false`，只有入场）。
+   改成：`snapshotForSwap()` **先 `dropGhost()` 再取 innerHTML**，`playSwap()` 开头也先收掉上一轮那层 ——
+   「一轮只演一层：拿当前看得见的那份内容去演」，与演示页里那个循环模型一致；连点三下只留一层
+   （`codex-swap-motion` ★11）。
+
+### 二、设置改成悬浮面板（`Tool.panel`）
+
+- 以前「设置」是普通工具：点它＝`#lk-module-view` 把主区整个换掉，改完还得切回来。
+  现在 `src/tools/registry.ts` 的 `Tool` 多了 **`panel?: boolean`**，`openTool` 见到面板型工具
+  **完全不碰主区**（不结算当前工具、不摘格子、不写 `#lk-module-view`），把它自己的悬浮层
+  （`src/ui/settings-panel.ts`，挂 `document.body`、`position:fixed`）交给它自己管；
+  清理函数单独存在 `disposePanel` 里（与 `disposeCurrent` 分开：**开设置不该把主区的工具关掉**）。
+- 关法三种（× / Esc / 点遮罩空白），打开与关闭都广播 `lingkuang-panel`；`src/ui/shell.ts` 的
+  `syncPanelButtons()` 据此同步左栏那个按钮的高亮 —— 再点一次按钮＝关（按钮是开关）。
+- `src/ui/settings.ts` 的 `renderSettings(store, host)` 改名 `renderSettingsInto(host, store)`
+  （宿主由悬浮层提供，它自己管尺寸与滚动），面板头部的「设置」由面板给，表单里原来那一行标题删掉。
+- **`settings-panel.ts` 在 `register.ts` 里是静态 import**：左栏高亮要同步问它 `isOpen()`，
+  同时静态 + 动态 import 同一模块会让 Vite 报 `INEFFECTIVE_DYNAMIC_IMPORT`（无效动态导入）警告。
+
+### 三、连带改掉的测试
+
+- `tools/e2e/motion-switch.cjs`：★7 原来点 `settings`（它已经不会切工具了）⇒ 换成 `schema`；
+  ★13/★14 的反向守卫改成"内容区改播**行级 WAAPI 动画**"（`animationName` 为空的那批）；
+  并在换类别之前**轮询等上一轮工具打开的错峰收手**（不干净的基线上 `#cx-root` 子项还挂着 `lk-wake`，
+  实测让 ★13 假挂一次）。
+- `tools/e2e/toolbar-groups.cjs`：★3 改成断言"悬浮面板 + 主区 HTML 未变"，新增 ★3b（再点＝关）。
+- `tools/e2e/codex-tree-view.cjs`：★18 顺带断言设置是悬浮层、工作台那棵树没被顶掉，新增 18b。
+- 新增 **`tools/e2e/codex-swap-motion.cjs`（14 项）** 与 **`tools/e2e/settings-panel.cjs`（12 项）**，
+  两者都做过 A/B（改动前分别 **6/14** 与 **4/12** FAIL，断言有判别力）。
+
+### 验证（二十二）
+
+- `codex-swap-motion` **14/14**（A/B 改动前 6 FAIL）；`settings-panel` **12/12**（A/B 4/12）；
+- 回归全绿：`codex-smooth-switch` 18/18、`motion-switch` 25/25、`toolbar-groups` 5/5、
+  `codex-node-tab` 18/18、`codex-tree-view` 22/22、`workbench-tree-folders` 29/29、
+  `entity-evolution` 38/38、`codex-switch-target` 7/7、`data-load-clean` 6/6、
+  `kind-change-stale-file` 11/11、`entity-vault` 17/17 + `cold-start-entity-vault` PASS、
+  `startup-materialize-entity` 6/6；`tsc --noEmit` / `vite build` exit 0。
+- ⚠️ 视觉取证受限：`Page.captureScreenshot` 在隐藏窗口（`LINGKUANG_TEST_WINDOW_NOFOCUS=1`，实测
+  `Page.bringToFront` 也救不回来，`visibilityState` 仍是 `hidden`）里**抓不到中间帧** ——
+  动画要么停在 0、要么被出帧一次性推到底。所以转场的证据是**参数级断言 + 演示页**（用户自己在
+  可见的 Edge 窗口里看过并点头），不是截图。
+
 ## 第二十一轮（2026-09-13）· 演变：实体的版本历史（新功能 + 两条自查出来的 bug）
 
 > **目的**（用户 2026-09-12 提、09-13 细化）：给每个世界一套 git ——
