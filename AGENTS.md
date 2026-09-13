@@ -18,7 +18,7 @@
 - `preload.js`：contextBridge 安全桥
 - `src/main.ts`：渲染进程入口（Vite）
 - `src/calendar.ts`：**历法系统**（`Calendar`/`toEpoch`/`fromEpoch`/`buildYearTable`，默认公历）
-- `src/store/`：数据层（`store.ts` 单一数据源 + 订阅、`actions.ts` 修改入口、`types.ts` 领域类型）
+- `src/store/`：数据层（`store.ts` 单一数据源 + 订阅、`actions.ts` 修改入口、`types.ts` 领域类型、`ids.ts` **id 生成** —— 一切 id 走 `uid(prefix)`，**不许手写 `'x' + Date.now()`**：同一毫秒里连建多个会撞 id、后建的把先建的覆盖掉）
 - `src/tools/`：工具栏工具注册（`registry.ts` + `register.ts`）
 - `src/ui/shell.ts`：壳 UI（世界栏 + 工具栏 + 沙盘 + 工具宿主）
 - `src/ui/timeline.ts`：**世界沙盘时间线**（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针）

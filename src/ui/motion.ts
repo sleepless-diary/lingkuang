@@ -193,6 +193,90 @@ export function rowsEnter(rows: HTMLElement[], o: RowMotionOpts = {}): Animation
   return anims;
 }
 
+/* ── 列表增删重排（工作台左树）────────────────────────────────────────────────────────────
+   用户 2026-09-13：「新建实体和节点时**不是硬切换**，而是从左侧滑入（就像正文的入场一样），
+   其下的所有节点都**向下平滑移动**（删除时也一样），展开文件夹时文件**向下弹出**」。
+   三件事对应下面三个函数：
+    · 新出现的那一行 → `rowSlideIn`（只有左右位移 + 渐显）；
+    · 其余那些"位置变了"的行 → `flipRows`（FLIP：先瞬移回旧位置，再滑到新位置）；
+    · 展开文件夹露出来的那些行 → `rowsDropIn`（从上方一点落下来）。
+   为什么必须用 WAAPI：左树每次重画都是 `innerHTML` 整块换掉（`src/ui/codex.ts` 的 `renderList()`），
+   元素是**新建**的、没有"旧位置"这个概念，CSS transition / keyframes 都表达不了。 */
+
+/** **FLIP**：行增删之后，让还在的那些行从**旧位置**滑到新位置（＝其下的行平滑让位，删除时向上让位）。
+ *
+ *  `rows` / `keys` / `tops` 三个数组按下标对齐（`tops[i]` = 第 i 行现在相对容器的 top）；
+ *  `prev` = **上一次**布局的 key → 相对 top。只有两次都在的行才动。
+ *  位移太小（<1.5px，等于没动）或太大（>240px，那是整棵树换了形态）都不演 —— 后者演出来像乱飞。
+ *  `fill:'none'`：动画期间显示插值，结束自然落在新位置（不需要清理，也不需要 `fill:'forwards'`）。 */
+export function flipRows(rows: HTMLElement[], keys: string[], tops: number[], prev: Map<string, number>, o: { dur?: number } = {}): Animation[] {
+  if (motionReduced()) return [];
+  const dur = o.dur ?? 320;
+  const anims: Animation[] = [];
+  rows.forEach((el, i) => {
+    const p = prev.get(keys[i]);
+    if (p === undefined) return;                       /* 新出现的行：由 rowSlideIn / rowsDropIn 负责 */
+    const delta = p - tops[i];
+    if (Math.abs(delta) < 1.5 || Math.abs(delta) > 240) return;
+    anims.push(el.animate([{ transform: `translateY(${delta}px)` }, { transform: 'none' }],
+      { duration: dur, easing: EASE_DECEL, fill: 'none' }));
+  });
+  autoRelease(anims, dur);
+  return anims;
+}
+
+/** 新出现的**一行**从左侧滑入（起点在终点左边 `dx`，往右落位）+ 渐显，快→慢。
+ *  只有**左右**位移：上下位移会被看成"弹了一下"（用户 2026-09-13 的原话）。 */
+export function rowSlideIn(el: HTMLElement | null, o: { dx?: number; dur?: number; delay?: number } = {}): Animation | null {
+  if (!el || motionReduced()) return null;
+  const dx = o.dx ?? 24;
+  const dur = o.dur ?? 320;
+  const delay = o.delay ?? 0;
+  const a = el.animate(
+    [{ opacity: 0, transform: `translateX(${-dx}px)` }, { opacity: 1, transform: 'none' }],
+    { duration: dur, delay, easing: EASE_DECEL, fill: 'both' }
+  );
+  autoRelease([a], delay + dur + 200);
+  return a;
+}
+
+/** 展开文件夹时，**被展开出来的那些行**从上方一点（`translateY(-dy)`）落下来 + 渐显，逐行小幅错峰。
+ *  （用户 2026-09-13：「展开文件夹时文件向下弹出」） */
+export function rowsDropIn(rows: HTMLElement[], o: { dy?: number; dur?: number; step?: number } = {}): Animation[] {
+  if (motionReduced()) return [];
+  const dy = o.dy ?? 8;
+  const dur = o.dur ?? 260;
+  const step = o.step ?? 22;
+  const anims = rows.map((el, i) =>
+    el.animate(
+      [{ opacity: 0, transform: `translateY(${-dy}px)` }, { opacity: 1, transform: 'none' }],
+      { duration: dur, delay: i * step, easing: EASE_DECEL, fill: 'both' }
+    )
+  );
+  autoRelease(anims, dur + step * rows.length + 200);
+  return anims;
+}
+
+/** 把**一个元素**演出场再从 DOM 里摘掉（删除条目时钉在原位淡出的幽灵层用）。
+ *  动画跑完（或兜底超时）后 `el.remove()` —— `rowsLeave` 本身只播不动 DOM。 */
+export function rowLeaveAndRemove(el: HTMLElement | null, o: RowMotionOpts = {}): void {
+  if (!el) return;
+  const anims = rowsLeave([el], o);
+  const kill = (): void => { el.remove(); };
+  if (!anims.length) { kill(); return; }   /* 减少动效：直接摘掉 */
+  Promise.all(anims.map((a) => a.finished)).then(kill).catch(kill);
+  window.setTimeout(kill, (o.dur ?? ROW_DUR) + (o.step ?? 10) + 400);
+}
+
+/** 量下容器里每个子项此刻**相对容器顶部**的 top（喂给 `flipRows` 的 `prev` / `tops`）。
+ *  用相对 top 而不是视口 top：`#cx-list` 会跟着 `#cx-root` 一起滚，视口坐标会把滚动量算进去。 */
+export function topsOf(container: HTMLElement | null): { els: HTMLElement[]; tops: number[] } {
+  if (!container) return { els: [], tops: [] };
+  const base = container.getBoundingClientRect().top;
+  const els = Array.from(container.children) as HTMLElement[];
+  return { els, tops: els.map((el) => el.getBoundingClientRect().top - base) };
+}
+
 /** 量下容器每个子项此刻的高度（**重建之前**调，结果喂给 `smoothHeights`）。
  *  高度只在"改 DOM 之前"才量得到旧值，所以是两步 API，不能合成一个函数。 */
 export function childHeights(container: HTMLElement | null): number[] {

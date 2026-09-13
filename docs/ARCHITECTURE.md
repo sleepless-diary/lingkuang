@@ -46,13 +46,14 @@
 | `src/ui/keys.ts` / `html.ts` | `isImeEnter(e)`（中文输入法回车守卫）/ `escapeHtml(s)`（外部文本进 innerHTML 前必过） |
 | `src/ui/alert.ts` | **壳级横幅**（`#lk-alerts` 通栏，`showShellAlert`/`removeShellAlert`/`hasShellAlert`）：放「必须被看见、且要用户做选择」的状态（数据文件判损、自动保存已暂停）。与编辑器内部的 `addHint` 不同 —— 那条活在编辑器工具里、切走就没了，这条挂壳上，任何工具下都在 |
 | `src/ui/schema.ts` | **结构体管理**面板（两个分区：**节点种类** / **实体类型**）。保存 → 节点种类写 `formats`（`formats.json`）或实体类型写 `worldsets[active].entityTypes` → 派发 `lingkuang-formats-changed`，由 `src/main.ts` 的 `ensureAllFormatFields` / `ensureEntityLayer` 补空值、清模板外的字段 |
-| `src/ui/motion.ts` | **动效层**（`enter(el, cls='lk-enter')` 重放入场 / `staggerIn(container)` 常驻错峰（页签栏）/ `cascadeIn(container, step, maxDelay, start)` 一次性错峰（工具打开、换页签、换条目）/ `stopCascade(container)` 取消一次性错峰（"这次不许播"的分支要显式调）/ `childHeights(container)` + `smoothHeights(container, before)` 高度平滑（重排类）/ `motionReduced()` / **`rowsLeave(rows, {dx, step, dur})` + `rowsEnter(rows, {dx, step, dur, start})`**（换条目的**行级转场**，Web Animations API：出场 `1/原位 → 0/往左 dx` 慢→快、入场 `0/从右 dx → 1/原位` 快→慢，逐行错峰，`fill:'both'` 保证延迟期间**不透明度为 0**；跑完 `autoRelease` 自己取消，隐藏窗口有兜底定时器））：keyframes 在 `src/style.css` 末尾「动效层」一节，时长走 `--motion-*` 令牌。⚠️ 只挂**显式切换**（切工具/开面板/换页签/弹窗），别挂 store 订阅触发的重渲染；⚠️ **不给整块容器挂**（会"洗白一下"且盖掉元素错峰） |
+| `src/ui/motion.ts` | **动效层**（`enter(el, cls='lk-enter')` 重放入场 / `staggerIn(container)` 常驻错峰（页签栏）/ `cascadeIn(container, step, maxDelay, start)` 一次性错峰（工具打开、换页签、换条目）/ `stopCascade(container)` 取消一次性错峰（"这次不许播"的分支要显式调）/ `childHeights(container)` + `smoothHeights(container, before)` 高度平滑（重排类）/ `motionReduced()` / **`rowsLeave(rows, {dx, step, dur})` + `rowsEnter(rows, {dx, step, dur, start})`**（换条目的**行级转场**，Web Animations API：出场 `1/原位 → 0/往左 dx` 慢→快、入场 `0/从右 dx → 1/原位` 快→慢，逐行错峰，`fill:'both'` 保证延迟期间**不透明度为 0**；跑完 `autoRelease` 自己取消，隐藏窗口有兜底定时器））：keyframes 在 `src/style.css` 末尾「动效层」一节，时长走 `--motion-*` 令牌。⚠️ 只挂**显式切换**（切工具/开面板/换页签/弹窗），别挂 store 订阅触发的重渲染；⚠️ **不给整块容器挂**（会"洗白一下"且盖掉元素错峰）。⭐ **左树增删的四个原语（2026-09-13）**：`rowSlideIn(el, {dx=24,dur=320,delay})`（新出现的行从**左侧**滑入 `translateX(-24px)/0 → none/1`）、`flipRows(rows, keys, tops, prev, {dur=320})`（**FLIP**：其余"位置变了"的行从旧位置 `translateY(旧-新) → none`，`fill:'none'`）、`rowsDropIn(rows, {dy=8,dur=260,step=22})`（展开文件夹露出来的行向下弹出）、`rowLeaveAndRemove(el, {dx:24,dur:260})`（被删那一行的幽灵演完自己 `remove()`）、`topsOf(container)`（量**相对容器顶部**的 top，避开页面滚动）。为什么必须 WAAPI：左树每次重画都是 `innerHTML` 整块换掉，元素是新建的、没有"旧位置"，CSS 表达不了 |
 | `src/ui/codex.ts` | **设定库 = 工作台**（合并方案 A 第 3 步 + 2026-09-13 的形态合并与左栏定型）：左列**一棵文件夹树**、中栏档案字段、右栏正文编辑器、右边缘演变帧条，外加**外部改动提示条**（`src/ui/vault-notice.ts`，见那一行）。节点中栏用 `src/ui/props-panel.ts`（与实体共用同一份）、实体用 `src/ui/fields.ts`、正文用 `src/ui/doc-editor.ts`。⭐ **左栏只有那棵树，没有第二种长相、也没有第二套控件** —— 这是用户 2026-09-13 三句话收敛出来的终态：①「设定库和编辑器是不是可以做成同一工具的两种不同形式啊（在设置里面切换）」→ ②「时间线节点和实体这两个按钮，列表和文件夹树的功能有点混乱，能不能重新设计一下」（重做成「筛选 pills + 一个视图按钮」）→ ③「**要不这样，把全部改成文件树的形式，这样子也方便看**」⇒ 列表形态整个撤掉，筛选 pills、视图按钮 `#cx-view`、类别页签 `#cx-tab-*`、设置里那组 `workbenchView` 单选全部删除。树的形状**本身就是筛选**（看哪一类就展开哪一枝），`mode`（编辑实体还是节点）由**点中的那一行**决定，两条路都走 `switchTarget()`。树与硬盘目录一一对应：世界 → 时间线 → 种类 → 节点 ／ 世界 → `_设定` → 类型 → 实体（`data-act` = world/tl/tkind/wset/etype/node/entity），行渲染走 `treeRow()` + 一份点击处理 `bindTreeClicks()`。⭐ **默认全展开**：三个 Set 记的是「**被用户收起来的**」（`collapsedWorlds` / `collapsedTls` / `collapsedKinds`，键分别是世界名、`<世界>::<时间线 id>` 与 `setting::<世界>`、`<世界>::<时间线 id>::<种类>` 与 `etype::<世界>::<类型 id>`），`isOpen(set, key)` / `toggleOpen(set, key)` 两个一行函数是唯一入口 —— 语义反转过来是为了「打开就看到全部条目」，也让按 `[data-cx-id]` 找实体行的十几个老套件不必先展开。实体行带 **`data-cx-id`**（旧版是 `<button data-cx-id>`，十几个老套件按它找行）与 **`data-cx-type`**（树上不显示类型 —— 上一层文件夹已经写着它了；`entity-vault` / `cold-start-entity-vault` / `startup-materialize-entity` 靠它读类型）。⚠️ `treeRow()` 用 `setAttribute('data-' + k)` 而不是 `dataset[k]`：`cx-id` 这种带连字符的键走 dataset 会抛 `SyntaxError: 'cx-id' is not a valid property name`。⚠️ 两类"空"**待遇不同，别顺手统一**：节点**种类**只列真有节点的（= 硬盘上真有的目录，`[...used.keys()]`）—— 改成「`store.data.formats` 的全部种类」会被用户报回来（「我指的是角色，地点，物品等文件夹同时存在于主线与设定文件夹下，是bug」；`main.js` 的 `DEFAULT_FORMATS` 曾与实体类型 `BUILTIN_ENTITY_TYPES` 重名，现在只留 `事件`/`战斗`）；实体**类型**列**全部**（含一个实体都没有的，空的 `is-empty` 置灰 + 展开一句「这个类型还没有实体」）。`_设定` 是**世界下面的一层**（与时间线同级）⇒ 缩进跟 `.ed-ttl` 一样 `padding-left: 18px`。⚠️ 换条目必须走 `switchTarget()`（先 flush 再改选择）。⚠️ `normalizeEntitySelection()` 对着**全部实体**归一（不是"左栏此刻画出来的那批"）：搜索词会把树收窄，那也不该把正在编辑的实体清空。⭐ **同类别内换条目走「就地换内容」**（`swapBody(animate = true)`，2026-09-13）：保住骨架，只换「名字/类型 + 字段行 + 正文」，内容区演一次**换文件转场**（`playSwap()`，做法 P：旧内容做成一层 `.lk-cx-ghost` 幽灵往左退场、新内容**延后一个出场时长**从右淡入，逐行错峰 `motionStagger`；旋钮在设置面板「换条目转场」卡片里 —— 开关 / 速度 / 错峰 / 入场距离）—— 整块 `render()` 会把左列错峰重播一遍、**把滚动位置打回顶部**（`#cx-root` 就是滚动容器）、还把 tiptap 销毁重建（用户描述为「点击实体会刷新界面」）。转场的三条纪律：① 快照（`snapshotForSwap()`）必须在**改 DOM 之前**取，且先 `dropGhost()` 收掉上一轮那层（它也在 `#cx-body` 里，留着会被写进快照）；② 幽灵里的 `[id]` 全部摘掉，否则会出现第二个 `#cx-doc`/`#cx-fields` 把 `querySelector` 引错；③ `rowsOf(root, skipGhost)` —— 扫 `#cx-body` 时排除幽灵里的行（同一份旧内容不该在"出场"和"入场"里各演一遍），扫幽灵自己时要传 `false`（否则 `.closest('.lk-cx-ghost')` 会把幽灵的每一行都滤掉，`exits` 空 ⇒ `Promise.all([])` 立刻 resolve ⇒ 幽灵当场消失）。**换类别**（实体 ↔ 节点）也走这条路（`mountBody()`，2026-09-13 下午：只重造 `#cx-body` 的 innerHTML 再 `wireBody()`，骨架/左树/滚动位置都留着；`#cx-rail` 常驻、节点模式 `display:none`，顶栏 `#cx-newbox` 按 mode 显隐）；只有"骨架不在 / 最后一个实体被删空"才 `render()`。⚠️ 树里节点行的高亮必须**同时**看「选的是谁」和「现在在编哪一类」（`mode === 'node' && !!nodeTarget && …`）—— 只比 nodeTarget 的话，切到实体后那一行还亮着（用户 2026-09-13：「从事件节点切换到实体节点时，事件节点保持选中状态」）。⭐ 编辑器的写回目标是**读时取值**的模块级 `docTarget`（编辑器跨条目复用），安全性由 `switchTarget` 的顺序保证：先 flush（旧目标）再改 `docTarget`。⚠️ store 订阅**按 `bodySignature()` 决定要不要重建**中/右栏 —— 无条件 `render()` 会 dispose 掉 tiptap，而「自动落盘 → vault 回扫」每次编辑后约 360ms 就会走一趟订阅，实测每换一次 DOM 就有丢击键/焦点/IME 的风险（第十八轮）。⚠️ 面板**高度预算**：`#cx-root` 是 `height:100%` + `overflow:auto`，内容比窗口高 1px 就长滚动条（实测只差 3px）⇒ `#cx-msg`/`#cx-hint` 没内容时 `display:none`（守卫：`entity-evolution.cjs` ★0d 外壳开销 ≤130px） |
 | `src/ui/fields.ts` | 模板字段控件的**公共渲染**（`fieldRow(field, value, onChange, labelWidth)` / `parseFieldInput` / `formatFieldValue`），按模板声明的类型决定形态。约定：只在 `change`（失焦/回车）提交 |
 | `src/ui/doc-editor.ts` | 极简文稿编辑器（tiptap，工作台两个形态共用这一份）：`createDocEditor(el, onFlush)` → `{ setDoc, getDoc, flush, dispose, toggleHeading(level), insertImage(src) }`。⚠️ 切条目必须 flush 再 dispose；⭐ 但**同页签内换条目**（codex）刻意**不 dispose**：`setDoc(md)` 换文档、实例留着，省掉"正文区先空一帧"（`setDoc` 会同步 `last`，所以换文档本身不会触发一次多余的写回） |
 | `src/store/entities.ts` | 实体层基础：`BUILTIN_ENTITY_TYPES`（角色/地点/物品/组织/种族）、`ensureEntityTypes`（世界没有类型时**播种一次**）、`ensureEntityFields`（按类型补字段）、`entityTypeOf` |
 | `src/store/evolution.ts` | **演变（实体版本历史）的纯逻辑**，不碰 DOM / store：`docDiff(prev, next)` / `applyDoc(prev, patch)`（正文**按行**存差异，`hunks[].at` = 上一版行号、从大到小排、从后往前应用）、`frameDiff(prev, next)`（没变化返回 `null`，不产生空帧）/ `applyPatch(st, patch)`、**`statesOf(e)` 一次算出全部前缀**（初稿 + 每一帧之后的样子；换版本 = 换个下标取数组，O(1)）、`epochOfNodes(ws)`（节点 → epoch，按世界算一次年表）、`normalizeFrames(e, epochOf)`（按锚点时间排序 + 一个节点只留一帧，**就地**整理）、`nearestVersion` / `versionAtNode`（站哪个节点看哪一版）、`patchSummary` / `isEmptyPatch` |
-| `src/ui/evolution-rail.ts` | 设定库右侧那条**等距竖线**（用户 2026-09-13）：一格 = 世界里一个事件节点（所有时间线合起来按时间排，顶上第一格是初稿），每格 46px 固定高（`flex: 0 0 46px` + `min/max-height` 钉死 —— 高度不稳就不叫"等距"）、有帧的格子点亮并显示差异摘要。它**自己不写数据**，只通过 `onSelect` / `onAddFrame` / `onDeleteFrame` 回调 `codex.ts`。⚠️ 让选中格滚进视野时**只滚帧条自己的 `.lk-rail__rows`**（算 `offsetTop`），**不要用 `scrollIntoView()`** —— 它会把所有祖先滚动容器一起滚，而 `#cx-root` 正是面板的滚动容器（实测把面板 scrollTop 从 260 拽到 122，被 `codex-smooth-switch.cjs` ★6 抓住） |
+| `src/ui/evolution-rail.ts` | 设定库右侧那条**等距竖线**（用户 2026-09-13）：一格 = 世界里一个事件节点（所有时间线合起来按时间排，顶上第一格是初稿），每格 46px 固定高（`flex: 0 0 46px` + `min/max-height` 钉死 —— 高度不稳就不叫"等距"）、有帧的格子点亮并显示差异摘要。它**自己不写数据**，只通过 `onSelect` / `onAddFrame` / `onDeleteFrame` 回调 `codex.ts`。⚠️ 让选中格滚进视野时**只滚帧条自己的 `.lk-rail__rows`**（算 `offsetTop`），**不要用 `scrollIntoView()`** —— 它会把所有祖先滚动容器一起滚，而 `#cx-root` 正是面板的滚动容器（实测把面板 scrollTop 从 260 拽到 122，被 `codex-smooth-switch.cjs` ★6 抓住）。⭐ 它还负责**写目标高亮**（`deps.getWriteTarget()` → 那一格 `.is-write` + 「改这里」药丸）与**自动模式不渲染「＋记一帧」**；写目标那一格若还没版本，要**单独补进**格子列表（`shown`），否则"高亮"无处可挂 |
+| `src/store/ids.ts` | **id 生成**（`uid(prefix)`）—— ⚠️ 全仓的实体/节点/时间线/地图/区域/标记/循环/剧情线 id 都走它，**不许再手写 `'e' + Date.now()`**：顶栏「数量」框能一次建 20 个条目，循环在**同一毫秒**里跑完 ⇒ 三次拿到**同一个 id** ⇒ `entities[id] = {…}` 后建的把先建的**覆盖**掉（实测"建 3 个只活下来 2 个"，名字还跳号，JSON 与 vault 一起丢，界面上没有任何报错）。`uid()` 是"**单调时钟**"：以 `Date.now()` 打底、同一毫秒内依次 +1，永不重复，格式仍是"前缀 + 十进制数字"（排序语义与 vault 文件名都不受影响） |
 | `data/worldbuilding.js` | 世界观种子数据（`window.__SEED_TIMELINES__`），首次运行/无用户数据时使用 |
 | `data/character_lib.json` | 角色生成词库（58 分类，萌百来源 CC BY-NC-SA，勿商用） |
 | `design-system/` | 设计令牌（`tokens.css` 权威颜色/字体源） |
@@ -308,8 +309,23 @@
   `transition`（宽/高/外边距/透明度 320ms + 位移 640ms）。
   ⚠️ **高度也要一起收**：三栏那行是 `align-items:flex-start`，帧条高度由内容决定 —— 只收宽度的话内容被
   挤成一列反而更高，把这一行撑高（`#cx-root` 多一个像素就长滚动条，见下面那条预算）；
-  ⚠️ `height: auto → 0` **过渡不了**（不是可插值长度），所以高度是瞬时收的 —— 布局上看不出来（帧条比中栏矮，
-  行高由中栏定），★13b 钉的是"框不动"。守卫：`codex-smooth-switch.cjs` ★13c（+ ★13b/★14d 比帧条的 top/宽/高）。
+  ⚠️ 但**不能把 `height: 0` 写进 `.is-off`**：`height: auto → 0` 不是可插值长度 ⇒ 瞬时生效，
+  `overflow: hidden` 当场把内容裁没，宽度那段收起就"看不见了"（用户 2026-09-13 深夜报的
+  「从设定文件切换到节点文件演变面板会**直接消失**」就是这个）。现在由 `setRailOpen()` 在 **420ms 后**
+  加 `.is-collapsed { height: 0 }`（那时已全透明），并给 `.lk-rail > *` 设 `min-width: 168px` 让内容
+  在收起过程中**不重排**。守卫：`codex-smooth-switch.cjs` ★13c（同一 tick 高度**必须还撑着**）+ ★13c2
+  （演完之后才 `.is-collapsed` / 宽高 0）+ ★13b/★14d（比帧条的 top/宽/高）。
+- ⭐ **「改动会写进哪一格」要看得见**（用户 2026-09-13 深夜：「我希望切换帧时直接高亮要写到的地方」）：
+  `RailDeps.getWriteTarget()` ← codex 的 **`writeTargetNodeId()`**（**只算不写**；⚠️ 别拿 `editVersion()`
+  顶替，它会建帧、还会把视图挪过去）。三种模式：锁定 = `evolveLock.nodeId`、自动 = `railAnchor`、
+  手动 = 正在看的那一版（null = 初稿）。那一格 `.is-write`（accent 内描边）+ `.lk-rail__tag--write`
+  「改这里」药丸；两者重合（自动模式）时只挂一个标签。⚠️ **写目标那一格必须被拉进帧条**：
+  `shown = showAll ? all : all.filter(r => r.hasFrame || r.nodeId === write)` —— 自动模式的「记到」
+  常常还没版本，而帧条默认只列有版本的格子，不补进来的话"高亮"根本无处可挂（★15c 就是这么挂的）。
+- ⭐ **自动模式不渲染「＋记一帧」**（同一条消息的另一件：「自动模式下怎么还有记一帧的按钮」）：
+  `.lk-rail__acts` 里那个按钮只在 `mode !== 'auto'` 时渲染（改动本就会自动记一版），
+  「记到」下拉保留（它决定自动帧锚在哪个事件上），空状态文案换成「改一下字段就会自动记一版」。
+  守卫：`entity-evolution.cjs` ★15d。
 - ⚠️ **回扫与写盘的竞态**（未修，机制最可能是"写盘在飞时来的扫描用旧快照覆盖内存"）：
   见 `docs/BUGS.md` 第二十一轮「七」，`entity-evolution.cjs` 约 2/10 次会因此挂 ★5 那组；
   动这块之前先读那一条，别把红灯当成本地回归。
@@ -480,7 +496,34 @@
   词条数随机 ⇒ 卡片高度只有 80/104/128/152 四档，实测卡片区**同一个 tick 内** 430 → 646px。
 - Anime.js（`animejs@4.5.0`，devDependency）已装但**尚未使用**：它留给「元素被重建、却要从旧位置
   连续滑到新位置」的场景（画布节点移动 / 列表增删让位），那是 CSS transition 表达不了的
-  （重建后的元素没有"旧位置"这个概念）。
+  （重建后的元素没有"旧位置"这个概念 —— 目前这一片用 WAAPI 的 `flipRows` 手搓，见下）。
+- ⭐ **左树的行级动效（2026-09-13，用户：「新建实体和节点时不是硬切换，而是从左侧滑入…其下的所有
+  节点都向下平滑移动（删除时也一样），展开文件夹时文件向下弹出」）**：
+  `rowSlideIn`（新行从左侧滑入）/ `flipRows`（其余行 FLIP 让位）/ `rowsDropIn`（展开露出的行下弹）/
+  `rowLeaveAndRemove`（被删那行的幽灵演完自摘）/ `topsOf`（量相对容器顶部的 top）。
+  - 左树侧（`src/ui/codex.ts`）：每行一个稳定键 **`data-cx-key`**（`<act>|<id>`）；`renderList()` 结尾
+    量一次位置、与上一轮快照 **`rowTops`** 做 FLIP；"新出现的行"靠 **`justOpened`**（展开时在
+    `bindTreeClicks` 里记下刚展开那一枝的键，键与 `collapsed*` 三个 Set 同构）分成两类
+    （展开露出的 → 下弹；真新建的 → 左侧滑入，错峰 30ms 封顶 240ms）。
+    **首次渲染 / 整块重建后不演**（`cold = prev.size === 0`，否则整个列表飞一遍）。
+  - ⚠️ **两次重画会把刚起头的动画顶掉**：`addEntity()` 走 `store.update` ⇒ 订阅**同步**重画一次左树，
+    紧接着 `switchTarget()` 又重画一次 —— 同一个 tick 里浏览器中间不合成帧，动画一帧都没画出来。
+    所以「建 N 个 / 删一条」期间用 **`withListHold()`** 挡住中间的重画，末尾一次画完（只挡左树，
+    中/右栏的签名判断照旧）。
+  - ⚠️ **删除会把位置快照冲掉**：删掉"正在编的那条"会让正文签名变化 ⇒ 中途触发整块 `render()`，
+    左树元素全换 ⇒ 只靠上一次 renderList 的快照会失效（实测删完**没有**让位动画）。
+    所以删除前 **`snapshotRows()` 主动拍一张**旧位置。
+  - 删除时被删那一行留一个 **`pinRowGhost()`** 的幽灵：`cloneNode` + `position:fixed` 挂在
+    `document.body`（`#cx-list` 马上会被清空），克隆体里的 `[id]` 全摘（否则页面上多出第二个
+    `#cx-fields`/`#cx-doc`，`querySelector` 会抓错）。
+- ⭐ **帧条（演变）的收起：高度"演完才收"**（用户 2026-09-13：「从设定文件切换到节点文件演变面板
+  会直接消失」）：`src/ui/codex.ts` 的 **`setRailOpen(open)`** —— 只切 `.is-off`，**420ms 后**才补
+  `.is-collapsed { height: 0 }`。⚠️ 不能把 `height: 0` 直接写进 `.is-off`：`height: auto → 0`
+  **不是可插值长度**，过渡对它是**瞬时**生效的，而这一条有 `overflow: hidden` ⇒ 内容当场被裁没，
+  宽度那 320ms 的收起根本看不见（实测点下去同一 tick 里 h 已 271 → 1、而 w 才刚起步）。
+  另配 `.lk-rail > * { min-width: 168px }`：收起过程中内容**不许重排**（宽度收到 0 时子项会挤成
+  一列，高度暴涨、把那一行撑高、`#cx-root` 白长一条滚动条）。骨架里节点态直接写
+  `class="lk-rail is-off is-collapsed"`（首帧不演）。
 
 ### 联想画布（`src/ui/assoc.ts` + 宿主 `src/ui/inspire.ts`）
 - **无限画布**（用户 2026-09-12：「现在有边界了，向上拖不动节点了，我想要无限画布」）：

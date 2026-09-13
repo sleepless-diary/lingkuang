@@ -4,6 +4,7 @@
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { getTimeline, setTimeCursor, saveNodeDoc, addLoop, setLoopCount, removeLoop, copyNode, removeNode } from '../store/actions';
+import { uid } from '../store/ids';
 import type { Timeline, TimelineNode, Storyline, Loop } from '../store/types';
 import { renderNodeForm } from './node-form';
 import { isEyedropActive, pick } from './eyedrop';
@@ -595,7 +596,7 @@ export function mountTimeline(
     });
     ui.querySelector('#lk-line-new')?.addEventListener('click', () => {
       if (pendingSegs.length === 0) { brushing = true; renderStoryUI(); return; }
-      const id = 'sl' + Date.now();
+      const id = uid('sl');
       const tlId = activeTimelineId();
       if (!tlId) return;
       const segs = pendingSegs.slice();

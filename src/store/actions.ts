@@ -1,10 +1,11 @@
 /** 灵框 · actions（通过 store.update 修改数据——视图不直接碰 data） */
 import type { Store } from './store';
 import { currentWorld } from './store';
+import { uid } from './ids';
 import type { Timeline, TimelineNode, Entity, Worldset, WorldData, PropValue } from './types';
 
 export function addTimeline(store: Store, name: string): string {
-  const id = 'tl' + Date.now();
+  const id = uid('tl');
   store.update((d) => {
     const ws = d.worldsets[store.activeWorld];
     if (!ws) return;
@@ -15,7 +16,7 @@ export function addTimeline(store: Store, name: string): string {
 }
 
 export function addNode(store: Store, tlId: string, node: Partial<TimelineNode>): string {
-  const id = 'n' + Date.now();
+  const id = uid('n');
   store.update((d) => {
     const tl = d.worldsets[store.activeWorld]?.timelines[tlId];
     if (!tl) return;
@@ -48,7 +49,10 @@ export function saveNodeDoc(store: Store, tlId: string, nodeId: string, doc: str
 }
 
 export function addEntity(store: Store, entity: Partial<Entity>): string {
-  const id = 'e' + Date.now();
+  /* ⚠️ id 必须用 `uid()`：顶栏那个「数量」框能一次建 20 个，循环在同一毫秒里跑完，
+     原来的 `'e' + Date.now()` 会让它们**拿到同一个 id** ⇒ `entities[id] = …` 后建的覆盖先建的
+     （实测"建 3 个只活下来 2 个"，名字还跳号）。详见 `src/store/ids.ts`。 */
+  const id = uid('e');
   store.update((d) => {
     const ws = d.worldsets[store.activeWorld];
     if (!ws) return;
@@ -88,7 +92,7 @@ export function removeEntity(store: Store, entityId: string): void {
 }
 
 export function addMap(store: Store, name: string): string {
-  const id = 'm' + Date.now();
+  const id = uid('m');
   store.update((d) => {
     const ws = d.worldsets[store.activeWorld];
     if (!ws) return;
@@ -120,7 +124,7 @@ export function getTimeline(store: Store, tlId: string): Timeline | undefined {
    直接改它既不 notify（tab 节点计数停在旧值）、也不进撤销栈，更不会触发落盘
    （main.ts 的防抖写盘挂在 store 通知上）→ 改完直接关窗就丢。 */
 export function addLoop(store: Store, tlId: string, loop: { name: string; startId?: string; endId?: string; count?: number }): string {
-  const id = 'lp' + Date.now();
+  const id = uid('lp');
   store.update((d) => {
     const tl = d.worldsets[store.activeWorld]?.timelines[tlId];
     if (!tl) return;
@@ -146,7 +150,7 @@ export function removeLoop(store: Store, tlId: string, loopId: string) {
 
 /** 复制节点（带新 id；失败返回 undefined） */
 export function copyNode(store: Store, tlId: string, nodeId: string): string | undefined {
-  const newId = 'n' + Date.now();
+  const newId = uid('n');
   let ok = false;
   store.update((d) => {
     const tl = d.worldsets[store.activeWorld]?.timelines[tlId];
@@ -232,7 +236,7 @@ export function removeWorld(store: Store, wsName: string): void {
 function ensureTimelineByName(ws: Worldset, name: string): Timeline {
   const found = Object.values(ws.timelines ?? {}).find((t) => t.name === name);
   if (found) return found;
-  const id = 'tl' + Date.now() + Math.floor(Math.random() * 1000);
+  const id = uid('tl');
   const tl: Timeline = { id, name, absOffset: 0, nodes: [], loops: [], storylines: [] };
   ws.timelines[id] = tl;
   ws.order = ws.order ?? [];

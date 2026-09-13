@@ -34,7 +34,7 @@ import { loadSettings } from './settings';
 import {
   epochOfNodes, frameDiff, nearestVersion, normalizeFrames, statesOf, versionAtNode, type EntityState,
 } from '../store/evolution';
-import { cascadeIn, enter, motionReduced, rowsEnter, rowsLeave } from './motion';
+import { cascadeIn, enter, flipRows, motionReduced, rowLeaveAndRemove, rowSlideIn, rowsDropIn, rowsEnter, rowsLeave, topsOf } from './motion';
 
 const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;font-family:inherit;user-select:text;';
 /* 顶栏那两组「下拉 + 新建按钮」共用同一份样式 —— 高度必须一模一样（27px），
@@ -121,6 +121,17 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   const collapsedTls = new Set<string>();
   const collapsedKinds = new Set<string>();
 
+  /* ── 左树的行级动效（用户 2026-09-13：「新建实体和节点时不是硬切换，而是从左侧滑入…其下的
+     所有节点都向下平滑移动（删除时也一样），展开文件夹时文件向下弹出」）──────────────────
+     左树每次重画都是 `innerHTML` 整块换掉 ⇒ 元素是新建的、没有"旧位置"这个概念，CSS 表达不了。
+     所以自己记一份**上一次布局**：行键 → 相对 top（`rowTops`），重画后拿它做 FLIP。
+     键 = 行的 `data-cx-key`（`<act>|<id>`，见 `rowKey()`）。 */
+  let rowTops = new Map<string, number>();
+  /* 刚刚被**展开**的那个文件夹的键（`justOpened`）。renderList 用它分清两种"新出现的行"：
+     展开露出来的 ⇒ 向下弹出（`rowsDropIn`）；真新建出来的 ⇒ 从左侧滑入（`rowSlideIn`）。
+     渲染一次就清掉（用 `openedKey` 取走）。 */
+  let justOpened: string | null = null;
+
   const world = () => currentWorld(store);
   const types = () => world().entityTypes ?? {};
   const entities = (): Entity[] => Object.values(world().entities ?? {}) as Entity[];
@@ -136,6 +147,71 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   /** 展开态：Set 里有的表示**被用户收起来了**（默认全展开，见三个 collapsed* 的注释） */
   const isOpen = (s: Set<string>, k: string): boolean => !s.has(k);
   const toggleOpen = (s: Set<string>, k: string): void => { if (s.has(k)) s.delete(k); else s.add(k); };
+
+  /** 批量改动（一次建 N 个 / 删一条）期间**先别重画左树**。
+   *
+   *  为什么（用户 2026-09-13：「新建实体和节点时不是硬切换，而是从左侧滑入」）：
+   *  `addEntity()` 走 `store.update` ⇒ 订阅里**同步**就重画一次左树，随后 `switchTarget()`
+   *  又把左树重画一次 —— 第一次刚起头的入场动画连一帧都没画出来，元素就被第二次重建顶掉了
+   *  （两次重画在同一个 tick 里，浏览器中间根本不合成帧）。攒到末尾只画一次，动画才有机会演。
+   *  只挡左树：中/右栏的签名判断等逻辑照旧（否则会漏掉真正需要重建的情况）。 */
+  let listHold = 0;
+  function withListHold(fn: () => void): void {
+    listHold++;
+    try { fn(); } finally { listHold--; }
+  }
+
+  /** 帧条的显隐（实体态展开 / 节点态收起）。
+   *
+   *  ⚠️ 收起的**高度要等演完再收**：`height: auto → 0` 不是可插值长度，过渡对它是瞬时生效的，
+   *  而这一条有 `overflow: hidden` ⇒ 内容当场被裁没，宽度那 320ms 的收起根本看不见 ——
+   *  用户 2026-09-13 报的「从设定文件切换到节点文件演变面板会直接消失」就是这个
+   *  （实测：点下去同一 tick 里高已经 271 → 1，而宽才刚从 176 开始走）。
+   *  420ms > 宽度/透明度的 320ms（那时候已经全透明，收高度看不出来）。 */
+  function setRailOpen(open: boolean): void {
+    const el = host.querySelector<HTMLElement>('#cx-rail');
+    if (!el) return;
+    el.classList.toggle('is-off', !open);
+    if (open) { el.classList.remove('is-collapsed'); return; }
+    window.setTimeout(() => {
+      if (el.isConnected && el.classList.contains('is-off')) el.classList.add('is-collapsed');
+    }, 420);
+  }
+
+  /** 「改动会写进哪一格」——**只算不写**。
+   *  ⚠️ 不能拿 `editVersion()` 替代：它会建帧（自动模式）并把视图挪过去，那是副作用。 */
+  function writeTargetNodeId(): string | null {
+    const st = loadSettings();
+    if (st.evolveMode === 'locked') {
+      const lock = st.evolveLock;
+      if (lock && lock.world === store.activeWorld) return lock.nodeId;
+    }
+    if (st.evolveMode === 'auto' && railAnchor !== null) return railAnchor;
+    return railNode;   /* 手动 = 正在看的那一版（null = 初稿） */
+  }
+
+  /** 量一次左树各行当前的位置（相对左树容器），存成 FLIP 要的"旧位置"快照。
+   *  **删除前必须先拍一张**：删掉当前条目会让正文签名变化 ⇒ 中途触发一次整块 `render()`，
+   *  左树元素全被换掉 —— 只靠"上一次 renderList 留下的快照"会在这中间被冲掉（实测删完没有让位动画）。 */
+  function snapshotRows(): Map<string, number> {
+    const el = host.querySelector<HTMLElement>('#cx-list .ed-tree') ?? host.querySelector<HTMLElement>('#cx-list');
+    const now = topsOf(el);
+    return new Map(now.els.map((e, i) => [e.getAttribute('data-cx-key') || '', now.tops[i]]));
+  }
+
+  /** 被删掉的那一行：克隆一份**钉在原位**（`position:fixed`，不能挂在 `#cx-list` 里 ——
+   *  它马上会被 `innerHTML = ''` 清空）演一次退场，同时下面的行向上让位（FLIP）。
+   *  ⚠️ 克隆体里的 id 全摘掉：留着就是页面里第二个 `#cx-fields` / `#cx-doc`，`querySelector` 会抓错。 */
+  function pinRowGhost(id: string): HTMLElement | null {
+    const row = host.querySelector<HTMLElement>('#cx-list [data-cx-id="' + id + '"]');
+    if (!row || motionReduced()) return null;
+    const r = row.getBoundingClientRect();
+    const g = row.cloneNode(true) as HTMLElement;
+    g.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+    g.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;margin:0;padding:0;pointer-events:none;z-index:900;`;
+    document.body.appendChild(g);
+    return g;
+  }
 
   /* ── 节点页签的数据源：世界 → 时间线 → 种类分组（＝ vault 的目录形状）──────────
      刻意遍历**所有世界**（不只 activeWorld）：左列是一棵树，树就该看得见全部；
@@ -823,7 +899,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
             ${bodyHtml()}
           </div>
           <!-- 右栏那条竖线**常驻**（节点模式只是藏起来）—— 换类别时就不用动骨架，见 mountBody -->
-          <div id="cx-rail" class="lk-rail${isEntity ? '' : ' is-off'}" title="演变：站在某个事件上看这条设定"></div>
+          <div id="cx-rail" class="lk-rail${isEntity ? '' : ' is-off is-collapsed'}" title="演变：站在某个事件上看这条设定"></div>
         </div>
         <div id="cx-msg" style="font-size:var(--text-xs);display:none;"></div>
       </div>`;
@@ -850,6 +926,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         getEntity: () => active(),
         getSelected: () => railNode,
         getAnchor: () => railAnchor,
+        /* 「改动会写进哪一格」——帧条据此点亮那一行 + 挂「改这里」标签（见 writeTargetNodeId） */
+        getWriteTarget: () => writeTargetNodeId(),
         onSelect: (id) => setRailNode(id),
         onAnchor: (id) => { railAnchor = id; rail?.render(); },
         onAddFrame: (id) => {
@@ -892,7 +970,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       const n = readCount('#cx-new-count');
       const taken = new Set(entities().map((e) => e.name || ''));
       const ids: string[] = [];
-      for (let i = 0; i < n; i++) ids.push(addEntity(store, { typeId, name: uniqueName('新实体', taken) }));
+      /* 建的过程先别重画左树（`withListHold`）：`addEntity` 每次都会触发一次重画，
+         而后面 `switchTarget()` 还会再画一次 —— 两次落在同一个 tick 里，新建那几行的
+         「从左侧滑入」连一帧都画不出来就被顶掉了（用户看到的就是"硬切换"）。 */
+      withListHold(() => {
+        for (let i = 0; i < n; i++) ids.push(addEntity(store, { typeId, name: uniqueName('新实体', taken) }));
+      });
       switchTarget(() => { activeId = ids[0]; });   /* 选**第一个**：按顺序往下填 */
       say(n > 1 ? `已新建 ${n} 个，改个名字吧` : '已新建，改个名字吧');
     });
@@ -908,7 +991,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       const kind = nodeNewKind(tlId);
       const taken = new Set((store.data.worldsets[store.activeWorld]?.timelines[tlId]?.nodes ?? []).map((x) => x.title || ''));
       const ids: string[] = [];
-      for (let i = 0; i < n; i++) ids.push(addNode(store, tlId, { title: uniqueName('新节点', taken), kind }));
+      withListHold(() => {   /* 同「＋新建实体」：攒到末尾一次重画，新行才演得出"从左侧滑入" */
+        for (let i = 0; i < n; i++) ids.push(addNode(store, tlId, { title: uniqueName('新节点', taken), kind }));
+      });
       switchTarget(() => {
         mode = 'node';
         nodeTarget = { world: store.activeWorld, tlId, nodeId: ids[0] };
@@ -1010,8 +1095,14 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         danger: true,
       }).then((ok) => {
         if (!ok) return;
-        removeEntity(store, c.id);
+        /* 被删的那一行先克隆一份钉在原位（`#cx-list` 马上会被重画清空，所以幽灵挂在 body 上），
+           下面的行由 FLIP 平滑补位 —— 用户 2026-09-13：「新建实体和节点时…其下的所有节点都向下
+           平滑移动（删除时也一样）」。 */
+        const ghost = pinRowGhost(c.id);
+        rowTops = snapshotRows();                        /* 先拍旧位置：让位动画要靠它（见 snapshotRows） */
+        withListHold(() => removeEntity(store, c.id));   /* 攒到末尾一次重画，让位动画才演得出来 */
         switchTarget(() => { activeId = ''; });
+        rowLeaveAndRemove(ghost, { dx: 24, dur: 260 });
         say('已删除');
       });
     });
@@ -1069,9 +1160,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     body.innerHTML = bodyHtml();
     /* 帧条改成**常驻 + .is-off**（原来是 `display:none` 硬切 —— 面板宽度瞬间变化，
        用户 2026-09-13：「演变窗口消失时编辑页的切换很生硬…顺便再给演变做一下出入场动画」）。
-       常驻还顺手让"展开/收起"有过渡可演（CSS 在 `.lk-rail` / `.lk-rail.is-off`）。 */
-    const railHost = host.querySelector<HTMLElement>('#cx-rail');
-    if (railHost) railHost.classList.toggle('is-off', mode !== 'entity');
+       常驻还顺手让"展开/收起"有过渡可演（CSS 在 `.lk-rail` / `.lk-rail.is-off`）。
+       ⚠️ 收起时高度**等演完再收**（`setRailOpen`）—— 直接写 `height: 0` 会瞬时生效，
+       被 `overflow: hidden` 一裁，用户看到的就是"直接消失"（见 setRailOpen 的注释）。 */
+    setRailOpen(mode === 'entity');
     syncNewBox();
     wireBody();
     renderedMode = mode;
@@ -1136,12 +1228,48 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     return d;
   }
 
-  /** 只重画左列（那棵树）。搜索框在它外面，所以打字不会被重建、不丢焦点。 */
+  /** 只重画左列（那棵树）。搜索框在它外面，所以打字不会被重建、不丢焦点。
+   *
+   *  行级动效（用户 2026-09-13：「新建实体和节点时不是硬切换，而是从左侧滑入（就像正文的入场一样），
+   *  其下的所有节点都向下平滑移动（删除时也一样），展开文件夹时文件向下弹出」）：
+   *    · **新出现的行**分两种 —— 展开文件夹露出来的 ⇒ 向下弹出（`rowsDropIn`）、真新建出来的
+   *      ⇒ 从左侧滑入（`rowSlideIn`，靠 `justOpened` 这个键分辨）；
+   *    · **其余行**位置变了 ⇒ FLIP（`flipRows`，用上一次的 `rowTops` 快照），这就是"下面的行平滑让位"。
+   *  左树每次都是 `innerHTML` 整块换掉（元素是新建的、没有旧位置），所以位置快照必须自己存。 */
   function renderList(): void {
+    if (listHold) return;                     /* 批量改动期间攒着，末尾一次画完（见 withListHold） */
     const listEl = host.querySelector<HTMLElement>('#cx-list');
     if (!listEl) return;
+    const prev = rowTops;
+    const opened = justOpened;
+    justOpened = null;
+    const cold = prev.size === 0;             /* 本会话第一次画（或刚整块重建）⇒ 全都别演，否则整个列表飞一遍 */
     const frag = document.createElement('div');
     frag.className = 'ed-tree';
+    /* 两种"新出现的行"分开收 */
+    const revealed: HTMLElement[] = [];
+    const fresh: HTMLElement[] = [];
+    /** 给一行打上稳定键（FLIP 用），并按"是展开露出来的还是新建的"归档 */
+    const keep = (el: HTMLElement, key: string, inReveal = false): HTMLElement => {
+      el.setAttribute('data-cx-key', key);
+      if (!prev.has(key)) (inReveal ? revealed : fresh).push(el);
+      return el;
+    };
+    /** 收尾：换进 DOM → 接线 → 演行级动效 → 存下这一次的位置快照 */
+    const done = (): void => {
+      listEl.innerHTML = '';
+      listEl.appendChild(frag);
+      bindTreeClicks(frag);
+      const now = topsOf(frag);
+      const keys = now.els.map((el) => el.getAttribute('data-cx-key') || '');
+      if (!cold) {
+        flipRows(now.els, keys, now.tops, prev);
+        /* 展开露出来的那批先落位，新建的那几行随后从左侧滑入（错峰 30ms，封顶 240ms） */
+        if (revealed.length) rowsDropIn(revealed);
+        fresh.forEach((el, i) => rowSlideIn(el, { delay: Math.min(i * 30, 240) }));
+      }
+      rowTops = new Map(keys.map((k, i) => [k, now.tops[i]]));
+    };
 
     if (query) {
       /* 搜索：节点与实体一起摊平（非空时不分层，跟列表视图节点的做法一致） */
@@ -1149,23 +1277,23 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       const entHits = searchEntities();
       if (!nodeHits.length && !entHits.length) {
         listEl.innerHTML = '<div style="font-size:var(--text-xs);color:var(--fg-2);padding:4px;">没有匹配的条目。</div>';
+        rowTops = new Map();
         return;
       }
       nodeHits.forEach((h) => {
         const on = mode === 'node' && !!nodeTarget && nodeTarget.world === h.world && nodeTarget.tlId === h.tlId && nodeTarget.nodeId === h.node.id;
-        frag.appendChild(treeRow(itemCls(on, h.node.title),
+        frag.appendChild(keep(treeRow(itemCls(on, h.node.title),
           `<span class="ed-tlabel">${escapeHtml(h.node.title)}</span>${stubTag(h.node.title)}<span class="ed-tcount">${escapeHtml(h.kind)}</span>`,
-          { act: 'node', nw: h.world, ntl: h.tlId, nid: h.node.id }));
+          { act: 'node', nw: h.world, ntl: h.tlId, nid: h.node.id }), 'node|' + h.world + '::' + h.node.id));
       });
       entHits.forEach((h) => {
         const on = mode === 'entity' && store.activeWorld === h.world && h.entity.id === activeId;
-        frag.appendChild(treeRow(itemCls(on, h.entity.name),
+        frag.appendChild(keep(treeRow(itemCls(on, h.entity.name),
           `<span class="ed-tlabel">${escapeHtml(h.entity.name)}</span>${stubTag(h.entity.name)}<span class="ed-tcount">${escapeHtml(typeNameOf(h.world, h.entity.typeId))}</span>`,
-          { act: 'entity', nw: h.world, nid: h.entity.id, 'cx-id': h.entity.id, 'cx-type': typeNameOf(h.world, h.entity.typeId) }));
+          { act: 'entity', nw: h.world, nid: h.entity.id, 'cx-id': h.entity.id, 'cx-type': typeNameOf(h.world, h.entity.typeId) }),
+          'entity|' + h.world + '::' + h.entity.id));
       });
-      listEl.innerHTML = '';
-      listEl.appendChild(frag);
-      bindTreeClicks(frag);
+      done();
       return;
     }
 
@@ -1174,38 +1302,42 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     const worlds = Object.keys(store.data.worldsets);
     if (!worlds.length) {
       listEl.innerHTML = '<div style="font-size:var(--text-xs);color:var(--fg-2);padding:4px;">还没有世界。</div>';
+      rowTops = new Map();
       return;
     }
     for (const wName of worlds) {
       const wOpen = isOpen(collapsedWorlds, wName);
-      frag.appendChild(treeRow('ed-tworld' + (wOpen ? ' is-open' : ''),
+      const inW = opened === wName;           /* 刚展开的正好是这个世界 ⇒ 它底下的一切都是"弹出来的" */
+      frag.appendChild(keep(treeRow('ed-tworld' + (wOpen ? ' is-open' : ''),
         `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(wName)}</span>`,
-        { act: 'world', nw: wName }));
+        { act: 'world', nw: wName }), 'world|' + wName, inW));
       if (!wOpen) continue;
 
       /* ① 时间线分支 */
       for (const g of allGroups.filter((x) => x.world === wName)) {
         const tlKey = g.world + '::' + g.tlId;
         const tOpen = isOpen(collapsedTls, tlKey);
+        const inTl = inW || opened === tlKey;
         const total = [...g.kinds.values()].reduce((n, l) => n + l.length, 0);
-        frag.appendChild(treeRow('ed-ttl' + (tOpen ? ' is-open' : ''),
+        frag.appendChild(keep(treeRow('ed-ttl' + (tOpen ? ' is-open' : ''),
           `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(g.tlName)}</span><span class="ed-tcount">${total}</span>`,
-          { act: 'tl', nw: g.world, ntl: g.tlId }));
+          { act: 'tl', nw: g.world, ntl: g.tlId }), 'tl|' + tlKey, inTl));
         if (!tOpen) continue;
         for (const [kind, nodes] of g.kinds) {
           const kKey = tlKey + '::' + kind;
           const kOpen = isOpen(collapsedKinds, kKey);
-          frag.appendChild(treeRow('ed-tkind' + (kOpen ? ' is-open' : ''),
+          const inKind = inTl || opened === kKey;
+          frag.appendChild(keep(treeRow('ed-tkind' + (kOpen ? ' is-open' : ''),
             `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(kind)}</span><span class="ed-tcount">${nodes.length}</span>`,
-            { act: 'tkind', nw: g.world, ntl: g.tlId, nk: kind }));
+            { act: 'tkind', nw: g.world, ntl: g.tlId, nk: kind }), 'tkind|' + kKey, inKind));
           if (!kOpen) continue;
           for (const n of nodes) {
             /* ⚠️ 高亮必须**同时**看「选的是谁」和「现在在编哪一类」——只是 nodeTarget 匹配的话，
                切到实体后这一行还亮着（用户 2026-09-13：「从事件节点切换到实体节点时，事件节点保持选中状态」）。 */
             const on = mode === 'node' && !!nodeTarget && nodeTarget.world === g.world && nodeTarget.tlId === g.tlId && nodeTarget.nodeId === n.id;
-            frag.appendChild(treeRow(itemCls(on, n.title),
+            frag.appendChild(keep(treeRow(itemCls(on, n.title),
               `<span class="ed-tlabel">${escapeHtml(n.title)}</span>${stubTag(n.title)}`,
-              { act: 'node', nw: g.world, ntl: g.tlId, nid: n.id }));
+              { act: 'node', nw: g.world, ntl: g.tlId, nid: n.id }), 'node|' + g.world + '::' + n.id, inKind));
           }
         }
       }
@@ -1215,55 +1347,68 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       if (sg) {
         const setKey = 'setting::' + wName;
         const sOpen = isOpen(collapsedTls, setKey);
+        const inSet = inW || opened === setKey;
         const total = sg.groups.reduce((n, t) => n + t.list.length, 0);
-        frag.appendChild(treeRow('ed-tset' + (sOpen ? ' is-open' : ''),
+        frag.appendChild(keep(treeRow('ed-tset' + (sOpen ? ' is-open' : ''),
           `<span class="ed-tcaret"></span><span class="ed-tlabel">_设定</span><span class="ed-tcount">${total}</span>`,
-          { act: 'wset', nw: wName }));
+          { act: 'wset', nw: wName }), 'wset|' + wName, inSet));
         if (sOpen) {
           for (const t of sg.groups) {
             /* 类型行：一个实体都没有也列（置灰 + 展开时给一句人话） */
             const tKey = 'etype::' + wName + '::' + t.id;
             const tOpen = isOpen(collapsedKinds, tKey);
-            frag.appendChild(treeRow('ed-ttype ed-tset-type' + (tOpen ? ' is-open' : '') + (t.list.length ? '' : ' is-empty'),
+            const inType = inSet || opened === tKey;
+            frag.appendChild(keep(treeRow('ed-ttype ed-tset-type' + (tOpen ? ' is-open' : '') + (t.list.length ? '' : ' is-empty'),
               `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(t.name)}</span><span class="ed-tcount">${t.list.length}</span>`,
-              { act: 'etype', nw: wName, nk: t.id }));
+              { act: 'etype', nw: wName, nk: t.id }), 'etype|' + tKey, inType));
             if (!tOpen) continue;
-            if (!t.list.length) { frag.appendChild(emptyRow('这个类型还没有实体')); continue; }
+            if (!t.list.length) { frag.appendChild(keep(emptyRow('这个类型还没有实体'), 'empty|' + tKey, inType)); continue; }
             for (const e of t.list) {
               const on = mode === 'entity' && store.activeWorld === wName && e.id === activeId;
               /* `cx-id` / `cx-type` 是给测试与将来拖拽用的稳定抓手（树上不显示类型 —— 上一层文件夹
                  已经写着它了）；`[data-cx-id]` 这个属性名是历史约定，十几条 e2e 都按它找实体行。 */
-              frag.appendChild(treeRow(itemCls(on, e.name),
+              frag.appendChild(keep(treeRow(itemCls(on, e.name),
                 `<span class="ed-tlabel">${escapeHtml(e.name)}</span>${stubTag(e.name)}`,
-                { act: 'entity', nw: wName, nid: e.id, 'cx-id': e.id, 'cx-type': typeNameOf(wName, e.typeId) }));
+                { act: 'entity', nw: wName, nid: e.id, 'cx-id': e.id, 'cx-type': typeNameOf(wName, e.typeId) }),
+                'entity|' + wName + '::' + e.id, inType));
             }
           }
         }
       }
     }
-    listEl.innerHTML = '';
-    listEl.appendChild(frag);
-    bindTreeClicks(frag);
+    done();
   }
 
   function bindTreeClicks(frag: HTMLElement): void {
     frag.querySelectorAll<HTMLElement>('.ed-tnode').forEach((el) => {
       el.addEventListener('click', () => {
         const ds = el.dataset;
+        /* 展开（不是收起）时把这一枝的键记进 `justOpened`：`renderList()` 靠它分辨"这些行是展开
+           露出来的"（⇒ 向下弹出）与"真新建出来的"（⇒ 从左侧滑入）。键与三个 collapsed* Set 对齐。 */
+        const opened = (key: string, wasOpen: boolean): void => { if (!wasOpen) justOpened = key; };
         if (ds.act === 'world') {
+          opened(ds.nw!, isOpen(collapsedWorlds, ds.nw!));
           toggleOpen(collapsedWorlds, ds.nw!);
           renderList();
         } else if (ds.act === 'tl') {
-          toggleOpen(collapsedTls, ds.nw + '::' + ds.ntl);
+          const k = ds.nw + '::' + ds.ntl;
+          opened(k, isOpen(collapsedTls, k));
+          toggleOpen(collapsedTls, k);
           renderList();
         } else if (ds.act === 'tkind') {
-          toggleOpen(collapsedKinds, ds.nw + '::' + ds.ntl + '::' + ds.nk);
+          const k = ds.nw + '::' + ds.ntl + '::' + ds.nk;
+          opened(k, isOpen(collapsedKinds, k));
+          toggleOpen(collapsedKinds, k);
           renderList();
         } else if (ds.act === 'wset') {
-          toggleOpen(collapsedTls, 'setting::' + ds.nw);
+          const k = 'setting::' + ds.nw;
+          opened(k, isOpen(collapsedTls, k));
+          toggleOpen(collapsedTls, k);
           renderList();
         } else if (ds.act === 'etype') {
-          toggleOpen(collapsedKinds, 'etype::' + ds.nw + '::' + ds.nk);
+          const k = 'etype::' + ds.nw + '::' + ds.nk;
+          opened(k, isOpen(collapsedKinds, k));
+          toggleOpen(collapsedKinds, k);
           renderList();
         } else if (ds.act === 'node') {
           switchTarget(() => {

@@ -99,11 +99,14 @@ async function main() {
     if (!b) return 'no row';
     b.click(); return 'ok';
   })()`);
-  /** 帧条：每格 { id, t, n, on, frame, ghost, anchor } + 底部按钮/提示 + 展开行文字 */
+  /** 帧条：每格 { id, t, n, on, frame, ghost, anchor, write } + 底部按钮/提示 + 展开行文字 */
   const rail = () => ev(`(() => {
     const rows = [...document.querySelectorAll('#cx-rail .lk-rail__row')].map((r) => ({
       id: r.dataset.rail || '', on: r.classList.contains('is-on'), frame: r.classList.contains('is-frame'),
       ghost: r.classList.contains('is-ghost'), anchor: r.classList.contains('is-anchor'),
+      /* 写目标（用户 2026-09-13：「切换帧时直接高亮要写到的地方」）：亮的那一格 + 「改这里」标签 */
+      write: r.classList.contains('is-write'),
+      wtag: !!r.querySelector('.lk-rail__tag--write'),
       t: (r.querySelector('.lk-rail__t') || {}).textContent || '', n: (r.querySelector('.lk-rail__n') || {}).textContent || '',
       s: (r.querySelector('.lk-rail__s') || {}).textContent || '',
     }));
@@ -145,7 +148,8 @@ async function main() {
   await sleep(500); await forceFrames(2);
   const r0 = await rail();
   check('★0 前置：一条版本都没有时，帧条上只有「初稿」那一格（没有版本的节点不列出来）',
-    r0.n === 1 && r0.rows[0].n === '初稿', { n: r0.n, rows: r0.rows.map((x) => x.t + '/' + x.n) });
+    /* 名字后面可能跟着「改这里」标签（写目标高亮，见 ★15）⇒ 用 startsWith 比 */
+    r0.n === 1 && r0.rows[0].n.startsWith('初稿'), { n: r0.n, rows: r0.rows.map((x) => x.t + '/' + x.n) });
   const a0 = await anchorInfo();
   check('★0b 「记到」下拉里三个事件节点都在（不列出来 ≠ 记不到），默认 = 离沙盘指针最近的那个事件',
     !!a0 && a0.opts.length === 3 && a0.opts.includes('n-evo-2') && a0.val === 'n-evo-3',
@@ -392,6 +396,49 @@ async function main() {
   check('★14c 删掉当前这一版之后：帧条退回还剩的那些版本，视图落在第 1 版（不是空的）',
     r14.n === 2 && r14.rows[1].on && (await versionNote()).includes('第 1 版'),
     { n: r14.n, on: r14.rows.findIndex((x) => x.on), note: await versionNote() });
+
+  /* ── ★15 写目标高亮：一眼看出「改动会写进哪一格」（用户 2026-09-13 原话：
+     「我希望切换帧时直接高亮要写到的地方」）──────────────────────────────── */
+  await sleep(300); await forceFrames(2);
+  const r15 = await rail();
+  check('★15 手动模式：亮着的是「正在看的那一版」（手动模式下它就是改动会写进去的那一格）',
+    r15.rows[1]?.write === true && r15.rows[1]?.wtag === true && r15.rows[0]?.write === false
+      && r15.rows[1].n.includes('改这里'),
+    { write: r15.rows.map((x) => x.write), tags: r15.rows.map((x) => x.wtag), n: r15.rows.map((x) => x.n) });
+
+  await clickRow(0);                     /* 切到「初稿」那一格 */
+  await sleep(350); await forceFrames(2);
+  const r15b = await rail();
+  check('★15b 切到初稿那一格 → 写目标跟着挪到初稿（不是刚才那一版）',
+    r15b.rows[0].write === true && r15b.rows[0].wtag === true && r15b.rows[1].write === false,
+    { write: r15b.rows.map((x) => x.write), n: r15b.rows.map((x) => x.n) });
+
+  await setMode('auto');
+  await sleep(450); await forceFrames(2);
+  const r15c = await rail();
+  const aIdx = r15c.rows.findIndex((x) => x.anchor);
+  check('★15c 自动模式：亮的是「记到」那一格（自动的改动就记到它上面）；它还没版本时也得**被拉进帧条**来（否则高亮无处可挂）',
+    aIdx >= 0 && r15c.rows[aIdx].write === true && r15c.rows[aIdx].ghost === true
+      && (r15c.rows[aIdx].n.match(/改这里|记到/g) || []).length === 1,
+    { write: r15c.rows.map((x) => x.write), ghost: r15c.rows.map((x) => x.ghost), aIdx, n: r15c.rows[aIdx]?.n });
+  check('★15d 自动模式：底部那个「＋ 记一帧」收起来了（改动本来就会自动记一版，留着只会让人以为要手动点）',
+    r15c.add === null && r15c.mode === '自动',
+    { add: r15c.add, mode: r15c.mode, hints: r15c.hints });
+
+  await ev(`(() => {
+    const s = JSON.parse(localStorage.getItem('lingkuang-settings') || '{}');
+    s.evolveMode = 'locked'; s.evolveLock = { world: '测试世界观', tlId: 'tl-主线', nodeId: 'n-evo-2' };
+    localStorage.setItem('lingkuang-settings', JSON.stringify(s));
+    window.dispatchEvent(new CustomEvent('lingkuang-settings'));
+    return true;
+  })()`);
+  await sleep(450); await forceFrames(2);
+  const r15e = await rail();
+  const lIdx = r15e.rows.findIndex((x) => x.id === 'n-evo-2');
+  check('★15e 锁定模式：亮的是锁定的那一格（改动都记到它上面，与"正在看哪一版"无关）',
+    lIdx >= 0 && r15e.rows[lIdx].write === true && r15e.rows.filter((x) => x.write).length === 1,
+    { write: r15e.rows.map((x) => x.write), lIdx, mode: r15e.mode });
+  await setMode('manual');   /* 复位（下一条断言看的是"没出错"，但别把状态留给同实例的下一个套件） */
 
   /* ── ★13 无未捕获异常 ───────────────────────────────────────────── */
   const errs = await ev(`window.__errs || []`);

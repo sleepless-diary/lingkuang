@@ -209,6 +209,109 @@
   动画要么停在 0、要么被出帧一次性推到底。所以转场的证据是**参数级断言 + 演示页**（用户自己在
   可见的 Edge 窗口里看过并点头），不是截图。
 
+### 八、切帧时看不清"改动会写到哪儿" + 自动模式还摆着「＋记一帧」（用户 2026-09-13 深夜）
+
+- 原话（同一条消息的另外两件）：「**我希望切换帧时直接高亮要写到的地方**，还有**自动模式下怎么还有
+  记一帧的按钮**」。用户在我给的选项里选了「在帧条上把要写进去的那一格点亮 + 挂个『改这里』小标签」。
+- 实现（`src/ui/evolution-rail.ts` + `src/ui/codex.ts`）：
+  - `RailDeps` 新增 `getWriteTarget: () => string | null`；codex 侧新增 **`writeTargetNodeId()`** ——
+    **只算不写**（⚠️ 不能复用 `editVersion()`：它会建帧、还会把视图挪过去，那是副作用）。三种模式的落点：
+    锁定 = `evolveLock.nodeId`（且世界匹配）；自动 = 「记到」那一格（`railAnchor`，为 null 时退回正在看的那版）；
+    手动 = 正在看的那一版（`railNode`，null = 初稿）。
+  - 那一格加 `.is-write`（accent 内描边 ring，与 `is-on` 的深色底区分：**"正在看"与"会写进去"可以是两行**）
+    + `.lk-rail__tag--write`「改这里」药丸（accent 实底）。两者重合时（自动模式下就是同一格）只挂一个标签。
+  - **写目标那一格必须"看得见"**：帧条默认只列有版本的格子，而自动模式的「记到」常常还没版本
+    ⇒ 单独把它补进 `shown`（虚化样子 + 「改这里」）。**这是 ★15c 逼出来的**：第一版没有这一步，
+    实测 `is-write` 一个都没有（`aIdx:-1`）——"高亮要写到的地方"在格子上根本不存在。
+  - 自动模式下**不渲染** `[data-rail-add]`（改动本就会自动记一版，留着按钮只会让人以为要手动点）；
+    空状态文案跟着换成「改一下字段就会自动记一版」；「记到」下拉保留（它决定自动帧锚在哪个事件上）。
+- 测试：`entity-evolution.cjs` **38 → 43 项**（★15 手动=正在看的那版 / ★15b 切到初稿写目标跟着挪 /
+  ★15c 自动=「记到」那格且被拉进帧条 / ★15d 自动没有 ＋记一帧 / ★15e 锁定=锁住那格且只有一格亮）。
+- 连带改：★0 的 `rows[0].n === '初稿'` 改成 `startsWith('初稿')`（名字后面现在可能跟着「改这里」标签）。
+
+### 九、左树的增删重排是"啪"地换（用户 2026-09-13 深夜）
+
+- 原话：「**新建实体和节点时不是硬切换，而是从左侧滑入（就像正文的入场一样），其下的所有节点都向下
+  平滑移动（删除时也一样），展开文件夹时文件向下弹出**」。
+- 为什么不能只靠 CSS：左树每次重画都是 `innerHTML` 整块换掉（元素**新建**、没有"旧位置"），
+  transition/keyframes 都表达不了"从旧位置滑到新位置"。`src/ui/motion.ts` 新增三个原语 + 一个测量器：
+  | 原语 | 用途 | 关键帧 |
+  |---|---|---|
+  | `rowSlideIn(el, {dx=24,dur=320,delay})` | 新出现的行 | `translateX(-24px)/0 → none/1`（快→慢，`fill:'both'`） |
+  | `flipRows(rows, keys, tops, prev, {dur=320})` | 其余**位置变了**的行 | `translateY(旧-新) → none`（`fill:'none'`） |
+  | `rowsDropIn(rows, {dy=8,dur=260,step=22})` | 展开文件夹露出来的行 | `translateY(-8px)/0 → none/1`，逐行 +22ms |
+  | `rowLeaveAndRemove(el, {dx:24,dur:260})` | 被删的那一行（幽灵） | `none/1 → translateX(-24px)/0`（慢→快），演完 `el.remove()` |
+  | `topsOf(container)` | 量"相对容器顶部"的 top | ——（相对值，避开页面滚动） |
+- 左树侧（`src/ui/codex.ts`）：行加稳定键 `data-cx-key`（`<act>|<id>`）；`renderList()` 结尾量一次位置、
+  与上一轮快照 `rowTops` 做 FLIP、把"新出现的行"分成两类（展开露出来的 → `rowsDropIn`；真新建的 →
+  `rowSlideIn`，错峰 30ms 封顶 240ms）；**首次渲染 / 整块重建后不演**（`cold = prev.size === 0`）。
+  展开时在 `bindTreeClicks` 里记 `justOpened = <键>`（键与 `collapsed*` 三个 Set 同构），
+  renderList 按祖先链判断一行是不是"刚被展开出来的"。
+- **两个坑（都在代码里写了理由）**：
+  1. **两次重画会把刚起头的动画顶掉**：`addEntity()` 走 `store.update` ⇒ store 订阅**同步**重画一次左树，
+     紧接着 `switchTarget()` 又重画一次 —— 两次落在同一个 tick，浏览器中间根本不合成帧，动画连一帧都
+     没画出来。修法：新增 `withListHold()`，建 N 个 / 删一条期间**先别重画**，末尾一次画完。
+  2. **删除中途会把位置快照冲掉**：删掉"当前正在编的那条"会让正文签名变化 ⇒ 中途触发一次整块 `render()`，
+     左树元素全换 ⇒ 靠"上一次 renderList 留下的快照"会在这中间失效（实测删完**没有**让位动画）。
+     修法：`snapshotRows()` —— 删除前**主动拍一张**旧位置快照。
+- 删除时被删的那一行留一个**钉在原位的幽灵**（`pinRowGhost()`：`cloneNode` + `position:fixed` 挂在
+  `document.body` 上，因为 `#cx-list` 马上会被清空；克隆体里的 `[id]` 全摘掉，否则页面上会多出第二个
+  `#cx-fields`/`#cx-doc`，`querySelector` 抓错元素）。
+
+### 十、帧条收起时"直接消失"（用户 2026-09-13 深夜报，第七节的后续）
+
+- 原话：「**对了，从设定文件切换到节点文件演变面板会直接消失**」。
+- 抓帧探针（`%TEMP%\lk-railoff.cjs`，点节点行后连采样）实测：点下去**同一个 tick** 里
+  帧条 `h` 已经从 **271 → 1**，而 `w` 才刚开始走（176 → 79 → 10 → 0）⇒ `overflow:hidden` 当场把内容裁没，
+  那 320ms 的宽度收起**根本看不见**。元素身份没变（`same:true`，不是被重建）。
+- 根因：`.lk-rail.is-off { height: 0 }` —— `height: auto → 0` **不是可插值长度**，过渡对它是**瞬时**生效的
+  （第七节当时就是这么写的，还写着"布局上看不出来"；在"收起"这个方向上它其实把整个动画吃掉了）。
+- 修法（`src/ui/codex.ts` 的 **`setRailOpen(open)`** + `src/style.css`）：
+  - `.is-off` 里**删掉** `height: 0`，改由 JS 在 **420ms 后**加 `.is-collapsed { height: 0 }`
+    （那时 opacity 已经到 0，收高度看不出来）；展开时立刻摘掉两个类（宽度从 0 长出来，观感就是拉开）。
+  - `.lk-rail > * { min-width: 168px }`：宽度收到 0 的过程中内容**不许重排**（实测子项宽度 175 → 18，
+    挤成一列会让高度暴涨、把那一行撑高、`#cx-root` 平白长滚动条）。
+  - 骨架里节点态直接给 `class="lk-rail is-off is-collapsed"`（首帧不演）。
+- 复测：收起时 `h` 保持 271 直到宽度走完（176 → 43 → 6 → 0），之后才 `.is-collapsed` → h=0；展开时
+  高度立刻回来、宽度 106 → 172 → 176。
+- 测试：`codex-smooth-switch.cjs` ★13c 反转为「**同一 tick 里高度必须还撑着**（`h1 > 0` 且没有
+  `.is-collapsed`）」，新增 **★13c2**「演完之后 `.is-collapsed` + 宽高都 0」。**A/B：改动前 ★13c 挂**
+  （读到的正是那个被瞬时归零的高度）。
+
+### 十一、⚠️ 一次建多个会**静默丢数据**（`'e' + Date.now()` 撞车，本轮自查 + 新套件逼出来的）
+
+- 现象：点一次「＋新建实体」（数量 3）只活下来 **2** 个，名字还跳号（`新实体 / 新实体 3`，
+  中间的 `新实体 2` 连 JSON 带 vault 一起没了）。是 `tools/e2e/codex-list-motion.cjs` 的 ★1 逼出来的：
+  它断言"新建出来的那几行都从左侧滑入"，第一版实测只数到 2 行。
+- 根因：`src/store/actions.ts` 六处 id 都是 **`'e' + Date.now()`**（节点/时间线/地图/循环/剧情线同理）。
+  批量建条目时循环在**同一毫秒**里跑完 ⇒ 三次拿到**同一个 id** ⇒ `entities[id] = {…}` 后建的把先建的
+  **覆盖**掉（vault 侧同一个 `.md` 路径也互相覆盖）。**界面上只看见少了一行，没有任何报错。**
+- 修法：新增 **`src/store/ids.ts`** 的 `uid(prefix)` —— 「**单调时钟**」：以 `Date.now()` 打底，
+  同一毫秒内依次 +1（`lastStamp`），永不重复；id 仍是"前缀 + 十进制数字"，排序语义与 vault 文件名都不受影响。
+  六处生成点（`addTimeline`/`addNode`/`addEntity`/`addMap`/`addLoop`/`copyNode` + `ensureTimeline` 里那个
+  带随机数的）+ `src/ui/map.ts`（默认地图 / 区域 / 标记）+ `src/ui/timeline.ts`（剧情线）全部改用它。
+- A/B（同一个探针、同一台机、各自干净起点）：**改动前 建 3 个 → JSON/vault 各只剩 2 个**；
+  改动后 → **3 个**（`新实体 / 新实体 2 / 新实体 3`，行数 +3）。vault 侧也逐份核对过。
+
+### 验证（二十二 · 续）
+
+- `tools/e2e/codex-list-motion.cjs`（**新增，14 项**）：★1/★1b 新行从左侧滑入且错峰 0/30/60、
+  ★2 其余行 FLIP（**方向不写死**：插在上面是向下让位、插在下面是向上让位，两种都对）、
+  ★3/★3b 展开文件夹的行向下弹出（错峰 22ms）、★4/★4b 收起→向上补位、再展开→向下让位、
+  ★5/★5b/★5c 删除的幽灵钉在原位往左退场 + 下面的行补位 + 行数 -1、★5d 幽灵演完自己摘掉、
+  ★6 减少动效时**一次动画都不演**、★7 无未捕获异常。
+  **A/B（`git stash` 掉 motion.ts/codex.ts/evolution-rail.ts/style.css + rebuild）4/14** ——
+  正好是那 10 条新断言全挂（★5d/★6/★7 是守卫，两边都过）。
+- `entity-evolution.cjs` **43/43**（新增 5 项见第八节）；重跑要**重新播种 + 重启**（脏实例连跑第二遍会掉到 31/38）。
+- 回归全绿（都在这个构建上、各自干净起点）：`codex-smooth-switch` **22/22**、`codex-swap-motion` 14/14、
+  `codex-node-tab` 18/18、`codex-tree-view` 22/22、`codex-switch-target` 7/7、`workbench-add-node` 15/15、
+  `workbench-tree-folders` 29/29、`motion-switch` 25/25、`toolbar-groups` 5/5、`settings-panel` 12/12、
+  `entity-vault` 17/17、`kind-change-stale-file` 11/11；`tsc --noEmit` / `vite build` exit 0。
+- ⚠️ 又一次踩到 **PowerShell 往返 UTF-8 源码**的坑：用 `(Get-Content -Raw) -replace … | Set-Content -Encoding utf8`
+  批量改 `src/store/actions.ts` 的 id 生成，把中文注释全写成了乱码（还加了 BOM）。
+  救法：`git checkout -- src/store/actions.ts`，改用 edit 工具逐处改。
+  **批量改名/替换一律用 edit 工具或 node 写文件，别走 PowerShell**（SKILL `never-roundtrip-utf8-source-through-powershell`）。
+
 ## 第二十一轮（2026-09-13）· 演变：实体的版本历史（新功能 + 两条自查出来的 bug）
 
 > **目的**（用户 2026-09-12 提、09-13 细化）：给每个世界一套 git ——

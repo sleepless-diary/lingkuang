@@ -752,15 +752,21 @@ body {
 }
 .lk-rail.is-off {
   width: 0;
-  /* 高度也要一起收：三栏那行是 `align-items:flex-start`，帧条高度由内容决定 —— 只收宽度的话
-     内容被挤成一列、反而更高，把这一行撑高（`#cx-root` 是 overflow:auto，多一像素就长滚动条）。 */
-  height: 0;
   margin-left: -12px;
   opacity: 0;
   transform: translateX(14px);
   border-width: 0;
   pointer-events: none;
 }
+/* ⚠️ **不要**把 `height: 0` 写进 `.is-off`：`height: auto → 0` 不是可插值长度，
+   过渡对它是**瞬时**生效的，而这一条有 `overflow: hidden` ⇒ 内容当场被裁没，
+   宽度那 320ms 的收起根本看不见。用户 2026-09-13 报的「从设定文件切换到节点文件演变面板会直接
+   消失」就是这个（实测：点下去同一 tick 里 h 已经从 271 变成 1，而 w 才刚从 176 开始走）。
+   现在高度由 JS 在收起演完（420ms，届时 opacity 已到 0）之后再加 `.is-collapsed` 收掉。 */
+.lk-rail.is-collapsed { height: 0; }
+/* 收起过程中内容**不许重排**：宽度收到 0 时块级子项会挤成一列（实测子项宽度 175 → 18），
+   高度会暴涨，那一行就跟着长高、`#cx-root` 平白多出滚动条。 */
+.lk-rail > * { min-width: 168px; }
 .lk-rail__head {
   display: flex;
   align-items: center;
@@ -826,6 +832,14 @@ body {
 .lk-rail__row.is-ghost:hover { opacity: 0.85; }
 /* 「记到」那一格：左侧一道亮边 + 名字后一个小标签（＝底部下拉选框的当前值） */
 .lk-rail__row.is-anchor { border-left-color: var(--accent); }
+/* **写目标**（改动真会落进这一格，用户 2026-09-13：「我希望切换帧时直接高亮要写到的地方」）：
+   一圈 accent 内描边 —— 与 `is-on`（深色底 = "正在看这一版"）分开，两件事可以不在同一行
+   （手动模式站在第 2 版看、锚点却在第 5 个事件上）。 */
+.lk-rail__row.is-write {
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: var(--surface);
+}
+.lk-rail__row.is-write.is-ghost { opacity: 0.75; }   /* 还没版本也要看得见"改动会写到这里" */
 .lk-rail__tag {
   margin-left: 5px;
   padding: 0 4px;
@@ -835,6 +849,8 @@ body {
   font-size: 9px;
   vertical-align: 1px;
 }
+/* 「改这里」：写目标的标签，比「记到」更实（底色铺满），一眼分得清哪个是"会写进去" */
+.lk-rail__tag--write { background: var(--accent); color: var(--accent-on); }
 /* 展开/收起那一行：不属于「等距格子」（那类高 46px 钉死），所以单独一个类、高度自适应 */
 .lk-rail__more {
   padding: 6px 8px;

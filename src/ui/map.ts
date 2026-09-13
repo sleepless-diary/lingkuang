@@ -1,6 +1,7 @@
 /** 地图模块——手绘矢量地图（区域 + 标记），存 ws.maps[]；基础版照抄 legacy 平滑 */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
+import { uid } from '../store/ids';
 import type { MapData } from '../store/types';
 import { escapeHtml } from './html';
 
@@ -39,7 +40,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
     store.update((d) => {
       const w = d.worldsets[store.activeWorld];
       if (!w.maps || !w.maps.length) {
-        w.maps = [{ id: 'm' + Date.now(), name: '默认地图', width: 900, height: 500, regions: [], markers: [], paths: [] }];
+        w.maps = [{ id: uid('m'), name: '默认地图', width: 900, height: 500, regions: [], markers: [], paths: [] }];
       }
     }, { undo: false, keepRedo: true });
   }
@@ -131,7 +132,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
       const fill = `rgba(${158 + Math.floor(Math.random() * 60)},${150 + Math.floor(Math.random() * 50)},${98},0.25)`;
       save((m) => {
         m.regions.push({
-          id: 'rg' + Date.now(),
+          id: uid('rg'),
           name: `区域 ${m.regions.length + 1}`,
           points: pts,
           path: smoothClosedPath(pts),
@@ -152,7 +153,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
       drawing = [[x, y]];
       renderSvg();
     } else if (mode === 'marker') {
-      save((m) => { m.markers.push({ id: 'mk' + Date.now(), x, y, label: `M${labelSeq++}` }); });
+      save((m) => { m.markers.push({ id: uid('mk'), x, y, label: `M${labelSeq++}` }); });
     } else {
       panning = true;
       panSX = e.clientX; panSY = e.clientY;

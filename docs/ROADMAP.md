@@ -232,12 +232,19 @@
   `Tool.panel = true`（面板型工具）+ `src/ui/settings-panel.ts`（挂 body、fixed、主区一动不动，
   ×/Esc/点遮罩三种关法，`lingkuang-panel` 事件同步左栏按钮高亮）。验证：`settings-panel.cjs` **12/12**
   （A/B 4/12），`toolbar-groups.cjs` 5/5。
-- [ ] **第 B 片 · 列表变化（剩下的一半）**：条目**增删**时其余项**让位**（CSS 表达不了，
-  要用 Anime.js 或手写 FLIP）。⚠️ 别把错峰挂在每次 `renderList()` 上 —— 搜索框每敲一个字都会重画左列
-  （左列条目那种"显式切换才播"的做法可以照 `src/ui/codex.ts` 的 `pendingEnter` 抄）。
-  高度平滑那套（`childHeights` + `smoothHeights`）能直接复用到「重画后高度变了」的场景。
+- [x] **第 B 片 · 列表变化（剩下的这一半，2026-09-13 深夜做完）**：用户原话「**新建实体和节点时不是
+  硬切换，而是从左侧滑入（就像正文的入场一样），其下的所有节点都向下平滑移动（删除时也一样），
+  展开文件夹时文件向下弹出**」。落地 = `src/ui/motion.ts` 四个原语（`rowSlideIn` / `flipRows` /
+  `rowsDropIn` / `rowLeaveAndRemove`）+ 左树每行一个 `data-cx-key` + 上一轮位置快照 `rowTops`：
+  新行左侧滑入（错峰 30ms）、其余行 FLIP 让位、展开露出的行下弹（错峰 22ms）、被删那行留一个钉在
+  原位的幽灵往左退场。**两个必须记住的实现前提**：① 批量改动期间要 `withListHold()` 挡住中间那次
+  重画（否则动画一帧都画不出来）；② 删除前要 `snapshotRows()` 主动拍旧位置（中途一次整块 render 会
+  把快照冲掉）。⚠️ 别把错峰挂在每次 `renderList()` 上 —— 搜索框每敲一个字都会重画左列
+  （`cold = prev.size === 0` 让"整块重建"那一次不演）。守卫：新增 `tools/e2e/codex-list-motion.cjs`
+  **14 项**（A/B 改动前 **4/14**）。
 - [ ] **第 C 片 · 画布**：时间线节点移动 / 循环框 / 剧情线。⚠️ 撞 `src/ui/timeline.ts` 的
-  「每次 store 通知整体重渲染」硬约束，得先让节点能跨重建续上位置（这是 Anime.js 真正该上场的地方）。
+  「每次 store 通知整体重渲染」硬约束，得先让节点能跨重建续上位置（这是 Anime.js 真正该上场的地方 ——
+  第 B 片最后是用 WAAPI 的 `flipRows` 手搓的，没动 Anime.js）。
 - [ ] **The Breath（8s 签名动效）**：只许用在 AI 头像 / 发送按钮（`DESIGN.md:156`）—— 等 AI 工具那片做。
 - 设计定义：`design-system/DESIGN.md` 第 19 / 152 / 156 / 157 / 159 行 —— 呼吸感（**8s 签名动效
     「The Breath」**，只许用在 AI 头像/发送按钮）、**苏醒入场（Waking fade）**（首次挂载

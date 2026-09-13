@@ -89,6 +89,7 @@ async function main() {
       const o0 = Number(cs.opacity);
       anims.forEach((a) => a.finish());
       return { off, trans, tr, w0, o0,
+        collapsed: r.classList.contains('is-collapsed'),   /* 高度"演完才收"用的类，见 ★13c */
         w1: Math.round(r.getBoundingClientRect().width), h1: Math.round(r.getBoundingClientRect().height),
         o1: Number(getComputedStyle(r).opacity), inDom: r.isConnected };
     };
@@ -314,12 +315,24 @@ async function main() {
   check('★13c 帧条是**演**着收起来的，不是硬切：元素常驻 + `.is-off` + 宽/位移/透明度过渡（176px→0、不透明→透明）',
     tab.railSame === true && tab.rail.inDom === true
       && tab.rail.off === true
-      && String(tab.rail.trans).includes('width') && String(tab.rail.trans).includes('height')
+      && String(tab.rail.trans).includes('width')
       && tab.rail.tr.some((x) => x.prop === 'width') && tab.rail.tr.some((x) => x.prop === 'margin-left')
       && tab.rail.tr.every((x) => x.dur > 0) && tab.rail.tr.length >= 3
       && tab.rail.w0 > 100 && tab.rail.o0 === 1
-      && tab.rail.w1 === 0 && tab.rail.h1 === 0 && tab.rail.o1 === 0,
+      && tab.rail.w1 === 0 && tab.rail.o1 === 0
+      /* ⚠️ 同一 tick 里**高度必须还撑着**：`height: auto → 0` 不是可插值长度，写在 `.is-off` 里会
+         **瞬时**生效，`overflow: hidden` 当场把内容裁没 —— 用户 2026-09-13 报的
+         「从设定文件切换到节点文件演变面板会直接消失」就是这个（实测 h 从 271 变 1，而宽度才刚起步）。 */
+      && tab.rail.h1 > 0 && !tab.rail.collapsed,
     { rail: tab.rail, trans: tab.rail.trans });
+
+  /* 演完之后高度才收（`.is-collapsed` 由 JS 在 420ms 后加）—— 收的这一刻整条已经透明，看不出来 */
+  await sleep(700);
+  const railLate = await ev(`(() => { const r = document.querySelector('#cx-rail');
+    return { collapsed: r.classList.contains('is-collapsed'), h: Math.round(r.getBoundingClientRect().height),
+      w: Math.round(r.getBoundingClientRect().width) }; })()`);
+  check('★13c2 收起演完才把高度收掉（`.is-collapsed` + 宽高都 0），那 320ms 因此是**看得见**的收起',
+    railLate.collapsed === true && railLate.h === 0 && railLate.w === 0, railLate);
 
   /* ── ⑨ 节点→节点也要就地换 ──
      左栏重做后列表形态**直接摊平**了节点行（不再需要先展开 世界→时间线→种类），

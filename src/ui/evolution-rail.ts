@@ -30,6 +30,9 @@ export interface RailDeps {
   getSelected: () => string | null;
   /** 「记到哪个事件」（底部下拉的当前值；null = 还没定，兜底用离指针最近的那个） */
   getAnchor: () => string | null;
+  /** **改动会写进哪一格**（null = 初稿）—— 用户 2026-09-13：「我希望切换帧时直接高亮要写到的地方」。
+   *  ⚠️ 只算不写：不能拿 `codex.ts` 的 `editVersion()` 当代替，它会建帧、还会把视图挪过去。 */
+  getWriteTarget: () => string | null;
   onSelect: (nodeId: string | null) => void;
   /** 换锚点：只记在 codex 里，不碰数据 */
   onAnchor: (nodeId: string) => void;
@@ -118,10 +121,19 @@ export function createEvolutionRail(deps: RailDeps): Rail {
     const e = deps.getEntity();
     const sel = deps.getSelected();
     const anchor = deps.getAnchor() ?? '';
+    /* 「改动落到哪一格」——三种模式的落点不同（手动＝正在看的那版／自动＝「记到」那格／锁定＝锁住那格），
+       codex 那边算好给这里点亮。它和「正在看的那一格」可以是**不同的两行**（手动模式站在第 2 版看、
+       锚点却在第 5 个事件上），所以两种高亮各画各的。 */
+    const write = deps.getWriteTarget();
     const mode = loadSettings().evolveMode;
     const modeText = mode === 'auto' ? '自动' : mode === 'locked' ? '锁定' : '手动';
     const all = allRows();
     const rs = all.filter((r) => r.hasFrame);
+    /* 帧条上画的格子 = 有版本的 ∪ **改动要写进去的那一格**。
+       ⚠️ 第二项是必须的：自动模式的「记到」常常还没版本（改动会自动在它上面开一版），
+       而帧条默认只列有版本的格子 ⇒ 那一格根本不在屏幕上，"高亮要写到的地方"就无从谈起
+       （实测 ★15c：`is-write` 一个都没有）。补进来的那一格是虚化样子 + 「改这里」标签。 */
+    const shown = showAll ? all : all.filter((r) => r.hasFrame || r.nodeId === write);
     const orphans = e ? orphanRows(e, all) : [];
     /** 一个事件叫什么（提示里要说清"改动会记到哪儿"） */
     const nodeTitle = (nodeId: string | null): string => {
@@ -157,15 +169,20 @@ export function createEvolutionRail(deps: RailDeps): Rail {
         ? (isEmptyPatch(frame?.patch) ? '（只是标记）' : patchSummary(frame?.patch))
         : '还没版本';
       const isAnchor = r.nodeId === anchor;
+      /* 写目标：改动真会落进这一格（用户 2026-09-13：「切换帧时直接高亮要写到的地方」） */
+      const isWrite = r.nodeId === write;
       /* 虚化行：还没版本的事件（只在"展开"时出现）。样式见 .lk-rail__row.is-ghost */
-      const cls = `lk-rail__row${on ? ' is-on' : ''}${r.hasFrame ? ' is-frame' : ' is-ghost'}${isAnchor ? ' is-anchor' : ''}`;
+      const cls = `lk-rail__row${on ? ' is-on' : ''}${r.hasFrame ? ' is-frame' : ' is-ghost'}${isAnchor ? ' is-anchor' : ''}${isWrite ? ' is-write' : ''}`;
+      /* 两种标签不同时挂（自动模式里两者是同一格，挂两个反而糊）：写目标优先 —— 它是"你改的东西会去哪" */
+      const tag = isWrite ? '<span class="lk-rail__tag lk-rail__tag--write">改这里</span>'
+        : (isAnchor ? '<span class="lk-rail__tag">记到</span>' : '');
       const tip = r.hasFrame
-        ? `${r.tlName} · ${timeText(r.node)} ${note}`
+        ? `${r.tlName} · ${timeText(r.node)} ${note}${isWrite ? '（改动会写进这一格）' : ''}`
         : `${r.tlName} · ${timeText(r.node)} ${note}（还没版本 —— 点它 = 把新版本记到这个事件）`;
       return `<div class="${cls}" data-rail="${escapeHtml(r.nodeId)}"${r.hasFrame ? '' : ' data-ghost="1"'} title="${escapeHtml(tip)}">
         <span class="lk-rail__dot"></span>
         <span class="lk-rail__t">${escapeHtml(timeText(r.node))}</span>
-        <span class="lk-rail__n">${escapeHtml(note)}${isAnchor ? '<span class="lk-rail__tag">记到</span>' : ''}</span>
+        <span class="lk-rail__n">${escapeHtml(note)}${tag}</span>
         <span class="lk-rail__s">${escapeHtml(sum)}</span>
       </div>`;
     };
@@ -180,13 +197,13 @@ export function createEvolutionRail(deps: RailDeps): Rail {
         <span class="lk-rail__mode" title="在「设置 → 设定演变」里改">${escapeHtml(modeText)}</span>
       </div>
       <div class="lk-rail__rows">
-        <div class="lk-rail__row lk-rail__row--base${sel === null ? ' is-on' : ''}" data-rail="" title="初稿（实体 .md 里 frontmatter 的那一份）">
+        <div class="lk-rail__row lk-rail__row--base${sel === null ? ' is-on' : ''}${write === null ? ' is-write' : ''}" data-rail="" title="初稿（实体 .md 里 frontmatter 的那一份）${write === null ? '；改动会写进这一格' : ''}">
           <span class="lk-rail__dot"></span>
           <span class="lk-rail__t">起点</span>
-          <span class="lk-rail__n">初稿</span>
+          <span class="lk-rail__n">初稿${write === null ? '<span class="lk-rail__tag lk-rail__tag--write">改这里</span>' : ''}</span>
           <span class="lk-rail__s">${e ? `${Object.keys(e.properties ?? {}).length} 个字段` : ''}</span>
         </div>
-        ${(showAll ? all : rs).map(rowHtml).join('')}
+        ${shown.map(rowHtml).join('')}
         ${orphans.map((o) => `<div class="lk-rail__row${o.nodeId === sel ? ' is-on' : ''} is-frame" data-rail="${escapeHtml(o.nodeId)}" title="这一帧锚的节点已经被删掉了（历史仍保留）">
           <span class="lk-rail__dot"></span>
           <span class="lk-rail__t">孤立</span>
@@ -194,7 +211,7 @@ export function createEvolutionRail(deps: RailDeps): Rail {
           <span class="lk-rail__s">${escapeHtml(patchSummary((e?.frames ?? [])[o.version - 1]?.patch))}</span>
         </div>`).join('')}
         ${moreHtml(all.length - rs.length)}
-        ${rs.length + orphans.length ? '' : '<div class="lk-rail__empty">还没有版本<br>选好事件，点下面的 ＋</div>'}
+        ${rs.length + orphans.length ? '' : `<div class="lk-rail__empty">还没有版本<br>${mode === 'auto' ? '改一下字段就会自动记一版' : '选好事件，点下面的 ＋'}</div>`}
       </div>
       <div class="lk-rail__foot">
         <div class="lk-rail__pick">
@@ -204,7 +221,7 @@ export function createEvolutionRail(deps: RailDeps): Rail {
           </select>
         </div>
         <div class="lk-rail__acts">
-          <button class="lk-rail__add" data-rail-add="${escapeHtml(anchor)}"${anchor ? '' : ' disabled'}>＋ 记一帧</button>
+          ${mode === 'auto' ? '' : `<button class="lk-rail__add" data-rail-add="${escapeHtml(anchor)}"${anchor ? '' : ' disabled'}>＋ 记一帧</button>`}
           ${sel !== null && rs.some((r) => r.nodeId === sel)
             ? `<button class="lk-rail__del" data-rail-del="${escapeHtml(sel)}">删掉这一帧</button>`
             : ''}
