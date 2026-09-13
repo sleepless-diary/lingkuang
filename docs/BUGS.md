@@ -199,8 +199,8 @@
 - **修法**：加 `let linePinned = false;`，只有"用户还没选过"或"聚焦的那条线被删了"才自动落位到第一条：
   `const ids = new Set(lines.map(l => l.id)); if (!linePinned || (activeLineId !== null && !ids.has(activeLineId))) activeLineId = lines[0]?.id ?? null; linePinned = true;`
   （change 处理器里置 `linePinned = true`）。
-- **A/B**（`%TEMP%\lk-story-probe-b.mjs`，8 项）：修复后 8/8；把 `src/ui/timeline.ts` 退回 HEAD 重新
-  build 后 **★1/★2/★3/★5 四条 FAIL**（4/8）⇒ 断言确实盯住了这个 bug。★1 选完保持"世界历史"、
+- **A/B**（`tools/e2e/storyline-world-history.cjs`，8 项）：修复后 8/8；把 `src/ui/timeline.ts` 退回 HEAD
+  重新 build 后 **★1/★2/★3/★5 四条 FAIL**（4/8）⇒ 断言确实盯住了这个 bug。★1 选完保持"世界历史"、
   ★2 移动指针后仍是"世界历史"、★3 世界历史下没有聚焦遮罩（`#lk-story-mask` 子元素 0 个）、
   ★4 切回剧情线照样生效。
 
@@ -213,7 +213,7 @@
   ★0h（再点一次收起，虚化行消失、锚点照旧）。干净目录跑 **38/38**。
 - `tools/e2e/vault-rescan-race.cjs`（新增，6 项）：写盘在飞时改别的实体 `.md` →
   「刚改的字段不许自己变回去」+「外部改动仍然要能回扫进界面」（后者是防"靠永不回扫换绿"的守卫）。
-- 剧情线那条（八）：`%TEMP%\lk-story-probe-b.mjs` 8/8，A/B 4/8（★1/★2/★3/★5 挂）。
+- 剧情线那条（八）：`storyline-world-history.cjs` 8/8，A/B 4/8（★1/★2/★3/★5 挂）。
 - 视觉取证：1440×900 下截图确认帧条 = 起点/初稿（实心、选中）→ 三个虚化事件行（含带「记到」
   小药丸的那一格）→ `▴ 只看有版本的（0）`；中栏/正文/左列都不受影响。
 - `tsc --noEmit` exit 0、`node --check main.js` exit 0、`vite build` exit 0。
