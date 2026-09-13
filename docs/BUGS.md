@@ -96,9 +96,11 @@
   ⇒ 与外壳无关。
 - 修法（`src/ui/codex.ts`）：
   1. 那组控件**两种类别下都渲染**（`newCtl` 不再 `isEntity && …`），骨架里也不带条件 `display:none`；
-  2. 新增 `syncNewBox()`：节点态**只 `visibility:hidden`**（占位照旧 ⇒ 头行恒 28px），
-     同时把里面的 `button,select,input` 全部 `disabled` —— **隐藏元素仍然吃程序化 `.click()`**，
+  2. 新增 `syncNewBox()`：节点态**只藏不拆**（占位照旧 ⇒ 头行恒 28px），
+     同时把里面那组控件 `disabled` —— **隐藏元素仍然吃程序化 `.click()`**，
      不禁用的话节点态下还能凭空建出一个实体（`#cx-new` 的处理器不看 mode）；
+     （第五节的「两组控件按类别换」在这条之上继续加料：节点态那一格里装的已经不是实体控件，
+     而是「时间线 ▾ + ＋新建节点」。）
   3. `mountBody()` 与 `render()` 里都调 `syncNewBox()`（原来是直接改 `style.display`）。
 - 修后复量：头行两种模式都 28px，三栏行 top 都是 50、`#cx-list` 90、`#cx-body` 50。
 - **A/B（新断言必须在修复前的代码上挂）**：把 `box.style.visibility` 改回 `box.style.display` 并重建，
@@ -112,17 +114,46 @@
   正确写法是换算到「面板内容原点」：`top - rootRect.top + root.scrollTop`。同理，
   **`display:none` 的元素 `getBoundingClientRect()` 全是 0**，只能拿它的 `h` 或 `display` 说话，别比 top。
 
+### 五、顶栏那组控件按类别换：节点态**直接建节点**（用户 2026-09-13 深夜）
+
+- 原话：「说实话，添加实体按钮在事件节点中其实可以改成添加节点的，**毕竟万一用户不知道
+  添加事件节点要在世界沙盒怎么办**」→ 我提了「弹出建节点表单」的做法，用户回：「**添加节点就直接
+  添加节点吧，就像添加实体一样**」⇒ 不做弹层，点一下直接建（与「＋新建实体」同一套手感）。
+- 实现（`src/ui/codex.ts`）：
+  - 顶栏那一个位置**两组控件**，按类别显隐：实体态 = 「类型 ▾ + ＋新建实体」（原样），
+    节点态 = 「时间线 ▾ + ＋新建节点」。两组都是「一个下拉 + 一个按钮」的同一套样式（`NEWSEL`/`NEWBTN`），
+    高度一样 ⇒ **换类别时头行高度不变**（第四节那条不变量继续成立，★13b 已改成断言这一条）。
+  - `syncNewBox()` 改成切**组自身**的 `display`，并把隐藏那一组里的 `button/select/input` 全部 `disabled`
+    —— 隐藏元素仍然吃程序化 `.click()`，不禁用的话节点态下还能凭空建出一个实体（反之亦然）。
+    带 `data-off` 的控件（这个世界一条时间线都没有时的「＋新建节点」）在显隐切换里不会被重新启用。
+  - `newTimelines()`（= 当前世界的时间线清单，`order` 在前）+ `nodeNewTlId()`（默认 = **正在编的那个
+    节点所在的时间线**，没有就第一条）+ `nodeNewKind(tlId)`（默认跟正在看的那条**同种类** ⇒
+    落在同一个文件夹；否则 `事件`，即 `main.js` 里 `kind` 缺省的兜底值、也是左树的分组口径）。
+  - 点「＋新建节点」：`addNode(store, tlId, { title: '新节点', kind })` → `switchTarget()` 选中它 →
+    `say('已新建，改个名字吧')`（和新建实体一模一样：名字/时间/字段都在中栏改）。
+    ⚠️ `switchTarget` 里 `mode='node'` 与 `nodeTarget` 必须一起设 —— 只设 nodeTarget 的话，
+    从实体态点过来时 `mode` 还是 entity，`bodyHtml()` 会按实体画中栏。
+  - 一个自摆的坑：组容器与按钮**不能同 id**（第一版都叫 `#cx-new-node`）⇒ 容器 `#cx-new-node`、
+    按钮 `#cx-new-node-btn`。`querySelector('#cx-new-node')` 抓到容器的话，监听器根本挂不到按钮上。
+- 测试：新增 **`tools/e2e/workbench-add-node.cjs`（8 项）**：★0 节点态顶栏真的换成那一组（另一组藏起来
+  且禁用、时间线下拉默认 = 正在看的那条）、★1 点一下树里多一行「新节点」且**没有**弹出表单、
+  ★2 工作台选中了它（面包屑 / 标题字段 / 左树高亮）、★3 它落进 `vault/<世界>/主线/事件/新节点.md`
+  （种类跟着正在看的那条）、★4 中栏改名 ⇒ 文件跟着改名且旧的「新节点.md」不留第二份、
+  ★5 id 没变（是改名不是新建）、★6 左树那行跟着改、★7 无异常。
+  **A/B（改动前 = `git checkout -- src/ui/codex.ts` + 重建）3/8**：★0/★1/★2/★3/★5 全挂，
+  且 ★1 dump 直接看到树里只有「王国的建立」一行 ⇒ 断言有判别力。
+
 ### 验证（二十二）
 
 - `codex-swap-motion` **14/14**（A/B 改动前 6 FAIL）；`settings-panel` **12/12**（A/B 4/12）；
 - 换类别 y 跳 7px（第四节）：`codex-smooth-switch` **20/20**，A/B（退回 `display` 切换）时 ★13b 挂、
   其余 19 项照旧（判别力坐实）；
+- 顶栏按类别换 + 直接建节点（第五节）：新增 `workbench-add-node` **8/8**，A/B（改动前）**3/8**；
 - 回归全绿（都在**这个构建**上跑过，各自干净起点）：
   `codex-smooth-switch` **20/20**、`codex-swap-motion` 14/14、`codex-node-tab` 18/18、
   `codex-tree-view` 22/22、`codex-switch-target` 7/7、`motion-switch` 25/25、
-  `toolbar-groups` 5/5、`workbench-tree-folders` 29/29、`entity-evolution` 38/38、
-  `data-load-clean` 6/6、`entity-vault` 17/17 + `cold-start-entity-vault` PASS、
-  `startup-materialize-entity` 6/6、`kind-change-stale-file` 11/11；
+  `toolbar-groups` 5/5、`settings-panel` 12/12、`workbench-tree-folders` 29/29、
+  `entity-evolution` 38/38、`entity-vault` 17/17；
   `tsc --noEmit` / `vite build` exit 0。
 - ⚠️ 两条测试环境教训：① `toolbar-groups` **必须用全新实例** —— `codex-tree-view` 会把悬浮设置面板
   留在开着的状态，同实例接着跑时 ★3 点那一下变成"关"，且主区已被前一个套件改过

@@ -246,8 +246,17 @@ async function main() {
       entOnAfter: [...document.querySelectorAll('#cx-list [data-cx-id]')].filter((b) => b.classList.contains('is-on')).length,
       nodeOnAfter: [...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]')].filter((b) => b.classList.contains('is-on')).length,
       geo: window.__geoNow(),
-      newbox: (() => { const b = document.querySelector('#cx-newbox'); const btn = document.querySelector('#cx-new');
-        return { vis: b ? getComputedStyle(b).visibility : null, disabled: btn ? btn.disabled : null }; })(),
+      newbox: (() => {
+        const box = document.querySelector('#cx-newbox');
+        const ent = document.querySelector('#cx-new-entity');
+        const nod = document.querySelector('#cx-new-node');
+        const vis = (el) => (el ? getComputedStyle(el).display !== 'none' : null);
+        const off = (sel) => [...document.querySelectorAll(sel)].map((el) => el.disabled);
+        return { h: box ? Math.round(box.getBoundingClientRect().height) : null,
+          entVis: vis(ent), nodeVis: vis(nod),
+          entOff: off('#cx-new-entity button, #cx-new-entity select'), nodeOff: off('#cx-new-node button, #cx-new-node select'),
+          label: nod ? (nod.textContent || '').trim() : null };
+      })(),
     };
   })()`);
   await sleep(500);
@@ -256,15 +265,19 @@ async function main() {
       && tab.bodyCss.length === 0 && tab.ghost === true && tab.rowAnims > 0
       && tab.entOnAfter === 0 && tab.nodeOnAfter === 1, tab);
   /* 用户 2026-09-13 深夜：「事件节点和设定实体切换时，元素 y 坐标会变，**应该是增加实体按钮的出现与
-     消失导致的**」—— 正是它：那个按钮高 28px、头行文字只有 21px，`display:none` 之后头行矮 7px，
-     下面所有元素跟着上下跳。修法 = 节点态只 `visibility:hidden`（占位照旧）。这条钉住"框不动"，
-     与 ★13 的"骨架不重建"是两件事：**重建没发生 ≠ 位置没变**。 */
-  check('★13b 换类别时框的位置与高度一律不动（左树/中右栏/顶栏那组控件的 top 相同、它的高度不变）',
+     消失导致的**」—— 正是它：那个按钮高 28px、头行文字只有 21px，整组 `display:none` 之后头行矮 7px，
+     下面所有元素跟着上下跳。修法 = 两组控件都在骨架里，只切**组自身**的显隐（都是「下拉 + 按钮」，
+     高度一样）。这条钉住"框不动"，与 ★13 的"骨架不重建"是两件事：**重建没发生 ≠ 位置没变**。
+     同日用户又提：「添加实体按钮在事件节点中其实可以改成添加节点的」⇒ 节点态显示的是「＋新建节点」。 */
+  check('★13b 换类别时框的位置与高度一律不动，且顶栏换成了「＋新建节点」那组（另一组藏起来并禁用）',
     !!geo.before && !!tab.geo
       && tab.geo.list.t === geo.before.list.t && tab.geo.body.t === geo.before.body.t
       && tab.geo.newbox.t === geo.before.newbox.t && tab.geo.newbox.h === geo.before.newbox.h
+      && tab.newbox.h === geo.before.newbox.h
       && geo.before.rail.vis !== 'none' && tab.geo.rail.vis === 'none'
-      && tab.newbox.vis === 'hidden' && tab.newbox.disabled === true,
+      && tab.newbox.entVis === false && tab.newbox.nodeVis === true
+      && tab.newbox.entOff.every((d) => d === true) && tab.newbox.nodeOff.every((d) => d === false)
+      && String(tab.newbox.label).includes('新建节点'),
     { before: geo.before, after: tab.geo, newbox: tab.newbox });
 
   /* ── ⑨ 节点→节点也要就地换 ──

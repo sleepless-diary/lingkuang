@@ -23,7 +23,7 @@
 - `src/ui/shell.ts`：壳 UI（世界栏 + 工具栏 + 沙盘 + 工具宿主）
 - `src/ui/timeline.ts`：**世界沙盘时间线**（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针）
 - `src/ui/inspire.ts` / `assoc.ts` / `codex.ts` / `map.ts` / `ai-workbench.ts` / `roleplay.ts` / `tavern.ts` / `settings.ts` / `settings-panel.ts` / `detail.ts` / `node-form.ts`
-  —— 其中 **`codex.ts` = 设定库工作台**（左栏**一棵文件夹树**：世界 → 时间线 → 种类 → 节点 ／ 世界 → `_设定` → 类型 → 实体，**默认全展开**；点中哪一行就编哪一类，中栏字段、右栏正文、右边缘演变帧条，换条目时 `#cx-body` 演一次**行级转场**）。
+  —— 其中 **`codex.ts` = 设定库工作台**（左栏**一棵文件夹树**：世界 → 时间线 → 种类 → 节点 ／ 世界 → `_设定` → 类型 → 实体，**默认全展开**；点中哪一行就编哪一类，中栏字段、右栏正文、右边缘演变帧条，换条目时 `#cx-body` 演一次**行级转场**；顶栏那组控件按类别换：实体态「类型 ▾ + ＋新建实体」／节点态「时间线 ▾ + ＋新建节点」——**不用切去世界沙盘也能建节点**，两组都在骨架里只切显隐，否则换类别时下面整体跳 7px）。
   **`settings.ts`** = 设置项的存储与表单（`loadSettings`/`saveSettings`/`renderSettingsInto`）；
   **`settings-panel.ts`** = 那层**悬浮设置面板**（用户 2026-09-13：「我希望设置面板是悬浮面板，而不是单开一个标签页」⇒ `src/tools/registry.ts` 里 `Tool.panel = true` 的面板型工具）。
   原 `src/ui/editor.ts` 已于 2026-09-13 并入工作台并删除（提示条搬去 `src/ui/vault-notice.ts`）。

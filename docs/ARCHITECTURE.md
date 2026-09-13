@@ -402,12 +402,16 @@
   ⭐ **换类别（时间线节点 ↔ 设定条目）也走就地换**（2026-09-13 下午，用户：「从事件节点切换到实体
   节点时，事件节点保持选中状态，且面板刷新」）：`renderedMode !== mode` 时不再整块 `render()`，而是
   `mountBody()` —— 只把 `#cx-body` 的 innerHTML 换成 `bodyHtml()` 再 `wireBody()`，骨架、左树与
-  `#cx-root` 的滚动位置全留着（`#cx-rail` 改成常驻、节点模式 `display:none`；顶栏 `#cx-newbox` 按 mode
+  `#cx-root` 的滚动位置全留着（`#cx-rail` 改成常驻、节点模式 `display:none`；顶栏那两组控件按类别
   显隐），转场照演。⚠️ **顶栏那组控件只藏不拆**（`syncNewBox()`）：用户 2026-09-13 深夜报「切换时元素 y
   坐标会变，应该是增加实体按钮的出现与消失导致的」—— 那个「＋新建实体」高 28px 而头行文字只有 21px，
-  `display:none` 会让**下面所有元素跟着跳 7px**；现在节点态只是 `visibility:hidden`（占位照旧），
-  里面的 `button/select/input` 同时 `disabled`（隐藏元素照样吃程序化 `.click()`，不禁用能凭空建出实体）。
+  `display:none` 会让**下面所有元素跟着跳 7px**；现在骨架里**两组都在**（实体态「类型 ▾ + ＋新建实体」／
+  节点态「时间线 ▾ + ＋新建节点」，两组的形状与样式完全一样 ⇒ 行高恒 28px），只切组自身的 `display`，
+  隐藏那组的控件同时 `disabled`（隐藏元素照样吃程序化 `.click()`，不禁用能凭空建出实体）。
   守卫：`codex-smooth-switch.cjs` ★13b / ★14d（量的是"框的位置"，与 ★13 的"元素身份"是两件事）。
+  ⭐ **节点态那个「＋新建节点」是直接建**（用户：「添加节点就直接添加节点吧，就像添加实体一样」）：
+  落进「时间线 ▾ 里选的那条」的「跟正在看的那条同种类」的文件夹（`newTimelines()` / `nodeNewTlId()` /
+  `nodeNewKind(tlId)`），建完 `switchTarget()` 选中它。守卫：`tools/e2e/workbench-add-node.cjs`。
   相应地 `motion-switch.cjs` ★13/★14 是**反向**守卫：换类别/换条目后 `#cx-root` 与
   `#cx-list` 的子项一个 CSS 动画都不许有，内容区改由**行级 WAAPI 动画**（`animationName === ''`）
   承担；`.lk-swap-in`（`opacity .5 → 1`）如今只剩**减少动效**那一档在用（`prefers-reduced-motion`

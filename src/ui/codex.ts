@@ -22,7 +22,7 @@
 import type { Store } from '../store/store';
 import type { Entity, EntityFrame, TimelineNode } from '../store/types';
 import { currentWorld } from '../store/store';
-import { addEntity, removeEntity } from '../store/actions';
+import { addEntity, addNode, removeEntity } from '../store/actions';
 import { confirmDialog } from './confirm';
 import { escapeHtml } from './html';
 import { fieldRow } from './fields';
@@ -37,6 +37,10 @@ import {
 import { cascadeIn, enter, motionReduced, rowsEnter, rowsLeave } from './motion';
 
 const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;font-family:inherit;user-select:text;';
+/* 顶栏那两组「下拉 + 新建按钮」共用同一份样式 —— 高度必须一模一样（27px），
+   换类别时头行高度才不会变（用户 2026-09-13 深夜报过"切换时元素上下跳 7px"）。 */
+const NEWSEL = 'background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 6px;font-size:var(--text-xs);outline:none;';
+const NEWBTN = 'background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:6px 14px;font-size:var(--text-xs);cursor:pointer;';
 
 /** 正文写回哪个目标（编辑器跨条目复用，目标会变，所以是**读时取值**不是创建时捕获）。
  *  安全性由 `switchTarget` 保证：它一定先 `flush()`（此时 docTarget 还是旧目标）再改 docTarget。 */
@@ -148,6 +152,35 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       }
     }
     return out;
+  }
+  /** 顶栏那个「时间线 ▾」的选项 = 当前世界的全部时间线（`order` 在前，没进 order 的补在后面） */
+  function newTimelines(): { id: string; name: string }[] {
+    const ws = store.data.worldsets[store.activeWorld];
+    if (!ws) return [];
+    const ids = (ws.order ?? []).filter((id) => ws.timelines[id]);
+    for (const id of Object.keys(ws.timelines ?? {})) if (!ids.includes(id)) ids.push(id);
+    return ids.map((id) => ({ id, name: ws.timelines[id]?.name || '未命名' }));
+  }
+  /** 默认选中哪条时间线：**正在编的那个节点所在的那条**（同一个世界），否则第一条。
+   *  用户 2026-09-13：「添加实体按钮在事件节点中其实可以改成添加节点的」——
+   *  在工作台里新建的节点，理应落回你此刻正在看的那条时间线。 */
+  function nodeNewTlId(): string {
+    const list = newTimelines();
+    const t = nodeTarget;
+    if (t && t.world === store.activeWorld && list.some((x) => x.id === t.tlId)) return t.tlId;
+    return list[0]?.id ?? '';
+  }
+  /** 新节点用哪种「种类」（决定它在 vault 里落进哪个文件夹、有哪些字段）：
+   *  跟当前正在看的那条**同种类**（同一条时间线里）；否则 `事件`（= main.js 里 `kind` 缺省的兜底值、
+   *  也是左树的分组口径）；再没有就用模板里的第一个。 */
+  function nodeNewKind(tlId: string): string {
+    const t = nodeTarget;
+    if (t && t.tlId === tlId) {
+      const cur = store.data.worldsets[t.world]?.timelines[t.tlId]?.nodes.find((n) => n.id === t.nodeId);
+      if (cur?.kind) return cur.kind;
+    }
+    const fmts = Object.keys(store.data.formats ?? {});
+    return fmts.length && !fmts.includes('事件') ? fmts[0] : '事件';
   }
   const activeNode = (): TimelineNode | undefined => {
     const t = nodeTarget;
@@ -722,19 +755,30 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     normalizeEntitySelection();
     ensureRailSelection();   /* 实体页签：把"站在哪个事件上看"与各版本的样子准备好 */
     const kinds = Object.keys(types());
-    /* ⚠️ 这组控件**两种类别下都要渲染出来**（节点态只是 `visibility:hidden`）：见 `syncNewBox()`。
-       少了它，节点态的头行会矮 7px（28 → 21），下面所有元素跟着上下跳一下。 */
+    /* 顶栏那组控件**两种类别下都要渲染出来**（各自只藏不拆，见 `syncNewBox()`）：
+       少了它，节点态的头行会矮 7px（28 → 21），下面所有元素跟着上下跳一下。
+       用户 2026-09-13：「添加实体按钮在事件节点中其实可以改成添加节点的，毕竟万一用户不知道
+       添加事件节点要在世界沙盒怎么办」⇒ 节点态换成同一套长相的「时间线 ▾ + ＋新建节点」，
+       两组都是「一个下拉 + 一个按钮」，高度一样，所以换类别时头行高度不变（那条不变量有测试钉着）。 */
     const newCtl = kinds.length
-      ? `<select id="cx-new-type" title="新实体的类型" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 6px;font-size:var(--text-xs);outline:none;">${kinds.map((k) => `<option value="${escapeHtml(k)}">${escapeHtml(typeName(k))}</option>`).join('')}</select>
-         <button id="cx-new" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:6px 14px;font-size:var(--text-xs);cursor:pointer;">＋新建实体</button>`
+      ? `<select id="cx-new-type" title="新实体的类型" style="${NEWSEL}">${kinds.map((k) => `<option value="${escapeHtml(k)}">${escapeHtml(typeName(k))}</option>`).join('')}</select>
+         <button id="cx-new" style="${NEWBTN}">＋新建实体</button>`
       : '';
+    const tlNewOpts = newTimelines();
+    const nodeCtl = `<select id="cx-new-tl" title="新节点放进哪条时间线" style="${NEWSEL}">${
+      tlNewOpts.map((t) => `<option value="${escapeHtml(t.id)}"${t.id === nodeNewTlId() ? ' selected' : ''}>${escapeHtml(t.name)}</option>`).join('')
+    }</select>
+      <button id="cx-new-node-btn" style="${NEWBTN}"${tlNewOpts.length ? '' : ' data-off="1" disabled title="这个世界还没有时间线 —— 先去世界沙盘建一条"'}>＋新建节点</button>`;
 
     host.innerHTML = `
       <div style="max-width:1020px;margin:0 auto;padding:14px 16px 12px;display:flex;flex-direction:column;gap:8px;height:100%;overflow:auto;" id="cx-root">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <div style="font-size:17px;font-weight:600;color:var(--fg);">设定库</div>
           <span style="font-size:var(--text-xs);color:var(--fg-2);">「${escapeHtml(store.activeWorld || '（未选世界）')}」的条目 · 字段由模板决定（在左栏「结构体管理」里改模板）</span>
-          <span id="cx-newbox" style="margin-left:auto;gap:6px;align-items:center;display:flex;">${newCtl}</span>
+          <span id="cx-newbox" style="margin-left:auto;gap:6px;align-items:center;display:flex;">
+            <span id="cx-new-entity" style="gap:6px;align-items:center;display:${isEntity ? 'flex' : 'none'};">${newCtl}</span>
+            <span id="cx-new-node" style="gap:6px;align-items:center;display:${isEntity ? 'none' : 'flex'};">${nodeCtl}</span>
+          </span>
         </div>
         <div id="cx-hint" style="display:none;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:rgba(217,101,92,.12);font-size:var(--text-xs);color:var(--fg);line-height:1.5;"></div>
         <div style="display:flex;gap:12px;align-items:flex-start;">
@@ -811,6 +855,21 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       if (!typeId) return;
       const id = addEntity(store, { typeId, name: '新实体' });
       switchTarget(() => { activeId = id; });
+      say('已新建，改个名字吧');
+    });
+    /* 节点态那个「＋新建节点」：**直接建**（和「＋新建实体」同一套手感 —— 用户 2026-09-13：
+       「添加节点就直接添加节点吧，就像添加实体一样」），建完在工作台里选中它，
+       名字/时间/字段就在中栏改。节点落进 vault 的 `<时间线>/<种类>/新节点.md`
+       （`kind` 不传 ⇒ main.js 按 `事件` 兜底，与左树的分组口径一致）。 */
+    host.querySelector('#cx-new-node-btn')?.addEventListener('click', () => {
+      const sel = host.querySelector('#cx-new-tl') as HTMLSelectElement | null;
+      const tlId = sel?.value ?? '';
+      if (!tlId) return;
+      const id = addNode(store, tlId, { title: '新节点', kind: nodeNewKind(tlId) });
+      switchTarget(() => {
+        mode = 'node';
+        nodeTarget = { world: store.activeWorld, tlId, nodeId: id };
+      });
       say('已新建，改个名字吧');
     });
     /* 外部改动提示条：宿主刚被整块重建，把已有提示重画进来（提示是累积的，不因切条目而丢） */
@@ -915,22 +974,25 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     });
   }
 
-  /** 顶栏那组「类型 + ＋新建实体」在节点态**只藏不拆**。
+  /** 顶栏那组控件**只藏不拆**（两组都在骨架里，按类别显隐）。
    *
-   *  用户 2026-09-13 深夜：「事件节点和设定实体切换时，元素 y 坐标会变，**应该是增加实体按钮的出现与
-   *  消失导致的**」—— 量下来正是如此：那个按钮高 28px，而头行的文字只有 21px，`display:none` 之后
-   *  头行从 28 变 21 ⇒ **下面所有元素（三栏行 / 左树 / 中右栏）跟着上下跳 7px**。
-   *  所以改成 `visibility:hidden`：占位照旧（头行恒 28px），也点不到；
-   *  里面的控件同时 `disabled` —— 隐藏元素仍然吃**程序化** `.click()`，
-   *  不禁用的话节点态下还能凭空建出一个实体（`#cx-new` 的处理器不看 mode）。 */
+   *  用户 2026-09-13 深夜：「事件节点和设定实体切换时，元素 y 坐标会变，**应该是增加实体按钮的
+   *  出现与消失导致的**」—— 量下来正是如此：那个按钮高 28px，而头行的文字只有 21px，
+   *  `display:none` 之后头行从 28 变 21 ⇒ **下面所有元素（三栏行 / 左树 / 中右栏）跟着上下跳 7px**。
+   *  所以两组都渲染出来，只切**组自身**的 `display`：两边都是「一个下拉 + 一个按钮」的同一套样式
+   *  （下拉 21px + 按钮 27px ⇒ 行高恒 28px），外面那行的高度不变。
+   *  隐藏那一组里的控件同时 `disabled` —— 隐藏元素仍然吃**程序化** `.click()`，
+   *  不禁用的话节点态下还能凭空建出一个实体（反之亦然）。 */
   function syncNewBox(): void {
-    const box = host.querySelector<HTMLElement>('#cx-newbox');
-    if (!box) return;
     const isEntity = mode === 'entity';
-    box.style.visibility = isEntity ? '' : 'hidden';
-    box.setAttribute('aria-hidden', isEntity ? 'false' : 'true');
-    for (const el of Array.from(box.querySelectorAll<HTMLButtonElement | HTMLSelectElement | HTMLInputElement>('button,select,input'))) {
-      el.disabled = !isEntity;
+    for (const [sel, on] of [['#cx-new-entity', isEntity], ['#cx-new-node', !isEntity]] as [string, boolean][]) {
+      const g = host.querySelector<HTMLElement>(sel);
+      if (!g) continue;
+      g.style.display = on ? 'flex' : 'none';
+      for (const el of Array.from(g.querySelectorAll<HTMLButtonElement | HTMLSelectElement | HTMLInputElement>('button,select,input'))) {
+        /* `data-off` = 这控件本来就不能用（比如这个世界一条时间线都没有），显隐不该把它打开 */
+        el.disabled = !on || el.hasAttribute('data-off');
+      }
     }
   }
 
