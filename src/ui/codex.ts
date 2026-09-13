@@ -78,6 +78,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
      `railNode` = 选中的锚点节点（null = 初稿那一格）；`railKey` = 这个选择属于哪条实体，
      换实体要重挑默认值（用户指定：**离沙盘时间指针最近的那一帧**）。 */
   let railNode: string | null = null;
+  /* 「记到哪个事件」（帧条底部那个下拉）：新版本落在哪一格。用户 2026-09-13 上午要求
+     「没有版本的节点就不显示」之后，帧条上再也点不到空格子 ⇒ 建版本的入口就是这个锚点。 */
+  let railAnchor: string | null = null;
   let railKey = '';
   let rail: Rail | null = null;
   let states: EntityState[] = [];
@@ -144,10 +147,13 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   function say(text: string, bad = false): void {
     const el = host.querySelector('#cx-msg') as HTMLElement | null;
     if (!el) return;
+    /* 没有消息时**不占位置**（display:none）——见 render() 里 #cx-root 的高度预算：
+       给一句空话留 27px，正好把面板顶出窗口几像素，于是"什么都没超也长出滚动条" */
+    el.style.display = 'block';
     el.textContent = text;
     el.style.color = bad ? 'var(--danger)' : 'var(--accent)';
     if (msgTimer) window.clearTimeout(msgTimer);
-    msgTimer = window.setTimeout(() => { if (el.isConnected) el.textContent = ''; }, 2600);
+    msgTimer = window.setTimeout(() => { if (el.isConnected) { el.textContent = ''; el.style.display = 'none'; } }, 2600);
   }
 
   /** 就地改 target 指向的节点（用 nodeTarget 自己的 world，不回退 activeWorld）。 */
@@ -187,6 +193,21 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     return undefined;
   }
 
+  /** 离沙盘时间指针最近的**事件节点**（不看有没有版本）—— 锚点下拉的默认值 */
+  function nearestNodeId(): string | null {
+    const ws = currentWorld(store) as any;
+    const cursor = Number(ws?.timeCursor ?? 0);
+    let best: string | null = null;
+    let bd = Infinity;
+    for (const tlId of (ws?.order ?? []) as string[]) {
+      for (const n of (ws?.timelines?.[tlId]?.nodes ?? []) as TimelineNode[]) {
+        const d = Math.abs((epochOf(n.id) ?? 0) - cursor);
+        if (d < bd) { bd = d; best = n.id; }
+      }
+    }
+    return best;
+  }
+
   /** 换实体时重挑锚点。锁定模式钉在锁定那一格；否则 = **离沙盘时间指针最近的那一帧**
    *  （用户 2026-09-13 指定），一帧都没有就落到初稿。顺便把物化结果算好、把帧按时间排好。 */
   function ensureRailSelection(): void {
@@ -201,6 +222,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       const v = nearestVersion(e, epochOf, cursor);
       railNode = v > 0 ? ((e.frames ?? [])[v - 1]?.nodeId ?? null) : null;
     }
+    /* 「记到」的锚点：锁定模式跟锁定点走，否则 = 离指针最近的事件（换实体不重置，锚点是整个世界的事） */
+    if (st.evolveMode === 'locked' && lock && lock.world === store.activeWorld) railAnchor = lock.nodeId;
+    else if (!railAnchor || !findNode(railAnchor)) railAnchor = nearestNodeId();
     railKey = e.id;
     /* 帧按锚点时间排序（同一个节点只留一帧）。就地整理**不写回**：写回由 store.update 那条路做 */
     normalizeFrames(e, epochOf);
@@ -247,8 +271,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   }
 
   /** 编辑**该落到哪一版**（用户 2026-09-13 把三种模式放进设置里）：
-   *   - 手动（默认）：不新开版本 —— 选中格没有帧时，改动落到它**之前最近的那一版**（右栏那行小字会写明）；
-   *   - 自动：选中格还没有帧 → 先开一个空帧，改动即成「这一格与上一格的区别」；
+   *   - 手动（默认）：改动改的是**你现在看的这一版**（初稿 or 某一帧）——所见即所改；
+   *     想新开一版，用帧条底部的「记到 + ＋记一帧」；
+   *   - 自动：改动落到**「记到」那个事件**上 —— 它还没有版本就先建一版，改动即成那一版；
    *   - 锁定：永远落到锁定的那一帧（设置里选）。
    *  三种模式都**不弹窗**：落点写在右栏上，看得见再改。 */
   function editVersion(): number {
@@ -259,20 +284,28 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       const lock = st.evolveLock;
       if (lock && lock.world === store.activeWorld) return versionAtNode(e, epochOf, epochOf(lock.nodeId), lock.nodeId);
     }
-    if (st.evolveMode === 'auto' && railNode !== null && !(e.frames ?? []).some((f) => f.nodeId === railNode)) {
-      addFrame(railNode, true);
+    if (st.evolveMode === 'auto' && railAnchor !== null) {
+      if (!(e.frames ?? []).some((f) => f.nodeId === railAnchor)) addFrame(railAnchor, true);
+      /* 改动既然记在锚点那一版上，视图也跟着站过去 —— 否则屏幕上这一栏显示的是别的版本的值 */
+      railNode = railAnchor;
       return entityVersion();
     }
     return entityVersion();
   }
 
-  /** 改「现在看到的那一版」（名字/类型/字段/正文都走这里） */
+  /** 改「现在看到的那一版」（名字/类型/字段/正文都走这里）。
+   *  ⚠️ 顺序：**先定"改哪一版"再取那一版的样子** —— 自动模式里 `editVersion()` 可能会新建一版
+   *  并把视图挪过去，先取 `viewState()` 就会拿"旧那一版"的内容去覆盖"新那一版"（内容整块串位）。 */
   function patchVersion(fn: (st: EntityState) => void): void {
-    const st = viewState();
+    const v = editVersion();
+    const st = states[Math.max(0, Math.min(states.length - 1, v))];
     if (!st) return;
     const next: EntityState = { ...st, properties: { ...st.properties } };
     fn(next);
-    commitState(editVersion(), next);
+    commitState(v, next);
+    /* 提交走的是 quiet（订阅里不重建），所以屏幕上那行「正在看：第 N 版」要手动跟上 */
+    const vn = host.querySelector<HTMLElement>('#cx-vnote');
+    if (vn) vn.textContent = versionNoteText();
     rail?.render();
   }
 
@@ -307,6 +340,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     const e = active();
     const fr = (e?.frames ?? []).find((f) => f.nodeId === nodeId);
     if (!e || !fr) return;
+    const idx = (e.frames ?? []).findIndex((f) => f.nodeId === nodeId);
     void confirmDialog({
       title: '删掉这一帧？',
       message: `「${fr.note || findNode(nodeId)?.node.title || '这一格'}」这一帧记的变化会被丢掉。`,
@@ -323,6 +357,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       });
       const e2 = active();
       if (e2) { states = statesOf(e2); statesId = e2.id; }
+      /* 删掉的正是"现在站着的那一格" ⇒ 视图不能停在一个已经不存在的版本上，
+         退到它**前一版**（没有前一版就是初稿）。用户 2026-09-13 上午改成"没有版本的节点不显示"，
+         不这么退的话那一格会连行一起从帧条上消失，看起来像"点了没反应还丢了东西"。 */
+      if (railNode === nodeId) railNode = (e2?.frames ?? [])[Math.max(0, idx - 1)]?.nodeId ?? null;
       say('已删掉这一帧');
       if (!swapBody()) render();
     });
@@ -341,6 +379,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (railNode === nodeId) return;
     if (docEditor) docEditor.flush();
     railNode = nodeId;
+    /* 点帧条上的行 = "我要看这一版"，顺便把「记到」也带过去（下一个版本记在这附近最顺手）。
+       点初稿（null）不动锚点 —— 初稿不是可以"记到"的地方。 */
+    if (nodeId !== null) railAnchor = nodeId;
     const e = active();
     if (e) { states = statesOf(e); statesId = e.id; }   /* 换版本 = 换个下标取数组，不用重算 */
     if (!swapBody()) render();
@@ -350,11 +391,17 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     withQuiet(() => {
       if (t.kind === 'entity') {
         /* 实体：正文属于**现在看到的那一版**（初稿 or 某一帧的差异），不是实体身上那一份。
-           `t.id` 一定还是"刚才编辑的那条"（switchTarget 先 flush 再改选择），
-           所以 viewState()/editVersion() 此刻读到的就是对的版本。 */
-        const st = t.id === activeId ? viewState() : undefined;
-        if (st && st.doc !== md) commitState(editVersion(), { ...st, doc: md });
-        else if (!st) store.update((d) => { const e = d.worldsets[store.activeWorld]?.entities?.[t.id]; if (e) e.doc = md; });
+           `t.id` 一定还是"刚才编辑的那条"（switchTarget 先 flush 再改选择）。
+           ⚠️ 与 patchVersion 同一条顺序纪律：**先定"改哪一版"再取那一版的样子** ——
+           自动模式下 `editVersion()` 可能新建一版并把视图挪过去，先取 viewState() 会串位。 */
+        if (t.id !== activeId) { store.update((d) => { const e = d.worldsets[store.activeWorld]?.entities?.[t.id]; if (e) e.doc = md; }); return; }
+        const v = editVersion();
+        const st = states[Math.max(0, Math.min(states.length - 1, v))];
+        if (!st) { store.update((d) => { const e = d.worldsets[store.activeWorld]?.entities?.[t.id]; if (e) e.doc = md; }); return; }
+        if (st.doc !== md) commitState(v, { ...st, doc: md });
+        const vn = host.querySelector<HTMLElement>('#cx-vnote');
+        if (vn) vn.textContent = versionNoteText();
+        rail?.render();
       } else {
         store.update((d) => {
           const n = d.worldsets[t.world]?.timelines?.[t.tlId]?.nodes.find((x) => x.id === t.nodeId);
@@ -513,7 +560,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       : '';
 
     host.innerHTML = `
-      <div style="max-width:1020px;margin:0 auto;padding:18px 16px;display:flex;flex-direction:column;gap:10px;height:100%;overflow:auto;" id="cx-root">
+      <div style="max-width:1020px;margin:0 auto;padding:14px 16px 12px;display:flex;flex-direction:column;gap:8px;height:100%;overflow:auto;" id="cx-root">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <div style="font-size:17px;font-weight:600;color:var(--fg);">设定库</div>
           <span style="font-size:var(--text-xs);color:var(--fg-2);">「${escapeHtml(store.activeWorld || '（未选世界）')}」的条目 · 字段由模板决定（在左栏「结构体管理」里改模板）</span>
@@ -535,8 +582,18 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
           </div>
           ${isEntity ? '<div id="cx-rail" class="lk-rail" title="演变：站在某个事件上看这条设定"></div>' : ''}
         </div>
-        <div id="cx-msg" style="font-size:var(--text-xs);"></div>
+        <div id="cx-msg" style="font-size:var(--text-xs);display:none;"></div>
       </div>`;
+
+    /* ★ 高度预算（用户 2026-09-13 上午：「默认创建了一个滚动条，去掉吧」）——
+       这个面板是 `height:100%` + `overflow:auto`，所以**内容只要比窗口高一个像素就会长出滚动条**。
+       实测（1440×900、真实数据 11 字段 + 一篇正文）：内容 864px vs 可用 861px ⇒ 差 3px，
+       于是"什么都没超出"却挂了一条滚动条（A/B 过：与帧条无关，把帧条 display:none 也一样超 3px）。
+       三处让位后不再超：
+         ① 根内边距 18px → 14/12px、块间距 10px → 8px（下面这行的内联样式）；
+         ② `#cx-msg` 没消息时 `display:none`（原来给一句空话留了约 27px，见 say()）；
+         ③ 帧条只列有版本的节点（`src/ui/evolution-rail.ts`，行数从 8 变 2）。
+       内容真的比窗口高（正文写长了）时这条滚动条还会出现 —— 那时它是对的。 */
 
     renderList();
 
@@ -549,8 +606,17 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         host: railHost,
         getEntity: () => active(),
         getSelected: () => railNode,
+        getAnchor: () => railAnchor,
         onSelect: (id) => setRailNode(id),
-        onAddFrame: (id) => { addFrame(id); bodySig = bodySignature(); rail?.render(); },
+        onAnchor: (id) => { railAnchor = id; rail?.render(); },
+        onAddFrame: (id) => {
+          addFrame(id);
+          /* 刚记下的那一版直接显示出来（不然点了 ＋ 屏幕上什么都没变，像没生效） */
+          railNode = id;
+          const e = active();
+          if (e) { states = statesOf(e); statesId = e.id; }
+          if (!swapBody()) render(); else { bodySig = bodySignature(); rail?.render(); }
+        },
         onDeleteFrame: (id) => deleteFrame(id),
       })
       : null;

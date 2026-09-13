@@ -73,11 +73,17 @@ export function staggerIn(container: HTMLElement | null): void {
  *  （整块半透明 ⇒ 洗白 + 里面每个元素自己的错峰被盖住）下沉一层。CSS 侧对应的
  *  `.lk-enter-stagger > .lk-own-cascade { animation: none }` 才是真正压住动画的那一条，
  *  这里过滤只是为了不给它写无用的行内延迟、以及不让它当"最后一块"（它没有动画，
- *  animationend 永远不会来，会白白等到兜底定时器）。 */
+ *  animationend 永远不会来，会白白等到兜底定时器）。
+ *
+ *  ⚠️ **没有盒子的子项（`display:none`）同样要跳过**，理由与上一条一模一样：
+ *  2026-09-13 把设定库底部那句空消息行改成 `display:none` 之后，它正好是 `#cx-root` 的
+ *  **最后一个**子项 —— 于是"最后一块的 animationend"永远不来，整组错峰只能等 2.5s 兜底定时器
+ *  才收手（motion-switch ★6 立刻抓到：`{cls:true, anims:3}`）。判据用 `getClientRects().length`
+ *  （没有盒子 ⇒ 动画不会跑），跳过后后面的块序号自动前移，延迟不会留空洞。 */
 export function cascadeIn(container: HTMLElement | null, step = 100, maxDelay = 500, start = 0): void {
   if (!container) return;
   const kids = (Array.from(container.children) as HTMLElement[])
-    .filter((el) => !el.classList.contains('lk-own-cascade'));
+    .filter((el) => !el.classList.contains('lk-own-cascade') && el.getClientRects().length > 0);
   if (!kids.length) return;
   /* 减少动效：错峰整个关掉（DESIGN.md:159）。**必须在这里判**，不能只靠 CSS 的降级块 ——
      本函数给子项写的是**行内** animation-delay，行内值优先级高于媒体查询里的规则，

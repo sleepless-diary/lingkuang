@@ -270,7 +270,10 @@ async function main() {
   const delays2 = (t2 || []).map((x) => x[0]?.delay);
   check('★15 减少动效：入场降级为 lk-fade/200ms，且错峰延迟全部为 0（含行内延迟）',
     reduced === true
-      && Array.isArray(a8) && a8.length >= 3 && a8.every((x) => x[0]?.name === 'lk-fade' && x[0]?.dur === 200 && x[0]?.delay === 0)
+      /* ⚠️ 只挑**真的播了动画**的块：设定库底部那句消息行没消息时是 display:none（不占高度，
+         2026-09-13 修「凭空一条滚动条」时改的），它不作动画 ⇒ 空数组不该让 every 判失败。 */
+      && Array.isArray(a8) && a8.filter((x) => x.length).length >= 3
+      && a8.filter((x) => x.length).every((x) => x[0]?.name === 'lk-fade' && x[0]?.dur === 200 && x[0]?.delay === 0)
       && delays2.length === 2 && delays2.every((d) => d === 0) && (t2 || []).every((x) => x[0]?.name === 'lk-fade'),
     { reduced, tool: a8, tabs: t2 });
 

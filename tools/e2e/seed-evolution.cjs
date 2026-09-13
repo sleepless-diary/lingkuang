@@ -93,10 +93,36 @@ for (const [name, fm, desc, doc] of NODES) {
 }
 
 /* JSON 侧：文件是源，实体与节点清空（残留会被「没有 _设定 目录就保留 base」那条例外复活）。
-   `timeCursor` 设成远超所有节点的值 —— 套件据此断言"默认落在最近的那一帧"。 */
+   `timeCursor` 设成远超所有节点的值 —— 套件据此断言"默认落在最近的那一帧"。
+
+   ⚠️ 两处**必须自己写全**，不能指望继承来的测试目录（2026-09-13 上午踩到）：
+   ① 实体类型的字段模板（`worldsets[ws].entityTypes`）—— 中栏字段行是**按模板渲染**的，
+      继承来的目录里「角色」只有「发色」一个字段，于是 setField('年龄'/'能力'/'瞳色') 静默无效，
+      ★5/★5b/★6/★10c/★10d/★10e/★11 七条一起报假 FAIL，看着像产品坏了；
+   ② 世界与时间线不存在时就建出来 —— 否则换一台机 / 换一个数据目录，播种第一步就
+      「测试世界观 不存在」退出（README 铁律 4 的同一个病根：别假设起点）。 */
 const d = JSON.parse(fs.readFileSync(DATA, 'utf8'));
-const w = d.worldsets[WS];
-if (!w) { console.log(`FAIL ${WS} 不存在于 ${DATA}`); process.exit(1); }
+let w = d.worldsets[WS];
+if (!w) {
+  w = { name: WS, order: [], timelines: {}, docs: {}, timeCursor: null, entities: {}, entityTypes: {}, maps: {} };
+  d.worldsets[WS] = w;
+}
+if (!w.timelines['tl-主线']) {
+  w.timelines['tl-主线'] = { id: 'tl-主线', name: TL, absOffset: null, nodes: [], loops: [], storylines: [] };
+  w.order = [...(w.order ?? []).filter((x) => x !== 'tl-主线'), 'tl-主线'];
+}
+w.entityTypes = {
+  角色: { id: '角色', name: '角色', fields: [
+    { name: '性别', type: 'text' }, { name: '种族', type: 'text' }, { name: '年龄', type: 'text' },
+    { name: '发色', type: 'text' }, { name: '瞳色', type: 'text' }, { name: '身高', type: 'text' },
+    { name: '外貌', type: 'longtext' }, { name: '性格', type: 'longtext' }, { name: '能力', type: 'longtext' },
+    { name: '所属', type: 'text' }, { name: '别名', type: 'list' },
+  ] },
+  物品: { id: '物品', name: '物品', fields: [
+    { name: '种类', type: 'text' }, { name: '持有者', type: 'text' },
+    { name: '能力', type: 'text' }, { name: '说明', type: 'longtext' },
+  ] },
+};
 w.entities = {};
 w.frames = undefined;
 const tl = w.timelines['tl-主线'];

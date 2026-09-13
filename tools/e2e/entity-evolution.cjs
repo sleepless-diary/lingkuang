@@ -2,12 +2,16 @@
  *  （用户 2026-09-13：「我想在设定库右侧加一条竖着的等距的时间线，用来储存不同节点，
  *   当选中实例时，默认进入离当前指针最近的 git」+「都做吧，把模式放到设置里面」）。
  *
- * 这条套件钉住的四件事：
- *   ① 右栏是**等距**的格子（每格 = 一个事件节点，顶上第一格 = 初稿），选格即换版本；
+ * 这条套件钉住的五件事：
+ *   ① 右栏是**等距**的格子（每格 = 一个有版本的事件节点，顶上第一格 = 初稿），选格即换版本；
+ *      ⚠️ 2026-09-13 上午用户改口：「**我希望没有版本的节点就不显示**」⇒ 帧条只列有版本的节点，
+ *      建版本的入口变成底部那个「记到 [事件 ▾] + ＋记一帧」（帧条上再也点不到空格子）。
  *   ② 三种模式真的不一样：**手动**改的是"你现在看的那一版"（不产生历史）；
- *      **自动**在选中格上没有版本时自动开一个；**锁定**永远记到锁定的那一格；
+ *      **自动**把改动记到「记到」那个事件上（它没有版本就先建一版）；**锁定**永远记到锁定的那一格；
  *   ③ 一帧只存**与上一帧的区别**（字段与正文都按行），且初稿（.md 的 frontmatter）不被改写；
- *   ④ 换一条实体不串台；帧写进 .md 的 `#演变：` 段，冷启动后还在（文件是源）。
+ *   ④ 换一条实体不串台；帧写进 .md 的 `#演变：` 段，冷启动后还在（文件是源）；
+ *   ⑤ 面板不该出现"没什么可滚却挂着滚动条"（用户 2026-09-13 上午：「默认创建了一个滚动条，去掉吧」，
+ *      实测 1440×900 下内容比可用高度多 3px —— 见 src/ui/codex.ts 的「高度预算」注释）。
  *
  * 用法：`node tools/e2e/seed-evolution.cjs` → 起应用 → `node tools/e2e/entity-evolution.cjs`
  * ⚠️ 会改测试数据（新增帧）。重跑请重新播种并重启实例。
@@ -104,6 +108,11 @@ async function main() {
     r.click(); return 'ok';
   })()`);
   const clickAdd = () => ev(`(() => { const b = document.querySelector('[data-rail-add]'); if (!b) return 'no button'; b.click(); return 'ok'; })()`);
+  /* 「记到」下拉：帧条只列有版本的节点之后，这是**唯一**指定"新版本记在哪个事件上"的入口 */
+  const anchorInfo = () => ev(`(() => { const s = document.querySelector('#cx-anchor');
+    return s ? { val: s.value, opts: [...s.options].map((o) => o.value), labels: [...s.options].map((o) => o.textContent) } : null; })()`);
+  const setAnchor = (nodeId) => ev(`(() => { const s = document.querySelector('#cx-anchor'); if (!s) return 'no select';
+    s.value = ${JSON.stringify(nodeId)}; s.dispatchEvent(new Event('change', { bubbles: true })); return s.value; })()`);
   /* ⚠️ 读 .md 必须**等它写下去**：store 变化后有 400ms 防抖（src/main.ts:417）再 IPC 写盘，
      固定 sleep 会压在边界上（第一版就是这么误报的：★3/★4/★7/★10c/★12b 全挂，其实都没问题）。 */
   const waitMd = (p, pred, ms = 6000) => waitFor(() => { try { return pred(read(p)); } catch { return false; } }, ms);
@@ -117,44 +126,68 @@ async function main() {
     return s.evolveMode;
   })()`);
 
-  /* ── ★0 前置：帧条在、等距、两格 ─────────────────────────────────── */
+  /* ── ★0 前置：帧条在、等距、没有版本的节点不列出来 ───────────────── */
   await pickEntity('银发少女');
   await sleep(500); await forceFrames(2);
   const r0 = await rail();
-  check('★0 前置：右栏帧条存在（1 格初稿 + 3 个事件节点，等高）', r0.n === 4 && r0.rows[0].n === '初稿' && r0.rows.slice(1).every((x) => x.n),
-    { n: r0.n, rows: r0.rows.map((x) => x.t + '/' + x.n) });
+  check('★0 前置：一条版本都没有时，帧条上只有「初稿」那一格（没有版本的节点不列出来）',
+    r0.n === 1 && r0.rows[0].n === '初稿', { n: r0.n, rows: r0.rows.map((x) => x.t + '/' + x.n) });
+  const a0 = await anchorInfo();
+  check('★0b 「记到」下拉里三个事件节点都在（不列出来 ≠ 记不到），默认 = 离沙盘指针最近的那个事件',
+    !!a0 && a0.opts.length === 3 && a0.opts.includes('n-evo-2') && a0.val === 'n-evo-3',
+    a0 && { val: a0.val, label: a0.labels[a0.opts.indexOf(a0.val)], opts: a0.opts });
   const heights = await ev(`[...document.querySelectorAll('#cx-rail .lk-rail__row')].map((r) => Math.round(r.getBoundingClientRect().height))`);
-  check('★0b 等距：每格高度相同（用户要的"等距时间线"，不按时间比例）', Array.isArray(heights) && new Set(heights).size === 1, heights);
+  check('★0c 等距：每格高度相同（用户要的"等距时间线"，不按时间比例）', Array.isArray(heights) && new Set(heights).size === 1, heights);
+  /* ★0d 面板的「外壳开销」要有预算。用户报「默认创建了一个滚动条」，实测（1440×900、真实数据
+     11 字段 + 一篇正文）：`#cx-root` 内容 864px vs 可用 861px —— 只差 3px，于是**什么都没超出**
+     却挂了一条滚动条。差的这 3px 来自"给一句空话预留的消息行 + 松掉的内边距/间距"。
+     ⚠️ 不能断言"1440×900 下没有滚动条"：那取决于正文有多长（正文长了本来就该滚）。
+     能断言的是**外壳开销**（标题行 + 页签行 + 内边距 + 间距 + 消息行 = 面板总高 − 三栏那一行）——
+     它与内容长短、窗口大小都无关。修完实测 94px（1408×822）/ 112px（1424×861）；
+     修之前是 155px（多出 27px 空消息行 + 16px 松内边距 + 差 3px 溢出），故上限取 130px。 */
+  const budget = await ev(`(() => {
+    const r = document.querySelector('#cx-root');
+    const row = [...r.children].find((c) => c.querySelector('#cx-body'));
+    const msg = document.querySelector('#cx-msg');
+    return { chrome: Math.round(r.scrollHeight - row.getBoundingClientRect().height),
+      msgDisplay: getComputedStyle(msg).display, msgH: msg.offsetHeight, win: [innerWidth, innerHeight] };
+  })()`);
+  check('★0d 面板外壳开销 ≤130px（用户那条"凭空出现的滚动条"就是这里多占了 27px 空行 + 16px 松内边距）',
+    budget.chrome <= 130 && budget.msgDisplay === 'none' && budget.msgH === 0, budget);
 
   /* ── ★1 还没有版本时默认落在初稿 ─────────────────────────────────── */
   check('★1 一条版本都没有时，默认落在「初稿」那一格', r0.rows[0].on && (await versionNote()).includes('初稿'),
     { on: r0.rows.findIndex((x) => x.on), note: await versionNote() });
 
-  /* ── ★2 点一个没有版本的格子：看到的是它之前的那一版（floor），并有提示 ── */
-  await clickRow(2);   /* 索引 2 = 第 2 个节点（第一次魔潮） */
-  await sleep(400); await forceFrames(2);
+  /* ── ★2 没有版本的节点不上帧条，但能从「记到」下拉里选中它 ───────── */
+  check('★2 默认站在初稿上，"记到"指向的是离指针最近的事件（n-evo-3）',
+    (await anchorInfo())?.val === 'n-evo-3', await anchorInfo());
   const r2 = await rail();
-  check('★2 点没有版本的格子：看到的是"上一版"，并在帧条上写明改动会记到哪里', r2.rows[2].on && r2.hints.some((h) => h.includes('这一格没有版本')),
-    { on: r2.rows.findIndex((x) => x.on), hints: r2.hints });
+  check('★2b 帧条上仍然只有初稿（没有版本的节点不显示）', r2.n === 1 && r2.rows[0].on && r2.hints.some((h) => h.includes('初稿')),
+    { n: r2.n, on: r2.rows.findIndex((x) => x.on), hints: r2.hints });
 
-  /* ── ★3 手动模式：改动落到"你现在看的那一版"（这里是初稿），不产生历史 ── */
+  /* ── ★3 手动模式：改动落到"你现在看的那一版"（初稿），不产生历史 ── */
   await ev(setField('发色', '墨黑'));
   await waitMd(MD_A, (t) => fmValue(t, '发色') === '墨黑');
   let mdA = read(MD_A);
-  check('★3 手动模式：在没版本的格子上改字段 → 改的是初稿（frontmatter 变），且**没有产生帧**',
+  check('★3 手动模式：站在初稿上改字段 → 改的是初稿（frontmatter 变），且**没有产生帧**',
     fmValue(mdA, '发色') === '墨黑' && mdFrames(mdA) === null,
     { 发色: fmValue(mdA, '发色'), frames: mdFrames(mdA) });
 
-  /* ── ★4 在这一格记一帧 ───────────────────────────────────────────── */
+  /* ── ★4 选好「记到」再按 ＋：在这一格记一帧 ──────────────────────── */
+  await setAnchor('n-evo-2');   /* 第一次魔潮：还没有版本 */
+  await sleep(200);
   await clickAdd();
   await waitMd(MD_A, (t) => Array.isArray(mdFrames(t)) && mdFrames(t).length === 1);
   mdA = read(MD_A);
   const f4 = mdFrames(mdA);
-  check('★4 点「＋ 在这一格记一帧」→ .md 里出现 #演变： 段，帧锚在「第一次魔潮」上',
+  check('★4 「记到 第一次魔潮」+ 点「＋ 记一帧」→ .md 里出现 #演变： 段，帧锚在 n-evo-2 上',
     Array.isArray(f4) && f4.length === 1 && f4[0].nodeId === 'n-evo-2',
     { frames: Array.isArray(f4) ? f4.map((f) => ({ node: f.nodeId, patch: f.patch })) : f4 });
   const r4 = await rail();
-  check('★4b 帧条上这一格被点亮（是版本了），底部按钮变成"删掉这一帧"', r4.rows[2].frame && r4.del === 'n-evo-2', { del: r4.del, frame: r4.rows[2].frame });
+  check('★4b 记完帧条多出一格（锚在第一次魔潮）、并跳到这一版上；底部同时给了「删掉这一帧」',
+    r4.n === 2 && r4.rows[1].frame && r4.rows[1].on && r4.del === 'n-evo-2',
+    { n: r4.n, rows: r4.rows.map((x) => x.t + '/' + x.n), on: r4.rows.findIndex((x) => x.on), del: r4.del });
 
   /* ── ★5 有版本之后改动落进那一帧，初稿不动 ───────────────────────── */
   await ev(setField('年龄', '19'));
@@ -175,7 +208,7 @@ async function main() {
   check('★6b 切回初稿时，发色仍是初稿里的墨黑（★3 改的就是初稿）', (await fieldVal(ev, '发色')) === '墨黑', await fieldVal(ev, '发色'));
 
   /* ── ★7 正文差异按行存：在某一版里改一行 ─────────────────────────── */
-  await clickRow(2);
+  await clickRow(1);   /* 第 1 格 = 第一次魔潮那一帧 */
   await sleep(400); await forceFrames(2);
   await ev(`(() => { const el = document.querySelector('#cx-doc .ProseMirror'); el.focus(); return true; })()`);
   await send('Input.insertText', { text: '【第一帧补写】' });
@@ -208,32 +241,37 @@ async function main() {
   await pickEntity('银发少女');
   await sleep(500); await forceFrames(2);
   const r9 = await rail();
-  check('★9 切回有版本的实体：默认落在**离沙盘指针最近的那一帧**（指针在最后 → 落在第 2 格那一帧）',
-    r9.rows[2].on && r9.rows[2].frame && (await versionNote()).includes('第 1 版'),
-    { on: r9.rows.findIndex((x) => x.on), note: await versionNote() });
+  check('★9 切回有版本的实体：默认落在**离沙盘指针最近的那一帧**（指针在最后 ⇒ 只剩的那一帧）',
+    r9.n === 2 && r9.rows[1].on && r9.rows[1].frame && (await versionNote()).includes('第 1 版'),
+    { n: r9.n, on: r9.rows.findIndex((x) => x.on), note: await versionNote() });
 
-  /* ── ★10 自动模式：在没版本的格子上改动会自动开一帧 ─────────────── */
+  /* ── ★10 自动模式：改动记到「记到」那个事件上（没版本就先建一版） ── */
   check('★10 设置里切成「自动」模式（帧条上显示模式）', (await setMode('auto')) === 'auto');
   await sleep(300); await forceFrames(2);
   const r10a = await rail();
   check('★10b 帧条上的模式标签跟着变', r10a.mode === '自动', r10a.mode);
-  await clickRow(3);   /* 第 3 个节点：霜冠加冕，还没有版本 */
+  await setAnchor('n-evo-3');   /* 霜冠加冕：还没有版本 */
   await sleep(400); await forceFrames(2);
   await ev(setField('能力', '霜、冰晶'));
   await waitMd(MD_A, (t) => (mdFrames(t)?.length ?? 0) === 2);
   mdA = read(MD_A);
   const f10 = mdFrames(mdA);
-  check('★10c 自动模式：改动自动在这一格开了一帧，差异 = 它与上一帧的区别',
+  check('★10c 自动模式：改动自动在「记到」那个事件上开了一帧，差异 = 它与上一帧的区别',
     Array.isArray(f10) && f10.length === 2 && f10[1].nodeId === 'n-evo-3' && f10[1].patch?.set?.能力 === '霜、冰晶'
       && f10[1].patch?.set?.年龄 === undefined,
     { frames: Array.isArray(f10) ? f10.map((f) => ({ node: f.nodeId, set: Object.keys(f.patch?.set ?? {}) })) : f10 });
   check('★10d 新帧是**增量**（不含上一帧已有的年龄），上一帧原样', Array.isArray(f10) && f10[0].patch?.set?.年龄 === '19', null);
+  await forceFrames(2);
+  const r10 = await rail();
+  check('★10e 自动建的那一版也上了帧条，并且视图跟到它上面',
+    r10.n === 3 && r10.rows[2].frame && r10.rows[2].on, { n: r10.n, on: r10.rows.findIndex((x) => x.on) });
 
-  /* ── ★11 站在最早那一格：看到的是初稿（floor），不是后来的版本 ───── */
-  await clickRow(1);   /* 王国的建立（315，最早） */
+  /* ── ★11 站在初稿那一格：看到的是初稿，不是后来的版本 ───────────── */
+  await clickRow(0);
   await sleep(400); await forceFrames(2);
-  check('★11 站在最早的格子（没有版本）→ 看到的是初稿那一版（年龄 17，不是第 1 版的 19）',
-    (await fieldVal(ev, '年龄')) === '17', await fieldVal(ev, '年龄'));
+  check('★11 点最上面那一格（初稿）→ 看到初稿那一版（年龄 17，不是第 1 版的 19）',
+    (await fieldVal(ev, '年龄')) === '17' && (await versionNote()).includes('初稿'),
+    { 年龄: await fieldVal(ev, '年龄'), note: await versionNote() });
 
   /* ── ★12 锁定模式：改动永远记到锁定的那一格 ─────────────────────── */
   await ev(`(() => {
@@ -245,13 +283,13 @@ async function main() {
   })()`);
   await sleep(400); await forceFrames(2);
   const r12 = await rail();
-  check('★12 锁定模式：视图钉在锁定的那一格上（选中 = 第一次魔潮）', r12.rows[2].on && r12.mode === '锁定',
+  check('★12 锁定模式：视图钉在锁定的那一格上（选中 = 第一次魔潮那一帧）', r12.rows[1].on && r12.mode === '锁定',
     { on: r12.rows.findIndex((x) => x.on), mode: r12.mode, hints: r12.hints });
-  await clickRow(3);
+  await clickRow(2);
   await sleep(300); await forceFrames(2);
   const r12b = await rail();
   check('★12b 锁定模式下点别的格子也不换视图（免得"看到的"和"改到的"不是同一版）',
-    r12b.rows[2].on && !r12b.rows[3].on, { on: r12b.rows.findIndex((x) => x.on) });
+    r12b.rows[1].on && !r12b.rows[2].on, { on: r12b.rows.findIndex((x) => x.on) });
   await ev(setField('瞳色', '霜白'));
   await waitMd(MD_A, (t) => mdFrames(t)?.[0]?.patch?.set?.瞳色 === '霜白');
   mdA = read(MD_A);
@@ -262,7 +300,7 @@ async function main() {
 
   /* ── ★14 删掉一帧（带确认弹层）：只删那一帧，别的还在 ─────────────── */
   await setMode('manual');
-  await clickRow(3);   /* 霜冠加冕：自动模式建的那一帧 */
+  await clickRow(2);   /* 霜冠加冕：自动模式建的那一帧 */
   await sleep(400); await forceFrames(2);
   await ev(`(() => { const b = document.querySelector('[data-rail-del]'); if (!b) return 'no del'; b.click(); return 'ok'; })()`);
   await sleep(300); await forceFrames(2);
@@ -277,6 +315,13 @@ async function main() {
   check('★14b 确认后：那一帧从 .md 里消失，另一帧原样（历史是一帧一帧删的）',
     Array.isArray(after) && after.length === 1 && after[0].nodeId === 'n-evo-2' && after[0].patch?.set?.年龄 === '19',
     Array.isArray(after) ? after.map((f) => ({ node: f.nodeId, set: Object.keys(f.patch?.set ?? {}) })) : after);
+  /* 删掉的正是"现在站着的那一格" ⇒ 视图与帧条都得退到它还剩下的那一版（不能停在一个不存在的版本上，
+     否则那一行会连行一起从帧条上消失，看着像"点了没反应还丢了东西"） */
+  await sleep(400); await forceFrames(2);
+  const r14 = await rail();
+  check('★14c 删掉当前这一版之后：帧条退回还剩的那些版本，视图落在第 1 版（不是空的）',
+    r14.n === 2 && r14.rows[1].on && (await versionNote()).includes('第 1 版'),
+    { n: r14.n, on: r14.rows.findIndex((x) => x.on), note: await versionNote() });
 
   /* ── ★13 无未捕获异常 ───────────────────────────────────────────── */
   const errs = await ev(`window.__errs || []`);
