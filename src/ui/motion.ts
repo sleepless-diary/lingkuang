@@ -142,7 +142,12 @@ export interface RowMotionOpts {
   step?: number;
   dur?: number;
   start?: number;
+  /** 错峰总量的上限（默认 240ms）—— 几十行时不让最后一行等到近一秒才动 */
+  maxDelay?: number;
 }
+
+/** 错峰默认上限：超过这个总量之后所有行一起动 */
+const MAX_STAGGER = 240;
 
 /** 出场曲线：慢 → 快 */
 const EASE_ACCEL = 'cubic-bezier(0.7, 0, 0.84, 0)';
@@ -162,20 +167,23 @@ function autoRelease(anims: Animation[], totalMs: number): void {
 }
 
 /** 行级**出场**：每行 `1 / 原位` → `0 / 往左 dx`（慢→快），按序号错峰。返回动画对象（调用方可取消）。
- *  给了 `dy` 就走**上下**（`0 / 原位` → `-dy`，往上）—— 那是"入场动画倒着播"的用法，见 `rowsDropIn`。 */
+ *  给了 `dy` 就走**上下**（`0 / 原位` → `-dy`，往上）—— 那是"入场动画倒着播"的用法，见 `rowsDropIn`。
+ *  错峰总量有上限（`maxDelay`，默认 240ms）：一个文件夹里几十行时，`i * step` 会让最后一行等上
+ *  近一秒才动（实测 44 行 ⇒ 967ms），看着就是"卡住不动然后整片消失"。 */
 export function rowsLeave(rows: HTMLElement[], o: RowMotionOpts = {}): Animation[] {
   if (motionReduced()) return [];
   const dx = o.dx ?? 32;
   const step = o.step ?? 10;
   const dur = o.dur ?? ROW_DUR;
+  const maxDelay = o.maxDelay ?? MAX_STAGGER;
   const out = o.dy !== undefined ? `translateY(${-o.dy}px)` : `translateX(${-dx}px)`;
   const anims = rows.map((el, i) =>
     el.animate(
       [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: out }],
-      { duration: dur, delay: i * step, easing: EASE_ACCEL, fill: 'both' }
+      { duration: dur, delay: Math.min(i * step, maxDelay), easing: EASE_ACCEL, fill: 'both' }
     )
   );
-  autoRelease(anims, dur + step * rows.length);
+  autoRelease(anims, dur + Math.min(step * rows.length, maxDelay));
   return anims;
 }
 
@@ -245,19 +253,21 @@ export function rowSlideIn(el: HTMLElement | null, o: { dx?: number; dur?: numbe
 }
 
 /** 展开文件夹时，**被展开出来的那些行**从上方一点（`translateY(-dy)`）落下来 + 渐显，逐行小幅错峰。
- *  （用户 2026-09-13：「展开文件夹时文件向下弹出」） */
-export function rowsDropIn(rows: HTMLElement[], o: { dy?: number; dur?: number; step?: number } = {}): Animation[] {
+ *  （用户 2026-09-13：「展开文件夹时文件向下弹出」）
+ *  与 `rowsLeave` 对称：同样的 `maxDelay` 上限（几十行时不至于让末尾的行等近一秒）。 */
+export function rowsDropIn(rows: HTMLElement[], o: { dy?: number; dur?: number; step?: number; maxDelay?: number } = {}): Animation[] {
   if (motionReduced()) return [];
   const dy = o.dy ?? 8;
   const dur = o.dur ?? 260;
   const step = o.step ?? 22;
+  const maxDelay = o.maxDelay ?? MAX_STAGGER;
   const anims = rows.map((el, i) =>
     el.animate(
       [{ opacity: 0, transform: `translateY(${-dy}px)` }, { opacity: 1, transform: 'none' }],
-      { duration: dur, delay: i * step, easing: EASE_DECEL, fill: 'both' }
+      { duration: dur, delay: Math.min(i * step, maxDelay), easing: EASE_DECEL, fill: 'both' }
     )
   );
-  autoRelease(anims, dur + step * rows.length + 200);
+  autoRelease(anims, dur + Math.min(step * rows.length, maxDelay) + 200);
   return anims;
 }
 
@@ -297,7 +307,10 @@ export function rowsLeaveAndRemove(rows: HTMLElement[], o: RowMotionOpts = {}): 
  *  做法：把旧文字克隆一份绝对定位盖在原处往上滚出，真标签换成新文字后从下方滚入。
  *  ⚠️ **滚动距离 = 裁切盒自己的高度**（不是写死的 13px）：滚一格的距离小于一行字高时，
  *  旧字和新字在盒子里**叠在同一处**，看着像文字糊成一团（用户 2026-09-14：「新建实体按钮
- *  文字会重叠」）。按盒高滚 ⇒ 旧字整行移出、新字整行移入，中间任何一帧都只有一行字在身上。
+ *  文字会重叠」）。按盒高滚 ⇒ 旧字整行移出、新字整行移入。
+ *  ⚠️ **两段错开播，不同时**（`in` 的 delay = `out` 的时长）：同时播时虽然两行字在几何上正好首尾相接，
+ *  但**各露半截、又都还半透明**，看上去仍是两层笔画叠在一起（用户第二轮反馈的「节点和实体两个文字
+ *  会重叠」）。错开之后任何一帧要么是旧字在往上走、要么是新字在往下落，中间那一下盒里接近空的。
  *  ⚠️ **只滚"会变的那两个字"**：调用方把不动的部分（「＋新建」）放在盒外 —— 整串一起滚等于
  *  两行字各有半截留在盒里，正是上面那个"重叠"的观感。
  *  ⚠️ 跑完**两个动画都取消**（`fill:'both'` 留着会让 `getAnimations()` 一直非空 ——
@@ -307,7 +320,7 @@ export function rollText(box: HTMLElement | null, next: string, o: { dur?: numbe
   if (!box || !t) return;
   if ((t.textContent ?? '') === next) return;
   if (motionReduced()) { t.textContent = next; return; }
-  const dur = o.dur ?? 260;
+  const dur = o.dur ?? 180;    /* **每一段**的时长：整段换字 = 2 × dur */
   /* 盒高即"一行"：量不到就退回 16px（≈ 常见行高），绝不退回 13 那种小于字高的值 */
   const dy = o.dy ?? Math.max(12, Math.round(box.getBoundingClientRect().height) || 16);
   const prev = t.cloneNode(true) as HTMLElement;
@@ -320,14 +333,14 @@ export function rollText(box: HTMLElement | null, next: string, o: { dur?: numbe
   );
   const inn = t.animate(
     [{ transform: `translateY(${dy}px)`, opacity: 0 }, { transform: 'none', opacity: 1 }],
-    { duration: dur, easing: EASE_DECEL, fill: 'both' }
+    { duration: dur, delay: dur, easing: EASE_DECEL, fill: 'both' }
   );
   const done = (): void => {
     try { out.cancel(); inn.cancel(); } catch { /* 已取消 */ }
     prev.remove();
   };
   Promise.all([out.finished, inn.finished]).then(done).catch(done);
-  window.setTimeout(done, dur + 600);
+  window.setTimeout(done, dur * 2 + 600);
 }
 
 /** 量下容器里每个子项此刻**相对容器顶部**的 top（喂给 `flipRows` 的 `prev` / `tops`）。

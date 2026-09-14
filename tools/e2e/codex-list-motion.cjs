@@ -145,14 +145,28 @@ async function main() {
     const nodeRows = () => [...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]')];
     const kind = () => [...document.querySelectorAll('#cx-list .ed-tkind')].find((e) => e.textContent.includes('事件'));
     const before = nodeRows().length;
+    /* ⚠️ 幽灵必须**长在原位**：树里那些缩进是各层类的 padding-left（条目 36px / 种类 27px / 时间线 18px）。
+       克隆时若把它清零，整行内容会当场**往左跳**几十像素（用户 2026-09-14：「收起文件时文件会先向左移」）。 */
+    const geoBefore = nodeRows().map((e) => ({ padL: getComputedStyle(e).paddingLeft, left: Math.round(e.getBoundingClientRect().left) }));
     /* ⚠️ 只认**这一次点击刚造出来**的幽灵：同一时刻页面上可能还挂着上一批（收起 A 没演完又收起 B，
        兜底定时器要 680ms 才摘），按数量直接数会数进别人的。 */
     const pre = new Set([...document.body.children]);
     kind().click();                                   /* 收起「事件」 */
     const ghosts = [...document.body.children].filter((e) => !pre.has(e) && e.classList.contains('lk-list-ghost'));
+    /* 再收起**行数最多**的那一枝（_設定：5 个类型 + 里面的实体）来量错峰的**顺序与总量** ——
+       「事件」底下只有 1~2 行，量不出"一行比一行晚"。（测完由调用方展开回来。） */
+    const setRow = [...document.querySelectorAll('#cx-list .ed-tset')][0];
+    const pre2 = new Set([...document.body.children]);
+    if (setRow) setRow.click();
+    const big = [...document.body.children].filter((e) => !pre2.has(e) && e.classList.contains('lk-list-ghost'));
     return { before, ghosts: ghosts.length,
       ghostText: ghosts.map((g) => (g.textContent || '').trim().slice(0, 12)),
       ghostAnim: ghosts.map((g) => window.__anim(g)),
+      geoBefore,
+      geoGhost: ghosts.map((g) => ({ padL: getComputedStyle(g).paddingLeft, left: Math.round(g.getBoundingClientRect().left) })),
+      bigDelays: big.map((g) => { const a = window.__anim(g)[0]; return a ? a.delay : -1; }),
+      bigPad: big.map((g) => getComputedStyle(g).paddingLeft),
+      bigCount: big.length,
       rowsLeft: nodeRows().length };
   })()`);
   check('★4c 收起「事件」文件夹：里面那些行变成**钉在原位的幽灵**演退场，不是直接消失',
@@ -160,6 +174,23 @@ async function main() {
       && t4c.ghostText.every((t) => t.startsWith('王国的建立'))
       && t4c.ghostAnim.every((a) => a.length === 1),
     t4c);
+  /* ★4d 幽灵不许"往左跳"：缩进（padding-left）与水平位置都得跟原行一模一样。
+     用户 2026-09-14 第二轮：「收起文件时文件会**先向左移**，然后再上隐」—— 真因是克隆体上写了 `padding:0`，
+     把各层类的缩进（世界 8px / 时间线 18px / 种类 27px / 条目 36px）当场清零。 */
+  check('★4d 幽灵**长在原位**：缩进与水平位置跟原行逐项相同（不往左跳）',
+    t4c.geoGhost.length >= 1 && t4c.geoGhost.length === t4c.geoBefore.length
+      && t4c.geoGhost.every((g, i) => g.padL === t4c.geoBefore[i].padL && g.left === t4c.geoBefore[i].left)
+      && parseFloat(t4c.geoGhost[0].padL) > 0 && t4c.bigPad.every((p) => parseFloat(p) > 0),
+    { geoBefore: t4c.geoBefore, geoGhost: t4c.geoGhost, bigPad: t4c.bigPad });
+  /* ★4e 退场错峰的**顺序与入场一致**（从上往下一行行走，不是倒着播），而且总量有上限 ——
+     第一版用了 `[...ghosts].reverse()` 且不限量：44 行时第一行要等 946ms 才动，看着就是"卡住然后整片消失"
+     （用户：「没有像入场一样的错分」）。 */
+  const gDelays = t4c.bigDelays ?? [];
+  check('★4e 退场错峰与入场同序（0/22/44…，按 DOM 从上往下）且总量 ≤240ms',
+    gDelays.length >= 4 && gDelays[0] === 0 && gDelays[1] === 22
+      && gDelays.every((d, i) => d >= 0 && (i === 0 || d >= gDelays[i - 1]))
+      && Math.max(...gDelays) <= 240,
+    { delays: gDelays, bigCount: t4c.bigCount });
   /* ⚠️ `open1` 里混着两类动画：**展开露出来的行**（下弹，`translateY(-8px)/0 → none/1`）与
      **让位的行**（FLIP，`translateY(±)/  → none/`）。只拿前者来比，不然 FLIP 的位移会把交叉断言搅黄。 */
   const inFrom = (t2.open1 ?? []).map((x) => x.a[0]).filter((a) => a && a.to === 'none/1').map((a) => a.from);
@@ -174,7 +205,10 @@ async function main() {
     { ghostAnim: t4c.ghostAnim, inFrom, inTo });
   const ghostGone = await waitFor(() => ev(`[...document.body.children].filter((e) => e.style.zIndex === '860').length === 0`), 3000);
   check('★4c3 退场演完幽灵自己摘掉（不留一个看不见的浮层压在页面上）', ghostGone);
-  await ev(`(() => { const k = [...document.querySelectorAll('#cx-list .ed-tkind')].find((e) => e.textContent.includes('事件')); if (k) k.click(); return true; })()`);
+  await ev(`(() => {
+    const k = [...document.querySelectorAll('#cx-list .ed-tkind')].find((e) => e.textContent.includes('事件')); if (k) k.click();
+    const s = [...document.querySelectorAll('#cx-list .ed-tset')][0]; if (s) s.click();   /* _設定 也展开回来（★5 要点里面的实体行） */
+    return true; })()`);
   await sleep(400); await forceFrames(2);
 
   /* ── ★5 删除：被删的那一行留一个钉在原位的幽灵演退场 + 下面的行补位 ──────── */

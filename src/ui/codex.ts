@@ -209,7 +209,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     const r = row.getBoundingClientRect();
     const g = row.cloneNode(true) as HTMLElement;
     g.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
-    g.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;margin:0;padding:0;pointer-events:none;z-index:900;`;
+    /* ⚠️ **不要**写 `padding:0`：树里那些缩进是各层类的 `padding-left`（世界 8px / 时间线 18px /
+       种类 27px / 条目 36px），克隆体带着同一个类，本来就在原位；清零会让整行内容**往左跳**
+       18~36px（用户 2026-09-14 报的「收起文件时文件会先向左移」就是这个）。 */
+    g.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;margin:0;pointer-events:none;z-index:900;`;
     document.body.appendChild(g);
     return g;
   }
@@ -226,7 +229,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       /* 打个类当抓手：同一时刻页面上可能同时挂着好几批幽灵（收起 A 还没演完又收起 B），
          测试与被收的那一枝都得能认出"这一批是我刚造出来的"。 */
       g.classList.add('lk-list-ghost');
-      g.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;margin:0;padding:0;pointer-events:none;z-index:860;`;
+      /* ⚠️ 同理**不要** `padding:0`：树的缩进是各层类的 `padding-left`，清零会让幽灵整行往左跳
+         （用户 2026-09-14：「收起文件时文件会**先向左移**，然后再上隐」）。 */
+      g.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;margin:0;pointer-events:none;z-index:860;`;
       document.body.appendChild(g);
       return g;
     });
@@ -1503,11 +1508,13 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
            再让它们退场 —— 不这么做的话它们随 `innerHTML` 一起"啪"地消失
            （用户 2026-09-14：「设定文件夹收起时无动画，收起时下面的文件直接消失」）。
            退场 = **展开入场（`rowsDropIn`）的倒放**（用户 2026-09-14：「文件出场动画改成入场的反向
-           就行了」）：展开时是"从上方 -8px 落下来、快的先到"，所以收起时"往上方 -8px 升走、
-           最后到的那一行先走"（`[...ghosts].reverse()` 让延迟顺序也倒过来），
-           方向、时长、错峰、曲线（快→慢 倒过来就是 慢→快）全都与 `rowsDropIn` 一一对应。 */
+           就行了」）：同样是"从上方 8px 的位移收回去"，只是方向相反（往上 8px 升走）、曲线倒过来
+           （入场 快→慢 的倒放 = 慢→快）、时长与错峰档次一模一样（260ms / 22ms）。
+           ⚠️ **顺序不再反转**（第一版 `[...ghosts].reverse()` 让最后落地的那行先走）：用户看到的是
+           「**没有像入场一样的错分**」—— 入场是从上往下一行行出来，退场就该是从上往下一行行走；
+           倒过来播等于波浪反向，跟入场对不上。 */
         const collapse = (wasOpen: boolean): HTMLElement[] => (wasOpen ? ghostRows(descendantsOf(el)) : []);
-        const leave = (ghosts: HTMLElement[]): void => rowsLeaveAndRemove([...ghosts].reverse(), { dy: 8, dur: 260, step: 22 });
+        const leave = (ghosts: HTMLElement[]): void => rowsLeaveAndRemove(ghosts, { dy: 8, dur: 260, step: 22 });
         if (ds.act === 'world') {
           const wasOpen = isOpen(collapsedWorlds, ds.nw!);
           const ghosts = collapse(wasOpen);

@@ -285,6 +285,10 @@ async function main() {
         /* 滚字那一对动画的关键帧（用户 2026-09-14：「新建实体按钮里面实体和节点文字的切换
            做成类似老虎机的上下切换」）—— 必须在点击的**同一个同步块**里读。 */
         const kf = (el) => (el ? el.getAnimations().filter((a) => !a.animationName).map((a) => a.effect.getKeyframes().map((k) => String(k.transform))) : []);
+        /* 那一对动画的时长/延迟也要（判"两段错开播"用）—— 同样得在这个同步块里读。 */
+        const timing = (el) => (el ? el.getAnimations().filter((a) => !a.animationName).map((a) => {
+          const t2 = a.effect.getTiming(); return { dur: t2.duration, delay: t2.delay };
+        }) : []);
         const rollBox = btn ? btn.querySelector('.lk-roll') : null;   /* 裁切盒（别看错：box 是 #cx-newbox） */
         return { h: box ? Math.round(box.getBoundingClientRect().height) : null,
           entVis: vis(ent), nodeVis: vis(nod),
@@ -300,7 +304,8 @@ async function main() {
           boxOvf: rollBox ? getComputedStyle(rollBox).overflow : null,
           wordH: t ? Math.round(t.getBoundingClientRect().height) : null,
           label: t ? (t.textContent || '').trim() : null,
-          rollOut: prevRoll ? kf(prevRoll)[0] : null, rollIn: t ? kf(t)[0] : null };
+          rollOut: prevRoll ? kf(prevRoll)[0] : null, rollIn: t ? kf(t)[0] : null,
+          rollOutT: prevRoll ? timing(prevRoll)[0] : null, rollInT: t ? timing(t)[0] : null };
       })(),
     };
   })()`);
@@ -361,6 +366,16 @@ async function main() {
       && outN[1] === -tab.newbox.boxH && inN[0] === tab.newbox.boxH,
     { boxH: tab.newbox.boxH, wordH: tab.newbox.wordH, ovf: tab.newbox.boxOvf, outN, inN });
 
+  /* ★13d4 两段**错开播**，不同时：几何上首尾相接到"刚好不叠"还不够 —— 同时播时两行字各露半截、
+     又都半透明，看上去仍是两层笔画糊在一起（用户第二轮反馈的「节点和实体两个文字会重叠」）。
+     新字入场必须等旧字走完（`in.delay === out.dur`）。 */
+  check('★13d4 旧字先走、新字后到（新字延迟 = 旧字时长 ⇒ 任何一帧只有一行字在身上）',
+    !!tab.newbox.rollOutT && !!tab.newbox.rollInT
+      && tab.newbox.rollOutT.delay === 0
+      && tab.newbox.rollOutT.dur === tab.newbox.rollInT.dur
+      && tab.newbox.rollInT.delay === tab.newbox.rollOutT.dur,
+    { out: tab.newbox.rollOutT, in: tab.newbox.rollInT });
+
   /* ── 帧条（演变）的**出入场动画** ──
      用户 2026-09-13：「演变窗口消失时编辑页的切换很生硬，顺便再给演变做一下出入场动画」。
      旧写法是 `rail.style.display = 'none' | ''` 硬切 ⇒ 面板宽度瞬间变化。现在帧条**常驻**，
@@ -387,15 +402,22 @@ async function main() {
   check('★13c2 收起演完才把高度收掉（`.is-collapsed` + 宽高都 0），那 320ms 因此是**看得见**的收起',
     railLate.collapsed === true && railLate.h === 0 && railLate.w === 0, railLate);
 
-  /* 滚字也得收干净：克隆出来的旧字要摘掉、动画要取消（留着会让"换类别后不许有动画"那几条守卫失灵） */
-  const rollLate = await ev(`(() => { const btn = document.querySelector('#cx-new');
+  /* 滚字也得收干净：克隆出来的旧字要摘掉、动画要取消（留着会让"换类别后不许有动画"那几条守卫失灵）。
+     ⚠️ 用**轮询**等它收干净，别用固定 sleep：隐藏窗口里 `finished` 不一定 resolve，真正的收手靠
+     `rollText` 的兜底定时器（`dur*2 + 600` = 960ms）—— 固定等 700ms 会压在边界上假挂。 */
+  const rollLateOf = async () => ev(`(() => { const btn = document.querySelector('#cx-new');
     const t = btn ? btn.querySelector('.lk-roll__t') : null;
     const fix = btn && btn.firstChild ? (btn.firstChild.textContent || '') : '';
     return { prev: btn ? btn.querySelectorAll('.lk-roll__prev').length : -1,
       anims: t ? t.getAnimations().length : -1,
       text: fix + (t ? (t.textContent || '') : '') }; })()`);
+  const rollGone = await (async () => {
+    for (let i = 0; i < 30; i++) { const r = await rollLateOf(); if (r.prev === 0 && r.anims === 0) return true; await sleep(120); }
+    return false;
+  })();
+  const rollLate = await rollLateOf();
   check('★13d2 滚字收干净：旧字克隆摘掉、标签上没有残留动画（兜底定时器兜住隐藏窗口里不推进的动画）',
-    rollLate.prev === 0 && rollLate.anims === 0 && rollLate.text === '＋新建节点', rollLate);
+    rollGone && rollLate.prev === 0 && rollLate.anims === 0 && rollLate.text === '＋新建节点', rollLate);
 
   /* ── ⑨ 节点→节点也要就地换 ──
      左栏重做后列表形态**直接摊平**了节点行（不再需要先展开 世界→时间线→种类），
