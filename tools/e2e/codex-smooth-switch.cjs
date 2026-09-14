@@ -285,10 +285,20 @@ async function main() {
         /* 滚字那一对动画的关键帧（用户 2026-09-14：「新建实体按钮里面实体和节点文字的切换
            做成类似老虎机的上下切换」）—— 必须在点击的**同一个同步块**里读。 */
         const kf = (el) => (el ? el.getAnimations().filter((a) => !a.animationName).map((a) => a.effect.getKeyframes().map((k) => String(k.transform))) : []);
+        const rollBox = btn ? btn.querySelector('.lk-roll') : null;   /* 裁切盒（别看错：box 是 #cx-newbox） */
         return { h: box ? Math.round(box.getBoundingClientRect().height) : null,
           entVis: vis(ent), nodeVis: vis(nod),
           entOff: off('#cx-new-entity select, #cx-new-entity input'), nodeOff: off('#cx-new-node select, #cx-new-node input'),
           labels: box ? [...box.querySelectorAll('.lk-newlbl')].map((el) => el.textContent) : [],
+          /* 用户 2026-09-14：「我希望滚动的只有实体和节点两个字」⇒ 不动的「＋新建」放在裁切盒**外面**，
+             盒里只有那两个字（字段名 label）；text = 前缀 + 那个字 = 用户在按钮上看到的整句。
+             ⚠️ 不能直接读 btn.textContent：这一刻盒子里还挂着克隆的旧字（lk-roll__prev），
+             会读成「＋新建节点实体」（第一版就是这么假挂的）。 */
+          fix: btn && btn.firstChild ? (btn.firstChild.textContent || '') : null,
+          text: btn && btn.firstChild ? ((btn.firstChild.textContent || '') + (t ? (t.textContent || '') : '')).trim() : null,
+          boxH: rollBox ? Math.round(rollBox.getBoundingClientRect().height) : null,
+          boxOvf: rollBox ? getComputedStyle(rollBox).overflow : null,
+          wordH: t ? Math.round(t.getBoundingClientRect().height) : null,
           label: t ? (t.textContent || '').trim() : null,
           rollOut: prevRoll ? kf(prevRoll)[0] : null, rollIn: t ? kf(t)[0] : null };
       })(),
@@ -314,7 +324,7 @@ async function main() {
       && tab.newbox.entVis === false && tab.newbox.nodeVis === true
       && tab.newbox.entOff.length > 0 && tab.newbox.entOff.every((d) => d === true)
       && tab.newbox.nodeOff.length > 0 && tab.newbox.nodeOff.every((d) => d === false)
-      && String(tab.newbox.label).includes('新建节点'),
+      && String(tab.newbox.text).includes('新建节点'),
     { before: geo.before, after: tab.geo, newbox: tab.newbox });
 
   /* ── 顶栏那两个控件的说明性小标签 ──
@@ -329,16 +339,27 @@ async function main() {
   /* ── 「＋新建实体 ↔ ＋新建节点」是**滚**着换字的 ──
      用户 2026-09-14：「新建实体按钮里面实体和节点文字的切换做成类似老虎机的上下切换」。
      原来两个按钮交替显隐 —— 换的是元素，滚字无从谈起；现在只有一个按钮 `#cx-new`，
-     换类别时把旧字克隆一份（`.lk-roll__prev`）往上滚出、真标签从下滚入。 */
+     换类别时把旧字克隆一份（`.lk-roll__prev`）往上滚出、真标签从下滚入。
+     同日用户报「**新建实体按钮文字会重叠**」+「**我希望滚动的只有实体和节点两个字**」⇒ 两条：
+     ① 不动的「＋新建」放在裁切盒外面，盒里只有那两个字（整串一起滚的话，前缀那半截也留在盒里）；
+     ② **滚一格的距离 = 裁切盒自己的高度**（旧写法写死 13px < 一行字高 16px ⇒ 旧字新字在盒里
+        始终叠着 3px，看着就是"文字重叠"）。这条把"滚动距离 ≥ 一行的字高"钉死。 */
   const rollNum = (kf) => (Array.isArray(kf) ? kf.map((s) => { const m = /translateY\((-?[\d.]+)px\)/.exec(String(s)); return m ? Number(m[1]) : null; }) : null);
   const outN = rollNum(tab.newbox.rollOut);
   const inN = rollNum(tab.newbox.rollIn);
-  check('★13d 换类别时按钮上的字像老虎机一样滚一格（旧字往上滚出、新字从下滚入，两个方向相反）',
-    tab.newbox.label === '＋新建节点'
+  check('★13d 换类别时只有按钮上那两个字滚一格（旧字往上滚出、新字从下滚入），「＋新建」不动',
+    tab.newbox.fix === '＋新建' && tab.newbox.label === '节点' && tab.newbox.text === '＋新建节点'
       && Array.isArray(outN) && outN.length === 2 && outN[0] === 0 && outN[1] < 0
       && Array.isArray(inN) && inN.length === 2 && inN[0] > 0
       && String(tab.newbox.rollIn[1]) === 'none' && String(tab.newbox.rollOut[0]) === 'translateY(0px)',
-    { label: tab.newbox.label, out: tab.newbox.rollOut, in: tab.newbox.rollIn, outN, inN });
+    { fix: tab.newbox.fix, label: tab.newbox.label, text: tab.newbox.text, out: tab.newbox.rollOut, in: tab.newbox.rollIn, outN, inN });
+
+  /* 滚一格的距离必须**不小于一行字高**，否则旧字与新字在裁切盒里叠着（用户报的"文字重叠"）。 */
+  check('★13d3 滚动距离 = 裁切盒高度（≥ 一行字高），所以旧字新字永不叠在一起',
+    tab.newbox.boxOvf === 'hidden'
+      && tab.newbox.boxH > 0 && tab.newbox.boxH === tab.newbox.wordH
+      && outN[1] === -tab.newbox.boxH && inN[0] === tab.newbox.boxH,
+    { boxH: tab.newbox.boxH, wordH: tab.newbox.wordH, ovf: tab.newbox.boxOvf, outN, inN });
 
   /* ── 帧条（演变）的**出入场动画** ──
      用户 2026-09-13：「演变窗口消失时编辑页的切换很生硬，顺便再给演变做一下出入场动画」。
@@ -369,8 +390,10 @@ async function main() {
   /* 滚字也得收干净：克隆出来的旧字要摘掉、动画要取消（留着会让"换类别后不许有动画"那几条守卫失灵） */
   const rollLate = await ev(`(() => { const btn = document.querySelector('#cx-new');
     const t = btn ? btn.querySelector('.lk-roll__t') : null;
+    const fix = btn && btn.firstChild ? (btn.firstChild.textContent || '') : '';
     return { prev: btn ? btn.querySelectorAll('.lk-roll__prev').length : -1,
-      anims: t ? t.getAnimations().length : -1, text: t ? (t.textContent || '').trim() : null }; })()`);
+      anims: t ? t.getAnimations().length : -1,
+      text: fix + (t ? (t.textContent || '') : '') }; })()`);
   check('★13d2 滚字收干净：旧字克隆摘掉、标签上没有残留动画（兜底定时器兜住隐藏窗口里不推进的动画）',
     rollLate.prev === 0 && rollLate.anims === 0 && rollLate.text === '＋新建节点', rollLate);
 

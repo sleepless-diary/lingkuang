@@ -70,14 +70,17 @@ async function main() {
     return { picked: ${picked}, entVis: vis('#cx-new-entity'), nodeVis: vis('#cx-new-node'),
       tlText: tlSel ? tlSel.options[tlSel.selectedIndex]?.textContent : null, tlValue: tlSel ? tlSel.value : null,
       btnOff: btn ? btn.disabled : null, entCtlOff: off('#cx-new-entity select, #cx-new-entity input'),
+      /* 滚动盒里只有「实体 / 节点」两个字，不动的「＋新建」在盒外（用户 2026-09-14）。
+         ⚠️ 别直接读 btn.textContent：这一刻盒里可能还挂着克隆的旧字（lk-roll__prev）。 */
       label: t ? (t.textContent || '').trim() : null,
+      btnText: btn ? (((btn.firstChild && btn.firstChild.textContent) || '') + (t ? (t.textContent || '') : '')).trim() : null,
       labels: [...document.querySelectorAll('#cx-newbox .lk-newlbl')].map((e) => e.textContent),
       boxH: Math.round(document.querySelector('#cx-newbox').getBoundingClientRect().height) };
   })()`);
   check('★0 前置：进节点态后顶栏换成「时间线 ▾ + 数量」，按钮上的字变成＋新建节点（另一组藏起来且禁用）',
     ctl.picked === true && ctl.nodeVis === true && ctl.entVis === false
       && ctl.btnOff === false && ctl.entCtlOff.length > 0 && ctl.entCtlOff.every((d) => d === true)
-      && ctl.tlText === TL && String(ctl.label).includes('新建节点'), ctl);
+      && ctl.tlText === TL && ctl.label === '节点' && ctl.btnText === '＋新建节点', ctl);
   /* 用户 2026-09-14：「新建实体左边两个按钮有什么用」—— 它们长得像按钮又没说清用途，
      现在每个控件前面挂一句小字（实体态：类型/数量；节点态：时间线/数量）。 */
   check('★0b 顶栏那两个控件各有一句说明小字（类型/时间线 + 数量）',

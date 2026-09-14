@@ -965,7 +965,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
           <span id="cx-newbox" style="margin-left:auto;gap:6px;align-items:center;display:flex;">
             <span id="cx-new-entity" style="gap:6px;align-items:center;display:${isEntity ? 'flex' : 'none'};">${newCtl}</span>
             <span id="cx-new-node" style="gap:6px;align-items:center;display:${isEntity ? 'none' : 'flex'};">${nodeCtl}</span>
-            <button id="cx-new" style="${NEWBTN}" data-off-entity="${kinds.length ? '' : '1'}" data-off-node="${tlNewOpts.length ? '' : '1'}"><span class="lk-roll"><span class="lk-roll__t">${isEntity ? '＋新建实体' : '＋新建节点'}</span></span></button>
+            <button id="cx-new" style="${NEWBTN}" data-off-entity="${kinds.length ? '' : '1'}" data-off-node="${tlNewOpts.length ? '' : '1'}">＋新建<span class="lk-roll"><span class="lk-roll__t">${isEntity ? '实体' : '节点'}</span></span></button>
           </span>
         </div>
         <div id="cx-hint" style="display:none;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:rgba(217,101,92,.12);font-size:var(--text-xs);color:var(--fg);line-height:1.5;"></div>
@@ -1229,8 +1229,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         el.disabled = !on || el.hasAttribute('data-off');
       }
     }
-    /* 共用那个按钮：能不能按看**当前这一类**建不建得出来（没有实体类型 / 没有时间线就不能），
-       按钮上的字跟着类别换 —— 换的时候像老虎机一样上下滚一格。 */
+    /* 共用那个按钮：能不能按看**当前这一类**建不建得出来（没有实体类型 / 没有时间线就不能）。
+       按钮上「＋新建」是**不动的前缀**，滚的只有后面那两个字（用户 2026-09-14：「我希望滚动的
+       只有实体和节点两个字」）—— 前缀跟着滚会让整串字一起上下跑，两行字在裁切盒里叠在一起看着发糊。 */
     const btn = host.querySelector<HTMLButtonElement>('#cx-new');
     if (btn) {
       const off = btn.getAttribute(isEntity ? 'data-off-entity' : 'data-off-node') === '1';
@@ -1238,7 +1239,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       btn.title = off
         ? (isEntity ? '这个世界还没有设定类型（去「结构体管理」加一个）' : '这个世界还没有时间线 —— 先去世界沙盘建一条')
         : (isEntity ? '新建设定条目（类型 / 数量看左边）' : '新建时间线节点（时间线 / 数量看左边）');
-      rollText(btn.querySelector<HTMLElement>('.lk-roll'), isEntity ? '＋新建实体' : '＋新建节点');
+      rollText(btn.querySelector<HTMLElement>('.lk-roll'), isEntity ? '实体' : '节点');
     }
     syncNewType();
   }
@@ -1499,10 +1500,14 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
            露出来的"（⇒ 向下弹出）与"真新建出来的"（⇒ 从左侧滑入）。键与三个 collapsed* Set 对齐。 */
         const opened = (key: string, wasOpen: boolean): void => { if (!wasOpen) justOpened = key; };
         /* **收起**时：先把这一枝下面那些行克隆成幽灵层钉在原位（`ghostRows`），等重画之后
-           再让它们原地往左淡出 —— 不这么做的话它们随 `innerHTML` 一起"啪"地消失
-           （用户 2026-09-14：「设定文件夹收起时无动画，收起时下面的文件直接消失」）。 */
+           再让它们退场 —— 不这么做的话它们随 `innerHTML` 一起"啪"地消失
+           （用户 2026-09-14：「设定文件夹收起时无动画，收起时下面的文件直接消失」）。
+           退场 = **展开入场（`rowsDropIn`）的倒放**（用户 2026-09-14：「文件出场动画改成入场的反向
+           就行了」）：展开时是"从上方 -8px 落下来、快的先到"，所以收起时"往上方 -8px 升走、
+           最后到的那一行先走"（`[...ghosts].reverse()` 让延迟顺序也倒过来），
+           方向、时长、错峰、曲线（快→慢 倒过来就是 慢→快）全都与 `rowsDropIn` 一一对应。 */
         const collapse = (wasOpen: boolean): HTMLElement[] => (wasOpen ? ghostRows(descendantsOf(el)) : []);
-        const leave = (ghosts: HTMLElement[]): void => rowsLeaveAndRemove(ghosts, { dx: 20, dur: 240, step: 10 });
+        const leave = (ghosts: HTMLElement[]): void => rowsLeaveAndRemove([...ghosts].reverse(), { dy: 8, dur: 260, step: 22 });
         if (ds.act === 'world') {
           const wasOpen = isOpen(collapsedWorlds, ds.nw!);
           const ghosts = collapse(wasOpen);

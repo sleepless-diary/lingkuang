@@ -134,9 +134,11 @@ export function stopCascade(container: HTMLElement | null): void {
    （快速连点时），CSS 类的行内延迟那套（`cascadeIn`）表达不了；而且这里必须 `fill:'both'`，
    否则入场在延迟期间会以**正常不透明度**显示 = 用户报过的"文字先出现，然后才演动画"。 */
 
-/** 行级转场的公共参数：`dx` 入场距离(px)、`step` 行错峰(ms)、`dur` 单行时长(ms)、`start` 入场整体延后(ms) */
+/** 行级转场的公共参数：`dx` 入场距离(px)、`dy` 上下出场距离(px，给了它就走上下)、
+ *  `step` 行错峰(ms)、`dur` 单行时长(ms)、`start` 入场整体延后(ms) */
 export interface RowMotionOpts {
   dx?: number;
+  dy?: number;
   step?: number;
   dur?: number;
   start?: number;
@@ -159,15 +161,17 @@ function autoRelease(anims: Animation[], totalMs: number): void {
   window.setTimeout(release, totalMs + 800);
 }
 
-/** 行级**出场**：每行 `1 / 原位` → `0 / 往左 dx`（慢→快），按序号错峰。返回动画对象（调用方可取消）。 */
+/** 行级**出场**：每行 `1 / 原位` → `0 / 往左 dx`（慢→快），按序号错峰。返回动画对象（调用方可取消）。
+ *  给了 `dy` 就走**上下**（`0 / 原位` → `-dy`，往上）—— 那是"入场动画倒着播"的用法，见 `rowsDropIn`。 */
 export function rowsLeave(rows: HTMLElement[], o: RowMotionOpts = {}): Animation[] {
   if (motionReduced()) return [];
   const dx = o.dx ?? 32;
   const step = o.step ?? 10;
   const dur = o.dur ?? ROW_DUR;
+  const out = o.dy !== undefined ? `translateY(${-o.dy}px)` : `translateX(${-dx}px)`;
   const anims = rows.map((el, i) =>
     el.animate(
-      [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `translateX(${-dx}px)` }],
+      [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: out }],
       { duration: dur, delay: i * step, easing: EASE_ACCEL, fill: 'both' }
     )
   );
@@ -291,6 +295,11 @@ export function rowsLeaveAndRemove(rows: HTMLElement[], o: RowMotionOpts = {}): 
  *  用户 2026-09-14：「新建实体按钮里面实体和节点文字的切换做成类似老虎机的上下切换」。
  *  `box` = 那个裁切盒（`.lk-roll`，`overflow:hidden`），里面第二层 `.lk-roll__t` 是真标签。
  *  做法：把旧文字克隆一份绝对定位盖在原处往上滚出，真标签换成新文字后从下方滚入。
+ *  ⚠️ **滚动距离 = 裁切盒自己的高度**（不是写死的 13px）：滚一格的距离小于一行字高时，
+ *  旧字和新字在盒子里**叠在同一处**，看着像文字糊成一团（用户 2026-09-14：「新建实体按钮
+ *  文字会重叠」）。按盒高滚 ⇒ 旧字整行移出、新字整行移入，中间任何一帧都只有一行字在身上。
+ *  ⚠️ **只滚"会变的那两个字"**：调用方把不动的部分（「＋新建」）放在盒外 —— 整串一起滚等于
+ *  两行字各有半截留在盒里，正是上面那个"重叠"的观感。
  *  ⚠️ 跑完**两个动画都取消**（`fill:'both'` 留着会让 `getAnimations()` 一直非空 ——
  *  而"换类别后容器里不许有动画"那几条守卫正是按它判的）。 */
 export function rollText(box: HTMLElement | null, next: string, o: { dur?: number; dy?: number } = {}): void {
@@ -299,7 +308,8 @@ export function rollText(box: HTMLElement | null, next: string, o: { dur?: numbe
   if ((t.textContent ?? '') === next) return;
   if (motionReduced()) { t.textContent = next; return; }
   const dur = o.dur ?? 260;
-  const dy = o.dy ?? 13;   /* ≈ 一行：起点在裁切盒外面，才看得出"从下面滚上来" */
+  /* 盒高即"一行"：量不到就退回 16px（≈ 常见行高），绝不退回 13 那种小于字高的值 */
+  const dy = o.dy ?? Math.max(12, Math.round(box.getBoundingClientRect().height) || 16);
   const prev = t.cloneNode(true) as HTMLElement;
   prev.classList.add('lk-roll__prev');
   box.appendChild(prev);

@@ -305,8 +305,19 @@
   标 `lk-list-ghost` 类，`z-index: 860`，克隆体里的 `[id]` 全摘）；收起时先用
   `descendantsOf(el)` 找出"这一枝底下的行"（按 `rowDepth()` 判层级：世界 0 / 时间线·`_设定` 1 /
   种类·类型 2 / 节点·实体·空提示 3；DOM 里紧跟其后、层级更深的那些），克隆钉住 → `renderList()`
-  → `rowsLeaveAndRemove(ghosts, { dx: 20, dur: 240, step: 10 })`（`src/ui/motion.ts` 新增的
+  → `rowsLeaveAndRemove(ghosts, { dy: 8, dur: 260, step: 22 })`（`src/ui/motion.ts` 新增的
   "一批行退场后从 DOM 摘掉"，与单行版 `rowLeaveAndRemove` 同族）。
+- **退场姿势：展开入场的倒放**（用户 2026-09-14 看过第一版之后：「**文件出场动画改成入场的反向就行了**」）。
+  第一版收起时是"往左 20px 淡出"，与展开时的"从上方 -8px 落下来"没关系，两件事各演各的；
+  现在收起 = `rowsDropIn` 倒着播：方向 `none/1 → translateY(-8px)/0`（往上 8px 升走）、
+  时长 260ms、错峰 22ms 全对齐，曲线也倒过来（入场 快→慢 `cubic-bezier(0.16,1,0.3,1)`
+  的倒放就是出场 慢→快 `cubic-bezier(0.7,0,0.84,0)`），**延迟顺序也反过来**
+  （`[...ghosts].reverse()`：入场时最后落地的那一行最先升走）。
+  `RowMotionOpts` 因此多了个可选的 `dy`：给了它 `rowsLeave()` 就走上下、不给还是左右
+  （换条目转场继续用 `dx`）。**断言直接拿入场的关键帧来比反向**（★4c2：出场的终点 = 入场的起点
+  `translateY(-8px)/0`、出场的起点 = 入场的终点 `none/1`）—— 比各写各的字面量可靠：
+  ⚠️ 上一版 `open1` 里混着 FLIP 让位行（`translateY(-21.39px)/ → none/`），交叉断言被它们搅黄过一次，
+  现在先按 `to === 'none/1'` 把"展开露出来的行"筛出来再比。
 - **教训（断言侧）**：同一时刻页面上可能**同时挂着好几批幽灵**（收起 A 还没演完又收起 B；
   隐藏窗口里 `finished` 永不 resolve，只能等 `dur + step*n + 400ms` 的兜底定时器）。
   第一版断言直接数 `document.body.children` 里 `z-index === 860` 的，把上一批 4 个也算进去了
@@ -364,6 +375,39 @@
 - 判别力：A/B（`git stash` 掉 codex.ts + rebuild）时按钮根本不存在 `.lk-roll`，
   ★13d 读到 `out/in` 皆空；改后实测关键帧 `translateY(0px) → translateY(-13px)`（出）
   与 `translateY(13px) → none`（入）。
+  （这一版的"整串字一起滚 + 滚 13px"后来被用户推翻，见第十六节。）
+
+
+### 十六、滚字看着"糊成一团"：只有两个字该滚、滚一格要够一行字高（用户 2026-09-14 两条）
+
+用户原话：「**新建实体按钮文字会重叠**」+「**我希望滚动的只有实体和节点两个字**」。
+
+- **症状**：换类别时（实体 ↔ 节点）按钮上那串字像两层字叠在一起。
+- **两个原因叠在一起**，都在"滚一格"这件事上：
+  ① 滚的是**整串字**（「＋新建实体」↔「＋新建节点」）—— 前缀也有半截留在裁切盒里；
+  ② 滚动距离写死 **13px**，而一行 CJK 字高实测 **16px** ⇒ 旧字与新字在盒子里**始终叠着 3px**，
+     而两者都是不透明的，看上去就是文字重叠。
+- **修法**（`src/ui/codex.ts` + `src/ui/motion.ts`）：
+  ① 按钮改成 `<button id="cx-new">＋新建<span class="lk-roll"><span class="lk-roll__t">实体</span></span></button>`
+     —— 不动的「＋新建」放在裁切盒**外面**，盒里只有会变的那两个字（实体 / 节点 都是 2 字，宽度也一样，
+     所以按钮宽度不会抖）；`rollText(btn.querySelector('.lk-roll'), isEntity ? '实体' : '节点')`。
+  ② `rollText()` 的 `dy` 默认值从写死的 13 改成 **裁切盒自己的高度**
+     （`const dy = o.dy ?? Math.max(12, Math.round(box.getBoundingClientRect().height) || 16)`）——
+     "一格"就是"一行"，旧字整行移出、新字整行移入，任何一帧都只有一行字在身上。
+- 实测（真实 Electron + CDP）：按钮 83×30、裁切盒 **22×16**（`overflow:hidden`）、
+  出 `translateY(0px)/1 → translateY(-16px)/0`、入 `translateY(16px)/0 → none/1`；
+  演完 `.lk-roll__prev` 0 个、标签上 0 个动画、按钮文字 = 「＋新建节点」。
+  截图核对：静止帧 = 干净的「＋新建实体」；滚到一半的那一帧里两个字**上下分开**（各露出一半），
+  不再叠在同一处。
+- 断言：★13d 改成「`fix === '＋新建'` + `label === '节点'` + 拼起来还是「＋新建节点」」，
+  另加 **★13d3**「滚动距离 = 裁切盒高度（≥ 一行字高）」。
+  ⚠️ 断言里**不能直接读 `btn.textContent`** —— 这一刻盒里还挂着克隆的旧字，
+  会读成「＋新建节点实体」（第一版就是这么假挂的，改成"前缀 + 真标签"拼）。
+  **A/B（`git checkout --` 两个源文件 + rebuild）24/26**，挂的正是 ★13d 与 ★13d3；
+  修复后 **26/26**（`workbench-add-node.cjs` 的 ★0 也同步改成读"前缀 + 真标签"，19/19）。
+- ⚠️ 又一次踩到**模板字符串里写反引号**：套件里那些给 `Runtime.evaluate` 的注释里写
+  `` `.lk-roll__prev` `` 会把模板字面量提前闭合（`SyntaxError: missing ) after argument list`），
+  中文注释里一律不写反引号（与 AGENTS 里那条"别把 UTF-8 源码往返 PowerShell"同族的低级坑）。
 
 
 ### 验证（二十二 · 续）
@@ -388,7 +432,8 @@
 ### 验证（十二 ~ 十五）
 
 - `codex-list-motion.cjs` **14 → 17 项**：新增 ★4c（收起「事件」时里面那些行变成**钉在原位的幽灵**、
-  行数归零、幽灵文字就是那一行）、★4c2（退场 `none/1 → translateX(-20px)/0`）、★4c3（演完自己摘掉）。
+  行数归零、幽灵文字就是那一行）、★4c2（退场 = **展开入场的倒放**：`none/1 → translateY(-8px)/0`，
+  关键帧直接把 ★4b 记下的入场起点/终点反过来比）、★4c3（演完自己摘掉）。
   **A/B（`git stash push -- src/ui/codex.ts src/ui/motion.ts src/style.css` + rebuild）15/17** ——
   挂的正是 ★4c/★4c2（dump 里 `ghostAnim` 为空）。修复后 **17/17**。
 - `workbench-add-node.cjs` **15 → 19 项**：新增 ★0b（两个控件各有说明小字）、
@@ -398,6 +443,20 @@
   前置多了一步：`$env:LK_SEED_ORDER="1"` 再跑 `seed-node.cjs`（它会多播一个 `year:1` 的「上古」，
   并把 `timeCursor` 设在 year 200 —— 公历换算与 `src/calendar.ts` 的 `toEpoch` 同一套公式）。
   **A/B（只 stash 源码）9/19** —— ★15/★16/★17 全挂（`appliedYear: null`、顺序 = 数组顺序）。
+
+### 验证（十六）
+
+- `codex-smooth-switch.cjs` **25 → 26 项**：★13d 改成"只有那两个字滚"、新增 ★13d3（滚一格 = 盒高）。
+  **A/B（把 `src/ui/codex.ts` + `src/ui/motion.ts` 退回 HEAD + rebuild）24/26**（挂 ★13d/★13d3，
+  dump `{"fix":"＋新建节点＋新建实体","outN":[0,-13]}`）；修复后 **26/26**。
+- `workbench-add-node.cjs` ★0 的读法同步改成"前缀 + 真标签"（`btnText === '＋新建节点'`），**19/19**
+  （⚠️ 必须先杀干净上一轮实例再 reset + seed：留着旧实例它会把自己内存里的 `新实体 2/3` 写回 vault，
+  `uniqueName` 就从 4 开始跳号、★9/★10/★11/★13 一起假挂 —— 本轮踩到过一次）。
+- 回归全绿（各自干净起点）：`codex-swap-motion` 14/14、`codex-list-motion` 17/17、
+  `codex-node-tab` 18/18、`codex-tree-view` 22/22、`motion-switch` 25/25；
+  `tsc --noEmit` / `node --check` / `vite build` 全 exit 0。
+- ⚠️ 端口又撞上一次：`--remote-debugging-port=9935` 落在 **Steam** 手里（`/json` 返 404 HTML）
+  ⇒ Electron DevTools 起不来。选端口后**先轮询 `/json/version` 看到 `Browser` 再往下跑**。
   修复后 **19/19**。
 - `entity-evolution.cjs` **43 → 46 项**：新增 ★16（站在帧上改类型 ⇒ 文件搬到 `_设定/物品/`、
   `#cx-vnote` 有那句提示、这一帧的 `patch` 不含 `typeId`）、★16b（搬过去那份帧与搬之前**逐字节相同**）、

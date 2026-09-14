@@ -132,10 +132,15 @@ async function main() {
     { open1: t2.open1 });
 
   /* ── ★4c 收起时**里面那些行不是"啪"地消失** ─────────────────────────────
-     用户 2026-09-14：「设定文件夹收起时无动画，收起时下面的文件直接消失」。
+     用户 2026-09-14：「设定文件夹收起时无动画，收起时下面的文件直接消失」，
+     随后又定：「**文件出场动画改成入场的反向就行了**」。
      收起 = 这一枝的行会被 `innerHTML` 整块换掉（元素是**当场没的**，没有旧位置可演），
      所以退场只能演在**克隆出来的幽灵层**上：`ghostRows()` 把它们钉在原位，
-     `rowsLeaveAndRemove()` 往左淡出后再摘掉（与删除时的幽灵同一套，只是 z-index 860）。 */
+     `rowsLeaveAndRemove()` 播完再摘掉（与删除时的幽灵同一套，只是 z-index 860）。
+     退场姿势 = **展开入场 `rowsDropIn` 的倒放**（从上方 -8px 落下来 ⇒ 往上方 -8px 升走，
+     `none/1 → translateY(-8px)/0`，260ms、错峰 22ms、曲线也倒过来 = 慢→快）。
+     ★4c2 因此**直接拿 ★4b 记下来的入场关键帧来比**（出场的终点 = 入场的起点、出场的起点 = 入场的终点），
+     而不是各写各的字面量 —— 这样"两边必须互为反向"是被断言的，不是靠注释。 */
   const t4c = await ev(`(() => {
     const nodeRows = () => [...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]')];
     const kind = () => [...document.querySelectorAll('#cx-list .ed-tkind')].find((e) => e.textContent.includes('事件'));
@@ -155,10 +160,18 @@ async function main() {
       && t4c.ghostText.every((t) => t.startsWith('王国的建立'))
       && t4c.ghostAnim.every((a) => a.length === 1),
     t4c);
-  check('★4c2 幽灵演的是「往左退场」（none/1 → translateX(-20px)/0，慢→快）',
+  /* ⚠️ `open1` 里混着两类动画：**展开露出来的行**（下弹，`translateY(-8px)/0 → none/1`）与
+     **让位的行**（FLIP，`translateY(±)/  → none/`）。只拿前者来比，不然 FLIP 的位移会把交叉断言搅黄。 */
+  const inFrom = (t2.open1 ?? []).map((x) => x.a[0]).filter((a) => a && a.to === 'none/1').map((a) => a.from);
+  const inTo = (t2.open1 ?? []).map((x) => x.a[0]).filter((a) => a && a.from === 'translateY(-8px)/0').map((a) => a.to);
+  check('★4c2 幽灵演的是**入场（向下弹出）的倒放**：none/1 → translateY(-8px)/0，260ms',
     t4c.ghostAnim.length >= 1
-      && t4c.ghostAnim.every((a) => a[0].from === 'none/1' && a[0].to === 'translateX(-20px)/0'),
-    { ghostAnim: t4c.ghostAnim });
+      && inFrom.length >= 1
+      && t4c.ghostAnim.every((a) => a[0].from === 'none/1' && a[0].to === 'translateY(-8px)/0' && a[0].dur === 260)
+      /* 逐项互为反向：出场的终点 = 入场的起点（-8px/0）、出场的起点 = 入场的终点（none/1） */
+      && inFrom.every((f) => t4c.ghostAnim.every((a) => a[0].to === f))
+      && inTo.every((t) => t4c.ghostAnim.every((a) => a[0].from === t)),
+    { ghostAnim: t4c.ghostAnim, inFrom, inTo });
   const ghostGone = await waitFor(() => ev(`[...document.body.children].filter((e) => e.style.zIndex === '860').length === 0`), 3000);
   check('★4c3 退场演完幽灵自己摘掉（不留一个看不见的浮层压在页面上）', ghostGone);
   await ev(`(() => { const k = [...document.querySelectorAll('#cx-list .ed-tkind')].find((e) => e.textContent.includes('事件')); if (k) k.click(); return true; })()`);
