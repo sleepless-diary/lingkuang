@@ -440,6 +440,40 @@ async function main() {
     { write: r15e.rows.map((x) => x.write), lIdx, mode: r15e.mode });
   await setMode('manual');   /* 复位（下一条断言看的是"没出错"，但别把状态留给同实例的下一个套件） */
 
+  /* ── ★16 「类型」是**身份**，不进版本差异 ───────────────────────────────
+     用户 2026-09-14：「时间帧内为什么能修改实体的类型」。答案：它决定 `.md` 落在
+     `_设定/<类型>/` 哪个文件夹里（文件名只按初稿的名字算）—— 让某一帧改类型，文件会留在旧
+     文件夹、界面却写着新类型，而回扫（类型从文件夹名来）又把它顶回去。
+     现在不论站在哪一版，改类型都是改**整条设定**（`commitState` 里差异恒用实体现有 typeId）。 */
+  const pickedA = await pickEntity('银发少女');
+  await sleep(400);
+  await clickRow(1);                       /* 站到第 1 版（某一帧）上 */
+  await sleep(400); await forceFrames(2);
+  const framesBefore = mdFrames(read(MD_A));
+  const noteOnFrame = await ev(`(document.querySelector('#cx-vnote') || {}).textContent || ''`);
+  await ev(`(() => { const s = document.querySelector('#cx-type'); if (!s) return false; s.value = '物品'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  const movedTo = path.join(VAULT, '测试世界观', '_设定', '物品', '银发少女.md');
+  const moved = await waitFor(() => read(movedTo).includes('name: 银发少女') && read(MD_A) === '', 15000);
+  const framesAfter = mdFrames(read(movedTo));
+  check('★16 站在某一帧上改「类型」：类型作用于**整条设定**（文件搬到 _设定/物品/），不被记进这一帧的差异',
+    pickedA === 'ok' && moved
+      && String(noteOnFrame).includes('类型改的是整条设定')
+      && fmValue(read(movedTo), 'type') === '物品'
+      && read(MD_A) === ''                                   /* 旧类型文件夹里不留第二份 */
+      && Array.isArray(framesBefore) && framesBefore.length >= 1
+      && Array.isArray(framesAfter) && framesAfter.length === framesBefore.length
+      && framesAfter.every((f) => !('typeId' in (f.patch ?? {}))),
+    { pickedA, moved, note: noteOnFrame, type: fmValue(read(movedTo), 'type'), 旧文件还在: read(MD_A).length > 0,
+      patchKeys: Array.isArray(framesAfter) ? framesAfter.map((f) => Object.keys(f.patch ?? {})) : framesAfter });
+  check('★16b 换成整条设定的类型**不会动到既有版本历史**：搬过去那份帧与搬之前逐字节相同',
+    Array.isArray(framesBefore) && framesBefore.length >= 1 && JSON.stringify(framesBefore) === JSON.stringify(framesAfter),
+    { before: Array.isArray(framesBefore) ? framesBefore.length : framesBefore, after: Array.isArray(framesAfter) ? framesAfter.length : framesAfter });
+  await ev(`(() => { const s = document.querySelector('#cx-type'); if (!s) return false; s.value = '角色'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  await sleep(900);
+  const backToA = await waitFor(() => read(MD_A).includes('name: 银发少女'), 15000);
+  check('★16c 把类型改回去 ⇒ 文件也搬回 _设定/角色/（类型 = 文件夹，两边始终一致）',
+    backToA && read(movedTo) === '', { 回角色: read(MD_A).length > 0, 物品里还留着: read(movedTo).length > 0 });
+
   /* ── ★13 无未捕获异常 ───────────────────────────────────────────── */
   const errs = await ev(`window.__errs || []`);
   check('★13 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

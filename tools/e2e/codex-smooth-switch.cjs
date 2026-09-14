@@ -277,12 +277,20 @@ async function main() {
         const box = document.querySelector('#cx-newbox');
         const ent = document.querySelector('#cx-new-entity');
         const nod = document.querySelector('#cx-new-node');
+        const btn = document.querySelector('#cx-new');
+        const t = btn ? btn.querySelector('.lk-roll__t') : null;
+        const prevRoll = btn ? btn.querySelector('.lk-roll__prev') : null;
         const vis = (el) => (el ? getComputedStyle(el).display !== 'none' : null);
         const off = (sel) => [...document.querySelectorAll(sel)].map((el) => el.disabled);
+        /* 滚字那一对动画的关键帧（用户 2026-09-14：「新建实体按钮里面实体和节点文字的切换
+           做成类似老虎机的上下切换」）—— 必须在点击的**同一个同步块**里读。 */
+        const kf = (el) => (el ? el.getAnimations().filter((a) => !a.animationName).map((a) => a.effect.getKeyframes().map((k) => String(k.transform))) : []);
         return { h: box ? Math.round(box.getBoundingClientRect().height) : null,
           entVis: vis(ent), nodeVis: vis(nod),
-          entOff: off('#cx-new-entity button, #cx-new-entity select'), nodeOff: off('#cx-new-node button, #cx-new-node select'),
-          label: nod ? (nod.textContent || '').trim() : null };
+          entOff: off('#cx-new-entity select, #cx-new-entity input'), nodeOff: off('#cx-new-node select, #cx-new-node input'),
+          labels: box ? [...box.querySelectorAll('.lk-newlbl')].map((el) => el.textContent) : [],
+          label: t ? (t.textContent || '').trim() : null,
+          rollOut: prevRoll ? kf(prevRoll)[0] : null, rollIn: t ? kf(t)[0] : null };
       })(),
     };
   })()`);
@@ -304,9 +312,33 @@ async function main() {
       && tab.geo.rail.t === geo.before.rail.t
       && geo.before.rail.off === false && geo.before.rail.w > 100
       && tab.newbox.entVis === false && tab.newbox.nodeVis === true
-      && tab.newbox.entOff.every((d) => d === true) && tab.newbox.nodeOff.every((d) => d === false)
+      && tab.newbox.entOff.length > 0 && tab.newbox.entOff.every((d) => d === true)
+      && tab.newbox.nodeOff.length > 0 && tab.newbox.nodeOff.every((d) => d === false)
       && String(tab.newbox.label).includes('新建节点'),
     { before: geo.before, after: tab.geo, newbox: tab.newbox });
+
+  /* ── 顶栏那两个控件的说明性小标签 ──
+     用户 2026-09-14：「新建实体左边两个按钮有什么用」—— 它们长得像按钮、也没说清是干什么的
+     （一个是「新条目属于哪个类型」的下拉，一个是「一次建几个」的数量框）。
+     现在各挂一个 `.lk-newlbl`（类型 / 时间线 / 数量），两组各两个。 */
+  check('★13g 顶栏两个控件各有一句说明（实体态：类型 + 数量；节点态：时间线 + 数量）',
+    Array.isArray(tab.newbox.labels) && tab.newbox.labels.length === 4
+      && tab.newbox.labels.join('|') === '类型|数量|时间线|数量',
+    tab.newbox.labels);
+
+  /* ── 「＋新建实体 ↔ ＋新建节点」是**滚**着换字的 ──
+     用户 2026-09-14：「新建实体按钮里面实体和节点文字的切换做成类似老虎机的上下切换」。
+     原来两个按钮交替显隐 —— 换的是元素，滚字无从谈起；现在只有一个按钮 `#cx-new`，
+     换类别时把旧字克隆一份（`.lk-roll__prev`）往上滚出、真标签从下滚入。 */
+  const rollNum = (kf) => (Array.isArray(kf) ? kf.map((s) => { const m = /translateY\((-?[\d.]+)px\)/.exec(String(s)); return m ? Number(m[1]) : null; }) : null);
+  const outN = rollNum(tab.newbox.rollOut);
+  const inN = rollNum(tab.newbox.rollIn);
+  check('★13d 换类别时按钮上的字像老虎机一样滚一格（旧字往上滚出、新字从下滚入，两个方向相反）',
+    tab.newbox.label === '＋新建节点'
+      && Array.isArray(outN) && outN.length === 2 && outN[0] === 0 && outN[1] < 0
+      && Array.isArray(inN) && inN.length === 2 && inN[0] > 0
+      && String(tab.newbox.rollIn[1]) === 'none' && String(tab.newbox.rollOut[0]) === 'translateY(0px)',
+    { label: tab.newbox.label, out: tab.newbox.rollOut, in: tab.newbox.rollIn, outN, inN });
 
   /* ── 帧条（演变）的**出入场动画** ──
      用户 2026-09-13：「演变窗口消失时编辑页的切换很生硬，顺便再给演变做一下出入场动画」。
@@ -333,6 +365,14 @@ async function main() {
       w: Math.round(r.getBoundingClientRect().width) }; })()`);
   check('★13c2 收起演完才把高度收掉（`.is-collapsed` + 宽高都 0），那 320ms 因此是**看得见**的收起',
     railLate.collapsed === true && railLate.h === 0 && railLate.w === 0, railLate);
+
+  /* 滚字也得收干净：克隆出来的旧字要摘掉、动画要取消（留着会让"换类别后不许有动画"那几条守卫失灵） */
+  const rollLate = await ev(`(() => { const btn = document.querySelector('#cx-new');
+    const t = btn ? btn.querySelector('.lk-roll__t') : null;
+    return { prev: btn ? btn.querySelectorAll('.lk-roll__prev').length : -1,
+      anims: t ? t.getAnimations().length : -1, text: t ? (t.textContent || '').trim() : null }; })()`);
+  check('★13d2 滚字收干净：旧字克隆摘掉、标签上没有残留动画（兜底定时器兜住隐藏窗口里不推进的动画）',
+    rollLate.prev === 0 && rollLate.anims === 0 && rollLate.text === '＋新建节点', rollLate);
 
   /* ── ⑨ 节点→节点也要就地换 ──
      左栏重做后列表形态**直接摊平**了节点行（不再需要先展开 世界→时间线→种类），

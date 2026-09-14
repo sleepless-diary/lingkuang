@@ -34,7 +34,8 @@ import { loadSettings } from './settings';
 import {
   epochOfNodes, frameDiff, nearestVersion, normalizeFrames, statesOf, versionAtNode, type EntityState,
 } from '../store/evolution';
-import { cascadeIn, enter, flipRows, motionReduced, rowLeaveAndRemove, rowSlideIn, rowsDropIn, rowsEnter, rowsLeave, topsOf } from './motion';
+import { calendarOf, fromEpoch } from '../calendar';
+import { cascadeIn, enter, flipRows, motionReduced, rollText, rowLeaveAndRemove, rowSlideIn, rowsDropIn, rowsEnter, rowsLeave, rowsLeaveAndRemove, topsOf } from './motion';
 
 const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;font-family:inherit;user-select:text;';
 /* 顶栏那两组「下拉 + 新建按钮」共用同一份样式 —— 高度必须一模一样（27px），
@@ -213,6 +214,45 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     return g;
   }
 
+  /** 一批行克隆成幽灵层（`position:fixed` 钉在原位）—— 收起文件夹时，被收掉的那几行靠它演出场。
+   *  与 `pinRowGhost` 同一套做法：不能挂在 `#cx-list` 里（马上被 `innerHTML = ''` 清空），
+   *  克隆体里的 `[id]` 也得全摘（否则页面里多出第二个 `#cx-fields` / `#cx-doc`）。 */
+  function ghostRows(rows: HTMLElement[]): HTMLElement[] {
+    if (motionReduced()) return [];
+    return rows.map((row) => {
+      const r = row.getBoundingClientRect();
+      const g = row.cloneNode(true) as HTMLElement;
+      g.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+      /* 打个类当抓手：同一时刻页面上可能同时挂着好几批幽灵（收起 A 还没演完又收起 B），
+         测试与被收的那一枝都得能认出"这一批是我刚造出来的"。 */
+      g.classList.add('lk-list-ghost');
+      g.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;margin:0;padding:0;pointer-events:none;z-index:860;`;
+      document.body.appendChild(g);
+      return g;
+    });
+  }
+
+  /** 一行在树里是第几层（`_设定` 与时间线平级 ⇒ 都是 1；种类/类型 2；节点/实体/空提示 3）。
+   *  收起一枝时要找出"它下面那些行"（DOM 里紧跟其后、层级更深的那些），只能按层级判。 */
+  const DEPTH_BY_CLASS: [string, number][] = [
+    ['ed-tworld', 0], ['ed-ttl', 1], ['ed-tset', 1], ['ed-tkind', 2], ['ed-ttype', 2], ['ed-tempty', 3], ['ed-tnode-item', 3],
+  ];
+  function rowDepth(el: HTMLElement): number {
+    for (const [cls, d] of DEPTH_BY_CLASS) if (el.classList.contains(cls)) return d;
+    return 3;
+  }
+  /** 点中的那一行**底下**的那些行（直到同级或更浅的行为止）。收起时拿它来演退场。 */
+  function descendantsOf(el: HTMLElement): HTMLElement[] {
+    const d = rowDepth(el);
+    const out: HTMLElement[] = [];
+    for (let s = el.nextElementSibling; s; s = s.nextElementSibling) {
+      const e = s as HTMLElement;
+      if (rowDepth(e) <= d) break;
+      out.push(e);
+    }
+    return out;
+  }
+
   /* ── 节点页签的数据源：世界 → 时间线 → 种类分组（＝ vault 的目录形状）──────────
      刻意遍历**所有世界**（不只 activeWorld）：左列是一棵树，树就该看得见全部；
      nodeTarget 带 world，所以编辑非活动世界的节点也会写回它自己的世界。 */
@@ -220,11 +260,19 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   function tlGroups(): TlGroup[] {
     const out: TlGroup[] = [];
     for (const [wName, w] of Object.entries(store.data.worldsets)) {
+      /* 节点按**时间**排（和沙盘上从左到右的次序一致），不按数组顺序 —— 数组顺序会随 vault 回扫
+         变成"文件夹 + 文件名"顺序，于是新建的节点先排在尾巴上、过一会儿又跳到别处
+         （用户 2026-09-14：「新建节点时直接插入尾部然后移到正确的顺序，能不能直接插入到对应的位置」）。
+         同一时刻的（比如一次连建的几个）按 id 排 —— id 是单调时钟（`src/store/ids.ts`），能保住创建次序。 */
+      const ep = epochOfNodes(w);
       for (const tlId of (w.order ?? [])) {
         const tl = w.timelines[tlId];
         if (!tl) continue;
+        const sorted = [...(tl.nodes ?? [])].sort(
+          (a, b) => (ep.get(a.id) ?? 0) - (ep.get(b.id) ?? 0) || String(a.id).localeCompare(String(b.id))
+        );
         const kinds = new Map<string, TimelineNode[]>();
-        for (const n of tl.nodes ?? []) {
+        for (const n of sorted) {
           const k = n.kind || '事件';
           if (!kinds.has(k)) kinds.set(k, []);
           kinds.get(k)!.push(n);
@@ -262,6 +310,21 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     }
     const fmts = Object.keys(store.data.formats ?? {});
     return fmts.length && !fmts.includes('事件') ? fmts[0] : '事件';
+  }
+  /** 新节点默认落在**时间指针**所在的那一年 —— 这样它从建出来的那一刻起就排在"对应的位置"上，
+   *  而不是先挂在末尾、等你自己填了年份才跳过去。
+   *  用户 2026-09-14：「新建节点时直接插入尾部然后移到正确的顺序，能不能直接插入到对应的位置」。
+   *  指针没设过（`timeCursor` 为空）就退回 0，与 `addNode` 的缺省一致。 */
+  function cursorYear(tlId: string): number {
+    const ws = store.data.worldsets[store.activeWorld];
+    const tl = ws?.timelines[tlId];
+    const cursor = (ws as any)?.timeCursor;
+    if (!tl || cursor === null || cursor === undefined || !Number.isFinite(Number(cursor))) return 0;
+    const tp = fromEpoch(calendarOf(tl as any), Number(cursor)) as any;
+    /* ⚠️ `fromEpoch` 返回的是 `{ anchor: { year }, values: {...} }`（不是顶层 `year`）——
+       写成 `tp.year` 会静默拿到 undefined ⇒ 退回 0，新节点又落回最前面。 */
+    const y = Number(tp?.anchor?.year ?? 0);
+    return Number.isFinite(y) ? y : 0;
   }
   /** 「刚建出来还没填」的条目：名字还是 ＋新建 时给的占位名 ⇒ 左树里标一个「待填」，
    *  改过名（或者自己填了字段）就自动不当它是新的了。用户 2026-09-13：「我希望能同时创建多个
@@ -459,7 +522,15 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
           return;
         }
         const fr = ent.frames?.[v - 1];
-        if (fr) fr.patch = (prev ? frameDiff(prev, next) : null) ?? {};
+        if (fr) {
+          /* ⚠️ **类型不进版本差异**（用户 2026-09-14：「时间帧内为什么能修改实体的类型」）：
+             类型是这条设定的**身份** —— 它决定 `.md` 落在 `_设定/<类型>/` 哪个文件夹里，
+             而文件名只按初稿的名字算。让某一帧改类型 = 文件在旧文件夹里、界面却写着新类型，
+             而且回扫（类型从文件夹名来）会把它顶回去 ⇒ 两边永远对不上。所以差异里恒用实体现有的
+             typeId，改类型只作用于整条设定（见 `#cx-type` 的 change 处理器）。 */
+          const norm = (s: EntityState): EntityState => ({ ...s, typeId: ent.typeId ?? s.typeId });
+          fr.patch = (prev ? frameDiff(norm(prev), norm(next)) : null) ?? {};
+        }
       });
     });
     if (states[v]) states[v] = next;
@@ -566,7 +637,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
    *  （实测：切到没有版本的实体再切回来，右栏高亮是「第 1 版」而这里仍写着"初稿"）。 */
   function versionNoteText(): string {
     const v = entityVersion();
-    return v === 0 ? '正在看：初稿' : `正在看：第 ${v} 版（锚在右边那格事件上）`;
+    return v === 0 ? '正在看：初稿' : `正在看：第 ${v} 版（锚在右边那格事件上）· 类型改的是整条设定，不记进版本`;
   }
 
   /** 换「站在哪个事件上看」：先结算正文，再换版本（顺序反了会把这一版的正文写进那一版）。 */
@@ -742,8 +813,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       /* 骨架是"一个条目都没有"那一版（中栏只有一句提示）⇒ 结构不同，整块重建 */
       if (!st || !nameEl || !typeEl || !fieldsEl) return false;
       nameEl.value = st.name ?? '';
-      /* 类型下拉里没有这个 id（外部的类型被删了）就别硬写 value —— 浏览器会把 select 落到第一个选项上 */
-      if (Array.from(typeEl.options).some((o) => o.value === st.typeId)) typeEl.value = st.typeId ?? '';
+      /* 类型下拉里没有这个 id（外部的类型被删了）就别硬写 value —— 浏览器会把 select 落到第一个选项上。
+         取的是**实体自己**的类型（不是这一版的）：类型是身份，不进版本差异。 */
+      const curType = active()?.typeId ?? st.typeId;
+      if (Array.from(typeEl.options).some((o) => o.value === curType)) typeEl.value = curType ?? '';
       fillEntityFields(fieldsEl, st);
       const vn = host.querySelector<HTMLElement>('#cx-vnote');
       if (vn) vn.textContent = versionNoteText();
@@ -817,11 +890,13 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (mode === 'entity') {
       const st = viewState();
       if (!st) return '<div style="font-size:var(--text-xs);color:var(--fg-2);">左边选一个实体看图。</div>';
+      /* 类型取**实体自己**的（不是这一版的）—— 类型是身份、不进版本差异，见 commitState 里那段 */
+      const curType = active()?.typeId ?? st.typeId;
       return `
         <div data-cx-row style="display:flex;align-items:center;gap:8px;">
           <input id="cx-name" value="${escapeHtml(st.name)}" style="${INP}font-size:15px;font-weight:600;"/>
           <span style="font-size:var(--text-xs);color:var(--fg-2);flex-shrink:0;">类型</span>
-          <select id="cx-type" style="flex-shrink:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-xs);outline:none;">${kinds.map((k) => `<option value="${escapeHtml(k)}"${k === st.typeId ? ' selected' : ''}>${escapeHtml(typeName(k))}</option>`).join('')}</select>
+          <select id="cx-type" title="类型是这条设定的身份（决定它落在 vault 的哪个文件夹）—— 改它作用于整条设定，不记进版本历史" style="flex-shrink:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 6px;font-size:var(--text-xs);outline:none;">${kinds.map((k) => `<option value="${escapeHtml(k)}"${k === curType ? ' selected' : ''}>${escapeHtml(typeName(k))}</option>`).join('')}</select>
           <button id="cx-del" style="margin-left:auto;flex-shrink:0;background:transparent;border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;">删除</button>
         </div>
         <div id="cx-vnote" data-cx-row style="font-size:var(--text-xs);color:var(--fg-2);margin-top:4px;">${escapeHtml(versionNoteText())}</div>
@@ -865,19 +940,22 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     /* 顶栏那组控件**两种类别下都要渲染出来**（各自只藏不拆，见 `syncNewBox()`）：
        少了它，节点态的头行会矮 7px（28 → 21），下面所有元素跟着上下跳一下。
        用户 2026-09-13：「添加实体按钮在事件节点中其实可以改成添加节点的，毕竟万一用户不知道
-       添加事件节点要在世界沙盒怎么办」⇒ 节点态换成同一套长相的「时间线 ▾ + ＋新建节点」，
-       两组都是「一个下拉 + 一个按钮」，高度一样，所以换类别时头行高度不变（那条不变量有测试钉着）。 */
+       添加事件节点要在世界沙盒怎么办」⇒ 节点态换成同一套长相的「时间线 ▾ + 数量」。
+       ⚠️ 2026-09-14 两处改动（用户：「新建实体左边两个按钮有什么用」「新建实体按钮里面实体和节点
+       文字的切换做成类似老虎机的上下切换」）：
+        · 每个控件前面加一个说明性小标签（类型 / 时间线 / 数量）—— 原来那两个控件长得像按钮，
+          没说清是干什么的；
+        · **按钮只有一个**（`#cx-new`，标签会像老虎机一样上下滚），两组只各自带自己的「下拉 + 数量」。
+          两个按钮交替显隐的话，"实体→节点"那两个字的切换是**换了个元素**，没法演滚字。 */
     const newCtl = kinds.length
-      ? `<select id="cx-new-type" title="新实体的类型（默认跟着你正在编的那条走）" style="${NEWSEL}">${kinds.map((k) => `<option value="${escapeHtml(k)}">${escapeHtml(typeName(k))}</option>`).join('')}</select>
-         <input id="cx-new-count" type="number" min="1" max="${NEW_MAX}" step="1" value="1" title="一次建几个（最多 ${NEW_MAX}）" style="${NEWNUM}"/>
-         <button id="cx-new" style="${NEWBTN}">＋新建实体</button>`
+      ? `<span class="lk-newlbl">类型</span><select id="cx-new-type" title="新实体的类型（默认跟着你正在编的那条走）" style="${NEWSEL}">${kinds.map((k) => `<option value="${escapeHtml(k)}">${escapeHtml(typeName(k))}</option>`).join('')}</select>
+         <span class="lk-newlbl">数量</span><input id="cx-new-count" type="number" min="1" max="${NEW_MAX}" step="1" value="1" title="一次建几个（最多 ${NEW_MAX}）" style="${NEWNUM}"/>`
       : '';
     const tlNewOpts = newTimelines();
-    const nodeCtl = `<select id="cx-new-tl" title="新节点放进哪条时间线（默认跟着你正在编的那条走）" style="${NEWSEL}">${
+    const nodeCtl = `<span class="lk-newlbl">时间线</span><select id="cx-new-tl" title="新节点放进哪条时间线（默认跟着你正在编的那条走）" style="${NEWSEL}">${
       tlNewOpts.map((t) => `<option value="${escapeHtml(t.id)}"${t.id === nodeNewTlId() ? ' selected' : ''}>${escapeHtml(t.name)}</option>`).join('')
     }</select>
-      <input id="cx-new-node-count" type="number" min="1" max="${NEW_MAX}" step="1" value="1" title="一次建几个（最多 ${NEW_MAX}）" style="${NEWNUM}"/>
-      <button id="cx-new-node-btn" style="${NEWBTN}"${tlNewOpts.length ? '' : ' data-off="1" disabled title="这个世界还没有时间线 —— 先去世界沙盘建一条"'}>＋新建节点</button>`;
+      <span class="lk-newlbl">数量</span><input id="cx-new-node-count" type="number" min="1" max="${NEW_MAX}" step="1" value="1" title="一次建几个（最多 ${NEW_MAX}）" style="${NEWNUM}"/>`;
 
     host.innerHTML = `
       <div style="max-width:1020px;margin:0 auto;padding:14px 16px 12px;display:flex;flex-direction:column;gap:8px;height:100%;overflow:auto;" id="cx-root">
@@ -887,6 +965,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
           <span id="cx-newbox" style="margin-left:auto;gap:6px;align-items:center;display:flex;">
             <span id="cx-new-entity" style="gap:6px;align-items:center;display:${isEntity ? 'flex' : 'none'};">${newCtl}</span>
             <span id="cx-new-node" style="gap:6px;align-items:center;display:${isEntity ? 'none' : 'flex'};">${nodeCtl}</span>
+            <button id="cx-new" style="${NEWBTN}" data-off-entity="${kinds.length ? '' : '1'}" data-off-node="${tlNewOpts.length ? '' : '1'}"><span class="lk-roll"><span class="lk-roll__t">${isEntity ? '＋新建实体' : '＋新建节点'}</span></span></button>
           </span>
         </div>
         <div id="cx-hint" style="display:none;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:rgba(217,101,92,.12);font-size:var(--text-xs);color:var(--fg);line-height:1.5;"></div>
@@ -963,7 +1042,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     /* 实体态那个「＋新建实体」：类型默认跟着**你正在编的那条**（`syncNewType()`），
        点一下建 1..NEW_MAX 个占位条目（用户 2026-09-13：「我希望能同时创建多个未填数据的实体」），
        名字自动取唯一（新实体 / 新实体 2 / …）—— 同名会写进同一个 `.md` 路径互相覆盖。 */
-    host.querySelector('#cx-new')?.addEventListener('click', () => {
+    const createEntities = (): void => {
       const sel = host.querySelector('#cx-new-type') as HTMLSelectElement | null;
       const typeId = sel?.value ?? '';
       if (!typeId) return;
@@ -978,27 +1057,36 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       });
       switchTarget(() => { activeId = ids[0]; });   /* 选**第一个**：按顺序往下填 */
       say(n > 1 ? `已新建 ${n} 个，改个名字吧` : '已新建，改个名字吧');
-    });
+    };
     /* 节点态那个「＋新建节点」：**直接建**（和「＋新建实体」同一套手感 —— 用户 2026-09-13：
        「添加节点就直接添加节点吧，就像添加实体一样」），建完在工作台里选中它，
-       名字/时间/字段就在中栏改。节点落进 vault 的 `<时间线>/<种类>/新节点.md`
-       （`kind` 不传 ⇒ main.js 按 `事件` 兜底，与左树的分组口径一致）。 */
-    host.querySelector('#cx-new-node-btn')?.addEventListener('click', () => {
+       名字/时间/字段就在中栏改。节点落进 vault 的 `<时间线>/<种类>/新节点.md`。
+       ⚠️ `year` 取**时间指针**那一年（`cursorYear`）—— 否则新节点 `year: 0`，排在哪里全看
+       数组顺序：先是挂在尾巴上，等你填了年份才跳到"对应的位置"（用户 2026-09-14 报的）——
+       左树现在按时间排（`tlGroups`），给对年份它就**一次到位**。 */
+    const createNodes = (): void => {
       const sel = host.querySelector('#cx-new-tl') as HTMLSelectElement | null;
       const tlId = sel?.value ?? '';
       if (!tlId) return;
       const n = readCount('#cx-new-node-count');
       const kind = nodeNewKind(tlId);
+      const year = cursorYear(tlId);
       const taken = new Set((store.data.worldsets[store.activeWorld]?.timelines[tlId]?.nodes ?? []).map((x) => x.title || ''));
       const ids: string[] = [];
       withListHold(() => {   /* 同「＋新建实体」：攒到末尾一次重画，新行才演得出"从左侧滑入" */
-        for (let i = 0; i < n; i++) ids.push(addNode(store, tlId, { title: uniqueName('新节点', taken), kind }));
+        for (let i = 0; i < n; i++) ids.push(addNode(store, tlId, { title: uniqueName('新节点', taken), kind, year }));
       });
       switchTarget(() => {
         mode = 'node';
         nodeTarget = { world: store.activeWorld, tlId, nodeId: ids[0] };
       });
       say(n > 1 ? `已新建 ${n} 个，改个名字吧` : '已新建，改个名字吧');
+    };
+    /* 顶栏那**一个**按钮：建实体还是建节点看你此刻在编哪一类（按钮上的字也跟着换，见 syncNewBox）。
+       用户 2026-09-14：「新建实体按钮里面实体和节点文字的切换做成类似老虎机的上下切换」——
+       原来两个按钮交替显隐，换的是**元素**，滚字无从谈起。 */
+    host.querySelector('#cx-new')?.addEventListener('click', () => {
+      if (mode === 'entity') createEntities(); else createNodes();
     });
     /* 外部改动提示条：宿主刚被整块重建，把已有提示重画进来（提示是累积的，不因切条目而丢） */
     vaultNotices?.refresh();
@@ -1026,10 +1114,23 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     });
     host.querySelector('#cx-type')?.addEventListener('change', () => {
       const sel = host.querySelector('#cx-type') as HTMLSelectElement;
-      patchVersion((st) => { st.typeId = sel.value; });
+      /* **类型作用于整条设定**（不走 `patchVersion`）：它是这条设定的身份，决定 `.md` 落在
+         `_设定/<类型>/` 哪个文件夹里，而路径只按初稿的名字算 ⇒ 让某一帧改类型，文件会留在旧
+         文件夹里、而界面写着新类型，回扫（类型从文件夹名来）又把它顶回去。
+         用户 2026-09-14：「时间帧内为什么能修改实体的类型」⇒ 现在不论站在哪一版，改类型都是
+         改这条设定本身（与 `commitState` 里"差异恒用实体现有 typeId"是同一件事的两半）。 */
+      if (sel.value === (active()?.typeId ?? '')) return;
+      withQuiet(() => {
+        store.update((d) => {
+          const e = d.worldsets[store.activeWorld]?.entities?.[activeId];
+          if (e) e.typeId = sel.value;
+        });
+      });
+      statesId = '';   /* 物化缓存作废：类型影响每一版的状态 */
       /* 换类型 → 按新模板补字段（由 src/main.ts 的 ensureEntityLayer 统一做） */
       window.dispatchEvent(new CustomEvent('lingkuang-formats-changed'));
-      say('已换类型 ✓');
+      say('已换类型（作用于整条设定，不记进版本）✓');
+      if (!swapBody(false)) render();
     });
     /* 实体字段行（公共控件 `src/ui/fields.ts`）：模板声明的类型决定控件形态 */
     const fieldsHost = host.querySelector('#cx-fields') as HTMLElement | null;
@@ -1127,6 +1228,17 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         /* `data-off` = 这控件本来就不能用（比如这个世界一条时间线都没有），显隐不该把它打开 */
         el.disabled = !on || el.hasAttribute('data-off');
       }
+    }
+    /* 共用那个按钮：能不能按看**当前这一类**建不建得出来（没有实体类型 / 没有时间线就不能），
+       按钮上的字跟着类别换 —— 换的时候像老虎机一样上下滚一格。 */
+    const btn = host.querySelector<HTMLButtonElement>('#cx-new');
+    if (btn) {
+      const off = btn.getAttribute(isEntity ? 'data-off-entity' : 'data-off-node') === '1';
+      btn.disabled = off;
+      btn.title = off
+        ? (isEntity ? '这个世界还没有设定类型（去「结构体管理」加一个）' : '这个世界还没有时间线 —— 先去世界沙盘建一条')
+        : (isEntity ? '新建设定条目（类型 / 数量看左边）' : '新建时间线节点（时间线 / 数量看左边）');
+      rollText(btn.querySelector<HTMLElement>('.lk-roll'), isEntity ? '＋新建实体' : '＋新建节点');
     }
     syncNewType();
   }
@@ -1386,30 +1498,50 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         /* 展开（不是收起）时把这一枝的键记进 `justOpened`：`renderList()` 靠它分辨"这些行是展开
            露出来的"（⇒ 向下弹出）与"真新建出来的"（⇒ 从左侧滑入）。键与三个 collapsed* Set 对齐。 */
         const opened = (key: string, wasOpen: boolean): void => { if (!wasOpen) justOpened = key; };
+        /* **收起**时：先把这一枝下面那些行克隆成幽灵层钉在原位（`ghostRows`），等重画之后
+           再让它们原地往左淡出 —— 不这么做的话它们随 `innerHTML` 一起"啪"地消失
+           （用户 2026-09-14：「设定文件夹收起时无动画，收起时下面的文件直接消失」）。 */
+        const collapse = (wasOpen: boolean): HTMLElement[] => (wasOpen ? ghostRows(descendantsOf(el)) : []);
+        const leave = (ghosts: HTMLElement[]): void => rowsLeaveAndRemove(ghosts, { dx: 20, dur: 240, step: 10 });
         if (ds.act === 'world') {
-          opened(ds.nw!, isOpen(collapsedWorlds, ds.nw!));
+          const wasOpen = isOpen(collapsedWorlds, ds.nw!);
+          const ghosts = collapse(wasOpen);
+          opened(ds.nw!, wasOpen);
           toggleOpen(collapsedWorlds, ds.nw!);
           renderList();
+          leave(ghosts);
         } else if (ds.act === 'tl') {
           const k = ds.nw + '::' + ds.ntl;
-          opened(k, isOpen(collapsedTls, k));
+          const wasOpen = isOpen(collapsedTls, k);
+          const ghosts = collapse(wasOpen);
+          opened(k, wasOpen);
           toggleOpen(collapsedTls, k);
           renderList();
+          leave(ghosts);
         } else if (ds.act === 'tkind') {
           const k = ds.nw + '::' + ds.ntl + '::' + ds.nk;
-          opened(k, isOpen(collapsedKinds, k));
+          const wasOpen = isOpen(collapsedKinds, k);
+          const ghosts = collapse(wasOpen);
+          opened(k, wasOpen);
           toggleOpen(collapsedKinds, k);
           renderList();
+          leave(ghosts);
         } else if (ds.act === 'wset') {
           const k = 'setting::' + ds.nw;
-          opened(k, isOpen(collapsedTls, k));
+          const wasOpen = isOpen(collapsedTls, k);
+          const ghosts = collapse(wasOpen);
+          opened(k, wasOpen);
           toggleOpen(collapsedTls, k);
           renderList();
+          leave(ghosts);
         } else if (ds.act === 'etype') {
           const k = 'etype::' + ds.nw + '::' + ds.nk;
-          opened(k, isOpen(collapsedKinds, k));
+          const wasOpen = isOpen(collapsedKinds, k);
+          const ghosts = collapse(wasOpen);
+          opened(k, wasOpen);
           toggleOpen(collapsedKinds, k);
           renderList();
+          leave(ghosts);
         } else if (ds.act === 'node') {
           switchTarget(() => {
             mode = 'node';

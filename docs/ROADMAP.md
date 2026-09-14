@@ -242,6 +242,14 @@
   把快照冲掉）。⚠️ 别把错峰挂在每次 `renderList()` 上 —— 搜索框每敲一个字都会重画左列
   （`cold = prev.size === 0` 让"整块重建"那一次不演）。守卫：新增 `tools/e2e/codex-list-motion.cjs`
   **14 项**（A/B 改动前 **4/14**）。
+- [x] **第 B 片 · 补漏：收起文件夹的行退场 + 老虎机滚字（2026-09-13 深夜）**：用户原话「**设定文件夹
+  收起时无动画，收起时下面的文件直接消失**……新建实体按钮里面实体和节点文字的切换做成类似老虎机的
+  上下切换」。落地 = `motion.ts` 的 `rowsLeaveAndRemove()`（一批行演完退场才摘）+ `codex.ts` 的
+  `ghostRows()`（先把要消失的行钉成 `position:fixed` 幽灵 `lk-list-ghost`、`z-index:860`，**必须在
+  `renderList()` 之前克隆**）+ `rollText()`（顶栏那个共享按钮的文案上下换）。`codex-list-motion.cjs`
+  **14 → 17 项**（A/B 15/17）、`codex-smooth-switch.cjs` **22 → 25 项**（★13d/★13d2 守卫滚字收干净）。
+  同轮还做了三件不是动效的事：树里的节点**按时间排**、新建节点落在**时间指针那一年**（`cursorYear()`）、
+  **类型是身份不进版本差异**（改类型不再写进帧的 patch）。
 - [ ] **第 C 片 · 画布**：时间线节点移动 / 循环框 / 剧情线。⚠️ 撞 `src/ui/timeline.ts` 的
   「每次 store 通知整体重渲染」硬约束，得先让节点能跨重建续上位置（这是 Anime.js 真正该上场的地方 ——
   第 B 片最后是用 WAAPI 的 `flipRows` 手搓的，没动 Anime.js）。

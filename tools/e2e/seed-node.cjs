@@ -38,6 +38,24 @@ type: world_event
 王国在灰烬上建立起来。
 `, 'utf8');
 
+/* 可选（`LK_SEED_ORDER=1`）：给左树的**时间排序**造一个能判别的起点 ——
+   · 再播一个 year:1 的节点「上古」（数组顺序/文件名顺序里它排在最后，按时间却该排最前）；
+   · 把「时间指针」设在 year 200（夹在 1 与 312 之间）。
+   于是"工作台新建的节点"必须落在这两条**中间**：按老的写法（year 0 + 数组追加）它会排在最后。
+   公历换算与 `src/calendar.ts` 的 `toEpoch` 同一套：365*y + 闰日数，再乘一天的秒数。 */
+if (process.env.LK_SEED_ORDER === '1') {
+  fs.writeFileSync(path.join(dir, '上古.md'), `---
+id: n-e2e-early
+title: 上古
+year: 1
+precision: year
+type: world_event
+---
+#描述：
+很早的事。
+`, 'utf8');
+}
+
 console.log('已播种节点「王国的建立」（种类=事件，模板字段 地点/规模）');
 console.log('  ' + path.join(dir, '王国的建立.md'));
 console.log('  ' + FORMATS);
@@ -46,6 +64,11 @@ console.log('  ' + FORMATS);
    （两个页签各有一份不同的正文，才测得出来） */
 const d = JSON.parse(fs.readFileSync(DATA, 'utf8'));
 const w = d.worldsets[WS];
+if (process.env.LK_SEED_ORDER === '1') {
+  const leaps = (y) => Math.floor((y + 3) / 4) - Math.floor((y + 99) / 100) + Math.floor((y + 399) / 400);
+  w.timeCursor = (365 * 200 + leaps(200)) * 86400;   /* year 200 的 1 月 1 日 */
+  console.log('  + 时间指针设在 year 200（LK_SEED_ORDER=1）');
+}
 w.entities = {
   'e-e2e-1': { id: 'e-e2e-1', name: '银发少女', typeId: '角色', properties: { 发色: '银白' }, doc: '实体自己的正文。' },
 };

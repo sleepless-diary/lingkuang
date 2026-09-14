@@ -131,6 +131,39 @@ async function main() {
       && t2.open1.some((x) => x.a[0].from === 'translateY(-8px)/0'),
     { open1: t2.open1 });
 
+  /* ── ★4c 收起时**里面那些行不是"啪"地消失** ─────────────────────────────
+     用户 2026-09-14：「设定文件夹收起时无动画，收起时下面的文件直接消失」。
+     收起 = 这一枝的行会被 `innerHTML` 整块换掉（元素是**当场没的**，没有旧位置可演），
+     所以退场只能演在**克隆出来的幽灵层**上：`ghostRows()` 把它们钉在原位，
+     `rowsLeaveAndRemove()` 往左淡出后再摘掉（与删除时的幽灵同一套，只是 z-index 860）。 */
+  const t4c = await ev(`(() => {
+    const nodeRows = () => [...document.querySelectorAll('#cx-list .ed-tnode-item[data-act="node"]')];
+    const kind = () => [...document.querySelectorAll('#cx-list .ed-tkind')].find((e) => e.textContent.includes('事件'));
+    const before = nodeRows().length;
+    /* ⚠️ 只认**这一次点击刚造出来**的幽灵：同一时刻页面上可能还挂着上一批（收起 A 没演完又收起 B，
+       兜底定时器要 680ms 才摘），按数量直接数会数进别人的。 */
+    const pre = new Set([...document.body.children]);
+    kind().click();                                   /* 收起「事件」 */
+    const ghosts = [...document.body.children].filter((e) => !pre.has(e) && e.classList.contains('lk-list-ghost'));
+    return { before, ghosts: ghosts.length,
+      ghostText: ghosts.map((g) => (g.textContent || '').trim().slice(0, 12)),
+      ghostAnim: ghosts.map((g) => window.__anim(g)),
+      rowsLeft: nodeRows().length };
+  })()`);
+  check('★4c 收起「事件」文件夹：里面那些行变成**钉在原位的幽灵**演退场，不是直接消失',
+    t4c.before >= 1 && t4c.ghosts === t4c.before && t4c.rowsLeft === 0
+      && t4c.ghostText.every((t) => t.startsWith('王国的建立'))
+      && t4c.ghostAnim.every((a) => a.length === 1),
+    t4c);
+  check('★4c2 幽灵演的是「往左退场」（none/1 → translateX(-20px)/0，慢→快）',
+    t4c.ghostAnim.length >= 1
+      && t4c.ghostAnim.every((a) => a[0].from === 'none/1' && a[0].to === 'translateX(-20px)/0'),
+    { ghostAnim: t4c.ghostAnim });
+  const ghostGone = await waitFor(() => ev(`[...document.body.children].filter((e) => e.style.zIndex === '860').length === 0`), 3000);
+  check('★4c3 退场演完幽灵自己摘掉（不留一个看不见的浮层压在页面上）', ghostGone);
+  await ev(`(() => { const k = [...document.querySelectorAll('#cx-list .ed-tkind')].find((e) => e.textContent.includes('事件')); if (k) k.click(); return true; })()`);
+  await sleep(400); await forceFrames(2);
+
   /* ── ★5 删除：被删的那一行留一个钉在原位的幽灵演退场 + 下面的行补位 ──────── */
   await ev(`document.querySelectorAll('#cx-list [data-cx-id]')[0].click(); true`);
   await sleep(600); await forceFrames(2);

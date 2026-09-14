@@ -64,21 +64,28 @@ async function main() {
   const ctl = await ev(`(() => {
     const vis = (sel) => { const el = document.querySelector(sel); return el ? getComputedStyle(el).display !== 'none' : null; };
     const tlSel = document.querySelector('#cx-new-tl');
-    const btn = document.querySelector('#cx-new-node-btn');
-    const entBtn = document.querySelector('#cx-new');
+    const btn = document.querySelector('#cx-new');   /* 顶栏只有**一个**按钮（标签会滚字） */
+    const t = btn ? btn.querySelector('.lk-roll__t') : null;
+    const off = (sel) => [...document.querySelectorAll(sel)].map((el) => el.disabled);
     return { picked: ${picked}, entVis: vis('#cx-new-entity'), nodeVis: vis('#cx-new-node'),
       tlText: tlSel ? tlSel.options[tlSel.selectedIndex]?.textContent : null, tlValue: tlSel ? tlSel.value : null,
-      btnOff: btn ? btn.disabled : null, entOff: entBtn ? entBtn.disabled : null,
-      label: btn ? btn.textContent.trim() : null, boxH: Math.round(document.querySelector('#cx-newbox').getBoundingClientRect().height) };
+      btnOff: btn ? btn.disabled : null, entCtlOff: off('#cx-new-entity select, #cx-new-entity input'),
+      label: t ? (t.textContent || '').trim() : null,
+      labels: [...document.querySelectorAll('#cx-newbox .lk-newlbl')].map((e) => e.textContent),
+      boxH: Math.round(document.querySelector('#cx-newbox').getBoundingClientRect().height) };
   })()`);
-  check('★0 前置：进节点态后顶栏换成「时间线 ▾ + ＋新建节点」（另一组藏起来且禁用）',
+  check('★0 前置：进节点态后顶栏换成「时间线 ▾ + 数量」，按钮上的字变成＋新建节点（另一组藏起来且禁用）',
     ctl.picked === true && ctl.nodeVis === true && ctl.entVis === false
-      && ctl.btnOff === false && ctl.entOff === true
+      && ctl.btnOff === false && ctl.entCtlOff.length > 0 && ctl.entCtlOff.every((d) => d === true)
       && ctl.tlText === TL && String(ctl.label).includes('新建节点'), ctl);
+  /* 用户 2026-09-14：「新建实体左边两个按钮有什么用」—— 它们长得像按钮又没说清用途，
+     现在每个控件前面挂一句小字（实体态：类型/数量；节点态：时间线/数量）。 */
+  check('★0b 顶栏那两个控件各有一句说明小字（类型/时间线 + 数量）',
+    Array.isArray(ctl.labels) && ctl.labels.join('|') === '类型|数量|时间线|数量', ctl.labels);
 
   /* 点一下**直接建** —— 不弹表单（用户：「就像添加实体一样」） */
   const before = await ev(nodeRows);
-  await clk('#cx-new-node-btn');
+  await clk('#cx-new');
   await sleep(700);
   const after = await ev(`({ n: ${nodeRows}, labels: ${nodeLabels},
     path: document.querySelector('#cx-nodepath')?.textContent ?? null,
@@ -180,7 +187,7 @@ async function main() {
   await sleep(700);
   const nodeBefore = await ev(nodeLabels);
   await setCount('#cx-new-node-count', 2);
-  await clk('#cx-new-node-btn');
+  await clk('#cx-new');
   await sleep(900);
   const nodeBatch = await ev(`({ labels: ${nodeLabels}, stubs: ${stubRows},
     path: document.querySelector('#cx-nodepath')?.textContent ?? null })`);
@@ -190,6 +197,24 @@ async function main() {
     nodeAdded.length === 2 && nodeAdded.includes('新节点') && nodeAdded.includes('新节点 2')
       && nodeBatch.stubs.filter((x) => x.startsWith('新节点')).length === 2 && nodeLanded,
     { nodeAdded, stubs: nodeBatch.stubs, nodeLanded });
+
+  /* ── ⑥ 左树按**时间**排 + 新节点一建出来就在"对应的位置" ────────────────────
+     用户 2026-09-14：「新建节点时直接插入尾部然后移到正确的顺序，能不能直接插入到对应的位置」。
+     两处机制：
+       · `tlGroups()` 按 epoch 排节点（与沙盘从左到右一致），不再按数组顺序 ——
+         数组顺序会随 vault 回扫变成"文件夹 + 文件名"顺序；
+       · 新建节点时 `year` 取**时间指针**那一年（`cursorYear`），所以它出生就在时间轴上的位置。
+     前置（跑本套件时要给）：`LK_SEED_ORDER=1 node tools/e2e/seed-node.cjs` ——
+     它会多播一个 year:1 的「上古」，并把指针设在 year 200（夹在 1 与 312 之间）。 */
+  const ordered = await ev(nodeLabels);
+  const at = (t) => ordered.indexOf(t);
+  check('★15 左树按**时间**排：year 1 的「上古」排在 year 312 的「王国的建立」前面（不是按数组/文件名顺序）',
+    at('上古') === 0 && at('王国的建立') > 0, ordered);
+  const appliedYear = (read(path.join(NODE_DIR, '新节点.md')).match(/^year:\s*(.+)$/m) || [])[1] || null;
+  check('★16 工作台建的节点，年份取的是**时间指针那一年**（year 200，不是旧默认的 0）',
+    Number(appliedYear) === 200, { appliedYear });
+  check('★17 于是它一建出来就落在**对应的位置**上：上古(1) < 新节点(200) < 王国的建立(312)，而不是挂在末尾',
+    at('新节点') > at('上古') && at('新节点') < at('王国的建立'), ordered);
 
   const errs = await ev(`window.__errs`);
   check('★20 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

@@ -268,6 +268,58 @@ export function rowLeaveAndRemove(el: HTMLElement | null, o: RowMotionOpts = {})
   window.setTimeout(kill, (o.dur ?? ROW_DUR) + (o.step ?? 10) + 400);
 }
 
+/** 把**一批**元素演出场再从 DOM 里摘掉（收起文件夹时，里面那些行不是"啪"地消失，
+ *  而是原地往左淡出）。
+ *
+ *  用户 2026-09-14：「设定文件夹收起时无动画，收起时下面的文件直接消失」——
+ *  收起时那一枝的行会被 `innerHTML` 整块换掉，元素是当场没的；所以退场必须演在
+ *  **克隆出来的幽灵层**上（调用方先 `cloneNode` + `position:fixed` 钉在原位，见
+ *  `src/ui/codex.ts` 的 `ghostRows()`），这里只负责播 + 收。 */
+export function rowsLeaveAndRemove(rows: HTMLElement[], o: RowMotionOpts = {}): void {
+  if (!rows.length) return;
+  const anims = rowsLeave(rows, o);
+  const kill = (): void => { for (const el of rows) el.remove(); };
+  if (!anims.length) { kill(); return; }   /* 减少动效：直接摘掉 */
+  Promise.all(anims.map((a) => a.finished)).then(kill).catch(kill);
+  const dur = o.dur ?? ROW_DUR;
+  const step = o.step ?? 10;
+  window.setTimeout(kill, dur + step * rows.length + 400);
+}
+
+/** **老虎机式换字**：同一个地方换一种说法时，旧字往上滚出、新字从下滚入。
+ *
+ *  用户 2026-09-14：「新建实体按钮里面实体和节点文字的切换做成类似老虎机的上下切换」。
+ *  `box` = 那个裁切盒（`.lk-roll`，`overflow:hidden`），里面第二层 `.lk-roll__t` 是真标签。
+ *  做法：把旧文字克隆一份绝对定位盖在原处往上滚出，真标签换成新文字后从下方滚入。
+ *  ⚠️ 跑完**两个动画都取消**（`fill:'both'` 留着会让 `getAnimations()` 一直非空 ——
+ *  而"换类别后容器里不许有动画"那几条守卫正是按它判的）。 */
+export function rollText(box: HTMLElement | null, next: string, o: { dur?: number; dy?: number } = {}): void {
+  const t = box?.querySelector<HTMLElement>('.lk-roll__t');
+  if (!box || !t) return;
+  if ((t.textContent ?? '') === next) return;
+  if (motionReduced()) { t.textContent = next; return; }
+  const dur = o.dur ?? 260;
+  const dy = o.dy ?? 13;   /* ≈ 一行：起点在裁切盒外面，才看得出"从下面滚上来" */
+  const prev = t.cloneNode(true) as HTMLElement;
+  prev.classList.add('lk-roll__prev');
+  box.appendChild(prev);
+  t.textContent = next;
+  const out = prev.animate(
+    [{ transform: 'translateY(0)', opacity: 1 }, { transform: `translateY(${-dy}px)`, opacity: 0 }],
+    { duration: dur, easing: EASE_ACCEL, fill: 'both' }
+  );
+  const inn = t.animate(
+    [{ transform: `translateY(${dy}px)`, opacity: 0 }, { transform: 'none', opacity: 1 }],
+    { duration: dur, easing: EASE_DECEL, fill: 'both' }
+  );
+  const done = (): void => {
+    try { out.cancel(); inn.cancel(); } catch { /* 已取消 */ }
+    prev.remove();
+  };
+  Promise.all([out.finished, inn.finished]).then(done).catch(done);
+  window.setTimeout(done, dur + 600);
+}
+
 /** 量下容器里每个子项此刻**相对容器顶部**的 top（喂给 `flipRows` 的 `prev` / `tops`）。
  *  用相对 top 而不是视口 top：`#cx-list` 会跟着 `#cx-root` 一起滚，视口坐标会把滚动量算进去。 */
 export function topsOf(container: HTMLElement | null): { els: HTMLElement[]; tops: number[] } {

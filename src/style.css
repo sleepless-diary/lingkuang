@@ -614,6 +614,18 @@ body {
 }
 /* 空文件夹展开后的那句人话 */
 .ed-tempty { padding: 2px 8px 2px 36px; font-size: 10px; color: var(--fg-2); opacity: .7; }
+
+/* ── 设定库顶栏那组「新建」控件（用户 2026-09-14）────────────────────────────
+   ① `.lk-newlbl`：那两个控件（下拉 / 数量框）原来长得像按钮，没人知道是干什么的 ——
+      各配一个说明性小标签（类型 / 时间线 / 数量）。字号最小档、颜色用 --fg-2，
+      高度不参与行高（那行的高度由下拉与按钮决定，换类别时必须恒定）。 */
+.lk-newlbl { font-size: 10px; color: var(--fg-2); flex-shrink: 0; }
+/* ② `.lk-roll`：「＋新建实体 ↔ ＋新建节点」换字时像老虎机一样上下滚一格。
+      外层是**裁切盒**（overflow:hidden，高度 = 一行），里层 `.lk-roll__t` 是真标签，
+      滚出去的旧字是临时克隆的 `.lk-roll__prev`（绝对定位盖在原处）。 */
+.lk-roll { display: inline-block; position: relative; overflow: hidden; vertical-align: middle; }
+.lk-roll__t { display: inline-block; white-space: nowrap; }
+.lk-roll__prev { position: absolute; left: 0; top: 0; white-space: nowrap; }
 /* （原来这里还有 `列表` 形态的两条样式 `.ed-tflat` / `.ed-tgroup`……
    用户 2026-09-13：「把全部改成文件树的形式，这样子也方便看」⇒ 列表形态整个撤掉，
    左栏只剩这棵树，那两条样式一起删了。） */
