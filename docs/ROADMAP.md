@@ -264,6 +264,14 @@
   （0/22/44…）+ `MAX_STAGGER = 240`ms 上限（`rowsLeave` / `rowsDropIn` 都有）；③ 滚字两段**同时**播，
   虽然几何上首尾相接、但各露半截又都半透明 ⇒ 仍是糊成一团，改成**旧字走完（180ms）新字才进**。
   `codex-list-motion.cjs` **19 项**（A/B 17/19）、`codex-smooth-switch.cjs` **27 项**（新增 ★13d4，A/B 26/27）。
+- [x] **第三轮体感修正：滚字归位到基线 + "里面的文件先消失、下面的行再补位"（2026-09-14 第三轮）**：
+  用户原话「**实体和节点两个字的位置偏下了**」+「**应该是文件先消失，下面的文件夹再移上来，现在反了，
+  下面的移上来后文件再消失**」。① 裁切盒是 `overflow:hidden` 的行内块，`vertical-align:middle` 让盒里的字
+  比「＋新建」低 **1.81px**（用 `Range` 量字体框实测）⇒ 按钮本体改 `inline-flex + align-items:center`（差 0）；
+  ② 收起一枝叶时"退场"与"下面的行补位"原来**同时**发生 ⇒ `collapse()` 算出这一枝的退场总时长
+  （`rowsLeaveTotal()`）交给 `flipRows(..., { delay })`，延迟期间靠 `fill:'both'` 冻在旧位置（实测收「主线」：
+  退场 304ms，下面 45 行 FLIP delay 全是 304）。`codex-list-motion.cjs` **20 项**（新增 ★4f，A/B 19/20）、
+  `codex-smooth-switch.cjs` **28 项**（新增 ★13e，A/B 27/28）。
 - [ ] **第 C 片 · 画布**：时间线节点移动 / 循环框 / 剧情线。⚠️ 撞 `src/ui/timeline.ts` 的
   「每次 store 通知整体重渲染」硬约束，得先让节点能跨重建续上位置（这是 Anime.js 真正该上场的地方 ——
   第 B 片最后是用 WAAPI 的 `flipRows` 手搓的，没动 Anime.js）。

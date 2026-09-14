@@ -54,7 +54,7 @@ async function main() {
       const k = a.effect.getKeyframes(); const t = a.effect.getTiming();
       return { from: (k[0] && (k[0].transform || '') + '/' + (k[0].opacity ?? '')) || '',
                to: (k[k.length - 1] && (k[k.length - 1].transform || '') + '/' + (k[k.length - 1].opacity ?? '')) || '',
-               delay: t.delay, dur: t.duration };
+               delay: t.delay, dur: t.duration, fill: t.fill };
     });
   };
   window.__rows = () => [...document.querySelectorAll('#cx-list .ed-tnode-item')];
@@ -153,6 +153,10 @@ async function main() {
     const pre = new Set([...document.body.children]);
     kind().click();                                   /* 收起「事件」 */
     const ghosts = [...document.body.children].filter((e) => !pre.has(e) && e.classList.contains('lk-list-ghost'));
+    /* 「事件」这一枝下面还挂着 _設定 那一大枝 ⇒ 它们要**等退场走完**才往上补位
+       （★4f：用户 2026-09-14「应该是文件先消失，下面的文件夹再移上来，现在反了」）。 */
+    const below = [...document.querySelectorAll('#cx-list [data-cx-key]')]
+      .map((e) => ({ key: e.getAttribute('data-cx-key'), a: window.__anim(e) })).filter((x) => x.a.length);
     /* 再收起**行数最多**的那一枝（_設定：5 个类型 + 里面的实体）来量错峰的**顺序与总量** ——
        「事件」底下只有 1~2 行，量不出"一行比一行晚"。（测完由调用方展开回来。） */
     const setRow = [...document.querySelectorAll('#cx-list .ed-tset')][0];
@@ -167,6 +171,7 @@ async function main() {
       bigDelays: big.map((g) => { const a = window.__anim(g)[0]; return a ? a.delay : -1; }),
       bigPad: big.map((g) => getComputedStyle(g).paddingLeft),
       bigCount: big.length,
+      below,
       rowsLeft: nodeRows().length };
   })()`);
   check('★4c 收起「事件」文件夹：里面那些行变成**钉在原位的幽灵**演退场，不是直接消失',
@@ -191,6 +196,21 @@ async function main() {
       && gDelays.every((d, i) => d >= 0 && (i === 0 || d >= gDelays[i - 1]))
       && Math.max(...gDelays) <= 240,
     { delays: gDelays, bigCount: t4c.bigCount });
+  /* ★4f 顺序：**里面的文件先消失，下面的行再移上来**（不是同时）。
+     用户 2026-09-14：「应该是文件先消失，下面的文件夹再移上来，现在反了，下面的移上来后文件再消失」。
+     做法 = 把这一次重画的 FLIP 推迟"退场总时长"这么多毫秒，且必须 `fill:'both'`
+     （延迟期间冻在旧位置上；`fill:'none'` 的话那一行会先瞬移到新位置、等延迟过完再跳回旧位置演一遍）。
+     ★4f 自己算"退场总时长"（这一枝幽灵里最晚的 delay + 单行时长），再去比下面那些行的 FLIP 延迟 ——
+     两边都是量出来的，不写死数字。 */
+  const c1Delays = (t4c.ghostAnim ?? []).map((a) => a[0]?.delay ?? 0);
+  const c1Dur = t4c.ghostAnim?.[0]?.[0]?.dur ?? 0;
+  const c1Total = c1Delays.length ? Math.max(...c1Delays) + c1Dur : 0;
+  const below = t4c.below ?? [];
+  check('★4f 收起时"下面的行补位"**等这一枝退场走完**（FLIP delay = 退场总时长，fill:both 冻在旧位置）',
+    below.length >= 1 && c1Total > 0
+      && below.every((x) => x.a[0].delay === c1Total && x.a[0].fill === 'both'
+        && /^translateY\([0-9.]+px\)\/$/.test(x.a[0].from)),
+    { exitTotal: c1Total, exitDelays: c1Delays, below: below.map((x) => ({ key: x.key, a: x.a[0] })) });
   /* ⚠️ `open1` 里混着两类动画：**展开露出来的行**（下弹，`translateY(-8px)/0 → none/1`）与
      **让位的行**（FLIP，`translateY(±)/  → none/`）。只拿前者来比，不然 FLIP 的位移会把交叉断言搅黄。 */
   const inFrom = (t2.open1 ?? []).map((x) => x.a[0]).filter((a) => a && a.to === 'none/1').map((a) => a.from);

@@ -220,10 +220,14 @@ export function rowsEnter(rows: HTMLElement[], o: RowMotionOpts = {}): Animation
  *  `rows` / `keys` / `tops` 三个数组按下标对齐（`tops[i]` = 第 i 行现在相对容器的 top）；
  *  `prev` = **上一次**布局的 key → 相对 top。只有两次都在的行才动。
  *  位移太小（<1.5px，等于没动）或太大（>240px，那是整棵树换了形态）都不演 —— 后者演出来像乱飞。
- *  `fill:'none'`：动画期间显示插值，结束自然落在新位置（不需要清理，也不需要 `fill:'forwards'`）。 */
-export function flipRows(rows: HTMLElement[], keys: string[], tops: number[], prev: Map<string, number>, o: { dur?: number } = {}): Animation[] {
+ *  不给 `delay` 时 `fill:'none'`（结束自然落在新位置）；**给了 `delay` 就必须 `fill:'both'`** ——
+ *  延迟期间要**冻在旧位置上**，否则那一行会先瞬移到新位置、等延迟过完再跳回旧位置演一遍
+ *  （用户 2026-09-14：「应该是文件先消失，下面的文件夹再移上来，现在反了」——
+ *  收起文件夹时，"里面的行退场"与"下面的行补位"必须**先后**发生，就靠这个 `delay`）。 */
+export function flipRows(rows: HTMLElement[], keys: string[], tops: number[], prev: Map<string, number>, o: { dur?: number; delay?: number } = {}): Animation[] {
   if (motionReduced()) return [];
   const dur = o.dur ?? 320;
+  const delay = o.delay ?? 0;
   const anims: Animation[] = [];
   rows.forEach((el, i) => {
     const p = prev.get(keys[i]);
@@ -231,9 +235,9 @@ export function flipRows(rows: HTMLElement[], keys: string[], tops: number[], pr
     const delta = p - tops[i];
     if (Math.abs(delta) < 1.5 || Math.abs(delta) > 240) return;
     anims.push(el.animate([{ transform: `translateY(${delta}px)` }, { transform: 'none' }],
-      { duration: dur, easing: EASE_DECEL, fill: 'none' }));
+      { duration: dur, delay, easing: EASE_DECEL, fill: delay > 0 ? 'both' : 'none' }));
   });
-  autoRelease(anims, dur);
+  autoRelease(anims, dur + delay + 200);
   return anims;
 }
 
@@ -280,6 +284,16 @@ export function rowLeaveAndRemove(el: HTMLElement | null, o: RowMotionOpts = {})
   if (!anims.length) { kill(); return; }   /* 减少动效：直接摘掉 */
   Promise.all(anims.map((a) => a.finished)).then(kill).catch(kill);
   window.setTimeout(kill, (o.dur ?? ROW_DUR) + (o.step ?? 10) + 400);
+}
+
+/** 一批行按 `rowsLeave` 演完**总共要多久**（最后一行的 delay + 单行时长）。
+ *  收起文件夹时要用它给"下面的行补位"（`flipRows` 的 `delay`）定时 ——
+ *  用户 2026-09-14：「应该是**文件先消失，下面的文件夹再移上来**，现在反了」。 */
+export function rowsLeaveTotal(n: number, o: RowMotionOpts = {}): number {
+  const step = o.step ?? 10;
+  const dur = o.dur ?? ROW_DUR;
+  const maxDelay = o.maxDelay ?? MAX_STAGGER;
+  return dur + Math.min(step * Math.max(0, n - 1), maxDelay);
 }
 
 /** 把**一批**元素演出场再从 DOM 里摘掉（收起文件夹时，里面那些行不是"啪"地消失，

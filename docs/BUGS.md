@@ -526,6 +526,57 @@
   `motion-switch` 25/25、`entity-evolution` 46/46（lk-evo + reset + seed + 重启）；
   `tsc --noEmit` / `node --check` / `vite build` 全 exit 0。
 
+### 十八、滚字那两个字"偏下"了 + 收起文件夹时"下面的行先动"
+
+用户 2026-09-14 一条消息两条：「**实体和节点两个字的位置偏下了**」+「**应该是文件先消失，下面的文件夹再移上来，
+现在反了，下面的移上来后文件再消失**」。
+
+**① 偏下 1.81px（`src/ui/codex.ts` 的 `NEWBTN` + `src/style.css` 的 `.lk-roll`）**
+
+`#cx-new` 里那个老虎机裁切盒（`.lk-roll`）是 `overflow:hidden` 的**行内块**，靠 `vertical-align: middle` 摆位 ——
+而 `middle` 的规则是"盒子中线对齐父元素基线 + x-height/2"，**不等于**"盒子里的字与旁边那行字同一条基线"。
+用 `Range` 量**字体框**（同一字体才有可比性，元素盒还包含行高）实测：
+
+| | 前缀「＋新建」字体框 | 盒里的字字体框 | 差 |
+|---|---|---|---|
+| 修前（`vertical-align:middle`） | top 22.67 / bottom 34.67 | top **24.48** / bottom **36.48** | **+1.81px**（偏下） |
+| 修后（按钮 `inline-flex;align-items:center`） | top 22.67 / bottom 34.67 | top 22.67 / bottom 34.67 | **0** |
+
+修法 = 按钮本身改 `display:inline-flex;align-items:center;justify-content:center`（flex 居中不求基线），
+`.lk-roll` 那句 `vertical-align: middle` 留作"万一按钮不是 flex"的兜底（注释写明）。
+
+**② 顺序反了（`src/ui/codex.ts` 的 `collapse()/leave()` + `src/ui/motion.ts` 的 `flipRows`）**
+
+收起一枝叶要做两件事：里面那些行**退场**（幽灵层）、下面的行**往上补位**（FLIP）。原来两者**同时**发生，
+用户看到的是"下面的先窜上来、文件再消失"。修法：`collapse()` 里把这一枝的退场总时长
+（`rowsLeaveTotal(n, EXIT)` = 单行 260ms + 最后一行的错峰延迟，封顶 240ms）写进模块级 `flipDelayMs`，
+`renderList()` 把它交给 `flipRows(..., { delay })`。**`flipRows` 给了 `delay` 就必须 `fill:'both'`** ——
+延迟期间要**冻在旧位置**上；`fill:'none'` 的话那一行会先瞬移到新位置、等延迟过完再跳回旧位置演一遍。
+
+实测（收起「主线」那一枝，它下面还挂着 `_設定` 一整枝）：
+
+| 量 | 值 |
+|---|---|
+| 幽灵退场 | 3 行，delay `0/22/44`，dur 260，`none/1 → translateY(-8px)/0` |
+| 退场总时长 | `44 + 260` = **304ms** |
+| 下面 45 行的 FLIP | delay **304**、dur 320、`fill:"both"`、`from: translateY(64.1875px)` |
+| 2.6s 后 | 幽灵 0 个、残留动画 0 个 |
+
+（收起「事件」那种单行枝时退场总时长 = 260，下面那些行就 delay 260。）
+
+**测试与 A/B**：`codex-list-motion.cjs` 19 → **20 项**（新增 **★4f**「下面的行补位要等这一枝退场走完：
+FLIP delay = 退场总时长（两条都由量出来的数比，不写死）、`fill:'both'`」）；`codex-smooth-switch.cjs` 27 → **28 项**
+（新增 **★13e**「盒里的字与「＋新建」字体框 top/bottom 逐项相同」）。
+**A/B（把 `NEWBTN` 的 flex 去掉 + 把 `flipRows` 的 delay 写死 0，`vite build` 后跑）**：
+`codex-list-motion` **19/20**（★4f 挂）、`codex-smooth-switch` **27/28**（★13e 挂）⇒ 两条断言都有判别力；恢复后 20/20、28/28。
+
+**⚠️ 一个与本次改动无关的既有假挂（已 A/B 排除）**：`codex-tree-view.cjs` 现在 **20/22**，
+挂的是 ★7/★8（「空类型也在、置灰」）—— 因为该 fixture 的世界里 `entityTypes` 只剩「角色」
+（vault 里只有 `_设定/角色`，扫描结果会把类型收窄成"真有的那几个"）。
+`git stash` 退回改动前的三个源文件 + `vite build` 后**同样 20/22、同样两条** ⇒ 不是本次引入的。
+修法方向（未做）：让 `reset-entity-vault.cjs` 既铺 `entityTypes` 又在硬盘上建五个类型空文件夹 ——
+本轮试过一次，反而把 `codex-node-tab` 的树层级断言带崩（15/22），遂回退，先如实记档。
+
 ## 第二十一轮（2026-09-13）· 演变：实体的版本历史（新功能 + 两条自查出来的 bug）
 
 > **目的**（用户 2026-09-12 提、09-13 细化）：给每个世界一套 git ——

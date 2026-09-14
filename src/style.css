@@ -622,7 +622,11 @@ body {
 .lk-newlbl { font-size: 10px; color: var(--fg-2); flex-shrink: 0; }
 /* ② `.lk-roll`：「＋新建实体 ↔ ＋新建节点」换字时像老虎机一样上下滚一格。
       外层是**裁切盒**（overflow:hidden，高度 = 一行），里层 `.lk-roll__t` 是真标签，
-      滚出去的旧字是临时克隆的 `.lk-roll__prev`（绝对定位盖在原处）。 */
+      滚出去的旧字是临时克隆的 `.lk-roll__prev`（绝对定位盖在原处）。
+      ⚠️ 盒子的**垂直位置由外层按钮负责**：`#cx-new` 是 `inline-flex + align-items:center`
+      （`src/ui/codex.ts` 的 `NEWBTN`）。只靠下面这句 `vertical-align:middle` 摆位，盒里的字会
+      比「＋新建」**低 1.81px**（实测；用户 2026-09-14「实体和节点两个字的位置偏下了」），
+      所以它只是"万一按钮不是 flex"时的兜底。 */
 .lk-roll { display: inline-block; position: relative; overflow: hidden; vertical-align: middle; }
 .lk-roll__t { display: inline-block; white-space: nowrap; }
 .lk-roll__prev { position: absolute; left: 0; top: 0; white-space: nowrap; }

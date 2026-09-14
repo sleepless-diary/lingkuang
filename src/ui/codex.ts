@@ -35,13 +35,17 @@ import {
   epochOfNodes, frameDiff, nearestVersion, normalizeFrames, statesOf, versionAtNode, type EntityState,
 } from '../store/evolution';
 import { calendarOf, fromEpoch } from '../calendar';
-import { cascadeIn, enter, flipRows, motionReduced, rollText, rowLeaveAndRemove, rowSlideIn, rowsDropIn, rowsEnter, rowsLeave, rowsLeaveAndRemove, topsOf } from './motion';
+import { cascadeIn, enter, flipRows, motionReduced, rollText, rowLeaveAndRemove, rowSlideIn, rowsDropIn, rowsEnter, rowsLeave, rowsLeaveAndRemove, rowsLeaveTotal, topsOf } from './motion';
 
 const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;font-family:inherit;user-select:text;';
 /* 顶栏那两组「下拉 + 新建按钮」共用同一份样式 —— 高度必须一模一样（27px），
    换类别时头行高度才不会变（用户 2026-09-13 深夜报过"切换时元素上下跳 7px"）。 */
 const NEWSEL = 'background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 6px;font-size:var(--text-xs);outline:none;';
-const NEWBTN = 'background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:6px 14px;font-size:var(--text-xs);cursor:pointer;';
+/** ⚠️ `display:inline-flex` + `align-items:center` 不是装饰 —— 里面的 `.lk-roll` 是个
+ *  `overflow:hidden` 的行内块裁切盒，靠 `vertical-align` 摆位时它的中线和「＋新建」的基线
+ *  并不在同一水平线上：实测裁切盒里的字比「＋新建」**低 1.81px**（用户 2026-09-14：
+ *  「实体和节点两个字的位置偏下了」）。改成 flex 居中后两者字体框 top/bottom 完全相同（实测差值 0）。 */
+const NEWBTN = 'background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:6px 14px;font-size:var(--text-xs);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;';
 /** 一次建几个（用户 2026-09-13：「我希望能同时创建多个未填数据的实体或者节点」）。
  *  高度必须与 NEWSEL/NEWBTN 一致，否则又会长出"换类别跳 7px"那种问题。 */
 const NEWNUM = 'width:46px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 6px;font-size:var(--text-xs);outline:none;text-align:center;';
@@ -132,6 +136,13 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
      展开露出来的 ⇒ 向下弹出（`rowsDropIn`）；真新建出来的 ⇒ 从左侧滑入（`rowSlideIn`）。
      渲染一次就清掉（用 `openedKey` 取走）。 */
   let justOpened: string | null = null;
+  /* 收起文件夹时，这一枝"演退场"要花多久（`rowsLeaveTotal`）。`renderList()` 把这次重画的
+     FLIP 推迟这么多毫秒 —— 用户要的顺序是"里面的文件先消失，下面的文件夹再移上来"
+     （2026-09-14：「应该是文件先消失，下面的文件夹再移上来，现在反了，下面的移上来后文件再消失」）。
+     只对紧接着的那一次重画有效（renderList 开头取走并清零）。 */
+  let flipDelayMs = 0;
+  /** 收起时那一枝的退场参数（与展开入场的 `rowsDropIn` 对应：往上 8px、260ms、错峰 22ms） */
+  const EXIT = { dy: 8, dur: 260, step: 22 } as const;
 
   const world = () => currentWorld(store);
   const types = () => world().entityTypes ?? {};
@@ -1361,6 +1372,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     const prev = rowTops;
     const opened = justOpened;
     justOpened = null;
+    const flipDelay = flipDelayMs;            /* 收起文件夹时＝那一枝退场的总时长（先走完再补位） */
+    flipDelayMs = 0;                          /* 只对"这一次重画"有效 */
     const cold = prev.size === 0;             /* 本会话第一次画（或刚整块重建）⇒ 全都别演，否则整个列表飞一遍 */
     const frag = document.createElement('div');
     frag.className = 'ed-tree';
@@ -1381,7 +1394,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       const now = topsOf(frag);
       const keys = now.els.map((el) => el.getAttribute('data-cx-key') || '');
       if (!cold) {
-        flipRows(now.els, keys, now.tops, prev);
+        flipRows(now.els, keys, now.tops, prev, { delay: flipDelay });
         /* 展开露出来的那批先落位，新建的那几行随后从左侧滑入（错峰 30ms，封顶 240ms） */
         if (revealed.length) rowsDropIn(revealed);
         fresh.forEach((el, i) => rowSlideIn(el, { delay: Math.min(i * 30, 240) }));
@@ -1512,9 +1525,18 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
            （入场 快→慢 的倒放 = 慢→快）、时长与错峰档次一模一样（260ms / 22ms）。
            ⚠️ **顺序不再反转**（第一版 `[...ghosts].reverse()` 让最后落地的那行先走）：用户看到的是
            「**没有像入场一样的错分**」—— 入场是从上往下一行行出来，退场就该是从上往下一行行走；
-           倒过来播等于波浪反向，跟入场对不上。 */
-        const collapse = (wasOpen: boolean): HTMLElement[] => (wasOpen ? ghostRows(descendantsOf(el)) : []);
-        const leave = (ghosts: HTMLElement[]): void => rowsLeaveAndRemove(ghosts, { dy: 8, dur: 260, step: 22 });
+           倒过来播等于波浪反向，跟入场对不上。
+           ⚠️ **"下面的行补位"要等这一枝走完**（用户 2026-09-14：「应该是**文件先消失，下面的文件夹
+           再移上来**，现在反了，下面的移上来后文件再消失」）：所以 `collapse()` 里先把这一枝的退场总
+           时长写进 `flipDelayMs`，`renderList()` 里那次 FLIP 会带着这个延迟（`fill:'both'` 冻在旧位置），
+           退场干净之后才往上补位。 */
+        const collapse = (wasOpen: boolean): HTMLElement[] => {
+          if (!wasOpen) return [];
+          const g = ghostRows(descendantsOf(el));
+          flipDelayMs = rowsLeaveTotal(g.length, EXIT);
+          return g;
+        };
+        const leave = (ghosts: HTMLElement[]): void => { if (ghosts.length) rowsLeaveAndRemove(ghosts, EXIT); flipDelayMs = 0; };
         if (ds.act === 'world') {
           const wasOpen = isOpen(collapsedWorlds, ds.nw!);
           const ghosts = collapse(wasOpen);

@@ -419,6 +419,29 @@ async function main() {
   check('★13d2 滚字收干净：旧字克隆摘掉、标签上没有残留动画（兜底定时器兜住隐藏窗口里不推进的动画）',
     rollGone && rollLate.prev === 0 && rollLate.anims === 0 && rollLate.text === '＋新建节点', rollLate);
 
+  /* ★13e 「实体 / 节点」那两个字要跟「＋新建」**在同一条水平线**上。
+     用户 2026-09-14：「实体和节点两个字的位置偏下了」—— 真因是裁切盒（`.lk-roll`，`overflow:hidden`
+     的行内块）靠 `vertical-align:middle` 摆位时，它的中线并不落在文字的基线上：实测盒里的字比
+     「＋新建」**低 1.81px**。修法 = 按钮 `#cx-new` 改 `inline-flex + align-items:center`
+     （`src/ui/codex.ts` 的 `NEWBTN`），实测两者字体框完全重合。
+     ⚠️ 计算值可能是 `flex` 而不是 `inline-flex`：按钮是 `#cx-newbox`（flex 容器）的子项，
+     行内级 display 被块化 ⇒ 断言写成 `/^(inline-)?flex$/`。
+     ⚠️ 量的是 **Range 的字体框**（同一个字体才有可比性），不是元素盒 —— 盒子高度还包含行高。
+     ⚠️ 必须在**滚字动画收干净之后**量：动画期间那两个字带着 transform，量出来当然是歪的。 */
+  const align = await ev(`(() => {
+    const btn = document.querySelector('#cx-new');
+    if (!btn || !btn.firstChild) return null;
+    const t = btn.querySelector('.lk-roll__t');
+    if (!t) return null;
+    const rectOf = (n) => { const r = document.createRange(); r.selectNodeContents(n); const q = r.getBoundingClientRect();
+      return { top: Math.round(q.top * 100) / 100, bottom: Math.round(q.bottom * 100) / 100 }; };
+    return { fix: rectOf(btn.firstChild), word: rectOf(t), disp: getComputedStyle(btn).display,
+      anims: btn.querySelectorAll('.lk-roll__prev').length };
+  })()`);
+  check('★13e 盒里的字与「＋新建」在同一水平线上（字体框 top/bottom 逐项相同，按钮 flex 居中）',
+    !!align && align.anims === 0 && /^(inline-)?flex$/.test(String(align.disp))
+      && align.fix.top === align.word.top && align.fix.bottom === align.word.bottom, align);
+
   /* ── ⑨ 节点→节点也要就地换 ──
      左栏重做后列表形态**直接摊平**了节点行（不再需要先展开 世界→时间线→种类），
      所以这里不用再点开树，`[data-act="node"]` 就在列表里。 */
