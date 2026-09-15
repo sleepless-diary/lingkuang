@@ -234,10 +234,10 @@ async function main() {
     return { n0, n1: rows.length, ghostN: fresh.length, animN: fresh.filter((r) => r.getAnimations().length).length,
       anim: fresh[0] ? ${treeAnim('fresh[0]')} : null };
   })()`);
-  check('★0f3 点展开时，新露出来的虚化行**逐行下弹**（translateY(-8px)/0 → 原位 · **落到 0.4 而不是 1**，180ms、错峰 14ms）',
+  check('★0f3 点展开时，新露出来的虚化行**逐行从右边滑进来**（translateX(32px)/0 → 原位 · **落到 0.4 而不是 1**，200ms、错峰 12ms）',
     (expAnim.ghostN ?? 0) === 3 && expAnim.animN === 3
-      && expAnim.anim && expAnim.anim.from === 'translateY(-8px)/0' && expAnim.anim.to === 'none/0.4'
-      && expAnim.anim.dur === 180 && expAnim.anim.delay === 0, expAnim);
+      && expAnim.anim && expAnim.anim.from === 'translateX(32px)/0' && expAnim.anim.to === 'none/0.4'
+      && expAnim.anim.dur === 200 && expAnim.anim.delay === 0, expAnim);
   await sleep(700);
   const colAnim = await ev(`(() => {
     const m = document.querySelector('.lk-rail__more');
@@ -262,13 +262,13 @@ async function main() {
       animN: ghosts.filter((g) => g.getAnimations().length).length,
       anim: ghosts[0] ? ${treeAnim('ghosts[0]')} : null, boxSame: Math.abs(box.height - boxBefore.height) < 2 };
   })()`);
-  check('★0f4 点收起时，那些虚化行先化成**裁在帧条里的幽灵**演退场（0.4 → 往上升 8px）· 裁切层停在旧高度、盒子随后才缩',
+  check('★0f4 点收起时，那些虚化行先化成**裁在帧条里的幽灵**演退场（0.4 → 往左滑走 32px）· 裁切层停在旧高度、盒子随后才缩',
     colAnim.layers === 1 && colAnim.ghosts === 3 && colAnim.rows === (expAnim.n0 ?? 0)
       && colAnim.layerOvf === 'hidden' && /height/.test(colAnim.transProp || '')
       && Math.abs(parseFloat(colAnim.layerTargetH) - colAnim.boxBeforeH) <= 2
       && parseFloat(colAnim.boxTo) < colAnim.boxBeforeH - 40
-      && colAnim.anim && colAnim.anim.from === 'none/0.4' && colAnim.anim.to === 'translateY(-8px)/0'
-      && colAnim.anim.dur === 180, colAnim);
+      && colAnim.anim && colAnim.anim.from === 'none/0.4' && colAnim.anim.to === 'translateX(-32px)/0'
+      && colAnim.anim.dur === 200, colAnim);
   const railLayerGone = await waitFor(() => ev(`document.querySelectorAll('.lk-ghost-layer').length === 0`), 3000);
   check('★0f5 帧条的幽灵演完，连裁切层一起摘掉（页面上不留空的浮层）', railLayerGone);
   /* 展开回来（★0g 要点虚化行换锚点） */

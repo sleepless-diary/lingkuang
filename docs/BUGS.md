@@ -705,6 +705,59 @@ FLIP delay = 退场总时长（两条都由量出来的数比，不写死）、`
 - 老断言按新参数更新：`codex-list-motion` 24 → **25 项**（新增 ★4k；★4f 的窗口改成"**首行**落在窗口里 + 后续 ≤ 窗口上界 + 错峰总量"，因为"一批共用一个延迟"不再是承诺）；`entity-evolution` ★0f3 的终点改 `none/0.4`、★0f4 改成"层停在旧高度 + 盒子的目标高度已经变矮"（原来是"层高 === 收起后的盒高"，那是旧行为的承诺）。
 - ⚠️ **顺序类断言必须先在修复前的代码上跑一遍**（本项目铁律 9）。第一版种子把版本放在**开头两个**节点上，距离恰好随 DOM 递增 ⇒ 顺序断言在旧代码上也全绿（**假绿**）。换成两端都有版本才让"按距离排"这件事证得出来。
 
+### 二十一、收起时"文字重叠（多出来一份）"、补位顺序、帧条出入场改成左右（用户 2026-09-14 第三轮）
+
+用户原话：「**文件收起时下面的文字会重叠（多出来一份），而且还是最底下的先移动，帧面板节点的出入场换成左右移动（就像正文面板一样）**」
+
+#### ① 重叠：**两段动画在时间上咬合**（真因，已实测）
+- 症状：收起一个"下面还挂着东西"的文件夹时，屏幕上同一行文字出现**两份**。
+- 实测（探针，收起「事件」+ rAF 采 45 帧）：幽灵淡出 `0 → 194ms`，而补位行 FLIP 起跑在 **107ms**
+  （`FLIP_OVERLAP = 0.55`）⇒ **132~187ms 这 55ms 里，半透明的幽灵与刚滑进来的真实行落在同一位置**
+  （`hits: 1`）。这正是"多出来一份"。
+- 修法（`src/ui/codex.ts`）：`flipDelayMs = rowsLeaveTotal(g.length, EXIT)` —— **严格先出后补**，删掉
+  `FLIP_OVERLAP`；同时把 `EXIT` 从 `{dur:180, step:14, maxDelay:120}` 压到
+  **`{dy:8, dur:150, step:12, maxDelay:96}`** —— 退场短了，"等满"也不会回到"停一拍"的观感
+  （当初加咬合就是为了消它，结果换来了叠字）。
+- 复测：幽灵 **161ms** 淡到 0、补位首行 **162ms** 起跑，45 帧 `hits` 全 0。
+
+#### ② "最底下的先移动"：补位顺序本身没反（参数实测）
+- 同一探针按 DOM 从上到下量：`delay = 150 / 164 / 178 / 192 / 206 …`（`FLIP_STEP = 14`、封顶
+  `FLIP_MAX = 120`）⇒ **越高的越先移**，与上一轮 ★4k 的承诺一致。
+- 判断：用户看到的是①的重叠造成的误读 —— 幽灵（属于被收起的那一枝）正好压在最上面那行补位行上，
+  两行文字同时在动，看着像"下面的先动"。①修好后请用户复看。
+
+#### ③ 帧条出入场改成左右（像正文面板一样）
+- `src/ui/evolution-rail.ts` 的 `EXIT`：`{dy:8, dur:180, step:14, maxDelay:120}`
+  ⇒ **`{dx:32, dur:200, step:12, maxDelay:96}`**。
+  ⚠️ `rowsLeave()` 里 **`dy` 优先于 `dx`** ⇒ "改成左右"必须**删掉 `dy`**，否则改了个寂寞。
+- 入场由 `rowsDropIn`（往下弹）换成 **`rowsEnter(enter, { dx, dur, step, maxDelay, start: 0 })`**：
+  ⚠️ `rowsEnter` 的 `start` 默认是 `dur`（那是给正文转场"先出后进"用的）—— 帧条只有入场，必须
+  **显式给 0**，否则整批白等 200ms（框都在长了、行还没出来）。
+- 连带：`rowsEnter` 的错峰补上 `maxDelay` 封顶（原来 `i * step` 无上限，帧条几十格时会拖长）。
+
+#### 测试
+- `tools/e2e/rail-order.cjs` 15 → **16 项**：★3 改判"从右边滑进来"（`translateX(32px) → none`）、
+  ★8 改判"往左滑走"（`none → translateX(-32px)`）、★1/★7 的档位随 `EXIT` 改 200/12、
+  新增 **★3b「入场的 `start` 必须是 0」**。
+- `tools/e2e/codex-list-motion.cjs`：★4c2 时长 180→**150**、★4e 档位改 12/封顶 96、
+  **★4f 从"咬合"改成"严格先出后补"**（首行 delay 必须**正好等于**退场总时长、其余行 ≥ 它）、
+  ★4k 保持 14（补位步长 `FLIP_STEP` 与退场 `EXIT.step` 是两个独立旋钮）。
+- `tools/e2e/entity-evolution.cjs` ★0f3/★0f4 改成左右（`translateX(±32px)`、200ms）⇒ **49/49**。
+- **A/B（铁律 9）**：`git stash push -- src/ui/evolution-rail.ts` + `vite build` ⇒ `rail-order`
+  **12/16**（★1/★3/★7/★8 精确挂）；再把新代码的 `start: 0` 临时改成 `start: EXIT.dur`（陷阱测试）
+  ⇒ **★3b FAIL**（`delay: 200/212/224…`）⇒ 两条新断言都证过有判别力。
+- 回归：`codex-list-motion` 25/25、`entity-evolution` 49/49、`codex-swap-motion` 14/14、
+  `codex-smooth-switch` 28/28、`motion-switch` 25/25、`codex-node-tab` 18/18、`codex-tree-view` 22/22、
+  `workbench-add-node` 19/19、`workbench-tree-folders` 29/29；`tsc --noEmit` / `vite build` exit 0。
+
+#### ⚠️ 工具坑（本轮踩到）
+- 用 PowerShell `(Get-Content -Raw) … | Set-Content -Encoding UTF8` 改源文件会**加 BOM**（这次没坏内容，
+  靠 `node -e` 查 `charCodeAt(0) === 0xFEFF` 发现并剥掉）⇒ 源码一律用 **edit 工具 / node 写**。
+- **自己写的辅助脚本里注释不能含 `*/`**：`/* … 把 \`*/\` 弄残了 … */` 会让块注释**提前闭合**，
+  报 `SyntaxError: Unexpected identifier 'xxx'` —— 一度以为是文件坏了。
+- `src/ui/codex.ts` 是 **CRLF**：`edit` 工具的多行 `old_string` 匹配不上（单行可以），
+  含全角标点的那几行也会失败 ⇒ 改用 node 按**锚点文本**splice（别按行号，行号会漂）。
+
 ## 第二十一轮（2026-09-13）· 演变：实体的版本历史（新功能 + 两条自查出来的 bug）
 
 > **目的**（用户 2026-09-12 提、09-13 细化）：给每个世界一套 git ——

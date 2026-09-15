@@ -102,17 +102,19 @@ async function main() {
   /* ⚠️ 铁律 15：WAAPI 关键帧里的数值**可能是字符串也可能是数字**（同一个 `{opacity: 0}` 在不同
      属性上读出来不一样）⇒ 一律 `String()` 之后比。 */
   const S = (v) => String(v);
-  check('★1 展开时虚化行**逐行**出现（4 格 · 单行 180ms · 逐行晚 14ms）',
-    (exp.info || []).length === 4 && JSON.stringify(delays(exp.info)) === JSON.stringify([0, 14, 28, 42])
-      && (exp.info || []).every((x) => x.dur === 180), exp.info);
+  check('★1 展开时虚化行**逐行**出现（4 格 · 单行 200ms · 逐行晚 12ms）',
+    (exp.info || []).length === 4 && JSON.stringify(delays(exp.info)) === JSON.stringify([0, 12, 24, 36])
+      && (exp.info || []).every((x) => x.dur === 200), exp.info);
   check('★2 顺序 = **离最近的一版越近越先出现**（距离序列单调递增；种子两端都有版本 ⇒ 与 DOM 顺序不同）',
     JSON.stringify(byDelay(exp.info)) === JSON.stringify(['n-ro-2', 'n-ro-5', 'n-ro-3', 'n-ro-4'])
       && monotone(distSeq(exp.order, exp.info, 1), 1)
       && distSeq(exp.order, exp.info, 1)[0] < distSeq(exp.order, exp.info, 1).slice(-1)[0],
     { order: byDelay(exp.info), dist: distSeq(exp.order, exp.info, 1) });
-  check('★3 入场**不许亮到 100%**：不透明度 0 → 这一行自己该有的 0.4（否则会先亮一下再变虚）',
+  check('★3 入场 = **从右边滑进来**（`translateX(+32px)` → 原位），不是上下弹（用户 2026-09-14：「帧面板节点的出入场换成左右移动（就像正文面板一样）」）',
     (exp.info || []).length === 4 && (exp.info || []).every((x) => S(x.opFrom) === '0' && S(x.opTo) === '0.4')
-      && (exp.info || []).every((x) => x.tfFrom === 'translateY(-8px)' && x.tfTo === 'none'), (exp.info || []).map((x) => [S(x.opFrom), S(x.opTo)]));
+      && (exp.info || []).every((x) => x.tfFrom === 'translateX(32px)' && x.tfTo === 'none'), (exp.info || []).map((x) => [S(x.opFrom), S(x.opTo)]));
+  check('★3b 入场的 `start` 必须是 **0**（`rowsEnter` 默认是 `dur`，那是给"先出后进"的正文转场用的 —— 帧条只有入场，等一个 dur 才动就白等）',
+    Math.min(...delays(exp.info)) === 0, delays(exp.info));
   check('★4 最外层那个框的高度**也演**，而且**晚一步**（delay > 0 · fill both 先冻在旧高度）',
     exp.boxAnimN === 1 && exp.boxDelay > 0 && exp.boxFill === 'both'
       && Math.abs(parseFloat(exp.boxFrom) - exp.before) <= 2 && parseFloat(exp.boxTo) > exp.before + 40,
@@ -165,13 +167,13 @@ async function main() {
     { layerN: col.layerN, ghosts: (col.info || []).length, rows: col.rows });
   check('★7 退场顺序 = 入场的**倒过来**（离最近的一版越远越先走；距离序列单调递减）',
     JSON.stringify(byDelay(col.info)) === JSON.stringify(['n-ro-3', 'n-ro-4', 'n-ro-2', 'n-ro-5'])
-      && JSON.stringify(delays(col.info)) === JSON.stringify([0, 14, 28, 42])
+      && JSON.stringify(delays(col.info)) === JSON.stringify([0, 12, 24, 36])
       && monotone(distSeq(col.order, col.info, -1), -1)
       && distSeq(col.order, col.info, -1)[0] > distSeq(col.order, col.info, -1).slice(-1)[0],
     { order: byDelay(col.info), dist: distSeq(col.order, col.info, -1) });
-  check('★8 退场**不透明度起点 = 0.4**（不是 1 —— 写死 1 就是"先正常显示、再虚化"的那一下闪）',
+  check('★8 退场 = **往左滑走**（不透明度起点 0.4；`translateX(-32px)` 收尾 —— 与入场同一根轴，方向相反）',
     (col.info || []).length === 4 && (col.info || []).every((x) => S(x.opFrom) === '0.4' && S(x.opTo) === '0')
-      && (col.info || []).every((x) => x.tfTo === 'translateY(-8px)'), (col.info || []).map((x) => [S(x.opFrom), S(x.opTo)]));
+      && (col.info || []).every((x) => x.tfTo === 'translateX(-32px)'), (col.info || []).map((x) => [S(x.opFrom), S(x.opTo)]));
   check('★9 裁切层**停在旧高度**（否则退场中的虚化行会被裁没）· 而框的目标高度已经变矮了',
     Math.abs((col.layerH ?? 0) - col.boxBefore) <= 2 && parseFloat(col.boxTo) < col.boxBefore - 40
       && col.boxAnimN === 1 && col.boxDelay > 0 && col.boxFill === 'both'

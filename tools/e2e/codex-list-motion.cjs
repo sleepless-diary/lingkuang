@@ -194,34 +194,35 @@ async function main() {
      第一版用了 `[...ghosts].reverse()` 且不限量：44 行时第一行要等 946ms 才动，看着就是"卡住然后整片消失"
      （用户：「没有像入场一样的错分」）。 */
   const gDelays = t4c.bigDelays ?? [];
-  check('★4e 退场错峰与入场同序（0/14/28…，按 DOM 从上往下）且总量 ≤120ms',
-    gDelays.length >= 4 && gDelays[0] === 0 && gDelays[1] === 14
+  check('★4e 退场错峰与入场同序（0/12/24…，按 DOM 从上往下）且总量 ≤96ms',
+    gDelays.length >= 4 && gDelays[0] === 0 && gDelays[1] === 12
       && gDelays.every((d, i) => d >= 0 && (i === 0 || d >= gDelays[i - 1]))
-      && Math.max(...gDelays) <= 120,
+      && Math.max(...gDelays) <= 96,
     { delays: gDelays, bigCount: t4c.bigCount });
-  /* ★4f 顺序：**里面的文件先消失，下面的行再移上来**（不是同时）。
-     用户 2026-09-14：「应该是文件先消失，下面的文件夹再移上来，现在反了，下面的移上来后文件再消失」。
-     做法 = 把这一次重画的 FLIP 推迟"退场总时长"这么多毫秒，且必须 `fill:'both'`
-     （延迟期间冻在旧位置上；`fill:'none'` 的话那一行会先瞬移到新位置、等延迟过完再跳回旧位置演一遍）。
+  /* ★4f 顺序：**里面的文件先消失，下面的行再移上来**（严格先出后补，不许交叠）。
+     用户 2026-09-14：「应该是文件先消失，下面的文件夹再移上来，现在反了」→ 同一天第三轮又报
+     「下面的文字会**重叠（多出来一份）**」：中间试过"咬合 55%"（提前 40ms 起跑）来消掉"停一拍"，
+     实测**那正是重叠的来源** —— 幽灵还在半透明时补位的行已经滑进同一个位置（探针实测重叠窗口
+     132~187ms）。所以现在**等满**：`flipDelayMs = rowsLeaveTotal(...)`，一行都不许提前。
      ★4f 自己算"退场总时长"（这一枝幽灵里最晚的 delay + 单行时长），再去比下面那些行的 FLIP 延迟 ——
      两边都是量出来的，不写死数字。 */
   const c1Delays = (t4c.ghostAnim ?? []).map((a) => a[0]?.delay ?? 0);
   const c1Dur = t4c.ghostAnim?.[0]?.[0]?.dur ?? 0;
   const c1Total = c1Delays.length ? Math.max(...c1Delays) + c1Dur : 0;
   const below = t4c.below ?? [];
-  /* ⚠️ 加了逐行错峰（★4k）之后，"一批补位的行共用一个延迟"不再是承诺：**第一行**还在那个窗口里起身，
-     后面的行按 14ms 一档往后排 —— 所以上界要放到"窗口上界 + 错峰总量（≤120ms）"。 */
-  check('★4f 收起时"下面的行补位"**等这一枝退场走了一多半**才动（首行 delay 与退场总时长咬合、fill:both 冻在旧位置）',
+  /* ⚠️ 加了逐行错峰（★4k）之后，"一批补位的行共用一个延迟"不再是承诺：**首行**在"退场刚走完"
+     那一刻起身（＝`c1Total`，这一条是硬承诺：一行都不许提前），后面的行按 `FLIP_STEP`（14ms，与
+     退场的 12ms 是两个独立的旋钮）往后排、封顶 `FLIP_MAX`（120ms）—— 所以其余行只钉下界。 */
+  check('★4f 收起时"下面的行补位"**等这一枝退场走完**才动（一行都不许提前；首行正好落在退场结束那一刻）',
     below.length >= 1 && c1Total > 0
-      && below.every((x) => x.a[0].fill === 'both' && x.a[0].delay > 0 && x.a[0].delay <= c1Total + 120
-        && x.a[0].delay >= Math.round(c1Total * 0.4)
-        && x.a[0].delay <= Math.round(c1Total * 0.75) + 120
+      && below.every((x) => x.a[0].fill === 'both' && x.a[0].delay >= c1Total
+        && x.a[0].delay <= c1Total + 200
         && /^translateY\([0-9.]+px\)\/$/.test(x.a[0].from))
-      && below[0].a[0].delay <= Math.round(c1Total * 0.75),
+      && Math.abs(below[0].a[0].delay - c1Total) <= 1,
     { exitTotal: c1Total, below: below.map((x) => ({ key: x.key, a: x.a[0] })) });
   /* ★4k 补位那一批的**错峰方向**：**越高的越先移**。
      用户 2026-09-14：「文件夹收起后其下文件上移**错分方向反了**，应该是越高的越先移，
-     现在是越下面的越先移」—— 原先所有补位的行共用一个延迟（整块一起上移，看着像"整片被拽上去"）。
+     现在是越下面的先移」—— 原先所有补位的行共用一个延迟（整块一起上移，看着像"整片被拽上去"）。
      `below` 是**按 DOM 顺序**（从上到下）收的 ⇒ 延迟必须非递减，且头两档就差一个步长（14ms）。 */
   const bDelays = below.map((x) => x.a[0].delay);
   check('★4k 补位的行**越高的越先移**（按 DOM 从上往下逐行晚 14ms，不是整块一起动）',
@@ -233,10 +234,10 @@ async function main() {
      **让位的行**（FLIP，`translateY(±)/  → none/`）。只拿前者来比，不然 FLIP 的位移会把交叉断言搅黄。 */
   const inFrom = (t2.open1 ?? []).map((x) => x.a[0]).filter((a) => a && a.to === 'none/1').map((a) => a.from);
   const inTo = (t2.open1 ?? []).map((x) => x.a[0]).filter((a) => a && a.from === 'translateY(-8px)/0').map((a) => a.to);
-  check('★4c2 幽灵演的是**入场（向下弹出）的倒放**：none/1 → translateY(-8px)/0，180ms',
+  check('★4c2 幽灵演的是**入场（向下弹出）的倒放**：none/1 → translateY(-8px)/0，150ms',
     t4c.ghostAnim.length >= 1
       && inFrom.length >= 1
-      && t4c.ghostAnim.every((a) => a[0].from === 'none/1' && a[0].to === 'translateY(-8px)/0' && a[0].dur === 180)
+      && t4c.ghostAnim.every((a) => a[0].from === 'none/1' && a[0].to === 'translateY(-8px)/0' && a[0].dur === 150)
       /* 逐项互为反向：出场的终点 = 入场的起点（-8px/0）、出场的起点 = 入场的终点（none/1） */
       && inFrom.every((f) => t4c.ghostAnim.every((a) => a[0].to === f))
       && inTo.every((t) => t4c.ghostAnim.every((a) => a[0].from === t)),

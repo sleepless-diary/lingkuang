@@ -19,7 +19,7 @@ import { currentWorld } from '../store/store';
 import type { Entity, TimelineNode } from '../store/types';
 import { epochOfNodes, isEmptyPatch, patchSummary, versionAtNode } from '../store/evolution';
 import { escapeHtml } from './html';
-import { cloneIntoLayer, ghostLayerFor, rowsDropIn, rowsLeaveAndRemove, rowsLeaveTotal, smoothBoxHeight } from './motion';
+import { cloneIntoLayer, ghostLayerFor, rowsEnter, rowsLeaveAndRemove, rowsLeaveTotal, smoothBoxHeight } from './motion';
 import { loadSettings } from './settings';
 
 export interface RailDeps {
@@ -69,7 +69,12 @@ export function createEvolutionRail(deps: RailDeps): Rail {
   let showAll = false;
   /** 帧条上"展开/收起"用的动效参数：与左树文件夹的弹出/收回**同一档**（往上 8px、180ms、错峰 14ms、
    *  封顶 120ms —— 2026-09-14 用户：「文件收起的动画快一点，现在有一点停滞感」，两处一起调快才是一套）。 */
-  const EXIT = { dy: 8, dur: 180, step: 14, maxDelay: 120 } as const;
+  /* 帧条那些行（展开出来的虚化行 / 收起时退场的行）的出入场参数。
+     用户 2026-09-14 第三轮：「**帧面板节点的出入场换成左右移动（就像正文面板一样）**」
+     ⇒ 不再用"上下 8px"（`dy`），改成与正文行级转场同一套左右位移：
+     出场 `0 / 原地 → 左移 dx`（慢→快）、入场 `从右 dx → 原地`（快→慢）。
+     ⚠️ `rowsLeave` 里 **`dy` 优先于 `dx`** ⇒ 这里绝不能给 `dy`。 */
+  const EXIT = { dx: 32, dur: 200, step: 12, maxDelay: 96 } as const;
   /* 节点 epoch 只按世界缓存：拖帧条、改字段都会重画这一条，不必每次都算年表 */
   let cacheWorld = '';
   let cacheEpoch: Map<string, number> = new Map();
@@ -314,9 +319,11 @@ export function createEvolutionRail(deps: RailDeps): Rail {
         /* 退场走到六成就开始收框：行已经淡得差不多了，框跟着缩不会被看穿，又不会拖到"停一拍" */
         smoothBoxHeight(boxAfter, boxBefore, { delay: Math.round(rowsLeaveTotal(ghosts.length, EXIT) * 0.6) });
       } else if (fresh.length) {
-        /* 入场：**离最近的一版越近的越先出现**（`orderByDistance` 已按距离升序排好） */
+        /* 入场：**离最近的一版越近的越先出现**（`orderByDistance` 已按距离升序排好），从**右边**滑进来。
+           ⚠️ `rowsEnter` 的 `start` 默认是 `dur`（那是给"先出后进"的正文转场用的）；帧条这里**必须
+           显式给 0**，否则整批要等 200ms 才开始动 —— 框都在长了行还没出来。 */
         const enter = orderByDistance([...host.querySelectorAll<HTMLElement>('.lk-rail__row')], fresh, false);
-        rowsDropIn(enter, EXIT);
+        rowsEnter(enter, { dx: EXIT.dx, dur: EXIT.dur, step: EXIT.step, maxDelay: EXIT.maxDelay, start: 0 });
         /* 框晚半步再长高（`rowsLeaveTotal` 就是"单行时长 + 封顶后的错峰总量"，入场同档参数） */
         smoothBoxHeight(boxAfter, boxBefore, { delay: Math.round(rowsLeaveTotal(enter.length, EXIT) * 0.5) });
       }

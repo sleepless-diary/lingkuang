@@ -214,21 +214,25 @@ export function rowsLeave(rows: HTMLElement[], o: RowMotionOpts = {}): Animation
   return anims;
 }
 
-/** 行级**入场**：每行 `0 / 从右 dx` → `1 / 原位`（快→慢），按序号错峰，整体延后 `start`。
- *  `fill:'both'` ⇒ 延迟期间**保持不透明度 0**（用户明确要求：动画开始前不许先亮出来）。 */
+/** 行级**入场**：每行 `0 / 从右 dx` → `natural / 原位`（快→慢），按序号错峰，整体延后 `start`。
+ *  `fill:'both'` ⇒ 延迟期间**保持不透明度 0**（用户明确要求：动画开始前不许先亮出来）。
+ *  ⚠️ `start` 默认是 `dur`：那是给正文转场用的（"先出后进"）。**帧条 / 文件夹那种"只有入场"的场景
+ *  必须显式给 `start: 0`**，否则整批要白等一个 `dur` 才开始动（用户 2026-09-14 把帧条的出入场改成
+ *  左右移动时踩到：框都在长了、行还没出来）。错峰同样封顶 `maxDelay`。 */
 export function rowsEnter(rows: HTMLElement[], o: RowMotionOpts = {}): Animation[] {
   if (motionReduced()) return [];
   const dx = o.dx ?? 32;
   const step = o.step ?? 10;
   const dur = o.dur ?? ROW_DUR;
   const start = o.start ?? dur;
+  const maxDelay = o.maxDelay ?? MAX_STAGGER;
   const anims = rows.map((el, i) =>
     el.animate(
       [{ opacity: 0, transform: `translateX(${dx}px)` }, { opacity: naturalOpacity(el), transform: 'none' }],
-      { duration: dur, delay: start + i * step, easing: EASE_DECEL, fill: 'both' }
+      { duration: dur, delay: start + Math.min(i * step, maxDelay), easing: EASE_DECEL, fill: 'both' }
     )
   );
-  autoRelease(anims, start + dur + step * rows.length);
+  autoRelease(anims, start + dur + Math.min(step * rows.length, maxDelay));
   return anims;
 }
 
