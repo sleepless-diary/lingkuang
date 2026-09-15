@@ -15,6 +15,66 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第二十三轮（2026-09-14）· 「这件事改变了谁」：演变的反向视图（**新功能**）
+
+> 用户原话：「**好，你先去写新功能吧，我在上课**」（他不在，我按之前给过的选单自主选了这个方向）。
+
+### 一、它是什么
+
+演变（第二十一轮）是**站在一条设定上看它的历史**：帧条把这条设定的每一版竖着列成一格。
+这一轮做的是**反过来**：**站在一个事件上看它改变了谁** —— 节点中栏多一块「这件事改变了谁」，
+列出**这个事件上挂了帧的设定**（名字 / 类型 / 第几版 / 改动摘要），点一行就跳到
+**"这条设定在这个事件之后的样子"**。
+
+**没有新增任何存储**：关系本来就在 `Entity.frames[].nodeId` 里（帧的锚点就是这个事件节点），
+所以这一块只是"读 + 跳"—— 这也意味着**老数据立刻就有内容**，不需要迁移。
+
+### 二、怎么做的（`src/ui/codex.ts`）
+
+- `bodyHtml()` 的**节点分支**加一块 `<div id="cx-changed" data-cx-row>`（排在 `#cx-props` 与正文之间）。
+- `changedRows()`：遍历 `Object.values(currentWorld(store).entities ?? {})`，取
+  `(e.frames ?? []).find((f) => f.nodeId === n.id)` 命中的；版本号用
+  `versionAtNode(e, epochOf, epochOf(n.id), n.id)`（**按各自的帧算** —— 银发少女在这个事件上是第 2 版、
+  霜纹剑是第 1 版，不是同一个号），摘要用 `patchSummary(fr.patch)`；排序按摘要长度降序
+  （改得多的排前面）、同长按名字。
+- `renderChangedBy(el)`：只填 `innerHTML`。没有帧时给一句人话（「这个事件还没有改变任何设定。
+  想记的话：在左边选中一条设定，在它右边那条时间线上点「＋ 记一帧」，事件选这一个。」），
+  **不是空白一块**。
+- `jumpToEntityVersion(id)`：`switchTarget(() => { mode = 'entity'; activeId = id; railNode = nodeId; railKey = id; railAnchor = nodeId; })`。
+  ⚠️ `railKey = id` 是**必须的**：`ensureRailSelection()` 里只有 `railKey !== e.id` 才会把 `railNode`
+  挪到"离指针最近的那一版"（`nearestVersion`），不设就会被挪走 —— 而用户点这一下想看的正是
+  **这个事件之后的样子**。`railAnchor` 一起设，接下来改字段就是改这一版。
+- ⚠️ **点击监听只在 `wireBody()` 里挂一次**：轻路径 `swapBody()` 会在同一个 `#cx-changed` 元素上
+  反复重填内容（换节点、store 变化），在 `renderChangedBy()` 里挂就会一层层叠监听。
+- ⚠️ **不用 `scrollIntoView()`**：它会把所有祖先滚动容器一起滚，而 `#cx-root` 正是面板的滚动容器
+  （帧条那里踩过，实测把 scrollTop 从 260 拽到 122）。跳到实体后靠左树的 `.is-on` 高亮表达"是哪一条"。
+
+### 三、验证
+
+- 新增 `tools/e2e/seed-node-changed.cjs`（**自足**播种：帧**直接写在 `.md` 的 `#演变：` 段里**，
+  不是靠界面点出来 —— 界面点出来的帧依赖上一轮套件跑没跑、跑了几遍，断言会飘）。
+  分布：银发少女 2 帧（n-evo-1 第 1 版 / n-evo-2 第 2 版）· 霜纹剑 1 帧（n-evo-2 第 1 版）·
+  守夜人队长 **0 帧**（负例）· n-evo-3 **没有任何帧**（空态）。
+  ⚠️ 帧必须写进 `.md`：vault 是"文件为源"，JSON 里的 `frames` 会被文件覆盖成空。
+- 新增 `tools/e2e/node-changed-by.cjs` **15 项**（★1 那块在 + 计数 / ★2 只列真有帧的两条 /
+  ★3 版本号按各自的帧算 / ★4 有类型名与摘要且摘要点出改了哪个字段 / ★5 没帧的**不在**列表里 /
+  ★6~★9b 点一行 ⇒ 跳到那条设定 + **中栏是这一版的样子**（年龄 21 / 发色 雪白，不是初稿的 17 / 银白）
+  + 「正在看：第 2 版」+ 帧条停在 `n-evo-2` 且可见 + 左树高亮换到实体行、节点行不再亮 /
+  ★10 空态一句人话 / ★11 只改过一次的事件 = 1 条第 1 版 / ★12 来回进出不叠内容 / ★13 无异常）。
+  跑法：`node tools/e2e/seed-node-changed.cjs` → 起应用 →
+  `LK_CDP_PORT=NNNN node tools/e2e/node-changed-by.cjs`（新测试目录 `%TEMP%\lk-changed`）。
+- **A/B（铁律 9）**：`Copy-Item src/ui/codex.ts src/ui/codex.ts.mine` → `git checkout -- src/ui/codex.ts`
+  → `npx vite build` → 重启实例复跑 ⇒ **2/15**（只有 ★0 前置与 ★13 无异常过）⇒ 断言有判别力；
+  恢复后 **15/15**（同一实例连跑两遍一致）。
+- 回归（各自干净起点，全绿）：`codex-node-tab` 18/18、`codex-tree-view` 22/22、
+  `workbench-add-node` 19/19、`codex-list-motion` 24/24、`entity-vault` 17/17、
+  `codex-smooth-switch` 28/28、`codex-swap-motion` 14/14、`motion-switch` 25/25、
+  `toolbar-groups` 5/5、`settings-panel` 12/12、`entity-evolution` 49/49、`workbench-tree-folders` 29/29；
+  `tsc --noEmit` / `vite build` exit 0。
+  ⚠️ 本轮第一次批量跑回归时**把 env 变量设在播种之后**（`LINGKUANG_TEST_DATA`/`LINGKUANG_VAULT` 必须在
+  同一次 pwsh 调用里、且在 `reset-entity-vault.cjs` **之前**设），于是三套套件都是拿旧 fixture 跑的，
+  报了 ★11/★14、★18/18b、★9/★10/★13 一堆假红灯 —— 顺序纠正后全绿。
+
 ## 第二十二轮（2026-09-13 深夜）· 换条目转场落地 + 设置改成悬浮面板
 
 > **需求**（用户原话）：「算了，就这样吧，**直接落地吧**，相关设置写入设置面板，对了，

@@ -32,7 +32,7 @@ import { createEvolutionRail, type Rail } from './evolution-rail';
 import { createVaultNotices, type VaultNotices } from './vault-notice';
 import { loadSettings } from './settings';
 import {
-  epochOfNodes, frameDiff, nearestVersion, normalizeFrames, statesOf, versionAtNode, type EntityState,
+  epochOfNodes, frameDiff, nearestVersion, normalizeFrames, patchSummary, statesOf, versionAtNode, type EntityState,
 } from '../store/evolution';
 import { calendarOf, fromEpoch } from '../calendar';
 import { cascadeIn, cloneIntoLayer, enter, flipRows, ghostLayerFor, motionReduced, rollText, rowLeaveAndRemove, rowSlideIn, rowsDropIn, rowsEnter, rowsLeave, rowsLeaveAndRemove, rowsLeaveTotal, smoothBoxHeight, topsOf } from './motion';
@@ -853,6 +853,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       const tlName = store.data.worldsets[t.world]?.timelines[t.tlId]?.name ?? t.tlId;
       pathEl.textContent = `${t.world} · ${tlName} · ${n.kind || '事件'}`;
       propsPanel.render(n, false);
+      /* 同一节点上停留时，别处（帧条/别的设定）新记的版本也要出现在这块里 */
+      const chEl = host.querySelector<HTMLElement>('#cx-changed');
+      if (chEl) renderChangedBy(chEl);
       next = { kind: 'node', world: t.world, tlId: t.tlId, nodeId: t.nodeId };
       md = n.doc ?? '';
       void vaultNotices?.checkBodyTag(t.world, t.tlId, t.nodeId, n.doc ?? '', n.title ?? '');
@@ -938,10 +941,75 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     return `
       <div id="cx-nodepath" data-cx-row style="font-size:var(--text-xs);color:var(--fg-2);margin-bottom:8px;">${escapeHtml(t.world)} · ${escapeHtml(tlName)} · ${escapeHtml(kind)}</div>
       <div id="cx-props" style="display:flex;flex-direction:column;gap:5px;"></div>
+      <div id="cx-changed" data-cx-row style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;"></div>
       <div data-cx-row style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
         ${docBar('正文（Markdown · 失焦自动保存）')}
         <div id="cx-doc"></div>
       </div>`;
+  }
+
+  /** 「这件事改变了谁」—— 演变的反向视图。
+   *
+   *  演变本身是"一条设定挂在某个事件上的一版"（`Entity.frames[].nodeId`）。帧条把它**竖着列成一条线**
+   *  （站在设定上看它经历过什么）；这里**倒过来看**：站在一个事件上，看它改动了哪些设定，并给个入口
+   *  跳过去。数据本来就在（不用新字段），所以这一块只是"读 + 跳"，不新增存储。
+   *  方向来自用户 2026-09-13 的选单（帧条的反向视图）。 */
+  function changedRows(): { e: Entity; v: number; note: string }[] {
+    const n = activeNode();
+    if (!n) return [];
+    const out: { e: Entity; v: number; note: string }[] = [];
+    for (const e of Object.values(currentWorld(store)?.entities ?? {})) {
+      const fr = (e.frames ?? []).find((f) => f.nodeId === n.id);
+      if (!fr) continue;
+      out.push({
+        e,
+        /* 第几版 = `versionAtNode` 的语义（这个节点上有帧就是它，否则往下取） */
+        v: versionAtNode(e, epochOf, epochOf(n.id), n.id),
+        note: patchSummary(fr.patch) || (fr.note ?? ''),
+      });
+    }
+    /* 改得多的排前面（摘要长说明动得多），同长按名字 —— "这件事影响最大的是谁"一眼可见 */
+    out.sort((a, b) => b.note.length - a.note.length || String(a.e.name ?? '').localeCompare(String(b.e.name ?? '')));
+    return out;
+  }
+
+  /** 只填 `#cx-changed` 的 innerHTML。⚠️ 点击监听**在 `wireBody()` 里只挂一次** ——
+   *  轻路径 `swapBody()` 会反复刷这一块（同一个元素），在这里挂就会一层层叠监听。 */
+  function renderChangedBy(el: HTMLElement): void {
+    const n = activeNode();
+    if (!n) { el.innerHTML = ''; return; }
+    const rows = changedRows();
+    const head = '<div style="display:flex;align-items:center;gap:6px;font-size:var(--text-xs);color:var(--fg-2);margin-bottom:2px;">'
+      + '<span>这件事改变了谁</span>'
+      + (rows.length ? `<span style="opacity:.7;">${rows.length} 条设定</span>` : '')
+      + '</div>';
+    if (!rows.length) {
+      el.innerHTML = head + '<div class="ed-tempty" style="padding-left:0;">这个事件还没有改变任何设定。想记的话：在左边选中一条设定，在它右边那条时间线上点「＋ 记一帧」，事件选这一个。</div>';
+      return;
+    }
+    el.innerHTML = head + rows.map(({ e, v, note }) => `
+      <button data-cx-goto="${escapeHtml(e.id)}" title="跳到这条设定在这个事件之后的样子"
+        style="display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:var(--radius-sm);padding:4px 7px;margin-top:4px;cursor:pointer;color:var(--fg);font-size:var(--text-xs);font-family:inherit;">
+        <span style="font-weight:600;flex-shrink:0;">${escapeHtml(e.name || '未命名')}</span>
+        <span style="color:var(--fg-2);flex-shrink:0;">${escapeHtml(typeNameOf(store.activeWorld, e.typeId))}</span>
+        <span style="color:var(--fg-2);flex-shrink:0;">第 ${v} 版</span>
+        <span style="color:var(--fg-2);opacity:.85;margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(note || '记了一版')}</span>
+      </button>`).join('');
+  }
+
+  /** 跳到"这条设定在这个事件之后的样子"：`railNode` **直接钉在这个节点上**（不是"离指针最近的那一版"），
+   *  `railKey` 一起设 ⇒ `ensureRailSelection()` 里 `railKey !== e.id` 不成立，不会把这一版挪走。 */
+  function jumpToEntityVersion(id: string): void {
+    const nodeId = nodeTarget?.nodeId ?? null;
+    if (!currentWorld(store)?.entities?.[id]) return;
+    switchTarget(() => {
+      mode = 'entity';
+      activeId = id;
+      railNode = nodeId;
+      railKey = id;
+      if (nodeId) railAnchor = nodeId;   /* 「记到」也跟着挪过来：接着改就是改这一版 */
+    });
+    say(nodeId ? '已跳到它在这个事件之后的样子 ✓' : '已跳到这条设定 ✓');
   }
 
   function render(): void {
@@ -1175,6 +1243,17 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         },
       });
       propsPanel.render(activeNode(), false);
+    }
+    /* 「这件事改变了谁」（节点侧的反向视图）：填内容 + **只在这儿挂一次**点击
+       （跳到那条设定在这个事件之后的样子）。轻路径 `swapBody()` 只重填内容，不重挂监听。 */
+    const changedEl = host.querySelector<HTMLElement>('#cx-changed');
+    if (changedEl) {
+      renderChangedBy(changedEl);
+      changedEl.addEventListener('click', (ev) => {
+        const b = (ev.target as HTMLElement).closest<HTMLElement>('[data-cx-goto]');
+        const id = b?.dataset.cxGoto;
+        if (id) jumpToEntityVersion(id);
+      });
     }
     /* 正文：真编辑器（tiptap）。**写回 docTarget 当时指着的目标**（不是"当前选中的那个"按值捕获）——
        编辑器现在跨条目复用（见 swapBody），目标会变；而 switchTarget/ render() 都保证
