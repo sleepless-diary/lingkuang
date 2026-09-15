@@ -112,7 +112,7 @@ async function main() {
     }));
     const add = document.querySelector('[data-rail-add]');
     const del = document.querySelector('[data-rail-del]');
-    const more = document.querySelector('.lk-rail__more');
+    const more = document.querySelector('#cx-rail [data-rail-toggle]');
     return { n: rows.length, rows, add: add ? add.dataset.railAdd : null, del: del ? del.dataset.railDel : null,
       more: more ? more.textContent.trim() : null,
       mode: (document.querySelector('.lk-rail__mode') || {}).textContent || '',
@@ -184,10 +184,12 @@ async function main() {
     return { ghosts: rows.filter((r) => r.classList.contains('is-ghost')).map((r) => r.dataset.rail),
       ghostTexts: rows.filter((r) => r.classList.contains('is-ghost')).map((r) => (r.querySelector('.lk-rail__t') || {}).textContent),
       frames: rows.filter((r) => r.classList.contains('is-frame')).length,
-      more: (document.querySelector('.lk-rail__more') || {}).textContent || null,
+      more: (document.querySelector('#cx-rail [data-rail-toggle]') || {}).textContent || null,
+      /* 开关长在标题右边（用户 2026-09-14）—— 它原来在列表最底下那一行 */
+      inHead: !!(document.querySelector('#cx-rail [data-rail-toggle]') || {}).closest?.('.lk-rail__head'),
       opacity: rows.filter((r) => r.classList.contains('is-ghost')).map((r) => getComputedStyle(r).opacity) };
   })()`);
-  const clickMore = () => ev(`(() => { const m = document.querySelector('.lk-rail__more'); if (!m) return 'no more row'; m.click(); return 'ok'; })()`);
+  const clickMore = () => ev(`(() => { const m = document.querySelector('#cx-rail [data-rail-toggle]'); if (!m) return 'no toggle button'; m.click(); return 'ok'; })()`);
   const clickGhost = (id) => ev(`(() => {
     const r = [...document.querySelectorAll('#cx-rail .lk-rail__row.is-ghost')].find((x) => x.dataset.rail === ${JSON.stringify(id)});
     if (!r) return 'no ghost row';
@@ -195,8 +197,8 @@ async function main() {
   })()`);
 
   const g0 = await ghostInfo();
-  check('★0e 默认收起：帧条上没有虚化行，底部写着「还有 N 个没版本」（上午那句"没有版本的不显示"没有被推翻）',
-    g0.ghosts.length === 0 && /还有 3 个没版本/.test(g0.more || ''), g0);
+  check('★0e 默认收起：帧条上没有虚化行，开关是**标题右边那个按钮**、写着「全部（N）」（上午那句"没有版本的不显示"没有被推翻）',
+    g0.ghosts.length === 0 && /全部/.test(g0.more || '') && g0.inHead === true, g0);
 
   await clickMore();
   await sleep(300);
@@ -221,8 +223,8 @@ async function main() {
     return { from: (a[0].transform || '') + '/' + (a[0].opacity ?? ''), to: (a[a.length - 1].transform || '') + '/' + (a[a.length - 1].opacity ?? ''),
       delay: t.delay, dur: t.duration }; })()`;
   const expAnim = await ev(`(() => {
-    const more = () => document.querySelector('.lk-rail__more');
-    if (!more()) return { err: 'no more row' };
+    const more = () => document.querySelector('#cx-rail [data-rail-toggle]');
+    if (!more()) return { err: 'no toggle button' };
     const rowN = () => document.querySelectorAll('.lk-rail__rows .lk-rail__row').length;
     /* ⚠️ 铁律 14「点一下展开之前先读状态」：上一条 ★0f 已经把它展开了，盲点一次会变成"收起"
        （实测：盲点导致 ★0f3/★0f4/★0g/★0h 连带后面版本类断言共 16 条一起假挂）。 */
@@ -240,7 +242,7 @@ async function main() {
       && expAnim.anim.dur === 200 && expAnim.anim.delay === 0, expAnim);
   await sleep(700);
   const colAnim = await ev(`(() => {
-    const m = document.querySelector('.lk-rail__more');
+    const m = document.querySelector('#cx-rail [data-rail-toggle]');
     const pre = new Set([...document.querySelectorAll('.lk-ghost-layer')]);
     const boxBefore = document.querySelector('.lk-rail__rows').getBoundingClientRect();
     m.click();
@@ -294,7 +296,7 @@ async function main() {
   await sleep(300);
   const g2 = await ghostInfo();
   check('★0h 再点一次收起：虚化行消失，锚点照旧（n-evo-3）',
-    g2.ghosts.length === 0 && (await anchorInfo()).val === 'n-evo-3' && /展开全部事件/.test(g2.more || ''), g2);
+    g2.ghosts.length === 0 && (await anchorInfo()).val === 'n-evo-3' && /全部/.test(g2.more || ''), g2);
 
   /* ── ★1 还没有版本时默认落在初稿 ─────────────────────────────────── */
   check('★1 一条版本都没有时，默认落在「初稿」那一格', r0.rows[0].on && (await versionNote()).includes('初稿'),

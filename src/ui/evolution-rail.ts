@@ -195,14 +195,17 @@ export function createEvolutionRail(deps: RailDeps): Rail {
         <span class="lk-rail__s">${escapeHtml(sum)}</span>
       </div>`;
     };
-    /* 展开/收起那一行 —— 它**不是** .lk-rail__row（那类高 46px 钉死，是"等距"的承诺） */
-    const moreHtml = (n: number): string => (n === 0 && !showAll ? '' : `<div class="lk-rail__more" data-rail-toggle="1" title="${showAll ? '收起，只看有版本的事件' : '把还没版本的事件也列出来（虚化显示，点它换「记到」）'}">
-      ${showAll ? `▴ 只看有版本的（${rs.length}）` : `▾ 展开全部事件（还有 ${n} 个没版本）`}
-    </div>`);
+    /* 展开/收起的**开关**（用户 2026-09-14：「帧面板的展开和收起做成按钮放演化标题右边吧」）。
+       它原来是列表底下那一行 —— 得先把帧条滚到底才点得到，而且自己还在"等距"的列表里占一块。
+       现在是标题右边的按钮：不占列表高度、随时看得见。
+       `data-rail-toggle` 这个钩子保持不变（点击委托在下面，套件也认它）。
+       没有"还没版本的事件"可展开时**不出现**（没东西可切）。 */
+    const toggleHtml = (n: number): string => (n === 0 && !showAll ? '' : `<button class="lk-rail__toggle" data-rail-toggle="1" title="${showAll ? `收起，只看有版本的事件（${rs.length} 个）` : `把还没版本的 ${n} 个事件也列出来（虚化显示，点它换「记到」）`}">${showAll ? '▴ 收起' : `▾ 全部（${rs.length + n}）`}</button>`);
 
     host.innerHTML = `
       <div class="lk-rail__head">
         <span class="lk-rail__title">演变</span>
+        ${toggleHtml(all.length - rs.length)}
         <span class="lk-rail__mode" title="在「设置 → 设定演变」里改">${escapeHtml(modeText)}</span>
       </div>
       <div class="lk-rail__rows">
@@ -219,7 +222,6 @@ export function createEvolutionRail(deps: RailDeps): Rail {
           <span class="lk-rail__n">节点已删除</span>
           <span class="lk-rail__s">${escapeHtml(patchSummary((e?.frames ?? [])[o.version - 1]?.patch))}</span>
         </div>`).join('')}
-        ${moreHtml(all.length - rs.length)}
         ${rs.length + orphans.length ? '' : `<div class="lk-rail__empty">还没有版本<br>${mode === 'auto' ? '改一下字段就会自动记一版' : '选好事件，点下面的 ＋'}</div>`}
       </div>
       <div class="lk-rail__foot">
@@ -289,11 +291,10 @@ export function createEvolutionRail(deps: RailDeps): Rail {
     if (add) { deps.onAddFrame(add.dataset.railAdd || ''); return; }
     const del = el.closest<HTMLElement>('[data-rail-del]');
     if (del) { deps.onDeleteFrame(del.dataset.railDel || ''); return; }
-    /* 「▾ 展开全部事件 / ▴ 只看有版本的」：不是硬切，虚化行**逐行往下弹出来**；收起时它们先化成
-       幽灵（钉在原位、裁在帧条的滚动盒里）演一次退场，再连同"收起"一起消失 ——
+    /* 「▾ 全部」/「▴ 收起」（标题右边那个按钮）：不是硬切，虚化行**逐行从右边滑进来**；收起时它们先化成
+       幽灵（钉在原位、裁在帧条的滚动盒里）演一次退场，**退场走完**才收外面的框 ——
        与左树文件夹的展开/收起同一套原语（用户 2026-09-14：「git 管理面板里面的展开也做成平滑切换」）。
-       顺序按**离最近的一版有多远**排（见 `orderByDistance`）：入场近的先出现、退场远的先走；
-       最外面那个框的高度**最后**再平滑切换（`smoothBoxHeight` 的 `delay`）。 */
+       顺序按**离最近的一版有多远**排（见 `orderByDistance`）：入场近的先出现、退场远的先走。 */
     if (el.closest('[data-rail-toggle]')) {
       const rowBox = host.querySelector<HTMLElement>('.lk-rail__rows');
       const boxBefore = rowBox ? rowBox.getBoundingClientRect().height : 0;
@@ -316,8 +317,10 @@ export function createEvolutionRail(deps: RailDeps): Rail {
       const fresh = [...host.querySelectorAll<HTMLElement>('.lk-rail__row')].filter((r) => !before.has(r.dataset.rail ?? ''));
       if (ghosts.length) {
         rowsLeaveAndRemove(ghosts, EXIT);
-        /* 退场走到六成就开始收框：行已经淡得差不多了，框跟着缩不会被看穿，又不会拖到"停一拍" */
-        smoothBoxHeight(boxAfter, boxBefore, { delay: Math.round(rowsLeaveTotal(ghosts.length, EXIT) * 0.6) });
+        /* 退场**走完**再收框（用户 2026-09-14：「收起时节点要先出场，外面的框再收起」）。
+           原来是"走到六成就开始收"（`× 0.6`）：框一边缩、行一边淡，缩下去的那一段里行还没走完，
+           看上去是框把行"啃"掉半截。`rowsLeaveTotal` 就是"单行时长 + 封顶后的错峰总量"。 */
+        smoothBoxHeight(boxAfter, boxBefore, { delay: rowsLeaveTotal(ghosts.length, EXIT) });
       } else if (fresh.length) {
         /* 入场：**离最近的一版越近的越先出现**（`orderByDistance` 已按距离升序排好），从**右边**滑进来。
            ⚠️ `rowsEnter` 的 `start` 默认是 `dur`（那是给"先出后进"的正文转场用的）；帧条这里**必须

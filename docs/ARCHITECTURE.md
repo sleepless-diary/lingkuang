@@ -52,7 +52,7 @@
 | `src/ui/doc-editor.ts` | 极简文稿编辑器（tiptap，工作台两个形态共用这一份）：`createDocEditor(el, onFlush)` → `{ setDoc, getDoc, flush, dispose, toggleHeading(level), insertImage(src) }`。⚠️ 切条目必须 flush 再 dispose；⭐ 但**同页签内换条目**（codex）刻意**不 dispose**：`setDoc(md)` 换文档、实例留着，省掉"正文区先空一帧"（`setDoc` 会同步 `last`，所以换文档本身不会触发一次多余的写回） |
 | `src/store/entities.ts` | 实体层基础：`BUILTIN_ENTITY_TYPES`（角色/地点/物品/组织/种族）、`ensureEntityTypes`（世界没有类型时**播种一次**）、`ensureEntityFields`（按类型补字段）、`entityTypeOf` |
 | `src/store/evolution.ts` | **演变（实体版本历史）的纯逻辑**，不碰 DOM / store：`docDiff(prev, next)` / `applyDoc(prev, patch)`（正文**按行**存差异，`hunks[].at` = 上一版行号、从大到小排、从后往前应用）、`frameDiff(prev, next)`（没变化返回 `null`，不产生空帧）/ `applyPatch(st, patch)`、**`statesOf(e)` 一次算出全部前缀**（初稿 + 每一帧之后的样子；换版本 = 换个下标取数组，O(1)）、`epochOfNodes(ws)`（节点 → epoch，按世界算一次年表）、`normalizeFrames(e, epochOf)`（按锚点时间排序 + 一个节点只留一帧，**就地**整理）、`nearestVersion` / `versionAtNode`（站哪个节点看哪一版）、`patchSummary` / `isEmptyPatch` |
-| `src/ui/evolution-rail.ts` | 设定库右侧那条**等距竖线**（用户 2026-09-13）：一格 = 世界里一个事件节点（所有时间线合起来按时间排，顶上第一格是初稿），每格 46px 固定高（`flex: 0 0 46px` + `min/max-height` 钉死 —— 高度不稳就不叫"等距"）、有帧的格子点亮并显示差异摘要。它**自己不写数据**，只通过 `onSelect` / `onAddFrame` / `onDeleteFrame` 回调 `codex.ts`。⚠️ 让选中格滚进视野时**只滚帧条自己的 `.lk-rail__rows`**（算 `offsetTop`），**不要用 `scrollIntoView()`** —— 它会把所有祖先滚动容器一起滚，而 `#cx-root` 正是面板的滚动容器（实测把面板 scrollTop 从 260 拽到 122，被 `codex-smooth-switch.cjs` ★6 抓住）。⭐ 它还负责**写目标高亮**（`deps.getWriteTarget()` → 那一格 `.is-write` + 「改这里」药丸）与**自动模式不渲染「＋记一帧」**；写目标那一格若还没版本，要**单独补进**格子列表（`shown`），否则"高亮"无处可挂。⭐ 那个「▾ 展开全部事件 / ▴ 只看有版本的」也是**平滑切换**（2026-09-14 用户：「git 管理面板里面的展开也做成平滑切换」）：展开时新露出的虚化行**从右边滑进来**（`rowsEnter(..., { start: 0 })`，用户 2026-09-14 第三轮：「帧面板节点的出入场换成左右移动（就像正文面板一样）」；⚠️ 上一版是 `rowsDropIn` 往下弹，且 `rowsEnter` 的 `start` 默认是 `dur`，不显式给 0 就白等一个 dur），收起时先把它们克隆进贴着 `.lk-rail__rows` 的裁切层走 `rowsLeaveAndRemove`；参数 `EXIT = { dx: 32, dur: 200, step: 12, maxDelay: 96 }`（⚠️ **不能给 `dy`**：`rowsLeave` 里 `dy` 优先，给了就还是上下）。顺序**不按 DOM**，而按**离最近的一版隔了几行**（`orderByDistance`：入场近的先、退场远的先），最外层那个框的高度**带延迟**跟着切（`smoothBoxHeight(..., { delay })`）。⚠️ 裁切层**不要**跟着当场缩到"收起后"的高度（会把退场中的虚化行裁没，见「动效」一节） |
+| `src/ui/evolution-rail.ts` | 设定库右侧那条**等距竖线**（用户 2026-09-13）：一格 = 世界里一个事件节点（所有时间线合起来按时间排，顶上第一格是初稿），每格 46px 固定高（`flex: 0 0 46px` + `min/max-height` 钉死 —— 高度不稳就不叫"等距"）、有帧的格子点亮并显示差异摘要。它**自己不写数据**，只通过 `onSelect` / `onAddFrame` / `onDeleteFrame` 回调 `codex.ts`。⚠️ 让选中格滚进视野时**只滚帧条自己的 `.lk-rail__rows`**（算 `offsetTop`），**不要用 `scrollIntoView()`** —— 它会把所有祖先滚动容器一起滚，而 `#cx-root` 正是面板的滚动容器（实测把面板 scrollTop 从 260 拽到 122，被 `codex-smooth-switch.cjs` ★6 抓住）。⭐ 它还负责**写目标高亮**（`deps.getWriteTarget()` → 那一格 `.is-write` + 「改这里」药丸）与**自动模式不渲染「＋记一帧」**；写目标那一格若还没版本，要**单独补进**格子列表（`shown`），否则"高亮"无处可挂。⭐ 那个**展开/收起开关**（「演变」标题右边的 `.lk-rail__toggle`，`data-rail-toggle` —— 用户 2026-09-14：「帧面板的展开和收起做成按钮放演化标题右边吧」；它原先是列表**最底下的一行** `.lk-rail__more`，得滚到底才点得到）也是**平滑切换**（2026-09-14 用户：「git 管理面板里面的展开也做成平滑切换」）：展开时新露出的虚化行**从右边滑进来**（`rowsEnter(..., { start: 0 })`，用户 2026-09-14 第三轮：「帧面板节点的出入场换成左右移动（就像正文面板一样）」；⚠️ 上一版是 `rowsDropIn` 往下弹，且 `rowsEnter` 的 `start` 默认是 `dur`，不显式给 0 就白等一个 dur），收起时先把它们克隆进贴着 `.lk-rail__rows` 的裁切层走 `rowsLeaveAndRemove`；参数 `EXIT = { dx: 32, dur: 200, step: 12, maxDelay: 96 }`（⚠️ **不能给 `dy`**：`rowsLeave` 里 `dy` 优先，给了就还是上下）。顺序**不按 DOM**，而按**离最近的一版隔了几行**（`orderByDistance`：入场近的先、退场远的先），最外层那个框的高度**带延迟**跟着切（`smoothBoxHeight(..., { delay })`）。⚠️ 裁切层**不要**跟着当场缩到"收起后"的高度（会把退场中的虚化行裁没，见「动效」一节） |
 | `src/store/ids.ts` | **id 生成**（`uid(prefix)`）—— ⚠️ 全仓的实体/节点/时间线/地图/区域/标记/循环/剧情线 id 都走它，**不许再手写 `'e' + Date.now()`**：顶栏「数量」框能一次建 20 个条目，循环在**同一毫秒**里跑完 ⇒ 三次拿到**同一个 id** ⇒ `entities[id] = {…}` 后建的把先建的**覆盖**掉（实测"建 3 个只活下来 2 个"，名字还跳号，JSON 与 vault 一起丢，界面上没有任何报错）。`uid()` 是"**单调时钟**"：以 `Date.now()` 打底、同一毫秒内依次 +1，永不重复，格式仍是"前缀 + 十进制数字"（排序语义与 vault 文件名都不受影响） |
 | `data/worldbuilding.js` | 世界观种子数据（`window.__SEED_TIMELINES__`），首次运行/无用户数据时使用 |
 | `data/character_lib.json` | 角色生成词库（58 分类，萌百来源 CC BY-NC-SA，勿商用） |
@@ -296,11 +296,15 @@
   （那一行已从帧条上消失，不退的话视图停在不存在的版本上）。
 - **帧条可以"展开"没版本的事件**（用户 2026-09-13 下午：「能展开未创建 git 的节点，但虚化显示」+
   「那个展开其实就是【记到】后面的下拉选框，不过和时间线一起显示更直观」）：闭包状态 `showAll`，
-  底部一行 `.lk-rail__more`（`data-rail-toggle`）切换；展开后没版本的事件**按时间插进时间线**、
-  整格 `is-ghost`（`opacity:.4` + 空心点），当前「记到」那一格 `is-anchor` + 小药丸 `.lk-rail__tag`。
+  **开关是「演变」标题右边那个按钮** `.lk-rail__toggle`（`data-rail-toggle`；用户 2026-09-14：
+  「帧面板的展开和收起做成按钮放演化标题右边吧」—— 它原来是列表**最底下的一行** `.lk-rail__more`，
+  得把帧条滚到底才点得到，而且自己还在"等距"的列表里占一块）；
+  展开后没版本的事件**按时间插进时间线**、整格 `is-ghost`（`opacity:.4` + 空心点），
+  当前「记到」那一格 `is-anchor` + 小药丸 `.lk-rail__tag`。
   **点虚化行 = 换「记到」（`deps.onAnchor`），不动正在看的版本**；点有版本的行才换版本（`deps.onSelect`）。
-  ⚠️ 展开行**不要用 `.lk-rail__row`**（那一类 46px 钉死是"等距"承诺）；`showAll` 是闭包状态，
-  面板重建（`render()`）会回到收起 —— 可接受，别为它引入全局状态。
+  ⚠️ 展开出来的是**虚化行**，它们用的就是 `.lk-rail__row`（46px 等距）—— 那是它们的待遇（它们是"时间线上的格子"）；
+  开关按钮**不是**那一类（它长在标题那一行，不占列表高度）。
+  `showAll` 是闭包状态，面板重建（`render()`）会回到收起 —— 可接受，别为它引入全局状态。
 - ⭐ **帧条的出入场是"演"的，不是硬切**（用户 2026-09-13 深夜：「演变窗口消失时编辑页的切换很生硬，
   顺便再给演变做一下出入场动画」）：原来节点模式 `#cx-rail` 走 `style.display = 'none' | ''`，
   面板宽度瞬间变化。现在 `#cx-rail` **常驻在骨架里**，只 `.classList.toggle('is-off', mode !== 'entity')`
@@ -604,7 +608,7 @@
   ⇒ 同距离按时间先后。入场 `farFirst=false`、退场 `true`；**退场必须在 `render()` 之前算**（收起后那些
   虚化行就不在 DOM 里了）。
   ⚠️ 同时**不再把裁切层的高度改成"收起后"的高度**：旧写法会当场把退场中的虚化行裁没（A/B 实测层高
-  被改成 `177px` 而盒子还是 `348px`）。现在层停在旧高度、框等退场走得差不多再缩（`smoothBoxHeight` 的
+  被改成 `177px` 而盒子还是 `348px`）。现在层停在旧高度、框**等退场全走完**再缩（`smoothBoxHeight` 的
   `delay`，`fill:'both'` 先冻在旧高度）—— 两件事就不会打架。
 - ⭐ **帧条的出入场走左右、跟正文一套**（用户 2026-09-14 第三轮：「**帧面板节点的出入场换成左右移动
   （就像正文面板一样）**」）：`src/ui/evolution-rail.ts` 的 `EXIT = { dx: 32, dur: 200, step: 12, maxDelay: 96 }`
@@ -614,8 +618,18 @@
   ② **`rowsEnter` 的 `start` 默认是 `dur`**（那是给正文转场"先出后进"用的）⇒ 帧条只有入场，必须显式给
   `0`，否则整批白等 200ms（框都在长了、行还没出来）。
 - ⭐ **"最外层那个框"的高度最后再切**（用户 2026-09-14：「**最后**再平滑切换最外层框的高度」）：
-  `smoothBoxHeight(el, from, { dur = 240, delay = 0 })`；帧条收起时 `delay = rowsLeaveTotal(n, EXIT) * 0.6`、
-  展开时 `× 0.5`。⚠️ 给了 `delay` 必须 `fill:'both'`，否则延迟期间它已经跳到新高度、等延迟过完再演一遍。
+  `smoothBoxHeight(el, from, { dur = 240, delay = 0 })`；帧条**收起时 `delay = rowsLeaveTotal(n, EXIT)`（整段，
+  不许打折）**、展开时 `× 0.5`。⚠️ 给了 `delay` 必须 `fill:'both'`，否则延迟期间它已经跳到新高度、等延迟过完再演一遍。
+  ⚠️ **收起时不许再乘 0.6**（2026-09-14 用户：「**收起时节点要先出场，外面的框再收起**」）：框一边缩、
+  行一边淡，缩下去的那段里行还没走完，看上去像框把行"啃"掉半截（A/B 实测旧写法 `delay=142ms` 而最后一行的
+  退场要到 `236ms` 才结束）。左树那侧同理（[`FLIP_OVERLAP`] 已删，见上文"严格先出后补"）。
+- ⭐ **量"框想要多高"时不能把滚动条算进去**（用户 2026-09-14：「**展开后外面的框高度会闪**」）：
+  `smoothBoxHeight` 现在**先把 `overflow` 钉成 `hidden` 再量** `to`。原因是帧条入场那些行正处在
+  `translateX(+32px)` 上 —— **位移会撑出横向可滚动溢出**，`overflow: auto` 的 `.lk-rail__rows` 这一刻
+  会冒出一条 15px 的横向滚动条，`getBoundingClientRect()` 把它算进高度 ⇒ 动画终点 = 内容 + 15px；
+  等行们落定、滚动条一走，框就"闪"矮一下。实测：修前动画终点 `363.333px` vs 自然 `348px`，修后 `322 / 322`。
+  两道保险：① `.lk-rail__rows` 加 **`overflow-x: hidden`**（横向本来也没有可滚的东西）；
+  ② `smoothBoxHeight` 钉住 `overflow` 之后再量（任何"还在动的邻居"都影响不到目标值了）。
 - ⭐ **帧条（演变）的收起：高度"演完才收"**（用户 2026-09-13：「从设定文件切换到节点文件演变面板
   会直接消失」）：`src/ui/codex.ts` 的 **`setRailOpen(open)`** —— 只切 `.is-off`，**420ms 后**才补
   `.is-collapsed { height: 0 }`。⚠️ 不能把 `height: 0` 直接写进 `.is-off`：`height: auto → 0`

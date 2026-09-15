@@ -410,15 +410,22 @@ export function cloneIntoLayer(layer: HTMLElement, rect: DOMRect, el: HTMLElemen
  *  `delay` = 晚一点再改高度（用户 2026-09-14：「**最后**再平滑切换最外层框的高度」）：
  *  里面的行先错峰出现/退场，框的高度随后跟上。
  *  ⚠️ 给了 `delay` 就**必须 `fill:'both'`** —— 否则延迟期间元素已经落到新高度（＝当场跳完），
- *  等延迟过完又从旧高度演一遍（与 `flipRows` 同一个坑）。 */
+ *  等延迟过完又从旧高度演一遍（与 `flipRows` 同一个坑）。
+ *  ⚠️ 目标高度是**先把 `overflow` 钉成 `hidden` 之后**量的：否则这一刻还在演的入场动画（位移会
+ *  撑出可滚动溢出）会让盒子上多出一条滚动条，终点高度就把滚动条也算进去 ⇒ 演完"闪"一下。 */
 export function smoothBoxHeight(el: HTMLElement | null, from: number, o: { dur?: number; delay?: number } = {}): Animation | null {
   if (!el || motionReduced() || !(from > 0)) return null;
-  const to = el.getBoundingClientRect().height;
-  if (Math.abs(to - from) < 1.5) return null;
   const prevOverflow = el.style.overflow;
+  /* ⚠️ **先钉住 overflow 再量目标高度**：`overflow:auto` 的盒子在"里面的行正演着入场"的这一刻量，
+     量到的是**内容 + 滚动条**（`.lk-rail__rows` 里入场行 `translateX(32px)` 会临时撑出横向可滚
+     溢出 ⇒ 多出一条 15px 的横条）⇒ 动画终点比自然高度高一条滚动条，演完滚动条一走框就"闪"一下
+     （用户 2026-09-14：「展开后外面的框高度会闪」；实测 363.333px vs 自然 348px）。
+     `overflow:hidden` 期间不渲染滚动条，量到的才是**内容高度**。 */
+  el.style.overflow = 'hidden';       /* 动画期间必须裁住：框还矮着的时候里面的行会溢出去 */
+  const to = el.getBoundingClientRect().height;
+  if (Math.abs(to - from) < 1.5) { el.style.overflow = prevOverflow; return null; }
   const dur = o.dur ?? 240;           /* 与 `.lk-ghost-layer` 的过渡时长同档（见 src/style.css） */
   const delay = o.delay ?? 0;
-  el.style.overflow = 'hidden';       /* 动画期间必须裁住：框还矮着的时候里面的行会溢出去 */
   const a = el.animate([{ height: `${from}px` }, { height: `${to}px` }],
     { duration: dur, delay, easing: EASE_DECEL, fill: delay > 0 ? 'both' : 'none' });
   let done = false;

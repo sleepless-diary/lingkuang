@@ -807,7 +807,12 @@ body {
   border-radius: var(--radius-pill);
   padding: 0 6px;
 }
-.lk-rail__rows { position: relative; display: flex; flex-direction: column; max-height: 58vh; overflow: auto; }
+/* ⚠️ `overflow-x: hidden` 不是可选的：入场那些行是 `translateX(+32px)` 滑进来的，**位移会撑出
+   横向的可滚动溢出** ⇒ `overflow: auto` 的这一刻会冒出一条横向滚动条（高 15px）。而外面那个框
+   的高度正是**这一刻**量出来的目标值（`smoothBoxHeight` 量 `to`）⇒ 目标比真实内容高 15px，
+   等行们落定、滚动条一走，框就当场"闪"矮一下（用户 2026-09-14：「展开后外面的框高度会闪」；
+   实测动画终点 363.333px vs 自然高度 348px = 恰好一条滚动条）。横向本来也没有可滚的东西。 */
+.lk-rail__rows { position: relative; display: flex; flex-direction: column; max-height: 58vh; overflow: auto; overflow-x: hidden; }
 .lk-rail__row {
   position: relative;
   flex: 0 0 46px;
@@ -875,16 +880,22 @@ body {
 }
 /* 「改这里」：写目标的标签，比「记到」更实（底色铺满），一眼分得清哪个是"会写进去" */
 .lk-rail__tag--write { background: var(--accent); color: var(--accent-on); }
-/* 展开/收起那一行：不属于「等距格子」（那类高 46px 钉死），所以单独一个类、高度自适应 */
-.lk-rail__more {
-  padding: 6px 8px;
-  border-top: 1px dashed var(--border);
+/* 展开/收起那个按钮：长在「演变」标题右边（用户 2026-09-14：「帧面板的展开和收起做成按钮放演化标题右边吧」）。
+   它原先是列表底下的一行（得滚到底才点得到）；现在不占列表高度，标题那一行里也放得下。
+   `.lk-rail__mode` 有 `margin-left:auto`，所以按钮贴在标题边上、模式胶囊仍然靠右。 */
+.lk-rail__toggle {
+  font: inherit;
   font-size: 10px;
+  line-height: 1;
   color: var(--fg-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 3px 7px;
   cursor: pointer;
-  text-align: center;
+  white-space: nowrap;
 }
-.lk-rail__more:hover { color: var(--accent); background: var(--surface); }
+.lk-rail__toggle:hover { color: var(--accent); border-color: var(--accent); }
 .lk-rail__row:hover { background: var(--surface); }
 .lk-rail__row.is-on { background: var(--surface); border-left-color: var(--accent); }
 .lk-rail__t { font-size: 10px; color: var(--fg-2); }

@@ -52,23 +52,47 @@ async function main() {
 
   /* 选中那条设定 —— 帧条只在实体态出现 */
   await ev(`(() => { const r = document.querySelector('#cx-list .ed-tnode-item[data-act="entity"]'); if (r) r.click(); return !!r; })()`);
-  const ready = await waitFor(async () => !!(await ev(`!!document.querySelector('.lk-rail__more') && document.querySelectorAll('#cx-rail .lk-rail__row.is-frame').length >= 2`)));
+  const ready = await waitFor(async () => !!(await ev(`!!document.querySelector('#cx-rail [data-rail-toggle]') && document.querySelectorAll('#cx-rail .lk-rail__row.is-frame').length >= 2`)));
   check('★0b 帧条上有两格**有版本**的 + 顶上那格「初稿」', ready);
 
   /* 等工具打开的那两级错峰收干净（README 铁律 10：别在脏基线上断言） */
   const clean = await waitFor(async () => !(await ev(`document.querySelectorAll('#cx-root .lk-enter-stagger, #cx-list .lk-enter-stagger').length`)), 6000);
   check('★0c 基线干净（错峰类已收手）', clean);
 
+  /* 开关本身：用户 2026-09-14「帧面板的展开和收起做成按钮放演化标题右边吧」——
+     它原来在列表最底下（得滚到底才点得到），而且自己还在"等距"的列表里占一块。
+     这里盯三件事：位置在标题那一行、是个按钮、列表里再没有那一行。 */
+  const tglInfo = await ev(`(() => {
+    const head = document.querySelector('#cx-rail .lk-rail__head');
+    const t = document.querySelector('#cx-rail [data-rail-toggle]');
+    const title = document.querySelector('#cx-rail .lk-rail__title');
+    if (!head || !t) return { err: 'no toggle' };
+    const rb = t.getBoundingClientRect(); const rTitle = title.getBoundingClientRect();
+    return { tag: t.tagName, inHead: head.contains(t), text: t.textContent.trim(), title: t.title,
+      rightOfTitle: rb.left >= rTitle.right - 1,
+      /* 按钮与右边缘的模式胶囊不许叠、也不许被挤出行外 */
+      railRight: Math.round(document.querySelector('#cx-rail').getBoundingClientRect().right),
+      tglRight: Math.round(rb.right), headH: Math.round(head.getBoundingClientRect().height),
+      inRows: !!document.querySelector('#cx-rail .lk-rail__rows [data-rail-toggle]'),
+      oldRow: !!document.querySelector('#cx-rail .lk-rail__more') };
+  })()`);
+  check('★0d 展开/收起是**标题右边的一个按钮**（不再是列表底下那一行）',
+    tglInfo.tag === 'BUTTON' && tglInfo.inHead && tglInfo.rightOfTitle && !tglInfo.inRows && !tglInfo.oldRow
+      && tglInfo.tglRight <= tglInfo.railRight && tglInfo.headH <= 40, tglInfo);
+
   /* ── ① 展开：虚化行按"离最近的一版有多远"升序出现 ─────────────────────────── */
   const exp = await ev(`(() => {
-    const more = document.querySelector('.lk-rail__more');
-    if (!more) return { err: 'no more row' };
+    const tgl = document.querySelector('#cx-rail [data-rail-toggle]');
+    if (!tgl) return { err: 'no toggle' };
     /* ⚠️ 铁律 14：点之前先读状态，别盲点（已有虚化行时点一下 = 收起） */
     if (document.querySelector('.lk-rail__rows .lk-rail__row.is-ghost')) return { err: 'already expanded' };
     const box = document.querySelector('.lk-rail__rows');
     const before = Math.round(box.getBoundingClientRect().height);
+    /* ⚠️ 横向溢出必须在**点之前**读：点了之后 smoothBoxHeight 会往这个盒子写行内 overflow:hidden
+       ⇒ 那一刻的 computed 值是行内的，问不出样式表里到底怎么写的（见 ★4d）。 */
+    const ovx = getComputedStyle(box).overflowX;
     const pre = new Set([...document.querySelectorAll('.lk-rail__row')].map((r) => r.dataset.rail ?? ''));
-    more.click();                                   /* 动画只在点下去那一 tick 抓得到 ⇒ 同一次 eval 里读 */
+    tgl.click();                                    /* 动画只在点下去那一 tick 抓得到 ⇒ 同一次 eval 里读 */
     const fresh = [...document.querySelectorAll('.lk-rail__row')].filter((r) => !pre.has(r.dataset.rail ?? ''));
     const info = fresh.map((r) => {
       const a = r.getAnimations()[0];
@@ -80,7 +104,11 @@ async function main() {
     const box2 = document.querySelector('.lk-rail__rows');
     const ba = box2.getAnimations();
     const bt = ba[0] ? ba[0].effect.getTiming() : null; const bk = ba[0] ? ba[0].effect.getKeyframes() : null;
-    return { before, after: Math.round(box2.getBoundingClientRect().height), info,
+    return { before, after: Math.round(box2.getBoundingClientRect().height), info, ovx,
+      /* 框"想要多高"：内容高度（scrollHeight，不含滚动条）与 max-height 里小的那个。
+         ⚠️ 别用 getBoundingClientRect() 当自然高度 —— 入场行还在 translateX(32px) 上时，
+         那个值会**多算一条横向滚动条**（见 ★4c）。 */
+      boxScrollH: box2.scrollHeight, boxMaxH: parseFloat(getComputedStyle(box2).maxHeight) || Infinity,
       boxAnimN: ba.length, boxDelay: bt ? bt.delay : null, boxFill: bt ? bt.fill : null, boxDur: bt ? bt.duration : null,
       boxFrom: bk ? bk[0].height : null, boxTo: bk ? bk[bk.length - 1].height : null,
       order: [...document.querySelectorAll('.lk-rail__row')].map((r) => ({ id: r.dataset.rail || 'base',
@@ -120,6 +148,15 @@ async function main() {
       && Math.abs(parseFloat(exp.boxFrom) - exp.before) <= 2 && parseFloat(exp.boxTo) > exp.before + 40,
     { before: exp.before, boxFrom: exp.boxFrom, boxTo: exp.boxTo, boxDelay: exp.boxDelay, boxDur: exp.boxDur });
   check('★4b 展开的那一 tick 里框还没长高（冻在旧高度上，尺寸靠动画给）', exp.after === exp.before, { before: exp.before, after: exp.after });
+  /* ⚠️ 用户 2026-09-14：「**展开后外面的框高度会闪**」—— 根因就是这一条盯的东西：
+     量目标高度那一刻，入场行还在 `translateX(32px)` 上（位移会撑出**横向**可滚动溢出）
+     ⇒ `overflow:auto` 的盒子当场长出一条 15px 的横向滚动条 ⇒ 动画终点 = 内容 + 滚动条；
+     等行们落定、滚动条一走，框就"闪"矮一下（修前实测终点 363.333px vs 自然 348px）。 */
+  check('★4c 框的动画终点 = **它真正想要的高度**（不含滚动条；否则演完会闪一下）',
+    Math.abs(parseFloat(exp.boxTo) - Math.min(exp.boxScrollH, exp.boxMaxH)) <= 1.5,
+    { boxTo: exp.boxTo, scrollH: exp.boxScrollH, maxH: exp.boxMaxH });
+  check('★4d 帧条滚动盒**不许出现横向滚动条**（`overflow-x: hidden` —— 入场行的位移会撑出横向溢出）',
+    exp.ovx === 'hidden', { overflowX: exp.ovx });
 
   /* 收干净：等动画走完，框落回自然高度。
      ⚠️ 铁律 19：**轮询**，别固定 sleep —— 隐藏窗口里定时器会被合并到秒级，
@@ -132,15 +169,15 @@ async function main() {
 
   /* ── ② 收起：同一个序列倒过来（越远的越先退场）──────────────────────────── */
   const col = await ev(`(() => {
-    const more = document.querySelector('.lk-rail__more');
-    if (!more) return { err: 'no more row' };
+    const tgl = document.querySelector('#cx-rail [data-rail-toggle]');
+    if (!tgl) return { err: 'no toggle' };
     if (!document.querySelector('.lk-rail__rows .lk-rail__row.is-ghost')) return { err: 'not expanded' };
     const boxBefore = Math.round(document.querySelector('.lk-rail__rows').getBoundingClientRect().height);
     /* ⚠️ 距离必须在**点击之前**算：收起之后那些虚化行就不在 DOM 里了（只活在裁切层的克隆里） */
     const orderPre = [...document.querySelectorAll('.lk-rail__row')].map((r) => ({ id: r.dataset.rail || 'base',
       frame: r.classList.contains('is-frame'), base: r.classList.contains('lk-rail__row--base'), ghost: r.classList.contains('is-ghost') }));
     const pre = new Set([...document.querySelectorAll('.lk-ghost-layer')]);
-    more.click();
+    tgl.click();
     const layers = [...document.querySelectorAll('.lk-ghost-layer')].filter((l) => !pre.has(l));
     const lay = layers[layers.length - 1];
     const ghosts = lay ? [...lay.querySelectorAll('.lk-list-ghost')] : [];
@@ -179,6 +216,13 @@ async function main() {
       && col.boxAnimN === 1 && col.boxDelay > 0 && col.boxFill === 'both'
       && Math.abs(parseFloat(col.boxFrom) - col.boxBefore) <= 2,
     { boxBefore: col.boxBefore, boxFrom: col.boxFrom, boxTo: col.boxTo, layerH: col.layerH, layerStyleH: col.layerStyleH, boxDelay: col.boxDelay });
+
+  /* ⚠️ 用户 2026-09-14：「**收起时节点要先出场，外面的框再收起**」——
+     原来框是"退场走到六成就开始缩"（`× 0.6` = 142ms），缩下去的那一段里行还没走完，
+     看上去像框把行啃掉半截。现在必须**等最后一行走完**（单行 dur + 最大 delay）才动。 */
+  check('★9b 收框**等退场全走完**才开始（delay ≥ 最后一行的 `delay + dur`）',
+    col.boxDelay >= Math.max(...(col.info || []).map((x) => x.d + x.dur)) && col.boxDelay > 0,
+    { boxDelay: col.boxDelay, exitEnd: Math.max(...(col.info || []).map((x) => x.d + x.dur)) });
 
   const gone = await waitFor(async () => await ev(`document.querySelectorAll('.lk-ghost-layer').length === 0`), 4000);
   const cleanBox = await waitFor(async () => await ev(`document.querySelector('.lk-rail__rows').getAnimations().length === 0`), 6000);

@@ -758,6 +758,60 @@ FLIP delay = 退场总时长（两条都由量出来的数比，不写死）、`
 - `src/ui/codex.ts` 是 **CRLF**：`edit` 工具的多行 `old_string` 匹配不上（单行可以），
   含全角标点的那几行也会失败 ⇒ 改用 node 按**锚点文本**splice（别按行号，行号会漂）。
 
+### 二十二、帧条开关搬到标题右边、收起时"先出场再收框"、展开时框高闪一下（用户 2026-09-14 三条）
+
+用户原话（一条消息）：「**帧面板的展开和收起做成按钮放演化标题右边吧，还有收起时节点要先出场，
+外面的框再收起，还有展开后外面的框高度会闪**」。
+
+#### ① 开关搬到「演变」标题右边（`src/ui/evolution-rail.ts` + `src/style.css`）
+- 原来它是列表**最底下的一行** `.lk-rail__more`（`▾ 展开全部事件（还有 N 个没版本）`）：得先把帧条
+  滚到底才点得到，而且它自己还在那个"等距"的列表里占一块高度（`#cx-rail` 收起态实测 177px 里有 39px 是它）。
+- 现在 `toggleHtml(n)` 渲染成 `.lk-rail__head` 里的 **`.lk-rail__toggle` 按钮**（贴在「演变」标题右边；
+  `.lk-rail__mode` 那枚模式胶囊继续靠 `margin-left:auto` 靠右）：收起态写 `▾ 全部（6）`、展开态写 `▴ 收起`，
+  数量与解释放 `title`。**没东西可展开时（没有还没版本的事件）按钮不出现**。
+- 钩子 `data-rail-toggle` 保持不变 ⇒ 点击委托与两个套件不用改点击路径（只改选择器）。
+- ⚠️ 那条老注释「展开行**不要用 `.lk-rail__row`**」现在只对**开关**成立：开关长了腿搬去标题行；
+  虚化行本身**就是** `.lk-rail__row`（它们是"时间线上的格子"，46px 等距是它们的待遇）。
+- 副作用（好的那种）：列表更干净了 —— 收起态实测 **177 → 138px**（正好 3 格 × 46px）。
+
+#### ② 收起时"节点先出场，外面的框再收起"
+- 旧写法 `smoothBoxHeight(boxAfter, boxBefore, { delay: rowsLeaveTotal(n, EXIT) * 0.6 })`：框从退场走到
+  六成就开始缩。实测退场最后一行要到 **236ms** 才结束，而框 **142ms** 就动了 ⇒ 缩下去的那一段里行还没走完，
+  看上去像框把行"啃"掉半截（与左树那条「两段动画咬合会叠字」同一类病，铁律 26）。
+- 改成 `delay: rowsLeaveTotal(n, EXIT)`（整段，不打折）：实测 `boxDelay = 236 = exitEnd`。
+  展开那侧保持 `× 0.5`（用户没抱怨它，且入场行是从右边滑进来的、框早一点长开反而让"滑进来"看得见）。
+
+#### ③ 「展开后外面的框高度会闪」= 量目标高度时把**横向滚动条**算进去了（根因实测）
+- 探针（`%TEMP%\lk-rb*.cjs`，把动画推到终点再取消，比"动画终点"与"自然高度"）：
+  **`kf: [176.667px → 363.333px]`，而自然高度 `348px`** —— 差 **15.33px**，恰好是一条横向滚动条。
+- 机制：入场那些行正处在 `translateX(+32px)` 上，**位移会撑出横向可滚动溢出**；而
+  `smoothBoxHeight` 量 `to` 的这一刻盒子还是 `overflow: auto` ⇒ 当场多出一条 15px 横条被算进高度。
+  等行们落定（`autoRelease` 取消动画）、滚动条一走，框就"闪"矮一下 —— 用户看到的正是这个。
+- 两道保险：
+  1. `src/style.css` 给 `.lk-rail__rows` 加 **`overflow-x: hidden`**（横向本来也没有可滚的东西）；
+  2. `src/ui/motion.ts` 的 `smoothBoxHeight` 改成**先把 `overflow` 钉成 `hidden` 再量 `to`**
+     （并且"位移太小直接返回"那条早退也要把 `overflow` 还回去）—— 任何"还在动的邻居"都影响不到目标值。
+- 实测修后：`kf: [138px → 322px]`、自然 **322px** ⇒ 零差。修前/修后 = `363.333/348` vs `322/322`。
+
+#### 验证（二十二 · 帧条三条）
+- `tools/e2e/rail-order.cjs` 16 → **20 项**，新增：★0d（开关是标题右边的 `<button>`、列表里再没有那一行、
+  按钮右边缘不越过帧条右边缘、标题行没被撑高）、★4c（**框的动画终点 = 它真正想要的高度**：`boxTo` 与
+  `min(scrollHeight, max-height)` 差 ≤1.5px）、★4d（滚动盒 `overflow-x: hidden`）、★9b（收框 `delay ≥` 最后
+  一行的 `delay + dur`）⇒ **20/20**。
+- **A/B（铁律 9）**：`Copy-Item` 备份三个源文件 → `git checkout --` + `vite build` + 重启 ⇒ **16/20**，
+  挂的正是 ★0d/★4c/★4d/★9b，dump 直接复现用户症状：`{"boxTo":"363.333px","scrollH":348}`、
+  `{"boxDelay":142,"exitEnd":236}`、`{"overflowX":"auto"}`、`{"tag":"DIV","inHead":false,"inRows":true}`。
+- `tools/e2e/entity-evolution.cjs` 5 处 `.lk-rail__more` 选择器改成 `#cx-rail [data-rail-toggle]`，
+  ★0e 增加"开关在 `.lk-rail__head` 里"、★0h 文案跟着新标签 ⇒ **49/49**。
+- 回归（各自干净起点）：`codex-smooth-switch` 28/28、`codex-swap-motion` 14/14、`codex-list-motion` 25/25、
+  `motion-switch` 25/25、`codex-node-tab` 18/18、`codex-tree-view` 22/22、`codex-switch-target` 7/7、
+  `settings-panel` 12/12、`toolbar-groups` 5/5、`workbench-tree-folders` 29/29、`workbench-add-node` 19/19、
+  `node-changed-by` 15/15；`tsc --noEmit` / `vite build` exit 0。
+- ⚠️ 回归里 `workbench-add-node` 先报 **14/19**（树里凭空多出 `新实体 4..8`）：**同一目录上还有别的测试实例活着**
+  （`lk-evault2` 上同时跑着 10402/10405 两个），reset+seed 之后它们一次回扫/写盘把旧 fixture 写回来了
+  （老账 `stale-test-instance-rewrites-vault-fixture`）。把该目录的实例全按端口杀干净→重新 reset+seed→只起一个
+  ⇒ **19/19**。产品无恙。
+
 ## 第二十一轮（2026-09-13）· 演变：实体的版本历史（新功能 + 两条自查出来的 bug）
 
 > **目的**（用户 2026-09-12 提、09-13 细化）：给每个世界一套 git ——
