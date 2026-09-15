@@ -19,7 +19,7 @@ import { currentWorld } from '../store/store';
 import type { Entity, TimelineNode } from '../store/types';
 import { epochOfNodes, isEmptyPatch, patchSummary, versionAtNode } from '../store/evolution';
 import { escapeHtml } from './html';
-import { cloneIntoLayer, ghostLayerFor, rowsEnter, rowsLeaveAndRemove, rowsLeaveTotal, smoothBoxHeight } from './motion';
+import { cloneIntoLayer, flipRows, ghostLayerFor, rowsEnter, rowsLeaveAndRemove, rowsLeaveTotal, smoothBoxHeight, topsOf } from './motion';
 import { loadSettings } from './settings';
 
 export interface RailDeps {
@@ -44,7 +44,20 @@ export interface RailDeps {
 }
 
 export interface Rail {
-  render: () => void;
+  /** `opts` 只给"展开/收起"那条路用（见 `RailRenderOpts`）；其余调用方空着即可 */
+  render: (opts?: RailRenderOpts) => void;
+}
+
+/** `render()` 的行级动效参数（用户 2026-09-14：「**已有的帧节点的位置变化也要平滑，时间线长度也一样**」）。
+ *
+ *  · `rowDelay` = 位置变了的行**晚多久**开始让位。收起时必须给"退场总时长"：那些虚化行先化成幽灵
+ *    在淡出，被让出来的位置得等它们走完再补（否则又是"两段动画咬合"→ 同一处两份内容，铁律 26）。
+ *  · `boxDelay` = 整条时间线的高度**晚多久**开始变。收起时同样要等退场走完。
+ *  · `enterNew: false` = "新出现的行由调用方自己演"（展开那条路要按"离最近的一版多远"排序再入场）。 */
+export interface RailRenderOpts {
+  rowDelay?: number;
+  boxDelay?: number;
+  enterNew?: boolean;
 }
 
 interface Row {
@@ -78,6 +91,30 @@ export function createEvolutionRail(deps: RailDeps): Rail {
   /* 节点 epoch 只按世界缓存：拖帧条、改字段都会重画这一条，不必每次都算年表 */
   let cacheWorld = '';
   let cacheEpoch: Map<string, number> = new Map();
+  /* 「已有的帧节点的位置变化也要平滑，时间线长度也一样」（用户 2026-09-14 深夜）：记一帧 / 删一帧 /
+     换一条设定，都会把帧条**整条重画**一遍 —— 以前只有"展开/收起"那条路在演，其余时候已有的格子
+     是被推下去/抽上来的（瞬间跳）、框高也在同一个 tick 蹦过去。现在每行带 `data-cx-key`，
+     重画后拿它和"上一批的位置"比，位置变了的走 `flipRows` 让位（越高的越先动，与左树同一档）。
+     而"上一批的位置"就是这个快照 —— 它有两个坑，都是实测踩出来的： */
+  /** 上一批重画**开始之前**每一行的位置（**相对滚动盒顶部**），key = 行的 `data-cx-key`。
+   *
+   *  ⚠️ 用"存下来的布局"而不是现场量 DOM：行身上可能还挂着上一轮的让位/入场动画（`fill:'both'`，
+   *  或者在测试的隐藏窗口里**停在起点永不推进**）——`getBoundingClientRect()` 给的是**动画当前值**、
+   *  不是布局位置。实测：展开时被钉在起点的 `n-ro-6`，收起时量到的"旧位置"正好等于新位置
+   *  ⇒ 位移算成 0 ⇒ 让位动画整个不演（用户要的"已有的帧节点位置变化平滑"等于没做）。
+   *
+   *  ⚠️ 而"存下来的"也不能每刀都更新：同一次改动里 `render()` 常被连着调好几刀（store 通知 +
+   *  换锚点 + 切条目），**每一刀都会把行换成一拨新元素** —— 动画挂在元素身上，第二刀一换 DOM
+   *  就把第一刀的动画连同元素一起丢了（实测：框在长高、格子也在，就是没人演，`anims: []`）。
+   *  ⇒ `rowTops` 只在**两刀之间隔开之后**才提交（`BATCH_MS` 之内算同一批）：同一批里每刀都算出
+   *  **同一个位移**、都往**当前这拨元素**上重新挂一遍，最后一刀留下的就是屏幕上那一份。 */
+  let rowTops = new Map<string, number>();
+  let pendingTops: Map<string, number> | null = null;   /* 这一批最后一刀的布局，等下一批开始时提交 */
+  let lastRenderAt = 0;
+  const BATCH_MS = 80;
+  const FLIP_DUR = 320;
+  const FLIP_STEP = 14;   /* 与 `src/ui/codex.ts` 的 FLIP_STEP 同档：一整套界面用同一个错峰节奏 */
+  const FLIP_MAX = 120;
 
   function epochMap(): Map<string, number> {
     const w = store.activeWorld;
@@ -126,7 +163,17 @@ export function createEvolutionRail(deps: RailDeps): Rail {
     return s || '（无时间）';
   }
 
-  function render(): void {
+  function render(opts: RailRenderOpts = {}): void {
+    /* 重画**之前**先留一份"这一轮开始时的样子"：上一批存下来的行位置（`rowTops`）与外面那个框的高度。
+       ⚠️ 行位置用**存下来的**，不现场量（理由见 `rowTops` 的说明）。
+       上一批已经结束（离上一刀超过 `BATCH_MS`）就先把它的结果提交上来。 */
+    const nowT = performance.now();
+    if (pendingTops && nowT - lastRenderAt >= BATCH_MS) { rowTops = pendingTops; pendingTops = null; }
+    const boxPrev = host.querySelector<HTMLElement>('.lk-rail__rows');
+    const boxBefore = boxPrev ? boxPrev.getBoundingClientRect().height : 0;
+    const prev = rowTops;
+    /* 第一次画（或者面板刚重建，帧条是空的）：没有"上一批的位置"，一切从自然状态开始，不演 */
+    const cold = prev.size === 0;
     const e = deps.getEntity();
     const sel = deps.getSelected();
     const anchor = deps.getAnchor() ?? '';
@@ -188,7 +235,7 @@ export function createEvolutionRail(deps: RailDeps): Rail {
       const tip = r.hasFrame
         ? `${r.tlName} · ${timeText(r.node)} ${note}${isWrite ? '（改动会写进这一格）' : ''}`
         : `${r.tlName} · ${timeText(r.node)} ${note}（还没版本 —— 点它 = 把新版本记到这个事件）`;
-      return `<div class="${cls}" data-rail="${escapeHtml(r.nodeId)}"${r.hasFrame ? '' : ' data-ghost="1"'} title="${escapeHtml(tip)}">
+      return `<div class="${cls}" data-rail="${escapeHtml(r.nodeId)}" data-cx-key="rail|${escapeHtml(r.nodeId)}"${r.hasFrame ? '' : ' data-ghost="1"'} title="${escapeHtml(tip)}">
         <span class="lk-rail__dot"></span>
         <span class="lk-rail__t">${escapeHtml(timeText(r.node))}</span>
         <span class="lk-rail__n">${escapeHtml(note)}${tag}</span>
@@ -209,14 +256,14 @@ export function createEvolutionRail(deps: RailDeps): Rail {
         <span class="lk-rail__mode" title="在「设置 → 设定演变」里改">${escapeHtml(modeText)}</span>
       </div>
       <div class="lk-rail__rows">
-        <div class="lk-rail__row lk-rail__row--base${sel === null ? ' is-on' : ''}${write === null ? ' is-write' : ''}" data-rail="" title="初稿（实体 .md 里 frontmatter 的那一份）${write === null ? '；改动会写进这一格' : ''}">
+        <div class="lk-rail__row lk-rail__row--base${sel === null ? ' is-on' : ''}${write === null ? ' is-write' : ''}" data-rail="" data-cx-key="rail|base" title="初稿（实体 .md 里 frontmatter 的那一份）${write === null ? '；改动会写进这一格' : ''}">
           <span class="lk-rail__dot"></span>
           <span class="lk-rail__t">起点</span>
           <span class="lk-rail__n">初稿${write === null ? '<span class="lk-rail__tag lk-rail__tag--write">改这里</span>' : ''}</span>
           <span class="lk-rail__s">${e ? `${Object.keys(e.properties ?? {}).length} 个字段` : ''}</span>
         </div>
         ${shown.map(rowHtml).join('')}
-        ${orphans.map((o) => `<div class="lk-rail__row${o.nodeId === sel ? ' is-on' : ''} is-frame" data-rail="${escapeHtml(o.nodeId)}" title="这一帧锚的节点已经被删掉了（历史仍保留）">
+        ${orphans.map((o) => `<div class="lk-rail__row${o.nodeId === sel ? ' is-on' : ''} is-frame" data-rail="${escapeHtml(o.nodeId)}" data-cx-key="orphan|${escapeHtml(o.nodeId)}" title="这一帧锚的节点已经被删掉了（历史仍保留）">
           <span class="lk-rail__dot"></span>
           <span class="lk-rail__t">孤立</span>
           <span class="lk-rail__n">节点已删除</span>
@@ -240,11 +287,55 @@ export function createEvolutionRail(deps: RailDeps): Rail {
         <span class="lk-rail__hint">${escapeHtml(editHint())}</span>
       </div>`;
 
+    /* 行让位 + 新行入场 + 外框高度，全都在这里（用户 2026-09-14：「已有的帧节点的位置变化也要平滑，
+       时间线长度也一样」）。三件事共用同一批测量：重画后每行的 `data-cx-key` 与相对盒顶的 top。 */
+    const box = host.querySelector<HTMLElement>('.lk-rail__rows');
+    if (box) {
+      const now = topsOf(box);
+      const rowsNow: HTMLElement[] = [];
+      const keys: string[] = [];
+      const tops: number[] = [];
+      now.els.forEach((el, i) => {
+        const k = el.getAttribute('data-cx-key');
+        if (!k) return;                       /* "还没有版本"那句话、裁切层里的幽灵都不是帧条的行 */
+        rowsNow.push(el); keys.push(k); tops.push(now.tops[i]);
+      });
+      if (!cold) {
+        /* 让位（FLIP）：位置变了的行从旧位置滑到新位置，**越高的越先动**。
+           ⚠️ `maxShift` 要放宽：帧条是个**能滚的盒子**，一次展开真能把行推下去好几百像素，
+           那是真位移、必须演；`flipRows` 默认 240px 会把它当成"整块换形态"而跳过
+           （看不见的行不演也无妨，所以按"盒子可见高度 + 一格"给）。 */
+        flipRows(rowsNow, keys, tops, prev, {
+          dur: FLIP_DUR,
+          delay: opts.rowDelay ?? 0,
+          step: FLIP_STEP,
+          maxDelay: FLIP_MAX,
+          maxShift: Math.max(240, (box.clientHeight || 0) + ROW_H),
+        });
+        if (opts.enterNew !== false) {
+          /* 这次重画里**新冒出来的格子**（记了一帧、删了一帧、换了一条设定）从右边滑进来，
+             一行比一行晚 `EXIT.step` —— 与展开时那批虚化行同一套姿势。
+             （展开那条路给 `enterNew: false`，它要按"离最近的一版多远"自己排序，见点击委托处） */
+          let n = 0;
+          rowsNow.forEach((el) => {
+            if (prev.has(el.getAttribute('data-cx-key') || '')) return;
+            rowsEnter([el], { dx: EXIT.dx, dur: EXIT.dur, step: 0, maxDelay: 0, start: Math.min(n * EXIT.step, EXIT.maxDelay) });
+            n++;
+          });
+        }
+      }
+      /* 外面的框（整条时间线的高度）跟着行一起演。收起那一路由调用方把 `boxDelay` 给成
+         "退场总时长"（`rowsLeaveTotal`）—— 虚化行先走完、框再收（见 `RailRenderOpts` 的说明）。 */
+      smoothBoxHeight(box, boxBefore, { delay: opts.boxDelay ?? 0 });
+      /* 存下这一刀的布局（**动画开演之前**量的）：等下一批开始时才提交成 `rowTops`（见上面的说明） */
+      pendingTops = new Map(keys.map((k, i) => [k, tops[i]]));
+      lastRenderAt = performance.now();
+    }
+
     /* 选中的那一格滚进视野 —— ⚠️ **只滚帧条自己那个滚动盒**，不能用 `scrollIntoView()`：
        它会把**所有**祖先滚动容器都滚一遍，而 `#cx-root` 正是整个面板的滚动容器 ⇒
        用户好不容易滚到正文中间，切个实体就被拉回别处（实测：面板 scrollTop 260 → 122，
        被既有套件 `codex-smooth-switch.cjs` 的 ★6 抓个正着）。 */
-    const box = host.querySelector<HTMLElement>('.lk-rail__rows');
     const onEl = host.querySelector<HTMLElement>('.lk-rail__row.is-on');
     if (box && onEl) {
       const top = onEl.offsetTop;
@@ -297,12 +388,11 @@ export function createEvolutionRail(deps: RailDeps): Rail {
        顺序按**离最近的一版有多远**排（见 `orderByDistance`）：入场近的先出现、退场远的先走。 */
     if (el.closest('[data-rail-toggle]')) {
       const rowBox = host.querySelector<HTMLElement>('.lk-rail__rows');
-      const boxBefore = rowBox ? rowBox.getBoundingClientRect().height : 0;
       const before = new Set([...host.querySelectorAll<HTMLElement>('.lk-rail__row')].map((r) => r.dataset.rail ?? ''));
       /* 收起前先排序 + 克隆：两者都必须在 `render()` 之前（`host.innerHTML` 一换它们就没了）。
          ⚠️ **别把裁切层的高度改成收起后的高度**：那一层是"退场中的虚化行"唯一的容身之处，
          当场缩下去＝把它们裁没（旧写法就是这么干的，慢一点的行整段看不见）。框的高度现在
-         等退场走得差不多再缩（下面那个 `smoothBoxHeight` 的 delay），所以层也不需要跟。 */
+         等退场走完再缩（`boxDelay`），所以层也不需要跟。 */
       const dying = showAll
         ? orderByDistance(
             [...host.querySelectorAll<HTMLElement>('.lk-rail__row')],
@@ -311,24 +401,29 @@ export function createEvolutionRail(deps: RailDeps): Rail {
         : [];
       const lay = rowBox && dying.length ? ghostLayerFor(rowBox, 860) : null;
       const ghosts = lay ? dying.map((r) => cloneIntoLayer(lay.layer, lay.rect, r, 'lk-list-ghost')) : [];
+      /* 展开时"马上要冒出来的虚化行"有几条 —— 只为了算**框晚多久开始长高**（入场同档的半步：行先
+         从右边滑进来、框再跟着长，否则框先撑开、里面还空着）。此刻它们还没进 DOM，所以按数据算：
+         没有版本的、且不是"改动要写进去的那一格"（那一格在收起态就已经画着了）。
+         ⚠️ 必须在 `showAll` 翻转**之前**算（翻转之后这个条件就不成立了）。 */
+      const upcoming = showAll ? 0 : allRows().filter((r) => !r.hasFrame && r.nodeId !== deps.getWriteTarget()).length;
       showAll = !showAll;
-      render();
-      const boxAfter = host.querySelector<HTMLElement>('.lk-rail__rows');
+      /* 退场总时长：单行时长 + 封顶后的错峰量（`rowsLeaveTotal`）。**
+         收起时行与框都等它**走完**再动**（用户 2026-09-14：「收起时节点要先出场，外面的框再收起」；
+         被让位的行同理 —— 不等的话虚化行还没淡走、下面的行已经补上来，同一处两份内容，铁律 26）。 */
+      const exitMs = ghosts.length ? rowsLeaveTotal(ghosts.length, EXIT) : 0;
+      const boxDelay = ghosts.length ? exitMs : (upcoming ? Math.round(rowsLeaveTotal(upcoming, EXIT) * 0.5) : 0);
+      /* 展开那条路的入场**不交给 render**：它要按"离最近的一版多远"排序（`orderByDistance`），
+         顺序只在点击这一刻量得到 ⇒ `enterNew: false`，下面自己调 `rowsEnter`。 */
+      render({ enterNew: false, rowDelay: exitMs, boxDelay });
       const fresh = [...host.querySelectorAll<HTMLElement>('.lk-rail__row')].filter((r) => !before.has(r.dataset.rail ?? ''));
       if (ghosts.length) {
         rowsLeaveAndRemove(ghosts, EXIT);
-        /* 退场**走完**再收框（用户 2026-09-14：「收起时节点要先出场，外面的框再收起」）。
-           原来是"走到六成就开始收"（`× 0.6`）：框一边缩、行一边淡，缩下去的那一段里行还没走完，
-           看上去是框把行"啃"掉半截。`rowsLeaveTotal` 就是"单行时长 + 封顶后的错峰总量"。 */
-        smoothBoxHeight(boxAfter, boxBefore, { delay: rowsLeaveTotal(ghosts.length, EXIT) });
       } else if (fresh.length) {
         /* 入场：**离最近的一版越近的越先出现**（`orderByDistance` 已按距离升序排好），从**右边**滑进来。
            ⚠️ `rowsEnter` 的 `start` 默认是 `dur`（那是给"先出后进"的正文转场用的）；帧条这里**必须
            显式给 0**，否则整批要等 200ms 才开始动 —— 框都在长了行还没出来。 */
         const enter = orderByDistance([...host.querySelectorAll<HTMLElement>('.lk-rail__row')], fresh, false);
         rowsEnter(enter, { dx: EXIT.dx, dur: EXIT.dur, step: EXIT.step, maxDelay: EXIT.maxDelay, start: 0 });
-        /* 框晚半步再长高（`rowsLeaveTotal` 就是"单行时长 + 封顶后的错峰总量"，入场同档参数） */
-        smoothBoxHeight(boxAfter, boxBefore, { delay: Math.round(rowsLeaveTotal(enter.length, EXIT) * 0.5) });
       }
       return;
     }

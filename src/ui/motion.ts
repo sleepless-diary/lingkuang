@@ -257,19 +257,24 @@ export function rowsEnter(rows: HTMLElement[], o: RowMotionOpts = {}): Animation
  *  收起文件夹时，"里面的行退场"与"下面的行补位"必须**先后**发生，就靠这个 `delay`）。
  *  给了 `step` 时**在 `delay` 之上再逐行错峰**（`delay + n*step`，`n` = 第几个真正会动的行，
  *  从上往下数，封顶 `maxDelay`）—— 补位的行**越高的越先动**，看着像"下面的一行行被抽上去"。 */
-export function flipRows(rows: HTMLElement[], keys: string[], tops: number[], prev: Map<string, number>, o: { dur?: number; delay?: number; step?: number; maxDelay?: number } = {}): Animation[] {
+export function flipRows(rows: HTMLElement[], keys: string[], tops: number[], prev: Map<string, number>, o: { dur?: number; delay?: number; step?: number; maxDelay?: number; maxShift?: number } = {}): Animation[] {
   if (motionReduced()) return [];
   const dur = o.dur ?? 320;
   const base = o.delay ?? 0;
   const step = o.step ?? 0;
   const maxDelay = o.maxDelay ?? MAX_STAGGER;
+  /* 位移太大就不演（默认 240px：整棵树换了形态那种"飞过去"很难看）。
+     ⚠️ 但"能滚的盒子"要另说：帧条（演变）里的行本来就可能在一次展开里被推下去好几百像素，
+     那是**真位移**、必须演（否则就是用户报的"已有的帧节点位置变化不平滑"）⇒ 调用方可放宽
+     （帧条按"盒子可见高度 + 一格"给，超出这个数的行反正已经滚出可视区，不演也看不见）。 */
+  const maxShift = o.maxShift ?? 240;
   const anims: Animation[] = [];
   let n = 0;   /* 真正在动的行**按从上到下**的顺序领延迟（见下） */
   rows.forEach((el, i) => {
     const p = prev.get(keys[i]);
     if (p === undefined) return;                       /* 新出现的行：由 rowSlideIn / rowsDropIn 负责 */
     const delta = p - tops[i];
-    if (Math.abs(delta) < 1.5 || Math.abs(delta) > 240) return;
+    if (Math.abs(delta) < 1.5 || Math.abs(delta) > maxShift) return;
     /* 错峰：**越高的越先移**（用户 2026-09-14：「文件夹收起后其下文件上移错分方向反了，
        应该是越高的越先移，现在是越下面的越先移」）。`n` 只数真正会动的行 ⇒ 中间那些没动的行
        不会在延迟序列里留空洞；两行起始延迟一致时，对"斜着让位"的观感影响很大。
@@ -479,7 +484,9 @@ export function rollText(box: HTMLElement | null, next: string, o: { dur?: numbe
 }
 
 /** 量下容器里每个子项此刻**相对容器顶部**的 top（喂给 `flipRows` 的 `prev` / `tops`）。
- *  用相对 top 而不是视口 top：`#cx-list` 会跟着 `#cx-root` 一起滚，视口坐标会把滚动量算进去。 */
+ *  用相对 top 而不是视口 top：`#cx-list` 会跟着 `#cx-root` 一起滚，视口坐标会把滚动量算进去。
+ *  ⚠️ 这是**渲染值**：行身上还挂着动画时读到的是动画当前值（要"上一轮的布局位置"就别现场量 ——
+ *  见 `src/ui/evolution-rail.ts` 里 `rowTops` 的说明）。 */
 export function topsOf(container: HTMLElement | null): { els: HTMLElement[]; tops: number[] } {
   if (!container) return { els: [], tops: [] };
   const base = container.getBoundingClientRect().top;

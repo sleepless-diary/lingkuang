@@ -104,7 +104,15 @@ async function main() {
     const box2 = document.querySelector('.lk-rail__rows');
     const ba = box2.getAnimations();
     const bt = ba[0] ? ba[0].effect.getTiming() : null; const bk = ba[0] ? ba[0].effect.getKeyframes() : null;
-    return { before, after: Math.round(box2.getBoundingClientRect().height), info, ovx,
+    /* 被**挤下去**的行（让位 / FLIP）：用户 2026-09-14「已有的帧节点的位置变化也要平滑」——
+       帧条是个能滚的盒子，一次展开真能把下面的格子推下去几百像素，以前是瞬间跳的。
+       只认"上下位移"的那种动画（transform 以 translateY 开头）；入场/退场那两批走的是 translateX。 */
+    const moving = [...box2.querySelectorAll('.lk-rail__row')].flatMap((r) => r.getAnimations().map((a) => {
+      const kf = a.effect.getKeyframes(); const t = a.effect.getTiming();
+      return { id: r.dataset.rail || 'base', d: t.delay, dur: t.duration, fill: t.fill,
+        tfFrom: kf[0].transform, tfTo: kf[kf.length - 1].transform };
+    }).filter((x) => String(x.tfFrom).indexOf('translateY') === 0 || String(x.tfTo).indexOf('translateY') === 0));
+    return { before, after: Math.round(box2.getBoundingClientRect().height), info, ovx, moving,
       /* 框"想要多高"：内容高度（scrollHeight，不含滚动条）与 max-height 里小的那个。
          ⚠️ 别用 getBoundingClientRect() 当自然高度 —— 入场行还在 translateX(32px) 上时，
          那个值会**多算一条横向滚动条**（见 ★4c）。 */
@@ -157,6 +165,12 @@ async function main() {
     { boxTo: exp.boxTo, scrollH: exp.boxScrollH, maxH: exp.boxMaxH });
   check('★4d 帧条滚动盒**不许出现横向滚动条**（`overflow-x: hidden` —— 入场行的位移会撑出横向溢出）',
     exp.ovx === 'hidden', { overflowX: exp.ovx });
+  /* 展开时**被挤下去**的那一格（`n-ro-6` 是有版本的最后一行，四个虚化行插在它前面 ⇒ 它要往下让 4 格）
+     ⚠️ 展开这条路上让位是**立刻**的（`rowDelay: 0`）：虚化行从右边滑进来、下面的格子同时被推下去。 */
+  check('★4e 展开时被挤下去的行**当下就让位**（FLIP：`translateY(-184px)` → 原位 · delay 0 · 一行的位移 = 4 格 × 46px）',
+    exp.moving.length === 1 && exp.moving[0].id === 'n-ro-6' && exp.moving[0].d === 0
+      && /^translateY\(-18[0-9](\.\d+)?px\)$/.test(String(exp.moving[0].tfFrom)) && exp.moving[0].tfTo === 'none',
+    exp.moving);
 
   /* 收干净：等动画走完，框落回自然高度。
      ⚠️ 铁律 19：**轮询**，别固定 sleep —— 隐藏窗口里定时器会被合并到秒级，
@@ -189,7 +203,19 @@ async function main() {
     });
     const box2 = document.querySelector('.lk-rail__rows');
     const ba = box2.getAnimations(); const bt = ba[0] ? ba[0].effect.getTiming() : null; const bk = ba[0] ? ba[0].effect.getKeyframes() : null;
-    return { boxBefore, boxAfter: Math.round(box2.getBoundingClientRect().height),
+    /* 被**抽上来**的行（让位 / FLIP）：与展开那条路同一件事，只是这次要**等虚化行退完**才动
+       （rowDelay = 退场总时长）—— 否则虚化行还没淡走、下面的格子已经补上来，同一处两份内容。 */
+    const moving = [...box2.querySelectorAll('.lk-rail__row')].flatMap((r) => r.getAnimations().map((a) => {
+      const kf = a.effect.getKeyframes(); const t = a.effect.getTiming();
+      return { id: r.dataset.rail || 'base', d: t.delay, dur: t.duration, fill: t.fill,
+        tfFrom: kf[0].transform, tfTo: kf[kf.length - 1].transform };
+    }).filter((x) => String(x.tfFrom).indexOf('translateY') === 0 || String(x.tfTo).indexOf('translateY') === 0));
+    const allAnims = [...box2.querySelectorAll('.lk-rail__row')].flatMap((r) => r.getAnimations().map((a) => {
+      const kf = a.effect.getKeyframes(); const t = a.effect.getTiming();
+      return { id: r.dataset.rail || 'base', d: t.delay, tfFrom: kf[0].transform };
+    }));
+    return { boxBefore, boxAfter: Math.round(box2.getBoundingClientRect().height), moving, allAnims,
+      rowsNow: [...box2.querySelectorAll('.lk-rail__row')].map((r) => r.dataset.cxKey || '?'),
       layerN: layers.length, layerOvf: lay ? getComputedStyle(lay).overflow : null,
       layerH: lay ? Math.round(lay.getBoundingClientRect().height) : null,
       /* ⚠️ 隐藏窗口里动画不推进（铁律 6）⇒ 层的高度只能看**目标值**（行内写死的那个） */
@@ -223,6 +249,12 @@ async function main() {
   check('★9b 收框**等退场全走完**才开始（delay ≥ 最后一行的 `delay + dur`）',
     col.boxDelay >= Math.max(...(col.info || []).map((x) => x.d + x.dur)) && col.boxDelay > 0,
     { boxDelay: col.boxDelay, exitEnd: Math.max(...(col.info || []).map((x) => x.d + x.dur)) });
+  /* 收起时**被抽上来**的那一格（`n-ro-6`）：它下面没有别的格子了，四个虚化行的位置空出来 ⇒ 它往上补 4 格。
+     ⚠️ 与展开那侧最大的不同：**等退场走完才动**（`rowDelay` = 退场总时长 = 236ms）。 */
+  check('★9c 收起时被抽上来的行**等虚化行退完**才补位（`translateY(+184px)` → 原位 · delay = 退场总时长）',
+    col.moving.length === 1 && col.moving[0].id === 'n-ro-6' && col.moving[0].d === col.boxDelay
+      && /^translateY\(18[0-9](\.\d+)?px\)$/.test(String(col.moving[0].tfFrom)) && col.moving[0].tfTo === 'none',
+    { moving: col.moving, allAnims: col.allAnims, rowsNow: col.rowsNow, boxDelay: col.boxDelay });
 
   const gone = await waitFor(async () => await ev(`document.querySelectorAll('.lk-ghost-layer').length === 0`), 4000);
   const cleanBox = await waitFor(async () => await ev(`document.querySelector('.lk-rail__rows').getAnimations().length === 0`), 6000);
@@ -233,6 +265,51 @@ async function main() {
   check('★10 演完就收干净：裁切层摘掉、帧条只剩「初稿 + 两格有版本」、框缩回展开前的高度',
     gone && cleanBox && after.ghosts === 0 && after.frames === 2 && after.styleH === '' && after.anims === 0
       && Math.abs(after.h - exp.before) <= 2, { gone, cleanBox, after, expBefore: exp.before });
+
+  /* ── ③ 「记一帧」那条路：新格子入场 + 已有的格子让位 + 整条时间线高度一起演 ────────────
+     用户 2026-09-14 深夜：「**已有的帧节点的位置变化也要平滑，时间线长度也一样**」——
+     这条路上以前三件事全是瞬间跳的（只有"展开/收起"那条路在演）。
+     先通过底部「记到」下拉把锚点换成一个**还没有版本**的节点（`n-ro-2`），再点「＋ 记一帧」：
+     它会成为新的一格 ⇒ 它入场、它下面的 `n-ro-6` 让位、框长高 —— 三件事都要有动画。 */
+  const addFrame = await ev(`(async () => {
+    const sel = document.querySelector('#cx-rail #cx-anchor');
+    if (!sel) return { err: 'no anchor' };
+    const before = Math.round(document.querySelector('.lk-rail__rows').getBoundingClientRect().height);
+    const pre = new Set([...document.querySelectorAll('.lk-rail__rows .lk-rail__row')].map((r) => r.dataset.cxKey || ''));
+    sel.value = 'n-ro-2';                                   /* 还没版本的事件 */
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    /* ⚠️ 换锚点会**重画**帧条（innerHTML 换掉）⇒ 按钮必须**重新查**：换之前抓到的那个已经脱离文档，
+       点它什么都不发生（第一版就是这么白点的：frames 一直是 2）。 */
+    const add = document.querySelector('#cx-rail [data-rail-add]');
+    if (!add) return { err: 'no add button' };
+    add.click();
+    /* 这一路的动画可能在 store 通知之后的几个微任务/定时器里才挂上 ⇒ 给一小段时间再读。
+       （隐藏窗口里动画**不推进**，所以等几百毫秒读到的是"定格的起点参数"，不是演完的终态） */
+    await new Promise((r) => setTimeout(r, 260));
+    const box = document.querySelector('.lk-rail__rows');
+    const rows = [...box.querySelectorAll('.lk-rail__row')];
+    const anims = rows.flatMap((r) => r.getAnimations().map((a) => {
+      const kf = a.effect.getKeyframes(); const t = a.effect.getTiming();
+      return { id: r.dataset.rail || 'base', d: t.delay, dur: t.duration,
+        tfFrom: kf[0].transform, tfTo: kf[kf.length - 1].transform };
+    }));
+    const ba = box.getAnimations(); const bt = ba[0] ? ba[0].effect.getTiming() : null; const bk = ba[0] ? ba[0].effect.getKeyframes() : null;
+    return { before, after: Math.round(box.getBoundingClientRect().height), pre: [...pre],
+      fresh: rows.filter((r) => !pre.has(r.dataset.cxKey || '')).map((r) => r.dataset.rail),
+      anims, boxAnimN: ba.length, boxDelay: bt ? bt.delay : null, boxFill: bt ? bt.fill : null,
+      boxFrom: bk ? bk[0].height : null, boxTo: bk ? bk[bk.length - 1].height : null,
+      frames: document.querySelectorAll('#cx-rail .lk-rail__row.is-frame').length };
+  })()`);
+  const enterAnim = (addFrame.anims || []).find((x) => x.id === 'n-ro-2' && String(x.tfFrom).indexOf('translateX') === 0);
+  const shiftAnim = (addFrame.anims || []).find((x) => x.id === 'n-ro-6' && String(x.tfFrom).indexOf('translateY') === 0);
+  check('★10b 记一帧：**新格子从右边滑进来**（`translateX(32px)` → 原位，与展开时那批虚化行同一套姿势）',
+    !!enterAnim && enterAnim.tfTo === 'none' && addFrame.fresh.includes('n-ro-2'), addFrame);
+  check('★10c 记一帧：**它下面的格子让位**（FLIP `translateY(-46px)` → 原位 · delay 0 —— 一行 = 一格 46px）',
+    !!shiftAnim && shiftAnim.d === 0 && shiftAnim.tfFrom === 'translateY(-46px)' && shiftAnim.tfTo === 'none', shiftAnim);
+  check('★10d 记一帧：**整条时间线的高度也演**（框从旧高度长一格，不再是瞬间跳）',
+    addFrame.boxAnimN >= 1 && Math.abs(parseFloat(addFrame.boxFrom) - addFrame.before) <= 2
+      && parseFloat(addFrame.boxTo) > addFrame.before + 30 && addFrame.frames === 3,
+    { before: addFrame.before, after: addFrame.after, boxFrom: addFrame.boxFrom, boxTo: addFrame.boxTo, frames: addFrame.frames });
 
   const errs = await ev(`JSON.stringify(window.__errs)`);
   check('★11 全程没有未捕获异常', errs === '[]', errs);
