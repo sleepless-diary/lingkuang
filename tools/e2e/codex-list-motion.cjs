@@ -209,12 +209,26 @@ async function main() {
   const c1Dur = t4c.ghostAnim?.[0]?.[0]?.dur ?? 0;
   const c1Total = c1Delays.length ? Math.max(...c1Delays) + c1Dur : 0;
   const below = t4c.below ?? [];
-  check('★4f 收起时"下面的行补位"**等这一枝退场走了一多半**才动（FLIP delay 与退场总时长咬合、fill:both 冻在旧位置）',
+  /* ⚠️ 加了逐行错峰（★4k）之后，"一批补位的行共用一个延迟"不再是承诺：**第一行**还在那个窗口里起身，
+     后面的行按 14ms 一档往后排 —— 所以上界要放到"窗口上界 + 错峰总量（≤120ms）"。 */
+  check('★4f 收起时"下面的行补位"**等这一枝退场走了一多半**才动（首行 delay 与退场总时长咬合、fill:both 冻在旧位置）',
     below.length >= 1 && c1Total > 0
-      && below.every((x) => x.a[0].fill === 'both' && x.a[0].delay > 0 && x.a[0].delay <= c1Total
-        && x.a[0].delay >= Math.round(c1Total * 0.4) && x.a[0].delay <= Math.round(c1Total * 0.75)
-        && /^translateY\([0-9.]+px\)\/$/.test(x.a[0].from)),
+      && below.every((x) => x.a[0].fill === 'both' && x.a[0].delay > 0 && x.a[0].delay <= c1Total + 120
+        && x.a[0].delay >= Math.round(c1Total * 0.4)
+        && x.a[0].delay <= Math.round(c1Total * 0.75) + 120
+        && /^translateY\([0-9.]+px\)\/$/.test(x.a[0].from))
+      && below[0].a[0].delay <= Math.round(c1Total * 0.75),
     { exitTotal: c1Total, below: below.map((x) => ({ key: x.key, a: x.a[0] })) });
+  /* ★4k 补位那一批的**错峰方向**：**越高的越先移**。
+     用户 2026-09-14：「文件夹收起后其下文件上移**错分方向反了**，应该是越高的越先移，
+     现在是越下面的越先移」—— 原先所有补位的行共用一个延迟（整块一起上移，看着像"整片被拽上去"）。
+     `below` 是**按 DOM 顺序**（从上到下）收的 ⇒ 延迟必须非递减，且头两档就差一个步长（14ms）。 */
+  const bDelays = below.map((x) => x.a[0].delay);
+  check('★4k 补位的行**越高的越先移**（按 DOM 从上往下逐行晚 14ms，不是整块一起动）',
+    bDelays.length >= 4 && bDelays[1] - bDelays[0] === 14
+      && bDelays.every((d, i) => i === 0 || d >= bDelays[i - 1])
+      && bDelays[bDelays.length - 1] > bDelays[0],
+    { delays: bDelays, keys: below.map((x) => x.key) });
   /* ⚠️ `open1` 里混着两类动画：**展开露出来的行**（下弹，`translateY(-8px)/0 → none/1`）与
      **让位的行**（FLIP，`translateY(±)/  → none/`）。只拿前者来比，不然 FLIP 的位移会把交叉断言搅黄。 */
   const inFrom = (t2.open1 ?? []).map((x) => x.a[0]).filter((a) => a && a.to === 'none/1').map((a) => a.from);

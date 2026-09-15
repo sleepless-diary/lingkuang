@@ -156,13 +156,40 @@ const EASE_DECEL = 'cubic-bezier(0.16, 1, 0.3, 1)';
 /** 单行时长基准（速度倍率在调用处除） */
 export const ROW_DUR = 300;
 
+/** 一行**自己本来该有的不透明度**（动画该在哪儿收手）。
+ *
+ *  为什么需要（用户 2026-09-14：「展开帧面板时文字会**先正常显示（100 不透明度），然后再虚化**」）：
+ *  帧条上那些"还没版本"的格子是 `.is-ghost { opacity: .4 }`，而入场动画原来写死 `0 → 1`，
+ *  出场写死 `1 → 0` —— 动画一结束 `autoRelease()` 把动画取消，元素**瞬间落回 .4**，
+ *  中间那一下就是"先全亮再变虚"；退场更明显：克隆体本来 .4，动画第一帧先跳到 1 再淡出。
+ *  读它自己算出来的值当终点，两种行（普通 1 / 虚化 .4 / 写目标 .75）就都不用特判了。
+ *  ⚠️ 读之前**先把这一行身上正在动 opacity 的动画摘掉**：`getComputedStyle` 对挂了动画的元素
+ *  给的是**当前动画值**，不是它自己该有的值 —— 延迟期间是 0、跑到一半是 0.93 这种中间值。
+ *  拿中间值当终点，下一轮就会以那个值收手（行停在半透明、甚至全透明上）。
+ *  实测（`tools/e2e/codex-smooth-switch.cjs` ★10）：同一次点击里 `playSwap` 会对同一批行播**两遍**入场，
+ *  第二次读到的正是第一次动画在**延迟里的 0** ⇒ 转场演完整块内容都看不见。 */
+function naturalOpacity(el: HTMLElement): number {
+  for (const a of el.getAnimations()) {
+    const eff = a.effect as KeyframeEffect | null;
+    const kf = eff && typeof eff.getKeyframes === 'function' ? eff.getKeyframes() : [];
+    if (kf.some((k) => (k as { opacity?: unknown }).opacity !== undefined)) {
+      try { a.cancel(); } catch { /* 已取消 */ }
+    }
+  }
+  const v = Number.parseFloat(getComputedStyle(el).opacity);
+  return Number.isFinite(v) ? v : 1;
+}
+
 /** 动画跑完就**取消**（不是留在那儿吃 fill）—— 取消后元素回到自然样式，与动画终点完全一样，
  *  但 `getAnimations()` 是干净的。隐藏窗口里动画不推进、`finished` 永不 resolve，所以另有一条
- *  按参数算出来的兜底定时器（与 `cascadeIn` 的 `maxDelay + 2000` 同一个理由）。 */
+ *  按参数算出来的兜底定时器（与 `cascadeIn` 的 `maxDelay + 2000` 同一个理由）。
+ *  ⚠️ 每个 `finished` 各自吞掉 rejection：批次里**只要有一个被取消**（`naturalOpacity` 会主动取消
+ *  上一轮那条），`Promise.all` 就整体 reject ⇒ 剩下的动画永远等不到取消，带着 `fill:'both'`
+ *  钉在终点值上（实测老代码的双入场场景：行停在 `opacity: 0` 的动画值上）。 */
 function autoRelease(anims: Animation[], totalMs: number): void {
   const release = (): void => { for (const a of anims) { try { a.cancel(); } catch { /* 已取消 */ } } };
   if (!anims.length) return;
-  Promise.all(anims.map((a) => a.finished)).then(release).catch(() => { /* 被取消过 */ });
+  Promise.all(anims.map((a) => a.finished.catch(() => { /* 被取消过 */ }))).then(release);
   window.setTimeout(release, totalMs + 800);
 }
 
@@ -179,7 +206,7 @@ export function rowsLeave(rows: HTMLElement[], o: RowMotionOpts = {}): Animation
   const out = o.dy !== undefined ? `translateY(${-o.dy}px)` : `translateX(${-dx}px)`;
   const anims = rows.map((el, i) =>
     el.animate(
-      [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: out }],
+      [{ opacity: naturalOpacity(el), transform: 'none' }, { opacity: 0, transform: out }],
       { duration: dur, delay: Math.min(i * step, maxDelay), easing: EASE_ACCEL, fill: 'both' }
     )
   );
@@ -197,7 +224,7 @@ export function rowsEnter(rows: HTMLElement[], o: RowMotionOpts = {}): Animation
   const start = o.start ?? dur;
   const anims = rows.map((el, i) =>
     el.animate(
-      [{ opacity: 0, transform: `translateX(${dx}px)` }, { opacity: 1, transform: 'none' }],
+      [{ opacity: 0, transform: `translateX(${dx}px)` }, { opacity: naturalOpacity(el), transform: 'none' }],
       { duration: dur, delay: start + i * step, easing: EASE_DECEL, fill: 'both' }
     )
   );
@@ -223,21 +250,32 @@ export function rowsEnter(rows: HTMLElement[], o: RowMotionOpts = {}): Animation
  *  不给 `delay` 时 `fill:'none'`（结束自然落在新位置）；**给了 `delay` 就必须 `fill:'both'`** ——
  *  延迟期间要**冻在旧位置上**，否则那一行会先瞬移到新位置、等延迟过完再跳回旧位置演一遍
  *  （用户 2026-09-14：「应该是文件先消失，下面的文件夹再移上来，现在反了」——
- *  收起文件夹时，"里面的行退场"与"下面的行补位"必须**先后**发生，就靠这个 `delay`）。 */
-export function flipRows(rows: HTMLElement[], keys: string[], tops: number[], prev: Map<string, number>, o: { dur?: number; delay?: number } = {}): Animation[] {
+ *  收起文件夹时，"里面的行退场"与"下面的行补位"必须**先后**发生，就靠这个 `delay`）。
+ *  给了 `step` 时**在 `delay` 之上再逐行错峰**（`delay + n*step`，`n` = 第几个真正会动的行，
+ *  从上往下数，封顶 `maxDelay`）—— 补位的行**越高的越先动**，看着像"下面的一行行被抽上去"。 */
+export function flipRows(rows: HTMLElement[], keys: string[], tops: number[], prev: Map<string, number>, o: { dur?: number; delay?: number; step?: number; maxDelay?: number } = {}): Animation[] {
   if (motionReduced()) return [];
   const dur = o.dur ?? 320;
-  const delay = o.delay ?? 0;
+  const base = o.delay ?? 0;
+  const step = o.step ?? 0;
+  const maxDelay = o.maxDelay ?? MAX_STAGGER;
   const anims: Animation[] = [];
+  let n = 0;   /* 真正在动的行**按从上到下**的顺序领延迟（见下） */
   rows.forEach((el, i) => {
     const p = prev.get(keys[i]);
     if (p === undefined) return;                       /* 新出现的行：由 rowSlideIn / rowsDropIn 负责 */
     const delta = p - tops[i];
     if (Math.abs(delta) < 1.5 || Math.abs(delta) > 240) return;
+    /* 错峰：**越高的越先移**（用户 2026-09-14：「文件夹收起后其下文件上移错分方向反了，
+       应该是越高的越先移，现在是越下面的越先移」）。`n` 只数真正会动的行 ⇒ 中间那些没动的行
+       不会在延迟序列里留空洞；两行起始延迟一致时，对"斜着让位"的观感影响很大。
+       ⚠️ 计数器在"跳过"之后才自增：`rows` 是按 DOM（从上到下）给的，索引顺序＝高度顺序。 */
+    const d = base + Math.min(n * step, maxDelay);
+    n++;
     anims.push(el.animate([{ transform: `translateY(${delta}px)` }, { transform: 'none' }],
-      { duration: dur, delay, easing: EASE_DECEL, fill: delay > 0 ? 'both' : 'none' }));
+      { duration: dur, delay: d, easing: EASE_DECEL, fill: d > 0 ? 'both' : 'none' }));
   });
-  autoRelease(anims, dur + delay + 200);
+  autoRelease(anims, dur + base + Math.min(step * rows.length, maxDelay) + 200);
   return anims;
 }
 
@@ -249,7 +287,7 @@ export function rowSlideIn(el: HTMLElement | null, o: { dx?: number; dur?: numbe
   const dur = o.dur ?? 320;
   const delay = o.delay ?? 0;
   const a = el.animate(
-    [{ opacity: 0, transform: `translateX(${-dx}px)` }, { opacity: 1, transform: 'none' }],
+    [{ opacity: 0, transform: `translateX(${-dx}px)` }, { opacity: naturalOpacity(el), transform: 'none' }],
     { duration: dur, delay, easing: EASE_DECEL, fill: 'both' }
   );
   autoRelease([a], delay + dur + 200);
@@ -267,7 +305,7 @@ export function rowsDropIn(rows: HTMLElement[], o: { dy?: number; dur?: number; 
   const maxDelay = o.maxDelay ?? MAX_STAGGER;
   const anims = rows.map((el, i) =>
     el.animate(
-      [{ opacity: 0, transform: `translateY(${-dy}px)` }, { opacity: 1, transform: 'none' }],
+      [{ opacity: 0, transform: `translateY(${-dy}px)` }, { opacity: naturalOpacity(el), transform: 'none' }],
       { duration: dur, delay: Math.min(i * step, maxDelay), easing: EASE_DECEL, fill: 'both' }
     )
   );
@@ -361,21 +399,28 @@ export function cloneIntoLayer(layer: HTMLElement, rect: DOMRect, el: HTMLElemen
   return g;
 }
 
-/** **一个元素自己**的高度变化也演出来（左树外面那个框）。`from` = 变化前量到的高度；
+/** **一个元素自己**的高度变化也演出来（左树外面那个框 / 帧条的滚动盒）。`from` = 变化前量到的高度；
  *  新高度当场量（此刻还没钉住）。位移太小就什么都不做。演完把 `overflow` 还回去、取消动画
- *  （`fill:'none'` ⇒ 落回自然高度，与动画终点一致，不会跳）。 */
-export function smoothBoxHeight(el: HTMLElement | null, from: number, o: { dur?: number } = {}): Animation | null {
+ *  （`fill:'none'` ⇒ 落回自然高度，与动画终点一致，不会跳）。
+ *
+ *  `delay` = 晚一点再改高度（用户 2026-09-14：「**最后**再平滑切换最外层框的高度」）：
+ *  里面的行先错峰出现/退场，框的高度随后跟上。
+ *  ⚠️ 给了 `delay` 就**必须 `fill:'both'`** —— 否则延迟期间元素已经落到新高度（＝当场跳完），
+ *  等延迟过完又从旧高度演一遍（与 `flipRows` 同一个坑）。 */
+export function smoothBoxHeight(el: HTMLElement | null, from: number, o: { dur?: number; delay?: number } = {}): Animation | null {
   if (!el || motionReduced() || !(from > 0)) return null;
   const to = el.getBoundingClientRect().height;
   if (Math.abs(to - from) < 1.5) return null;
   const prevOverflow = el.style.overflow;
   const dur = o.dur ?? 240;           /* 与 `.lk-ghost-layer` 的过渡时长同档（见 src/style.css） */
+  const delay = o.delay ?? 0;
   el.style.overflow = 'hidden';       /* 动画期间必须裁住：框还矮着的时候里面的行会溢出去 */
-  const a = el.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: dur, easing: EASE_DECEL, fill: 'none' });
+  const a = el.animate([{ height: `${from}px` }, { height: `${to}px` }],
+    { duration: dur, delay, easing: EASE_DECEL, fill: delay > 0 ? 'both' : 'none' });
   let done = false;
   const finish = (): void => { if (done) return; done = true; el.style.overflow = prevOverflow; try { a.cancel(); } catch { /* 已取消 */ } };
   a.finished.then(finish).catch(() => { /* 被取消过 */ });
-  window.setTimeout(finish, dur + 400);
+  window.setTimeout(finish, dur + delay + 400);
   return a;
 }
 

@@ -148,6 +148,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   /** "下面的行补位"（FLIP）相对退场总时长的**咬合比例**：不再等整枝走完才动（那正是"停一拍再上移"的
    *  停滞感来源），走到 55% 就跟着上移 —— 顺序仍是"文件先动、下面的行后动"，但衔接紧得多。 */
   const FLIP_OVERLAP = 0.55;
+  /** 补位那一批**自己的**错峰：从上往下每行晚 14ms、封顶 120ms（与退场同档参数）。
+   *  用户 2026-09-14：「文件夹收起后其下文件上移**错分方向反了**，应该是越高的越先移，
+   *  现在是越下面的越先移」—— 原先所有补位的行共用一个延迟（整块一起上移），
+   *  现在按"从上到下"的顺序逐行延迟（见 `motion.ts` 的 `flipRows`）。 */
+  const FLIP_STEP = 14;
+  const FLIP_MAX = 120;
 
   const world = () => currentWorld(store);
   const types = () => world().entityTypes ?? {};
@@ -1486,7 +1492,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       const boxAfter = listEl.getBoundingClientRect().height;
       const keys = now.els.map((el) => el.getAttribute('data-cx-key') || '');
       if (!cold) {
-        flipRows(now.els, keys, now.tops, prev, { delay: flipDelay });
+        /* 补位的行**越高的越先移**（`step`）：收起文件夹时它下面的整片会一行行"被抽上去"，
+           而不是整块平移（用户 2026-09-14 的第二条） */
+        flipRows(now.els, keys, now.tops, prev, { delay: flipDelay, step: FLIP_STEP, maxDelay: FLIP_MAX });
         /* 展开露出来的那批先落位，新建的那几行随后从左侧滑入（错峰 30ms，封顶 240ms） */
         if (revealed.length) rowsDropIn(revealed);
         fresh.forEach((el, i) => rowSlideIn(el, { delay: Math.min(i * 30, 240) }));

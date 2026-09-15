@@ -19,7 +19,7 @@ import { currentWorld } from '../store/store';
 import type { Entity, TimelineNode } from '../store/types';
 import { epochOfNodes, isEmptyPatch, patchSummary, versionAtNode } from '../store/evolution';
 import { escapeHtml } from './html';
-import { cloneIntoLayer, ghostLayerFor, rowsDropIn, rowsLeaveAndRemove } from './motion';
+import { cloneIntoLayer, ghostLayerFor, rowsDropIn, rowsLeaveAndRemove, rowsLeaveTotal, smoothBoxHeight } from './motion';
 import { loadSettings } from './settings';
 
 export interface RailDeps {
@@ -256,6 +256,27 @@ export function createEvolutionRail(deps: RailDeps): Rail {
     return r ? r.version : versionAtNode(e, (id) => ep.get(id) ?? 0, ep.get(lock.nodeId) ?? 0, lock.nodeId);
   }
 
+  /** 虚化行的**出场/入场顺序**（用户 2026-09-14：「展开面板时也有错分，**离已有帧节点越近的越先出现**；
+   *  出场也是一样，**离已有帧越远的帧越先退场**」）。
+   *
+   *  距离怎么算：帧条是**等距**的（每格 46px 钉死），所以"隔了几行"就是时间距离最直观的代理。
+   *  锚点 = 那些**留在帧条上的**格子：有版本的行（`.is-frame`）+ 顶上永远的「初稿」行
+   *  （`.lk-rail__row--base`）—— 用户嘴里的"已有帧"就是它们。
+   *  `all` 与 `rows` 都是**同一个 DOM 顺序**（时间序）里的元素；`sort` 稳定 ⇒ 同距离的按时间先后。
+   *  ⚠️ 出场那一路要在 `render()` **之前**调用：收起之后那些虚化行就不在 DOM 里了，
+   *  距离只能在旧的（展开着的）那份列表上算。 */
+  function orderByDistance(all: HTMLElement[], rows: HTMLElement[], farFirst: boolean): HTMLElement[] {
+    const anchors = all
+      .map((r, i) => (r.classList.contains('is-frame') || r.classList.contains('lk-rail__row--base') ? i : -1))
+      .filter((i) => i >= 0);
+    const dist = (el: HTMLElement): number => {
+      const i = all.indexOf(el);
+      if (i < 0 || !anchors.length) return 0;
+      return Math.min(...anchors.map((j) => Math.abs(i - j)));
+    };
+    return rows.slice().sort((a, b) => (farFirst ? dist(b) - dist(a) : dist(a) - dist(b)));
+  }
+
   /* 事件：委托一次挂上，重画 innerHTML 后不用重挂 */
   host.addEventListener('click', (ev) => {
     const el = ev.target as HTMLElement;
@@ -265,26 +286,40 @@ export function createEvolutionRail(deps: RailDeps): Rail {
     if (del) { deps.onDeleteFrame(del.dataset.railDel || ''); return; }
     /* 「▾ 展开全部事件 / ▴ 只看有版本的」：不是硬切，虚化行**逐行往下弹出来**；收起时它们先化成
        幽灵（钉在原位、裁在帧条的滚动盒里）演一次退场，再连同"收起"一起消失 ——
-       与左树文件夹的展开/收起同一套原语（用户 2026-09-14：「git 管理面板里面的展开也做成平滑切换」）。 */
+       与左树文件夹的展开/收起同一套原语（用户 2026-09-14：「git 管理面板里面的展开也做成平滑切换」）。
+       顺序按**离最近的一版有多远**排（见 `orderByDistance`）：入场近的先出现、退场远的先走；
+       最外面那个框的高度**最后**再平滑切换（`smoothBoxHeight` 的 `delay`）。 */
     if (el.closest('[data-rail-toggle]')) {
       const rowBox = host.querySelector<HTMLElement>('.lk-rail__rows');
+      const boxBefore = rowBox ? rowBox.getBoundingClientRect().height : 0;
       const before = new Set([...host.querySelectorAll<HTMLElement>('.lk-rail__row')].map((r) => r.dataset.rail ?? ''));
-      /* 收起前先克隆：克隆必须在 `render()` 之前（`host.innerHTML` 一换它们就没了） */
-      const dying = showAll ? [...host.querySelectorAll<HTMLElement>('.lk-rail__row.is-ghost')] : [];
+      /* 收起前先排序 + 克隆：两者都必须在 `render()` 之前（`host.innerHTML` 一换它们就没了）。
+         ⚠️ **别把裁切层的高度改成收起后的高度**：那一层是"退场中的虚化行"唯一的容身之处，
+         当场缩下去＝把它们裁没（旧写法就是这么干的，慢一点的行整段看不见）。框的高度现在
+         等退场走得差不多再缩（下面那个 `smoothBoxHeight` 的 delay），所以层也不需要跟。 */
+      const dying = showAll
+        ? orderByDistance(
+            [...host.querySelectorAll<HTMLElement>('.lk-rail__row')],
+            [...host.querySelectorAll<HTMLElement>('.lk-rail__row.is-ghost')],
+            true)
+        : [];
       const lay = rowBox && dying.length ? ghostLayerFor(rowBox, 860) : null;
       const ghosts = lay ? dying.map((r) => cloneIntoLayer(lay.layer, lay.rect, r, 'lk-list-ghost')) : [];
       showAll = !showAll;
       render();
+      const boxAfter = host.querySelector<HTMLElement>('.lk-rail__rows');
       const fresh = [...host.querySelectorAll<HTMLElement>('.lk-rail__row')].filter((r) => !before.has(r.dataset.rail ?? ''));
-      /* 收起来之后 `.lk-rail__rows` 自己也矮了 ⇒ 让那一层裁切层跟着新高度缩（配 `.lk-ghost-layer` 的
-         CSS height 过渡）：否则层还停在旧高度上，退场中的虚化行会**露出帧条的框外**——
-         与左树"关文件夹时部分文件超出这个框"同一个病根（用户 2026-09-14 报过）。 */
-      if (lay) {
-        const boxAfter = host.querySelector<HTMLElement>('.lk-rail__rows');
-        if (boxAfter) lay.layer.style.height = boxAfter.offsetHeight + 'px';
+      if (ghosts.length) {
+        rowsLeaveAndRemove(ghosts, EXIT);
+        /* 退场走到六成就开始收框：行已经淡得差不多了，框跟着缩不会被看穿，又不会拖到"停一拍" */
+        smoothBoxHeight(boxAfter, boxBefore, { delay: Math.round(rowsLeaveTotal(ghosts.length, EXIT) * 0.6) });
+      } else if (fresh.length) {
+        /* 入场：**离最近的一版越近的越先出现**（`orderByDistance` 已按距离升序排好） */
+        const enter = orderByDistance([...host.querySelectorAll<HTMLElement>('.lk-rail__row')], fresh, false);
+        rowsDropIn(enter, EXIT);
+        /* 框晚半步再长高（`rowsLeaveTotal` 就是"单行时长 + 封顶后的错峰总量"，入场同档参数） */
+        smoothBoxHeight(boxAfter, boxBefore, { delay: Math.round(rowsLeaveTotal(enter.length, EXIT) * 0.5) });
       }
-      if (ghosts.length) rowsLeaveAndRemove(ghosts, EXIT);
-      else if (fresh.length) rowsDropIn(fresh, EXIT);
       return;
     }
     const row = el.closest<HTMLElement>('[data-rail]');

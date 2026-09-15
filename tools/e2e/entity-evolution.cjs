@@ -234,9 +234,9 @@ async function main() {
     return { n0, n1: rows.length, ghostN: fresh.length, animN: fresh.filter((r) => r.getAnimations().length).length,
       anim: fresh[0] ? ${treeAnim('fresh[0]')} : null };
   })()`);
-  check('★0f3 点展开时，新露出来的虚化行**逐行下弹**（translateY(-8px)/0 → 原位，180ms、错峰 14ms）',
+  check('★0f3 点展开时，新露出来的虚化行**逐行下弹**（translateY(-8px)/0 → 原位 · **落到 0.4 而不是 1**，180ms、错峰 14ms）',
     (expAnim.ghostN ?? 0) === 3 && expAnim.animN === 3
-      && expAnim.anim && expAnim.anim.from === 'translateY(-8px)/0' && expAnim.anim.to === 'none/1'
+      && expAnim.anim && expAnim.anim.from === 'translateY(-8px)/0' && expAnim.anim.to === 'none/0.4'
       && expAnim.anim.dur === 180 && expAnim.anim.delay === 0, expAnim);
   await sleep(700);
   const colAnim = await ev(`(() => {
@@ -252,17 +252,22 @@ async function main() {
     return { layers: layers.length, ghosts: ghosts.length, rows: document.querySelectorAll('.lk-rail__rows .lk-rail__row').length,
       layerOvf: lay ? getComputedStyle(lay).overflow : null,
       /* ⚠️ 隐藏窗口里动画不推进（铁律 6）⇒ 不能比**渲染高度**（过渡刚开始，量到的还是旧值），
-         要比**目标值**：层的 height 已被设成收起后帧条盒子的高度。 */
-      layerTargetH: lay ? lay.style.height : null, boxAfterH: box ? Math.round(box.height) + 'px' : null,
+         要比**目标值**：层的 height 是建层时按帧条盒子的**旧高度**写死的（ghostLayerFor），
+         而盒子的高度动画（带 delay、fill:both）目标已经变矮了 —— 层要停在旧高度上，
+         否则退场中的虚化行当场被裁没（旧写法把层缩到"收起后"的高度，慢一点的行整段看不见）。 */
+      layerTargetH: lay ? lay.style.height : null, boxBeforeH: Math.round(boxBefore.height),
+      boxTo: (() => { const el = document.querySelector('.lk-rail__rows'); const a = el ? el.getAnimations()[0] : null;
+        return a ? a.effect.getKeyframes().slice(-1)[0].height : null; })(),
       transProp: lay ? getComputedStyle(lay).transitionProperty : null,
       animN: ghosts.filter((g) => g.getAnimations().length).length,
       anim: ghosts[0] ? ${treeAnim('ghosts[0]')} : null, boxSame: Math.abs(box.height - boxBefore.height) < 2 };
   })()`);
-  check('★0f4 点收起时，那些虚化行先化成**裁在帧条里的幽灵**演退场（none/1 → 往上升 8px），行数当场就少了',
+  check('★0f4 点收起时，那些虚化行先化成**裁在帧条里的幽灵**演退场（0.4 → 往上升 8px）· 裁切层停在旧高度、盒子随后才缩',
     colAnim.layers === 1 && colAnim.ghosts === 3 && colAnim.rows === (expAnim.n0 ?? 0)
       && colAnim.layerOvf === 'hidden' && /height/.test(colAnim.transProp || '')
-      && colAnim.layerTargetH === colAnim.boxAfterH
-      && colAnim.anim && colAnim.anim.from === 'none/1' && colAnim.anim.to === 'translateY(-8px)/0'
+      && Math.abs(parseFloat(colAnim.layerTargetH) - colAnim.boxBeforeH) <= 2
+      && parseFloat(colAnim.boxTo) < colAnim.boxBeforeH - 40
+      && colAnim.anim && colAnim.anim.from === 'none/0.4' && colAnim.anim.to === 'translateY(-8px)/0'
       && colAnim.anim.dur === 180, colAnim);
   const railLayerGone = await waitFor(() => ev(`document.querySelectorAll('.lk-ghost-layer').length === 0`), 3000);
   check('★0f5 帧条的幽灵演完，连裁切层一起摘掉（页面上不留空的浮层）', railLayerGone);
