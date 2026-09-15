@@ -272,6 +272,15 @@
   （`rowsLeaveTotal()`）交给 `flipRows(..., { delay })`，延迟期间靠 `fill:'both'` 冻在旧位置（实测收「主线」：
   退场 304ms，下面 45 行 FLIP delay 全是 304）。`codex-list-motion.cjs` **20 项**（新增 ★4f，A/B 19/20）、
   `codex-smooth-switch.cjs` **28 项**（新增 ★13e，A/B 27/28）。
+- [x] **第四轮体感修正：左树外框平滑 + 收起的行不再"跑出框外" + 帧条展开也平滑（2026-09-14 第四轮）**：
+  用户原话「**文件树最外面的框也要做平滑切换，而且关文件夹时部分文件会超出这个框，git管理面板里面的
+  展开也做成平滑切换**」→ 追加「**文件收起的动画快一点，现在有一点停滞感**」。① `#cx-list` 是内容撑高的
+  （展开 327px、收起时**同一 tick** 掉到 23px）⇒ `motion.ts` 新增 `smoothBoxHeight()`，`renderList()` 量
+  旧高→钉住→演到新高（240ms）；② 幽灵原来直接挂 `document.body`、不受外框裁切 ⇒ 新增 `ghostLayerFor()`
+  + `cloneIntoLayer()`，让它们住进一层**贴着框、`overflow:hidden`** 的裁切层，层高跟着框的**目标高度**缩
+  （`syncGhostLayers()`）；③ 帧条的「▾ 展开全部事件」同样接上 `rowsDropIn` / `rowsLeaveAndRemove`，
+  并把层高设成收起后盒子的高度；④ 提速：`EXIT` 260/22 → **180/14 封顶 120**、`FLIP_OVERLAP = 0.55`
+  （不再等整枝退完才补位）。`codex-list-motion.cjs` **24 项**、`entity-evolution.cjs` **49 项**。
 - [ ] **第 C 片 · 画布**：时间线节点移动 / 循环框 / 剧情线。⚠️ 撞 `src/ui/timeline.ts` 的
   「每次 store 通知整体重渲染」硬约束，得先让节点能跨重建续上位置（这是 Anime.js 真正该上场的地方 ——
   第 B 片最后是用 WAAPI 的 `flipRows` 手搓的，没动 Anime.js）。

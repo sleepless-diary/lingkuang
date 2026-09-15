@@ -280,7 +280,11 @@ export function rowsDropIn(rows: HTMLElement[], o: { dy?: number; dur?: number; 
 export function rowLeaveAndRemove(el: HTMLElement | null, o: RowMotionOpts = {}): void {
   if (!el) return;
   const anims = rowsLeave([el], o);
-  const kill = (): void => { el.remove(); };
+  const kill = (): void => {
+    const box = el.parentElement;   /* 幽灵住在裁切层里 ⇒ 空了这层也要跟着走（同 rowsLeaveAndRemove） */
+    el.remove();
+    if (box && box.classList.contains('lk-ghost-layer') && !box.childElementCount) box.remove();
+  };
   if (!anims.length) { kill(); return; }   /* 减少动效：直接摘掉 */
   Promise.all(anims.map((a) => a.finished)).then(kill).catch(kill);
   window.setTimeout(kill, (o.dur ?? ROW_DUR) + (o.step ?? 10) + 400);
@@ -306,12 +310,73 @@ export function rowsLeaveTotal(n: number, o: RowMotionOpts = {}): number {
 export function rowsLeaveAndRemove(rows: HTMLElement[], o: RowMotionOpts = {}): void {
   if (!rows.length) return;
   const anims = rowsLeave(rows, o);
-  const kill = (): void => { for (const el of rows) el.remove(); };
+  const kill = (): void => {
+    for (const el of rows) {
+      const box = el.parentElement;
+      el.remove();
+      /* 幽灵是住在一层**裁切层**里的（见 `ghostLayerFor`）：最后一行摘掉之后这层也得跟着走，
+         否则页面上会留一堆空的 fixed 层（它们不吃事件，但会挡住别的测试的 `elementFromPoint`）。 */
+      if (box && box.classList.contains('lk-ghost-layer') && !box.childElementCount) box.remove();
+    }
+  };
   if (!anims.length) { kill(); return; }   /* 减少动效：直接摘掉 */
   Promise.all(anims.map((a) => a.finished)).then(kill).catch(kill);
   const dur = o.dur ?? ROW_DUR;
   const step = o.step ?? 10;
   window.setTimeout(kill, dur + step * rows.length + 400);
+}
+
+/* ── 幽灵层的裁切 + "最外面那个框"的高度平滑 ────────────────────────────────────────────────
+   用户 2026-09-14：「文件树**最外面的框**也要做平滑切换，而且关文件夹时**部分文件会超出这个框**」。
+
+   两条其实是同一件事的两半：收起文件夹时外框**当场**从 327px 缩到 23px（实测同一 tick 就缩完），
+   而退了场的行是挂在 `document.body` 上的 `position:fixed` 克隆体 —— 既不受外框裁切、也没有跟着缩，
+   于是它们"飘"在缩小后的框外面。所以：
+   ① 幽灵改成住进一层**贴着外框、`overflow:hidden`** 的裁切层（`ghostLayerFor` + `cloneIntoLayer`）；
+   ② 外框自己的高度变化改成**演出来**（`smoothBoxHeight`），动画期间同样 `overflow:hidden`。 */
+
+/** 造一层贴着 `clip` 那个元素位置的**裁切层**（`position:fixed` + `overflow:hidden`，挂在 body 上）。
+ *  返回层与层自己的 rect（克隆坐标要换算成层内坐标）。`motionReduced()` 时返回 null。 */
+export function ghostLayerFor(clip: HTMLElement, z = 860): { layer: HTMLElement; rect: DOMRect } | null {
+  if (motionReduced()) return null;
+  const r = clip.getBoundingClientRect();
+  const layer = document.createElement('div');
+  layer.className = 'lk-ghost-layer';
+  layer.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;overflow:hidden;pointer-events:none;z-index:${z};`;
+  document.body.appendChild(layer);
+  return { layer, rect: r };
+}
+
+/** 把一个元素克隆进裁切层（坐标换成层内坐标，用 `position:absolute` 才受层的 `overflow:hidden` 约束）。
+ *  ⚠️ 克隆体里的 `[id]` 一律摘掉：留着就是页面里第二个 `#cx-fields` / `#cx-doc`，`querySelector` 会抓错。
+ *  ⚠️ **不要**顺手写 `padding:0`：树的缩进是各层类的 `padding-left`（世界 8px / 时间线 18px /
+ *  种类 27px / 条目 36px），清零会让整行**往左跳**（用户 2026-09-14：「收起文件时文件会先向左移」）。 */
+export function cloneIntoLayer(layer: HTMLElement, rect: DOMRect, el: HTMLElement, cls?: string): HTMLElement {
+  const r = el.getBoundingClientRect();
+  const g = el.cloneNode(true) as HTMLElement;
+  g.querySelectorAll('[id]').forEach((n) => n.removeAttribute('id'));
+  if (cls) g.classList.add(cls);
+  g.style.cssText = `position:absolute;left:${r.left - rect.left}px;top:${r.top - rect.top}px;width:${r.width}px;height:${r.height}px;margin:0;pointer-events:none;`;
+  layer.appendChild(g);
+  return g;
+}
+
+/** **一个元素自己**的高度变化也演出来（左树外面那个框）。`from` = 变化前量到的高度；
+ *  新高度当场量（此刻还没钉住）。位移太小就什么都不做。演完把 `overflow` 还回去、取消动画
+ *  （`fill:'none'` ⇒ 落回自然高度，与动画终点一致，不会跳）。 */
+export function smoothBoxHeight(el: HTMLElement | null, from: number, o: { dur?: number } = {}): Animation | null {
+  if (!el || motionReduced() || !(from > 0)) return null;
+  const to = el.getBoundingClientRect().height;
+  if (Math.abs(to - from) < 1.5) return null;
+  const prevOverflow = el.style.overflow;
+  const dur = o.dur ?? 240;           /* 与 `.lk-ghost-layer` 的过渡时长同档（见 src/style.css） */
+  el.style.overflow = 'hidden';       /* 动画期间必须裁住：框还矮着的时候里面的行会溢出去 */
+  const a = el.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: dur, easing: EASE_DECEL, fill: 'none' });
+  let done = false;
+  const finish = (): void => { if (done) return; done = true; el.style.overflow = prevOverflow; try { a.cancel(); } catch { /* 已取消 */ } };
+  a.finished.then(finish).catch(() => { /* 被取消过 */ });
+  window.setTimeout(finish, dur + 400);
+  return a;
 }
 
 /** **老虎机式换字**：同一个地方换一种说法时，旧字往上滚出、新字从下滚入。

@@ -35,7 +35,7 @@ import {
   epochOfNodes, frameDiff, nearestVersion, normalizeFrames, statesOf, versionAtNode, type EntityState,
 } from '../store/evolution';
 import { calendarOf, fromEpoch } from '../calendar';
-import { cascadeIn, enter, flipRows, motionReduced, rollText, rowLeaveAndRemove, rowSlideIn, rowsDropIn, rowsEnter, rowsLeave, rowsLeaveAndRemove, rowsLeaveTotal, topsOf } from './motion';
+import { cascadeIn, cloneIntoLayer, enter, flipRows, ghostLayerFor, motionReduced, rollText, rowLeaveAndRemove, rowSlideIn, rowsDropIn, rowsEnter, rowsLeave, rowsLeaveAndRemove, rowsLeaveTotal, smoothBoxHeight, topsOf } from './motion';
 
 const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;font-family:inherit;user-select:text;';
 /* 顶栏那两组「下拉 + 新建按钮」共用同一份样式 —— 高度必须一模一样（27px），
@@ -141,8 +141,13 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
      （2026-09-14：「应该是文件先消失，下面的文件夹再移上来，现在反了，下面的移上来后文件再消失」）。
      只对紧接着的那一次重画有效（renderList 开头取走并清零）。 */
   let flipDelayMs = 0;
-  /** 收起时那一枝的退场参数（与展开入场的 `rowsDropIn` 对应：往上 8px、260ms、错峰 22ms） */
-  const EXIT = { dy: 8, dur: 260, step: 22 } as const;
+  /** 收起时那一枝的退场参数（与展开入场的 `rowsDropIn` 对应：往上 8px、曲线倒过来 = 慢→快）。
+   *  2026-09-14 用户第二轮：「**文件收起的动画快一点，现在有一点停滞感**」⇒ 单行 260→**180ms**、
+   *  错峰 22→**14ms** 且封顶 **120ms**（否则 40 多行时最后一行要等 240ms 才动，整段拖到 500ms）。 */
+  const EXIT = { dy: 8, dur: 180, step: 14, maxDelay: 120 } as const;
+  /** "下面的行补位"（FLIP）相对退场总时长的**咬合比例**：不再等整枝走完才动（那正是"停一拍再上移"的
+   *  停滞感来源），走到 55% 就跟着上移 —— 顺序仍是"文件先动、下面的行后动"，但衔接紧得多。 */
+  const FLIP_OVERLAP = 0.55;
 
   const world = () => currentWorld(store);
   const types = () => world().entityTypes ?? {};
@@ -211,39 +216,40 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     return new Map(now.els.map((e, i) => [e.getAttribute('data-cx-key') || '', now.tops[i]]));
   }
 
-  /** 被删掉的那一行：克隆一份**钉在原位**（`position:fixed`，不能挂在 `#cx-list` 里 ——
-   *  它马上会被 `innerHTML = ''` 清空）演一次退场，同时下面的行向上让位（FLIP）。
-   *  ⚠️ 克隆体里的 id 全摘掉：留着就是页面里第二个 `#cx-fields` / `#cx-doc`，`querySelector` 会抓错。 */
-  function pinRowGhost(id: string): HTMLElement | null {
-    const row = host.querySelector<HTMLElement>('#cx-list [data-cx-id="' + id + '"]');
-    if (!row || motionReduced()) return null;
-    const r = row.getBoundingClientRect();
-    const g = row.cloneNode(true) as HTMLElement;
-    g.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
-    /* ⚠️ **不要**写 `padding:0`：树里那些缩进是各层类的 `padding-left`（世界 8px / 时间线 18px /
-       种类 27px / 条目 36px），克隆体带着同一个类，本来就在原位；清零会让整行内容**往左跳**
-       18~36px（用户 2026-09-14 报的「收起文件时文件会先向左移」就是这个）。 */
-    g.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;margin:0;pointer-events:none;z-index:900;`;
-    document.body.appendChild(g);
-    return g;
+  /** 让**还活着**的幽灵裁切层跟着左树的新高度一起缩（配 `src/style.css` 里 `.lk-ghost-layer` 的
+   *  height 过渡，曲线与 `smoothBoxHeight` 同一档）。不这么做的话：外框在 320ms 里越缩越矮，
+   *  而裁切层还停在旧高度 ⇒ 幽灵在后半程又"露"到框外面去了 —— 用户 2026-09-14 报的那件事只解决一半。
+   *  ⚠️ 传进来的必须是**目标高度**：调用点上 `smoothBoxHeight` 已经把外框钉住了，此刻再量
+   *  `getBoundingClientRect()` 拿到的是动画**起点**（实测：传元素进去时层高一直停在 327，外框已经到 132）。 */
+  function syncGhostLayers(targetH: number): void {
+    document.querySelectorAll<HTMLElement>('.lk-ghost-layer').forEach((lay) => { lay.style.height = `${targetH}px`; });
   }
 
-  /** 一批行克隆成幽灵层（`position:fixed` 钉在原位）—— 收起文件夹时，被收掉的那几行靠它演出场。
-   *  与 `pinRowGhost` 同一套做法：不能挂在 `#cx-list` 里（马上被 `innerHTML = ''` 清空），
-   *  克隆体里的 `[id]` 也得全摘（否则页面里多出第二个 `#cx-fields` / `#cx-doc`）。 */
+  /** 被删掉的那一行：克隆一份**钉在原位**演一次退场，同时下面的行向上让位（FLIP）。
+   *  克隆体住在**贴着左树的裁切层**里（`ghostLayerFor(#cx-list, 900)`）—— 不能直接挂 `#cx-list`（它马上
+   *  会被 `innerHTML = ''` 清空），也不能裸挂 `document.body`（那样不受外框裁切，用户 2026-09-14 报的
+   *  「关文件夹时部分文件会**超出这个框**」就是这么来的）。 */
+  function pinRowGhost(id: string): HTMLElement | null {
+    const row = host.querySelector<HTMLElement>('#cx-list [data-cx-id="' + id + '"]');
+    const clip = host.querySelector<HTMLElement>('#cx-list');
+    if (!row || !clip || motionReduced()) return null;
+    const lay = ghostLayerFor(clip, 900);
+    if (!lay) return null;
+    /* 类名与"收起文件夹"那一批统一（`lk-list-ghost`）：测试与清理逻辑都按它认幽灵 */
+    return cloneIntoLayer(lay.layer, lay.rect, row, 'lk-list-ghost');
+  }
+
+  /** 一批行克隆成幽灵层 —— 收起文件夹时，被收掉的那几行靠它演出场。
+   *  住在贴着左树的**裁切层**里（同一个理由：外框在缩、它们不能飘到框外面去）。 */
   function ghostRows(rows: HTMLElement[]): HTMLElement[] {
-    if (motionReduced()) return [];
+    const clip = host.querySelector<HTMLElement>('#cx-list');
+    const lay = clip ? ghostLayerFor(clip, 860) : null;
+    if (!lay) return [];
     return rows.map((row) => {
-      const r = row.getBoundingClientRect();
-      const g = row.cloneNode(true) as HTMLElement;
-      g.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+      const g = cloneIntoLayer(lay.layer, lay.rect, row);
       /* 打个类当抓手：同一时刻页面上可能同时挂着好几批幽灵（收起 A 还没演完又收起 B），
          测试与被收的那一枝都得能认出"这一批是我刚造出来的"。 */
       g.classList.add('lk-list-ghost');
-      /* ⚠️ 同理**不要** `padding:0`：树的缩进是各层类的 `padding-left`，清零会让幽灵整行往左跳
-         （用户 2026-09-14：「收起文件时文件会**先向左移**，然后再上隐」）。 */
-      g.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;margin:0;pointer-events:none;z-index:860;`;
-      document.body.appendChild(g);
       return g;
     });
   }
@@ -1369,6 +1375,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (listHold) return;                     /* 批量改动期间攒着，末尾一次画完（见 withListHold） */
     const listEl = host.querySelector<HTMLElement>('#cx-list');
     if (!listEl) return;
+    /* "最外面那个框"自己的高度也要平滑（用户 2026-09-14：「文件树**最外面的框**也要做平滑切换」）：
+       外框高度是内容撑的，收起一个文件夹时它**同一 tick** 就从 327px 缩到 23px。先在改动前把旧高度量下来，
+       末尾交给 `smoothBoxHeight()` 演到新高度（动画期间它会临时 `overflow:hidden`，把行裁在框里）。 */
+    const boxBefore = listEl.getBoundingClientRect().height;
     const prev = rowTops;
     const opened = justOpened;
     justOpened = null;
@@ -1392,6 +1402,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       listEl.appendChild(frag);
       bindTreeClicks(frag);
       const now = topsOf(frag);
+      /* 外框的**目标**高度要在这里量（还没被 `smoothBoxHeight` 钉住，量到的是自然高度）——
+         幽灵裁切层跟着它缩，见 `syncGhostLayers()`。 */
+      const boxAfter = listEl.getBoundingClientRect().height;
       const keys = now.els.map((el) => el.getAttribute('data-cx-key') || '');
       if (!cold) {
         flipRows(now.els, keys, now.tops, prev, { delay: flipDelay });
@@ -1400,6 +1413,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         fresh.forEach((el, i) => rowSlideIn(el, { delay: Math.min(i * 30, 240) }));
       }
       rowTops = new Map(keys.map((k, i) => [k, now.tops[i]]));
+      smoothBoxHeight(listEl, boxBefore);     /* 外框高度也演（同上，用户 2026-09-14 的第一条） */
+      syncGhostLayers(boxAfter);              /* 幽灵的裁切层跟着外框一起缩，不然后半段又会露到框外 */
     };
 
     if (query) {
@@ -1409,6 +1424,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       if (!nodeHits.length && !entHits.length) {
         listEl.innerHTML = '<div style="font-size:var(--text-xs);color:var(--fg-2);padding:4px;">没有匹配的条目。</div>';
         rowTops = new Map();
+        smoothBoxHeight(listEl, boxBefore);   /* 这条早退路径也要演，否则搜不到东西时框会"啪"地缩 */
         return;
       }
       nodeHits.forEach((h) => {
@@ -1527,13 +1543,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
            「**没有像入场一样的错分**」—— 入场是从上往下一行行出来，退场就该是从上往下一行行走；
            倒过来播等于波浪反向，跟入场对不上。
            ⚠️ **"下面的行补位"要等这一枝走完**（用户 2026-09-14：「应该是**文件先消失，下面的文件夹
-           再移上来**，现在反了，下面的移上来后文件再消失」）：所以 `collapse()` 里先把这一枝的退场总
-           时长写进 `flipDelayMs`，`renderList()` 里那次 FLIP 会带着这个延迟（`fill:'both'` 冻在旧位置），
-           退场干净之后才往上补位。 */
+           再移上来**，现在反了，下面的移上来后文件再消失」）—— 但**不是等满**：见 `FLIP_OVERLAP`
+           （第二天的反馈"收起的动画快一点，有一点停滞感"就是等满造成的）。 */
         const collapse = (wasOpen: boolean): HTMLElement[] => {
           if (!wasOpen) return [];
           const g = ghostRows(descendantsOf(el));
-          flipDelayMs = rowsLeaveTotal(g.length, EXIT);
+          flipDelayMs = Math.round(rowsLeaveTotal(g.length, EXIT) * FLIP_OVERLAP);
           return g;
         };
         const leave = (ghosts: HTMLElement[]): void => { if (ghosts.length) rowsLeaveAndRemove(ghosts, EXIT); flipDelayMs = 0; };

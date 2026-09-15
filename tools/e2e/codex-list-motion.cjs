@@ -150,9 +150,12 @@ async function main() {
     const geoBefore = nodeRows().map((e) => ({ padL: getComputedStyle(e).paddingLeft, left: Math.round(e.getBoundingClientRect().left) }));
     /* ⚠️ 只认**这一次点击刚造出来**的幽灵：同一时刻页面上可能还挂着上一批（收起 A 没演完又收起 B，
        兜底定时器要 680ms 才摘），按数量直接数会数进别人的。 */
-    const pre = new Set([...document.body.children]);
+    const pre = new Set([...document.querySelectorAll('.lk-ghost-layer .lk-list-ghost')]);
     kind().click();                                   /* 收起「事件」 */
-    const ghosts = [...document.body.children].filter((e) => !pre.has(e) && e.classList.contains('lk-list-ghost'));
+    /* ⚠️ 幽灵不再直接挂 document.body 了（2026-09-14：它们搬进贴着外框的裁切层 .lk-ghost-layer），
+       所以按"层内的幽灵"找；**同时必须扣掉点击前就挂着的那一批** —— 同一时刻可能还演着上一批
+       （收起 A 没完又收起 B），不扣就会数进别人的（实测 before:1 却数到 6 个）。 */
+    const ghosts = [...document.querySelectorAll('.lk-ghost-layer .lk-list-ghost')].filter((g) => !pre.has(g));
     /* 「事件」这一枝下面还挂着 _設定 那一大枝 ⇒ 它们要**等退场走完**才往上补位
        （★4f：用户 2026-09-14「应该是文件先消失，下面的文件夹再移上来，现在反了」）。 */
     const below = [...document.querySelectorAll('#cx-list [data-cx-key]')]
@@ -160,9 +163,9 @@ async function main() {
     /* 再收起**行数最多**的那一枝（_設定：5 个类型 + 里面的实体）来量错峰的**顺序与总量** ——
        「事件」底下只有 1~2 行，量不出"一行比一行晚"。（测完由调用方展开回来。） */
     const setRow = [...document.querySelectorAll('#cx-list .ed-tset')][0];
-    const pre2 = new Set([...document.body.children]);
+    const pre2 = new Set([...document.querySelectorAll('.lk-ghost-layer .lk-list-ghost')]);
     if (setRow) setRow.click();
-    const big = [...document.body.children].filter((e) => !pre2.has(e) && e.classList.contains('lk-list-ghost'));
+    const big = [...document.querySelectorAll('.lk-ghost-layer .lk-list-ghost')].filter((e) => !pre2.has(e));
     return { before, ghosts: ghosts.length,
       ghostText: ghosts.map((g) => (g.textContent || '').trim().slice(0, 12)),
       ghostAnim: ghosts.map((g) => window.__anim(g)),
@@ -191,10 +194,10 @@ async function main() {
      第一版用了 `[...ghosts].reverse()` 且不限量：44 行时第一行要等 946ms 才动，看着就是"卡住然后整片消失"
      （用户：「没有像入场一样的错分」）。 */
   const gDelays = t4c.bigDelays ?? [];
-  check('★4e 退场错峰与入场同序（0/22/44…，按 DOM 从上往下）且总量 ≤240ms',
-    gDelays.length >= 4 && gDelays[0] === 0 && gDelays[1] === 22
+  check('★4e 退场错峰与入场同序（0/14/28…，按 DOM 从上往下）且总量 ≤120ms',
+    gDelays.length >= 4 && gDelays[0] === 0 && gDelays[1] === 14
       && gDelays.every((d, i) => d >= 0 && (i === 0 || d >= gDelays[i - 1]))
-      && Math.max(...gDelays) <= 240,
+      && Math.max(...gDelays) <= 120,
     { delays: gDelays, bigCount: t4c.bigCount });
   /* ★4f 顺序：**里面的文件先消失，下面的行再移上来**（不是同时）。
      用户 2026-09-14：「应该是文件先消失，下面的文件夹再移上来，现在反了，下面的移上来后文件再消失」。
@@ -206,25 +209,92 @@ async function main() {
   const c1Dur = t4c.ghostAnim?.[0]?.[0]?.dur ?? 0;
   const c1Total = c1Delays.length ? Math.max(...c1Delays) + c1Dur : 0;
   const below = t4c.below ?? [];
-  check('★4f 收起时"下面的行补位"**等这一枝退场走完**（FLIP delay = 退场总时长，fill:both 冻在旧位置）',
+  check('★4f 收起时"下面的行补位"**等这一枝退场走了一多半**才动（FLIP delay 与退场总时长咬合、fill:both 冻在旧位置）',
     below.length >= 1 && c1Total > 0
-      && below.every((x) => x.a[0].delay === c1Total && x.a[0].fill === 'both'
+      && below.every((x) => x.a[0].fill === 'both' && x.a[0].delay > 0 && x.a[0].delay <= c1Total
+        && x.a[0].delay >= Math.round(c1Total * 0.4) && x.a[0].delay <= Math.round(c1Total * 0.75)
         && /^translateY\([0-9.]+px\)\/$/.test(x.a[0].from)),
-    { exitTotal: c1Total, exitDelays: c1Delays, below: below.map((x) => ({ key: x.key, a: x.a[0] })) });
+    { exitTotal: c1Total, below: below.map((x) => ({ key: x.key, a: x.a[0] })) });
   /* ⚠️ `open1` 里混着两类动画：**展开露出来的行**（下弹，`translateY(-8px)/0 → none/1`）与
      **让位的行**（FLIP，`translateY(±)/  → none/`）。只拿前者来比，不然 FLIP 的位移会把交叉断言搅黄。 */
   const inFrom = (t2.open1 ?? []).map((x) => x.a[0]).filter((a) => a && a.to === 'none/1').map((a) => a.from);
   const inTo = (t2.open1 ?? []).map((x) => x.a[0]).filter((a) => a && a.from === 'translateY(-8px)/0').map((a) => a.to);
-  check('★4c2 幽灵演的是**入场（向下弹出）的倒放**：none/1 → translateY(-8px)/0，260ms',
+  check('★4c2 幽灵演的是**入场（向下弹出）的倒放**：none/1 → translateY(-8px)/0，180ms',
     t4c.ghostAnim.length >= 1
       && inFrom.length >= 1
-      && t4c.ghostAnim.every((a) => a[0].from === 'none/1' && a[0].to === 'translateY(-8px)/0' && a[0].dur === 260)
+      && t4c.ghostAnim.every((a) => a[0].from === 'none/1' && a[0].to === 'translateY(-8px)/0' && a[0].dur === 180)
       /* 逐项互为反向：出场的终点 = 入场的起点（-8px/0）、出场的起点 = 入场的终点（none/1） */
       && inFrom.every((f) => t4c.ghostAnim.every((a) => a[0].to === f))
       && inTo.every((t) => t4c.ghostAnim.every((a) => a[0].from === t)),
     { ghostAnim: t4c.ghostAnim, inFrom, inTo });
   const ghostGone = await waitFor(() => ev(`[...document.body.children].filter((e) => e.style.zIndex === '860').length === 0`), 3000);
   check('★4c3 退场演完幽灵自己摘掉（不留一个看不见的浮层压在页面上）', ghostGone);
+
+  /* ── ★4g/★4h/★4i/★4j 「最外面那个框」+ 幽灵的裁切层 ────────────────────────────
+     用户 2026-09-14：「**文件树最外面的框也要做平滑切换**，而且**关文件夹时部分文件会超出这个框**」。
+     两件事同一个机制：外框高度是内容撑的（收起一枝时**同一 tick** 从 327 → 23，实测），
+     而退了场的行是挂在 `document.body` 上的 `position:fixed` 克隆体 —— 既不受框裁切、也不跟着缩，
+     于是"飘"到缩小后的框外面。修法 = ① `smoothBoxHeight()` 把框高演出来（动画期间 `overflow:hidden`）；
+     ② 幽灵住进一层**贴着框、`overflow:hidden`** 的裁切层（`.lk-ghost-layer`），层高跟着框一起缩。 */
+  await ev(`(() => { const w = document.querySelector('#cx-list [data-act="world"]');
+    if (w && !w.classList.contains('is-open')) w.click(); return true; })()`);
+  await sleep(500); await forceFrames(2);
+  const t4g = await ev(`(() => {
+    const el = document.querySelector('#cx-list');
+    const h0 = Math.round(el.getBoundingClientRect().height);
+    const pre = new Set([...document.querySelectorAll('.lk-ghost-layer')]);
+    document.querySelector('#cx-list [data-act="world"]').click();          /* 收起整个世界 */
+    const tick = Math.round(el.getBoundingClientRect().height);             /* 同一 tick 还不许缩 */
+    const boxAnim = el.getAnimations().map((a) => { const k = a.effect.getKeyframes(); const t = a.effect.getTiming();
+      return { from: k[0].height, to: k[k.length - 1].height, dur: t.duration }; });
+    const ovf = getComputedStyle(el).overflow;
+    const lay = [...document.querySelectorAll('.lk-ghost-layer')].filter((l) => !pre.has(l)).pop();
+    const br = el.getBoundingClientRect();
+    const lr = lay ? lay.getBoundingClientRect() : null;
+    const ghosts = lay ? [...lay.querySelectorAll('.lk-list-ghost')] : [];
+    const inside = !!lr && ghosts.length > 0 && ghosts.every((g) => { const r = g.getBoundingClientRect();
+      return r.top >= lr.top - 0.5 && r.bottom <= lr.bottom + 0.5 && r.left >= lr.left - 0.5 && r.right <= lr.right + 0.5; });
+    return { h0, tick, boxAnim, ovf, ghosts: ghosts.length,
+      layerOvf: lay ? getComputedStyle(lay).overflow : null,
+      layerInlineH: lay ? lay.style.height : null,
+      layerTransition: lay ? getComputedStyle(lay).transitionProperty : null,
+      layerMatchesBox: !!lr && Math.abs(lr.top - br.top) < 1 && Math.abs(lr.left - br.left) < 1 && Math.abs(lr.width - br.width) < 1,
+      ghostPos: ghosts[0] ? getComputedStyle(ghosts[0]).position : null, inside,
+      ghostAnim: ghosts[0] && ghosts[0].getAnimations()[0]
+        ? (() => { const k = ghosts[0].getAnimations()[0].effect.getKeyframes();
+            return { from: (k[0].transform || '') + '/' + (k[0].opacity ?? ''), to: (k[k.length - 1].transform || '') + '/' + (k[k.length - 1].opacity ?? '') }; })() : null };
+  })()`);
+  /* ⚠️ 两个量法上的坑（都踩过）：
+     ① 「同一 tick 高度不变」与「这次收起确实缩了一大截」是两件事 —— 写成 `h0 > tick + 50` 就把
+        "没缩"当成了"缩得多"，直接自相矛盾（90px 的树收成 23px 时 t4g 假挂）；
+     ② 隐藏窗口里动画**不推进**（铁律 6）⇒ 别去断言层的**渲染高度**已经跟上框，要看它的
+        **目标值**（`lay.style.height` = 框动画的终点高度）+ `transitionProperty` 里有 height。 */
+  check('★4g 外框高度是**演**出来的：同一 tick 高度不变 + 框上挂着 height 动画（缩掉一大截），动画期间 overflow:hidden',
+    t4g.tick === t4g.h0 && t4g.ovf === 'hidden'
+      && (t4g.boxAnim ?? []).length >= 1 && (t4g.boxAnim[0].dur ?? 0) > 0
+      && parseFloat(t4g.boxAnim[0].from) - parseFloat(t4g.boxAnim[0].to) > 50,
+    t4g);
+  check('★4h 收起时的幽灵住在**贴着外框的裁切层**里（不是散在 body 上）：层 overflow:hidden、贴合框、里面的行全在层内',
+    t4g.ghosts >= 1 && t4g.layerOvf === 'hidden' && t4g.layerMatchesBox && t4g.ghostPos === 'absolute' && t4g.inside
+      && t4g.ghostAnim && t4g.ghostAnim.from === 'none/1' && t4g.ghostAnim.to === 'translateY(-8px)/0',
+    t4g);
+  check('★4i 幽灵的裁切层**跟着外框一起缩**：层的目标高度 = 框动画的终点高度（有 height 过渡）',
+    !!t4g.layerInlineH && !!t4g.boxAnim?.[0]
+      && Math.abs(parseFloat(t4g.layerInlineH) - parseFloat(t4g.boxAnim[0].to)) < 1
+      && /height/.test(String(t4g.layerTransition)),
+    { layerInlineH: t4g.layerInlineH, boxTo: t4g.boxAnim?.[0]?.to, transition: t4g.layerTransition });
+  const layerGone = await waitFor(() => ev(`document.querySelectorAll('.lk-ghost-layer').length === 0`), 3000);
+  const restored = await waitFor(async () => {
+    const r = await ev(`(() => { const el = document.querySelector('#cx-list');
+      return { ovf: getComputedStyle(el).overflow, anims: el.getAnimations().length }; })()`);
+    return r && r.ovf !== 'hidden' && r.anims === 0 ? r : null;
+  }, 3000);
+  check('★4j 演完连裁切层一起摘掉，并且外框的 overflow 还回去（不留常驻的 hidden）',
+    layerGone && !!restored, { layerGone, restored });
+  /* 把世界展开回来（后面 ★5 要在树里点实体行） */
+  await ev(`(() => { const w = document.querySelector('#cx-list [data-act="world"]');
+    if (w && !w.classList.contains('is-open')) w.click(); return true; })()`);
+  await sleep(520); await forceFrames(2);
   await ev(`(() => {
     const k = [...document.querySelectorAll('#cx-list .ed-tkind')].find((e) => e.textContent.includes('事件')); if (k) k.click();
     const s = [...document.querySelectorAll('#cx-list .ed-tset')][0]; if (s) s.click();   /* _設定 也展开回来（★5 要点里面的实体行） */
@@ -244,15 +314,18 @@ async function main() {
   })()`);
   await sleep(150);
   const t5 = await ev(`(() => {
-    const ghosts = [...document.body.children].filter((e) => e.style.position === 'fixed' && e.style.zIndex === '900');
+    /* 被删那一行的幽灵也住在**裁切层**里了（层带 z-index:900，幽灵本身没有） */
+    const lay = [...document.body.children].find((e) => e.style.position === 'fixed' && e.style.zIndex === '900');
+    const ghosts = lay ? [...lay.querySelectorAll('.lk-list-ghost')] : [];
     return { ghosts: ghosts.length, ghostText: ghosts.map((g) => (g.textContent || '').trim().slice(0, 10)),
       ghostAnim: ghosts.map((g) => window.__anim(g)),
+      layerOvf: lay ? getComputedStyle(lay).overflow : null,
       flip: window.__rows().filter((e) => e.getAnimations().length).map((e) => ({ key: e.getAttribute('data-cx-key'), a: window.__anim(e) })),
       rows: window.__rows().length };
   })()`);
-  check('★5 删除确认后，被删的那一行留了一个**钉在原位**的幽灵在演退场（它自己已经被移出列表了）',
-    confirmed && t5.ghosts === 1 && !!victim && t5.ghostText[0].startsWith(victim.name),
-    { confirmed, victim, ghosts: t5.ghosts, ghostText: t5.ghostText });
+  check('★5 删除确认后，被删的那一行留了一个**钉在原位的幽灵**在演退场（它自己已经被移出列表了）',
+    confirmed && t5.ghosts === 1 && t5.layerOvf === 'hidden' && !!victim && t5.ghostText[0].startsWith(victim.name),
+    { confirmed, victim, ghosts: t5.ghosts, ghostText: t5.ghostText, layerOvf: t5.layerOvf });
   check('★5b 幽灵演的是「往左退场」（none/1 → translateX(-24px)/0，慢→快）',
     (t5.ghostAnim[0] ?? []).length === 1 && t5.ghostAnim[0][0].from === 'none/1' && t5.ghostAnim[0][0].to === 'translateX(-24px)/0',
     { ghostAnim: t5.ghostAnim });

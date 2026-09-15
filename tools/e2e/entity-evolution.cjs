@@ -208,6 +208,68 @@ async function main() {
   check('★0f2 虚化是**真的**虚化（整格半透明，不是只是换个颜色/点点）',
     g1.opacity.length === 3 && g1.opacity.every((o) => Number(o) < 0.6), g1.opacity);
 
+  /* ── ★0f3/★0f4 帧条上的"展开/收起"也是平滑切换（2026-09-14 用户：「git 管理面板里面的展开也做成
+     平滑切换」）────────────────────────────────────────────────────────────────────
+     与左树文件夹同一套：展开时新出现的虚化行**逐行往下弹出来**（`translateY(-8px)/0 → none/1`，260ms、
+     错峰 22ms）；收起时它们先化成**幽灵**（克隆进一层贴着帧条滚动盒的裁切层，`overflow:hidden`）
+     演一次退场（`none/1 → translateY(-8px)/0`）+ 层末了自己摘掉。
+     ⚠️ 读数必须与点击写在**同一个 eval** 里（WAAPI 动画只在那一 tick 抓得到），且**不能在点击前抓
+     `.lk-rail__rows` 的引用** —— `render()` 会把 `host.innerHTML` 整块换掉，老引用是脱离文档的。 */
+  const treeAnim = (el) => `(() => {
+    const k = ${el}.getAnimations()[0]; if (!k) return null;
+    const a = k.effect.getKeyframes(); const t = k.effect.getTiming();
+    return { from: (a[0].transform || '') + '/' + (a[0].opacity ?? ''), to: (a[a.length - 1].transform || '') + '/' + (a[a.length - 1].opacity ?? ''),
+      delay: t.delay, dur: t.duration }; })()`;
+  const expAnim = await ev(`(() => {
+    const more = () => document.querySelector('.lk-rail__more');
+    if (!more()) return { err: 'no more row' };
+    const rowN = () => document.querySelectorAll('.lk-rail__rows .lk-rail__row').length;
+    /* ⚠️ 铁律 14「点一下展开之前先读状态」：上一条 ★0f 已经把它展开了，盲点一次会变成"收起"
+       （实测：盲点导致 ★0f3/★0f4/★0g/★0h 连带后面版本类断言共 16 条一起假挂）。 */
+    if (document.querySelector('.lk-rail__rows .lk-rail__row.is-ghost')) more().click();   /* 先收起来 */
+    const n0 = rowN();
+    more().click();                                                   /* 再展开 —— 这一 tick 抓动画 */
+    const rows = [...document.querySelectorAll('.lk-rail__rows .lk-rail__row')];
+    const fresh = rows.filter((r) => r.classList.contains('is-ghost'));
+    return { n0, n1: rows.length, ghostN: fresh.length, animN: fresh.filter((r) => r.getAnimations().length).length,
+      anim: fresh[0] ? ${treeAnim('fresh[0]')} : null };
+  })()`);
+  check('★0f3 点展开时，新露出来的虚化行**逐行下弹**（translateY(-8px)/0 → 原位，180ms、错峰 14ms）',
+    (expAnim.ghostN ?? 0) === 3 && expAnim.animN === 3
+      && expAnim.anim && expAnim.anim.from === 'translateY(-8px)/0' && expAnim.anim.to === 'none/1'
+      && expAnim.anim.dur === 180 && expAnim.anim.delay === 0, expAnim);
+  await sleep(700);
+  const colAnim = await ev(`(() => {
+    const m = document.querySelector('.lk-rail__more');
+    const pre = new Set([...document.querySelectorAll('.lk-ghost-layer')]);
+    const boxBefore = document.querySelector('.lk-rail__rows').getBoundingClientRect();
+    m.click();
+    const layers = [...document.querySelectorAll('.lk-ghost-layer')].filter((l) => !pre.has(l));
+    const lay = layers[layers.length - 1];
+    const box = document.querySelector('.lk-rail__rows').getBoundingClientRect();   /* ⚠️ 重新取，别用点击前的引用 */
+    const lr = lay ? lay.getBoundingClientRect() : null;
+    const ghosts = lay ? [...lay.querySelectorAll('.lk-list-ghost')] : [];
+    return { layers: layers.length, ghosts: ghosts.length, rows: document.querySelectorAll('.lk-rail__rows .lk-rail__row').length,
+      layerOvf: lay ? getComputedStyle(lay).overflow : null,
+      /* ⚠️ 隐藏窗口里动画不推进（铁律 6）⇒ 不能比**渲染高度**（过渡刚开始，量到的还是旧值），
+         要比**目标值**：层的 height 已被设成收起后帧条盒子的高度。 */
+      layerTargetH: lay ? lay.style.height : null, boxAfterH: box ? Math.round(box.height) + 'px' : null,
+      transProp: lay ? getComputedStyle(lay).transitionProperty : null,
+      animN: ghosts.filter((g) => g.getAnimations().length).length,
+      anim: ghosts[0] ? ${treeAnim('ghosts[0]')} : null, boxSame: Math.abs(box.height - boxBefore.height) < 2 };
+  })()`);
+  check('★0f4 点收起时，那些虚化行先化成**裁在帧条里的幽灵**演退场（none/1 → 往上升 8px），行数当场就少了',
+    colAnim.layers === 1 && colAnim.ghosts === 3 && colAnim.rows === (expAnim.n0 ?? 0)
+      && colAnim.layerOvf === 'hidden' && /height/.test(colAnim.transProp || '')
+      && colAnim.layerTargetH === colAnim.boxAfterH
+      && colAnim.anim && colAnim.anim.from === 'none/1' && colAnim.anim.to === 'translateY(-8px)/0'
+      && colAnim.anim.dur === 180, colAnim);
+  const railLayerGone = await waitFor(() => ev(`document.querySelectorAll('.lk-ghost-layer').length === 0`), 3000);
+  check('★0f5 帧条的幽灵演完，连裁切层一起摘掉（页面上不留空的浮层）', railLayerGone);
+  /* 展开回来（★0g 要点虚化行换锚点） */
+  await clickMore();
+  await sleep(700);
+
   /* 点虚化行 = 换「记到」。先把锚点挪到 n-evo-1，再点 n-evo-3 那一行：
      这样既证明"点得动"，又让锚点**回到**原值 n-evo-3（后面 ★2 还要断言它）。 */
   const noteBefore = await versionNote();

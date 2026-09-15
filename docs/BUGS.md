@@ -577,6 +577,41 @@ FLIP delay = 退场总时长（两条都由量出来的数比，不写死）、`
 修法方向（未做）：让 `reset-entity-vault.cjs` 既铺 `entityTypes` 又在硬盘上建五个类型空文件夹 ——
 本轮试过一次，反而把 `codex-node-tab` 的树层级断言带崩（15/22），遂回退，先如实记档。
 
+### 十九、左树外框不平滑、收起的行"跑出框外"、帧条展开是硬切（用户 2026-09-14 三条 + 一条追加）
+
+用户原话：「**文件树最外面的框也要做平滑切换，而且关文件夹时部分文件会超出这个框，git管理面板里面的展开也做成平滑切换**」→ 随后：「**文件收起的动画快一点，现在有一点停滞感**」。
+
+**实测根因**（探针 `%TEMP%\lk-p3.cjs` / `lk-p4.cjs` / `lk-p5.cjs`）：
+
+| 量 | 值 |
+|---|---|
+| `#cx-list`（左树那个框）展开态高 | **327px** |
+| 收起世界后**同一 tick** | **23px**（无动画，硬切） |
+| 幽灵原来的落点 | 直接挂 `document.body` + `position:fixed` + `z-index:860/900` ⇒ 既不受外框裁切、也不跟着框缩 |
+
+⇒ 两件事一个病根：框自己的高度没人管（内容撑的），幽灵又住在框外面，所以"关文件夹时部分文件**超出这个框**"。
+
+**修法（`src/ui/motion.ts` 三个新原语 + 两处调用）**
+- `ghostLayerFor(clip, z = 860)`：造一层**贴着 `clip` 位置**的 `position:fixed; overflow:hidden` 裁切层挂到 body（`motionReduced()` 返回 null）；`cloneIntoLayer(layer, rect, el, cls?)`：把行克隆进层、坐标换算成层内坐标、`position:absolute`、摘掉所有 `[id]`（**不许写 `padding:0`** —— 缩进就是各层的 `padding-left`，清零会让幽灵往左跳）；`smoothBoxHeight(el, from, {dur = 240})`：把框钉在旧高度演到新高度，动画期间临时 `overflow:hidden`，演完还回去。
+- `src/ui/codex.ts`：`ghostRows()`/`pinRowGhost()` 都改成造层 + 克隆（`ghostLayerFor(#cx-list, 860/900)` + `cloneIntoLayer(..., 'lk-list-ghost')`）；`renderList()` 开头量 `boxBefore`，`done()` 里量 `boxAfter`（**必须在 `smoothBoxHeight` 之前量**，否则拿到的是动画起点）→ `smoothBoxHeight` + `syncGhostLayers(boxAfter)`（活着的层高度设成目标高度，配 CSS 过渡一起缩）。
+- `src/style.css`：`.lk-ghost-layer { overflow:hidden; pointer-events:none; transition: height 240ms cubic-bezier(0.16,1,0.3,1) }`。
+- `src/ui/evolution-rail.ts`：帧条的 `[data-rail-toggle]` 不再硬切 —— 展开时新露出的虚化行走 `rowsDropIn`，收起时先把它们克隆进贴着 `.lk-rail__rows` 的裁切层走 `rowsLeaveAndRemove`，**并把层高设成收起后盒子的高度**（否则退场中的行会露出帧条框外，与左树同病）。
+
+**提速（用户追加要求）**：`EXIT` 从 `{ dy: 8, dur: 260, step: 22 }` → **`{ dy: 8, dur: 180, step: 14, maxDelay: 120 }`**（两处：`src/ui/codex.ts`、`src/ui/evolution-rail.ts`）；新增 **`FLIP_OVERLAP = 0.55`**：`flipDelayMs = Math.round(rowsLeaveTotal(n, EXIT) * FLIP_OVERLAP)` —— 不再等整枝走完才补位（"停一拍再上移"的停滞感来源），顺序仍是"文件先动、下面的行后动"。
+
+**两个自己踩出来的 bug（都在收尾时被抓出来）**
+1. **`pinRowGhost()` 忘了给克隆体挂 `lk-list-ghost` 类** ⇒ 删除时那一行的幽灵在层里"存在但认不出"：测试数到 `ghosts: 0`、`rowLeaveAndRemove` 也认不出它而**留下一个空的 900 层**压在页面上。
+2. **`rowLeaveAndRemove`（单数）没做"层空了就摘层"**（上一轮只给了 `rowsLeaveAndRemove` 复数版）⇒ 同上，层的清理只能靠兜底超时。
+
+**测试**：`codex-list-motion.cjs` 20 → **24 项**（★4g 框高度是演的、★4h 幽灵住在裁切层里且全在层内、★4i 层的目标高度 = 框动画终点、★4j 演完层摘掉且 `overflow` 还回去）；`entity-evolution.cjs` 46 → **49 项**（★0f3 展开逐行下弹、★0f4 收起时裁切层里的幽灵退场 + 层高跟到盒子、★0f5 层演完摘掉）。老断言按新参数更新：★4e 错峰 `14`/封顶 `120`、★4c2 `dur 180`、★5/★5b/★5d 改成**层里找幽灵**（900 现在是层、幽灵本体不再有 z-index）。
+
+**⚠️ 两条教训（比改动本身重要）**
+1. **改 fixture 脚本 = 改数据，回退脚本不够**。本轮试过一次"让 `reset-entity-vault.cjs` 既铺 `entityTypes` 又在硬盘上建五个类型空文件夹"，试完把脚本 `git checkout` 回退了，**但那次运行已经把 `fields` 写成对象**（`{描述:'text'}`）存进 `%TEMP%\lk-evault2\worldbuilding.json`。于是 `src/store/actions.ts` 的 `addEntity` 里
+   `for (const f of ws.entityTypes?.[typeId]?.fields ?? [])` 抛 **`TypeError: object is not iterable (cannot read property Symbol(Symbol.iterator))`**：点「＋新建」静默失败、`codex-list-motion` 崩到 **7/24**。
+   恢复法 = **删掉整个测试目录重建**：① `seed-node.cjs` ② 起一次应用让扫描写出 `worldbuilding.json`（`fields` 是**数组**）③ 关应用 ④ `reset-entity-vault.cjs` + `seed-node.cjs` ⑤ 再起实例跑套件。之后 `codex-node-tab`/`codex-tree-view` 从 17/18、21/22 回到 **18/18、22/22**。
+2. **新写的断言违反了本项目自己的铁律 14**（"点一下展开之前先读状态"）：★0f 已经把帧条展开了，我又写的 ★0f3 里**盲点**一次 toggle 变成"收起" ⇒ ★0f3/★0f4/★0g/★0h 立刻挂，**并且把后面 16 条版本类断言一起带崩（30/49）**；因为 `git stash` 退回源文件后**同样 30/49、同样 19 条**，我一度以为是自己这几条改动引起的回归（A/B 的价值也在这：它证明"不是源文件的问题"）。修法 = ★0f3 自己先读 `is-ghost` 再决定点不点（并把"收起后行数"当断言）。
+   ⚠️ 另一个测试写法：隐藏窗口里动画不推进（铁律 6）⇒ ★0f4 不能比**渲染高度**（过渡刚开始量到的还是旧值），要比**目标值** `lay.style.height === box.height + 'px'`。
+
 ## 第二十一轮（2026-09-13）· 演变：实体的版本历史（新功能 + 两条自查出来的 bug）
 
 > **目的**（用户 2026-09-12 提、09-13 细化）：给每个世界一套 git ——

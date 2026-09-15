@@ -19,6 +19,7 @@ import { currentWorld } from '../store/store';
 import type { Entity, TimelineNode } from '../store/types';
 import { epochOfNodes, isEmptyPatch, patchSummary, versionAtNode } from '../store/evolution';
 import { escapeHtml } from './html';
+import { cloneIntoLayer, ghostLayerFor, rowsDropIn, rowsLeaveAndRemove } from './motion';
 import { loadSettings } from './settings';
 
 export interface RailDeps {
@@ -66,6 +67,9 @@ export function createEvolutionRail(deps: RailDeps): Rail {
      **不改**正在看的版本（那一版还不存在，没什么可看）。
      状态放这里而不是 render 里重建，否则一重画就弹回收起。 */
   let showAll = false;
+  /** 帧条上"展开/收起"用的动效参数：与左树文件夹的弹出/收回**同一档**（往上 8px、180ms、错峰 14ms、
+   *  封顶 120ms —— 2026-09-14 用户：「文件收起的动画快一点，现在有一点停滞感」，两处一起调快才是一套）。 */
+  const EXIT = { dy: 8, dur: 180, step: 14, maxDelay: 120 } as const;
   /* 节点 epoch 只按世界缓存：拖帧条、改字段都会重画这一条，不必每次都算年表 */
   let cacheWorld = '';
   let cacheEpoch: Map<string, number> = new Map();
@@ -259,7 +263,30 @@ export function createEvolutionRail(deps: RailDeps): Rail {
     if (add) { deps.onAddFrame(add.dataset.railAdd || ''); return; }
     const del = el.closest<HTMLElement>('[data-rail-del]');
     if (del) { deps.onDeleteFrame(del.dataset.railDel || ''); return; }
-    if (el.closest('[data-rail-toggle]')) { showAll = !showAll; render(); return; }
+    /* 「▾ 展开全部事件 / ▴ 只看有版本的」：不是硬切，虚化行**逐行往下弹出来**；收起时它们先化成
+       幽灵（钉在原位、裁在帧条的滚动盒里）演一次退场，再连同"收起"一起消失 ——
+       与左树文件夹的展开/收起同一套原语（用户 2026-09-14：「git 管理面板里面的展开也做成平滑切换」）。 */
+    if (el.closest('[data-rail-toggle]')) {
+      const rowBox = host.querySelector<HTMLElement>('.lk-rail__rows');
+      const before = new Set([...host.querySelectorAll<HTMLElement>('.lk-rail__row')].map((r) => r.dataset.rail ?? ''));
+      /* 收起前先克隆：克隆必须在 `render()` 之前（`host.innerHTML` 一换它们就没了） */
+      const dying = showAll ? [...host.querySelectorAll<HTMLElement>('.lk-rail__row.is-ghost')] : [];
+      const lay = rowBox && dying.length ? ghostLayerFor(rowBox, 860) : null;
+      const ghosts = lay ? dying.map((r) => cloneIntoLayer(lay.layer, lay.rect, r, 'lk-list-ghost')) : [];
+      showAll = !showAll;
+      render();
+      const fresh = [...host.querySelectorAll<HTMLElement>('.lk-rail__row')].filter((r) => !before.has(r.dataset.rail ?? ''));
+      /* 收起来之后 `.lk-rail__rows` 自己也矮了 ⇒ 让那一层裁切层跟着新高度缩（配 `.lk-ghost-layer` 的
+         CSS height 过渡）：否则层还停在旧高度上，退场中的虚化行会**露出帧条的框外**——
+         与左树"关文件夹时部分文件超出这个框"同一个病根（用户 2026-09-14 报过）。 */
+      if (lay) {
+        const boxAfter = host.querySelector<HTMLElement>('.lk-rail__rows');
+        if (boxAfter) lay.layer.style.height = boxAfter.offsetHeight + 'px';
+      }
+      if (ghosts.length) rowsLeaveAndRemove(ghosts, EXIT);
+      else if (fresh.length) rowsDropIn(fresh, EXIT);
+      return;
+    }
     const row = el.closest<HTMLElement>('[data-rail]');
     if (row) {
       if (loadSettings().evolveMode === 'locked') return;   /* 锁定模式：视图也钉在锁定点（见设置里的说明） */

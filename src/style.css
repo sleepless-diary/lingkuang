@@ -693,6 +693,14 @@ body {
   overflow: hidden;
   pointer-events: none;
 }
+/* 幽灵的**裁切层**：贴在左树外面那个框上（位置/尺寸由 `ghostLayerFor()` 写死在行内），
+   退场的行住在里面 ⇒ 被框裁住，不会飘到框外（用户 2026-09-14：「关文件夹时部分文件会超出这个框」）。
+   `height` 的过渡与 `smoothBoxHeight()` 同一档（320ms / 同一曲线）：外框一边缩，这层跟着缩。 */
+.lk-ghost-layer {
+  overflow: hidden;
+  pointer-events: none;
+  transition: height 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
 /* 错峰容器：子项按序号依次浮现。两种用法共用这一个类，区别是**类留不留**：
    ① 常驻（页签栏：`staggerIn()`，容器长期活着、子项随时被换掉 ⇒ 新子项自动有错峰）；
    ② 一次性（工具打开 / 换页签 / 换条目：`cascadeIn()`，跑完把类摘掉，否则工具下次整块重渲染
