@@ -1,0 +1,211 @@
+/* agent-tools.cjs —— 灵框助手的「动作」（片 3：只读即执行 / 写入变提议卡片 / 三档权限）
+ *
+ * 不变量（这份套件守的就是这四条）：
+ *   ① 只读动作**立刻执行**，结果作为下一轮喂回模型（不是显示给你看就完了）；
+ *   ② 写入动作**不直接落盘** —— 变成一张提议卡片，你点「应用」才改数据；
+ *   ③ 权限档位说了算：只读档不执行、逐项确认档出卡片、YOLO 直接执行（写入路径只有一条）；
+ *   ④ 不像动作的回复（工具名不认识 / 前面有散文）**当聊天**，不许悄悄执行。
+ *
+ * ⭐ 最要紧的两条断言：
+ *   ★2 —— 只读结果真的进了**下一轮**喂给模型的 messages（而不是只画在屏幕上）；
+ *   ★5 —— 点「应用」之前，数据一点没动（这才是「提议」的意义）。
+ *
+ * 假引擎：`window.__lkAgentMock`（见 src/ui/agent-model.ts）——本套件用**函数形态**
+ * 顺手把喂进去的 messages 存进 `window.__lkSeen`，好断言提示词里到底有什么。
+ *
+ * 前置（同一 pwsh 调用里做，再重启实例）：
+ *   $env:LINGKUANG_TEST_DATA=<lk-evault2>\worldbuilding.json; $env:LINGKUANG_VAULT=<lk-evault2>\vault
+ *   $env:LINGKUANG_TEST_USERDATA=<lk-evault2>\userdata
+ *   node tools\e2e\reset-entity-vault.cjs; node tools\e2e\seed-node.cjs; node tools\e2e\seed-agent-memory.cjs
+ * 跑：$env:LK_CDP_PORT=9346; node tools\e2e\agent-tools.cjs
+ */
+const path = require('path');
+const PORT = process.env.LK_CDP_PORT || '9346';
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const results = [];
+
+function check(n, ok, extra) {
+  results.push(ok);
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${extra !== undefined ? '   ' + JSON.stringify(extra) : ''}`);
+}
+
+async function main() {
+  /* ---------- 连 CDP ---------- */
+  let target = null;
+  for (let i = 0; i < 120 && !target; i++) {
+    try {
+      const list = await (await fetch(`http://127.0.0.1:${PORT}/json`)).json();
+      target = list.find((t) => t.type === 'page' && t.webSocketDebuggerUrl);
+    } catch { /* 还没起来 */ }
+    if (!target) await sleep(200);
+  }
+  if (!target) { console.log('FAIL 无法连接 CDP ' + PORT); process.exit(1); }
+  const w = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((res, rej) => { w.onopen = res; w.onerror = rej; });
+  let seq = 0;
+  const pending = new Map();
+  w.onmessage = (m) => {
+    const d = JSON.parse(m.data);
+    if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); }
+  };
+  const send = (method, params) => new Promise((res) => {
+    const id = ++seq;
+    pending.set(id, res);
+    w.send(JSON.stringify({ id, method, params: params || {} }));
+  });
+  const ev = async (expr) => {
+    const r = await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
+    const ex = r.result && r.result.exceptionDetails;
+    if (ex) throw new Error('eval: ' + ((ex.exception && ex.exception.description) || ex.text));
+    return r.result && r.result.result ? r.result.result.value : undefined;
+  };
+
+  /* ---------- 打开工作台 + 助手面板 ---------- */
+  await sleep(1500);
+  await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); true`);
+  await ev(`document.querySelector('#lk-toolbar [data-tool="codex"]').click(); true`);
+  await sleep(1200);
+  await ev(`document.querySelector('#cx-list [data-cx-id="e-e2e-1"]').click(); true`);
+  await sleep(600);
+
+  /* 自己把起点摆正：上一份套件（如 agent-memory）可能把助手面板留着开着 ——
+     那样下面 Ctrl+K 反而会把它关掉、后面整串假挂。 */
+  await ev(`(function () { const b = document.getElementById('lk-agent-close'); if (b) b.click(); return true; })()`);
+  await sleep(400);
+
+  const pre = await ev(`({
+    tools: [...document.querySelectorAll('#lk-toolbar .lk-tool-btn')].map((b) => b.dataset.tool),
+    panel: !!document.getElementById('lk-agent-panel'),
+    rows: document.querySelectorAll('#cx-list [data-cx-id]').length,
+    focus: (document.getElementById('lk-agent-focus') || {}).textContent || '',
+  })`);
+  check('★0 前置：工作台与设定库开着、助手按钮在、面板还没开', pre.tools.includes('agent') && pre.panel === false && pre.rows === 1, pre);
+
+  /* ---------- 开面板（Ctrl+K）---------- */
+  await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })); true`);
+  await sleep(500);
+
+  /* 函数形态的假引擎：把每次喂进去的 messages 存起来，回复按队列取 */
+  const setMock = async (queue) => ev(`window.__lkSeen = []; window.__lkMockQ = ${JSON.stringify(queue)}; window.__lkAgentMock = (m) => { window.__lkSeen.push(m); return window.__lkMockQ.length ? window.__lkMockQ.shift() : '好的。'; }; true`);
+  const ask = async (text) => {
+    await ev(`(function () { const t = document.getElementById('lk-agent-input'); t.value = ${JSON.stringify(text)}; document.getElementById('lk-agent-send').click(); return true; })()`);
+    await sleep(1000);
+  };
+  const setPerm = async (p) => {
+    await ev(`(function () { const s = document.getElementById('lk-agent-perm'); s.value = ${JSON.stringify(p)}; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+    await sleep(250);
+  };
+  const rows = () => ev(`document.querySelectorAll('#cx-list [data-cx-id]').length`);
+  const props = () => ev(`[...document.querySelectorAll('#lk-agent-msgs .lk-agent__prop')].map((p) => ({ settled: p.classList.contains('is-settled'), h: (p.querySelector('.lk-agent__prop-h') || {}).textContent || '', note: (p.querySelector('.lk-agent__prop-note') || {}).textContent || '' }))`);
+  const noteText = () => ev(`(document.getElementById('lk-agent-note') || {}).textContent || ''`);
+  const lastBubble = () => ev(`(function () { const b = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__msg.is-ai .lk-agent__bubble')]; return b.length ? b[b.length - 1].textContent : ''; })()`);
+
+  check('★1 面板开出来了（Ctrl+K）', (await ev(`!!document.getElementById('lk-agent-panel')`)) === true);
+
+  /* 权限档也自己摆正（同样防串跑：上一份套件可能停在 YOLO 档）。
+     「默认档就是逐项确认」那条不变量由 agent-memory.cjs ★1 在干净实例上守。 */
+  await setPerm('confirm');
+
+  /* ---------- ① 只读动作立刻执行 ---------- */
+  await setMock(['{"tool":"list_entities","args":{}}', '列表我看过了，设定不多。']);
+  await ask('现在都有哪些设定？');
+  const readRun = await ev(`({
+    calls: document.querySelectorAll('#lk-agent-msgs .lk-agent__call').length,
+    callText: (document.querySelector('#lk-agent-msgs .lk-agent__call') || {}).textContent || '',
+    toolText: (document.querySelector('#lk-agent-msgs .lk-agent__tool') || {}).textContent || '',
+    props: document.querySelectorAll('#lk-agent-msgs .lk-agent__prop').length,
+  })`);
+  check('★2 只读动作自动跑掉了、结果画出来了，而且没出提议卡片',
+    readRun.calls === 1 && readRun.callText.indexOf('list_entities') >= 0 && readRun.toolText.indexOf('银发少女') >= 0 && readRun.props === 0, readRun);
+
+  const seen = await ev(`({
+    n: window.__lkSeen.length,
+    second: window.__lkSeen.length > 1 ? JSON.stringify(window.__lkSeen[1]) : '',
+    first: window.__lkSeen.length ? String(window.__lkSeen[0][0].content) : '',
+  })`);
+  check('★3 ⭐只读结果真的喂回了下一轮（模型看得见，不是只给你看）',
+    seen.n === 2 && seen.second.indexOf('【动作结果：list_entities】') >= 0 && seen.second.indexOf('银发少女') >= 0,
+    { n: seen.n, hasResult: seen.second.indexOf('【动作结果') >= 0, hasName: seen.second.indexOf('银发少女') >= 0 });
+  check('★4 动作协议写进了系统提示（模型才知道能调什么）',
+    seen.first.indexOf('【你能用的动作】') >= 0 && seen.first.indexOf('{"tool":"动作名"') >= 0 && seen.first.indexOf('只读的可以随时用') >= 0,
+    { chars: seen.first.length, hasTools: seen.first.indexOf('【你能用的动作】') >= 0, hasFormat: seen.first.indexOf('{"tool":"动作名"') >= 0 });
+  check('★5 只读动作结束后模型接着用普通话回答', (await lastBubble()).indexOf('列表我看过了') >= 0);
+
+  /* ---------- ② 写入动作在「逐项确认」档 ⇒ 提议卡片 ---------- */
+  const gate0 = await ev(`document.getElementById('lk-agent-panel').dataset.gate`);
+  await setMock(['{"tool":"create_entity","args":{"name":"测试新条目","type":"角色"}}']);
+  await ask('帮我建一条叫「测试新条目」的设定。');
+  const card1 = await props();
+  check('★6 写入动作在默认档变成了提议卡片（gate=' + gate0 + '）',
+    gate0 === 'propose' && card1.length === 1 && card1[0].h.indexOf('测试新条目') >= 0 && (await noteText()).indexOf('应用') >= 0,
+    { gate: gate0, cards: card1, note: await noteText() });
+
+  check('★7 ⭐点「应用」之前，数据一点没动', (await rows()) === 1, { rows: await rows() });
+
+  /* ---------- ③ 点「应用」才落盘 ---------- */
+  await ev(`document.querySelector('#lk-agent-msgs [data-prop-ok="0"]').click(); true`);
+  await sleep(800);
+  const card1b = await props();
+  check('★8 点「应用」之后才真落盘（设定树里多了一行）',
+    (await rows()) === 2 && card1b[0].settled === true && card1b[0].note.indexOf('已新建设定') >= 0,
+    { rows: await rows(), card: card1b[0] });
+
+  /* ---------- ④「忽略」什么都不做 ---------- */
+  await setMock(['{"tool":"create_entity","args":{"name":"测试被忽略","type":"角色"}}']);
+  await ask('再建一条叫「测试被忽略」的。');
+  const card2 = await props();
+  await ev(`document.querySelector('#lk-agent-msgs [data-prop-no="1"]').click(); true`);
+  await sleep(500);
+  const card2b = await props();
+  check('★9 点「忽略」= 什么都不做（树不动、卡片标已忽略）',
+    card2.length === 2 && (await rows()) === 2 && card2b[1].settled === true && card2b[1].note.indexOf('已忽略') >= 0,
+    { cards: card2.length, rows: await rows(), note: card2b[1].note });
+
+  /* ---------- ⑤ 只读档：不给执行 ---------- */
+  await setPerm('readonly');
+  const gateRo = await ev(`document.getElementById('lk-agent-panel').dataset.gate`);
+  await setMock(['{"tool":"create_entity","args":{"name":"测试只读档","type":"角色"}}']);
+  await ask('建一条叫「测试只读档」的。');
+  const ro = { gate: gateRo, cards: (await props()).length, rows: await rows(), note: await noteText() };
+  check('★10 只读档：不出卡片、不落盘、明白告诉你没执行',
+    ro.gate === 'deny' && ro.cards === 2 && ro.rows === 2 && ro.note.indexOf('只读') >= 0, ro);
+
+  /* ---------- ⑥ YOLO：直接执行 ---------- */
+  await setPerm('yolo');
+  const gateYolo = await ev(`document.getElementById('lk-agent-panel').dataset.gate`);
+  await setMock(['{"tool":"create_entity","args":{"name":"测试自动","type":"角色"}}']);
+  await ask('建一条叫「测试自动」的。');
+  const yolo = {
+    gate: gateYolo, cards: (await props()).length, rows: await rows(),
+    stored: await ev(`JSON.parse(localStorage.getItem('lingkuang-settings') || '{}').agentPerm`),
+    note: await noteText(),
+  };
+  check('★11 YOLO 档：不用点，直接就落盘了（档位也存进了设置）',
+    yolo.gate === 'allow' && yolo.cards === 2 && yolo.rows === 3 && yolo.stored === 'yolo' && yolo.note.indexOf('已新建设定') >= 0, yolo);
+
+  /* ---------- ⑦ 不像动作的回复 ⇒ 当聊天 ---------- */
+  const callsBefore = await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__call').length`);
+  await setMock(['{"tool":"fly_to_moon","args":{}}']);
+  await ask('随便试试。');
+  const unknown = { calls: await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__call').length`), cards: (await props()).length, rows: await rows(), last: await lastBubble() };
+  check('★12 工具名不认识 ⇒ 当聊天处理（不执行、不出卡片）',
+    unknown.calls === callsBefore && unknown.cards === 2 && unknown.rows === 3 && unknown.last.indexOf('fly_to_moon') >= 0, unknown);
+
+  await setMock(['你可以这样写：\n{"tool":"create_entity","args":{"name":"测试假调用","type":"角色"}}']);
+  await ask('给我个例子？');
+  const prose = { calls: await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__call').length`), cards: (await props()).length, rows: await rows(), last: await lastBubble() };
+  check('★13 前面带散文的 JSON ⇒ 当聊天（免得举例被误当调用）',
+    prose.calls === callsBefore && prose.cards === 2 && prose.rows === 3 && prose.last.indexOf('你可以这样写') >= 0, prose);
+
+  const errs = await ev(`window.__errs`);
+  check('★14 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
+
+  const pass = results.filter(Boolean).length;
+  console.log(`==== ${pass}/${results.length} PASS ====`);
+  process.exit(pass === results.length ? 0 : 1);
+}
+
+main().catch((e) => {
+  console.log('FAIL 脚本异常: ' + (e && e.stack ? e.stack : String(e)));
+  process.exit(2);
+});

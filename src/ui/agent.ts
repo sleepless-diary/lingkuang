@@ -19,6 +19,7 @@ import {
   setMemorySink, summarizePrefs, updateMemory,
 } from './agent-memory';
 import { PERM_HINT, PERM_LABEL, gateWrite, getAgentPerm, permissionPrompt, setAgentPerm } from './agent-perm';
+import { isWriteTool, parseToolCall, planWrite, runReadTool, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
 import { isImeEnter } from './keys';
 import { escapeHtml } from './html';
 import { loadSettings, type AgentPerm } from './settings';
@@ -46,6 +47,11 @@ let loaded = false;
 let busy = false;
 /** 「＋ 手动加一条」点了之后，列表里多出一行空输入框等着填 */
 let draft = false;
+
+/* 动作（片 3）：`MAX_ROUNDS` = 只读动作最多连着跑几轮（模型看结果 → 再决定），
+   防它在「列设定 → 再看一条 → 再列」里打转。`cards` = 这次会话里还没处理的提议卡片。 */
+const MAX_ROUNDS = 3;
+let cards: { p: Proposal; done?: string; ignored?: boolean }[] = [];
 
 const api = (): any => (window as any).lingkuangAPI;
 
@@ -81,17 +87,63 @@ function persist(): void {
 }
 
 /* ── 渲染 ─────────────────────────────────────────────────────────── */
+/* 动作的调用与结果都是**对话的一部分**（要喂回模型），但显示上不能混成聊天气泡：
+   调用显示成一行「用到动作」，结果显示成一小块说明。 */
+const RESULT_RE = /^【动作结果：([^】]+)】/;
+
+function isCallMsg(m: ChatMsg): boolean {
+  return m.role === 'assistant' && parseToolCall(m.content) !== null;
+}
+
 function msgHtml(m: ChatMsg): string {
+  if (isCallMsg(m)) {
+    const call = parseToolCall(m.content);
+    return `<div class="lk-agent__call">用到动作：${escapeHtml(call?.tool ?? '?')}</div>`;
+  }
+  if (m.role === 'user') {
+    const mm = RESULT_RE.exec(m.content);
+    if (mm) {
+      return (
+        `<div class="lk-agent__tool"><div class="lk-agent__tool-h">${escapeHtml(mm[1])}</div>` +
+        `<pre>${escapeHtml(m.content.slice(mm[0].length).trim())}</pre></div>`
+      );
+    }
+  }
   const who = m.role === 'user' ? 'is-user' : 'is-ai';
   return `<div class="lk-agent__msg ${who}"><div class="lk-agent__bubble">${escapeHtml(m.content)}</div></div>`;
+}
+
+/* 提议卡片：写入动作不直接落盘，先在这里等创作者点头（`应用` / `忽略`） */
+function cardHtml(i: number, c: { p: Proposal; done?: string; ignored?: boolean }): string {
+  const settled = c.done || c.ignored;
+  const acts = settled
+    ? ''
+    : `<div class="lk-agent__prop-acts">` +
+        `<button class="lk-agent__prop-btn is-primary" data-prop-ok="${i}">应用</button>` +
+        `<button class="lk-agent__prop-btn" data-prop-no="${i}">忽略</button>` +
+      `</div>`;
+  const state = c.done
+    ? `<div class="lk-agent__prop-note">${escapeHtml(c.done)}</div>`
+    : c.ignored
+      ? '<div class="lk-agent__prop-note">已忽略</div>'
+      : '';
+  return (
+    `<div class="lk-agent__prop${settled ? ' is-settled' : ''}" data-prop="${i}">` +
+      `<div class="lk-agent__prop-h">${escapeHtml(c.p.title)}</div>` +
+      `<div class="lk-agent__prop-d">${escapeHtml(c.p.detail)}</div>` +
+      acts +
+      state +
+    `</div>`
+  );
 }
 
 function renderMsgs(): void {
   const box = openEl?.querySelector('#lk-agent-msgs');
   if (!box) return;
-  box.innerHTML = history.length
+  const head = history.length
     ? history.map(msgHtml).join('')
     : '<div class="lk-agent__empty">问点什么吧。比如「这条时间线的冲突还缺什么」「帮我把正在编的那条设定写细一点」。</div>';
+  box.innerHTML = head + cards.map((c, i) => cardHtml(i, c)).join('');
   box.scrollTop = box.scrollHeight;
 }
 
@@ -154,6 +206,57 @@ function setNote(text: string, isErr = false): void {
   el.classList.toggle('is-err', isErr);
 }
 
+/* 写入动作：三档权限决定它怎么落地 ——
+   只读 = 不执行（把意图讲给创作者）；逐项确认 = 出一张提议卡片等点「应用」；
+   YOLO = 直接执行。三条路都往历史里塞一条「动作结果」，模型下一轮才知道发生了什么。 */
+function handleWrite(call: ToolCall): void {
+  if (!store) return;
+  const gate = gateWrite();
+  if (gate === 'deny') {
+    history.push({ role: 'user', content: `【动作结果：${call.tool}】现在是「只读」档，没有执行。把你的意图写成创作者能照着改的话。` });
+    setNote('只读档：这次写入没有执行', true);
+    return;
+  }
+  const plan = planWrite(call, store);
+  if (!plan.ok) {
+    history.push({ role: 'user', content: `【动作结果：${call.tool}】${plan.note}` });
+    setNote(plan.note, true);
+    return;
+  }
+  if (gate === 'allow') {
+    const r = plan.proposal.apply();
+    history.push({ role: 'user', content: `【动作结果：${call.tool}】${r.note}` });
+    setNote(r.note);
+    return;
+  }
+  cards.push({ p: plan.proposal });
+  setNote('写了一张提议卡片，点「应用」才落盘');
+}
+
+/* 卡片上的「应用」/「忽略」（事件委托：卡片随消息区一起重画） */
+function onCardClick(e: Event): void {
+  const el = (e.target as HTMLElement).closest('[data-prop-ok], [data-prop-no]') as HTMLElement | null;
+  if (!el) return;
+  const i = Number(el.dataset.propOk ?? el.dataset.propNo ?? '-1');
+  const c = cards[i];
+  if (!c) return;
+  if (el.dataset.propNo !== undefined) {
+    c.ignored = true;
+    renderMsgs();
+    return;
+  }
+  if (gateWrite() === 'deny') {
+    setNote('现在是「只读」档，改权限才能落盘', true);
+    return;
+  }
+  const r = c.p.apply();
+  c.done = r.note;
+  history.push({ role: 'user', content: `【动作结果：${c.p.tool}】${r.note}` });
+  persist();
+  renderMsgs();
+  setNote(r.note);
+}
+
 /* ── 发送 ─────────────────────────────────────────────────────────── */
 async function send(): Promise<void> {
   if (busy || !openEl || !store) return;
@@ -169,14 +272,33 @@ async function send(): Promise<void> {
   const sys = [
     SYS_HEAD,
     permissionPrompt(),
+    toolsPrompt(),
     memoryPrompt(),
     '【工作区现状】\n' + buildContext(store),
   ].filter(Boolean).join('\n\n');
-  const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...history.slice(-HISTORY_SEND)];
+  const cfg = { temperature: 0.7, numPredict: 900 };
   try {
-    const r = await agentAsk(msgs, { temperature: 0.7, numPredict: 900 });
-    history.push({ role: 'assistant', content: r.text || '（模型返回了空内容）' });
-    setNote(r.model === 'mock' ? '' : r.model ? '模型：' + r.model : '');
+    /* 一次提问 = 最多 MAX_ROUNDS 轮：模型要么说话（结束），要么要求一个只读动作
+       （执行完把结果喂回去，让它接着说）。写入动作一轮就结束 —— 要么落盘要么等点击。 */
+    for (let round = 0; round <= MAX_ROUNDS; round++) {
+      const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...history.slice(-HISTORY_SEND)];
+      const r = await agentAsk(msgs, cfg);
+      const call = parseToolCall(r.text);
+      if (!call) {
+        history.push({ role: 'assistant', content: r.text || '（模型返回了空内容）' });
+        setNote(r.model === 'mock' ? '' : r.model ? '模型：' + r.model : '');
+        break;
+      }
+      history.push({ role: 'assistant', content: r.text });
+      if (isWriteTool(call.tool)) {
+        handleWrite(call);
+        break;
+      }
+      const out = runReadTool(call, store);
+      history.push({ role: 'user', content: `【动作结果：${call.tool}】\n${out}` });
+      renderMsgs();
+      if (round === MAX_ROUNDS) setNote('动作调了几轮了，先停一下', true);
+    }
     persist();
   } catch (e) {
     /* 报错**不进历史**（否则会被反复喂回模型），只在面板底部提示 */
@@ -214,6 +336,7 @@ export function closeAgentPanel(): void {
   openEl = null;
   store = null;
   draft = false;
+  cards = [];
   setMemorySink(null);
   disposeAll?.();
   disposeAll = null;
@@ -288,6 +411,8 @@ export function openAgentPanel(s: Store): () => void {
 
   el.querySelector('#lk-agent-close')?.addEventListener('click', () => closeAgentPanel());
   el.querySelector('#lk-agent-send')?.addEventListener('click', () => { void send(); });
+  /* 提议卡片的「应用」/「忽略」（卡片跟消息区一起重画，所以用委托） */
+  el.querySelector('#lk-agent-msgs')?.addEventListener('click', onCardClick);
   const ta = el.querySelector<HTMLTextAreaElement>('#lk-agent-input');
   ta?.addEventListener('keydown', (e: KeyboardEvent) => {
     /* 中文输入法选词的回车不能当发送（复用 `src/ui/keys.ts` 的 isImeEnter） */

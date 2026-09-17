@@ -15,6 +15,39 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第二十六轮（2026-09-15）· 灵框助手第 3 片：动作工具 + 提议卡片（**新功能**）
+
+承第二十五轮（第 2 片：长期记忆 + 三档权限骨架）。本片把助手从「只会说」变成「能动手」，并且**动手这件事必须经过你**。
+
+新增 / 改动：`src/ui/agent-tools.ts`（新）/ `src/ui/agent.ts` / `src/style.css` / `tools/e2e/agent-tools.cjs`（新）。
+
+### 一、工具协议：文本 JSON 指令，**不依赖 function calling**
+
+- 用户方向是「类 agent」，但本地 7B 的工具调用基本不可用 ⇒ 协议 = 让模型整条回复只写一行 `{"tool":"动作名","args":{…}}`。`src/ui/agent-tools.ts` 的 `parseToolCall(raw)`：剥 ``` 代码栏 → 不以 `{` 开头时找 `{"tool"`，**前面有正文就返回 null**（免得它举例说明时被误当调用）→ JSON.parse 失败 / `tool` 空 / **`findTool` 不认识的工具名 ⇒ null（当聊天）**。
+- 动作表：只读 4 个 `list_entities{type?}` / `read_entity{name}` / `list_nodes{}` / `search{q}`；写入 5 个 `create_entity{name,type?,fields?}` / `set_field{entity,field,value}` / `append_doc{target:'entity'|'node',name,text}` / `create_node{title,year,kind?,desc?}` / `rename_entity{entity,name}`。协议文本由 `toolsPrompt()` 拼进系统提示（e2e ★4 断言 `【你能用的动作】` 与 `{"tool":"动作名"`）。
+- `send()` 变**最多 `MAX_ROUNDS = 3` 轮**：只读动作跑完把 `【动作结果：名字】…` 作为一条 user 消息塞回历史**继续问模型**（不是显示给你看就完了 —— e2e ★3 就守这条）；写入动作交给 `handleWrite()`；`parseToolCall` 为 null 就当普通聊天收尾。
+
+### 二、⭐ 写入路径只有一条：提议卡片（用户「部分执行」的落地）
+
+- 写入**不直接落盘**。`planWrite(call, store)` 返回 `Proposal { tool; title; detail; apply(): { ok; note } }`（标题形如 `新建设定：X（角色）`、`改字段：X · 发色`、`续写正文：X`、`新建事件：X`、`改名：X → Y`；`apply()` 一律走 `src/store/actions.ts` 的 `addEntity`/`addNode` 或 `store.update`，**不自己拼 id**）。
+- `handleWrite()` 按 `src/ui/agent-perm.ts` 的 `gateWrite()` 分三路：`deny`（只读档）⇒ 不执行、往历史塞「现在是「只读」档，没有执行」+ 红字提示；`propose`（默认档）⇒ `cards.push(...)` 出一张卡片，**点「应用」才落盘**（点前数据一点没动 —— e2e ★7）；`allow`（YOLO）⇒ 直接 `apply()`。⇒ **YOLO 只是把"等点一下"去掉，写入实现只有一条**，不存在两条会分叉的写路径。
+- 卡片是事件委托绑在 `#lk-agent-msgs` 上的（消息区整体重画，逐个绑会丢）；已应用打 `.is-settled` + 结果文案，忽略的标「已忽略」；点「应用」时**再查一次** `gateWrite()`（开着卡片时你可能已经把档位调回只读）。
+
+### 三、e2e `tools/e2e/agent-tools.cjs`（15 项，首次即全绿）
+
+前置 = `reset-entity-vault.cjs` + `seed-node.cjs` + `seed-agent-memory.cjs`。用**函数形态**的假引擎 `window.__lkAgentMock` 顺手把喂进去的 messages 存进 `window.__lkSeen` ⇒ 能断言「只读结果进了下一轮」「动作协议在系统提示里」。★7 点应用前数据未动、★8 点后落盘、★9 忽略不动、★10 只读档不出卡片、★11 YOLO 直接落盘、★12 未知工具名当聊天、★13 带散文的 JSON 当聊天。
+
+### 四、A/B 判别力（坐实）与一条串跑教训
+
+- `git stash push -m "ab-agent-tools-p3"`（**不带 `-u`**）→ `npx vite build` → 旧 build 上跑同一套件：**★2/★3/★4/★5/★6 五条 FAIL + 脚本异常 `Cannot read properties of null (reading 'click')`**（旧面板没有动作/卡片）⇒ 断言真的有判别力；恢复后 15/15。
+- **⚠️ 串跑假挂**：先跑 `agent-memory.cjs` 再跑 `agent-tools.cjs` ⇒ 助手面板被上一份套件**留在开着**，`Ctrl+K` 反而把它关掉，后面整串崩；同理权限被留在 YOLO 档 ⇒ ★6 的 `gate==='propose'` 挂。两份套件都会**改夹具数据**（建实体 / 改权限）⇒ 守既有纪律：**一份套件一份干净起点（reset + seed + 重启）**。已给 `agent-tools.cjs` 加了「开场把面板收掉 + 把档位设回 confirm」的自摆正，但**这不能替代干净起点**（实体数量漂移照样让 ★7/★8 计数挂）。
+
+### 验证（二十六）
+
+- `npx tsc --noEmit` = 0、`npx vite build` = 0。
+- 干净实例（`%TEMP%\lk-evault2`，端口 9346）：`agent-tools.cjs` **15/15**；A/B 旧 build **6 FAIL**。
+- 回归（各自干净起点）：`agent-memory.cjs` 15/15、`agent-panel.cjs` 14/14、`settings-panel.cjs` 12/12、`toolbar-groups.cjs` 5/5、`data-load-clean.cjs` 6/6。
+
 ## 第二十五轮（2026-09-15）· 灵框助手第 2 片：长期记忆 + 三档权限骨架（**新功能** + 一条测试隔离缺陷）
 
 承第二十四轮（第 1 片：`Ctrl+K` 对话框 + 上下文注入 + 对话落盘）。本片补上用户原话里剩下的两半：**「有记忆，能总结创作者的偏好等」**、**「和真 agent 软件一样，有禁止，部分执行和 YOLO 什么的」**。
