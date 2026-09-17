@@ -1012,3 +1012,43 @@ body {
   font-size: var(--text-sm); font-family: var(--font-body); cursor: pointer;
 }
 .lk-agent__send:hover { background: var(--accent-hover); }
+/* 权限三档（片 2）：只读 / 逐项确认 / YOLO。档位本身存在设置里，这里只是选它 */
+.lk-agent__perm { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: var(--text-xs); }
+.lk-agent__perm-lbl { color: var(--fg-2); }
+.lk-agent__perm-sel {
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  color: var(--fg); font-size: var(--text-xs); font-family: var(--font-body); padding: 2px 4px; outline: none;
+}
+.lk-agent__perm-sel:focus { border-color: var(--accent); }
+.lk-agent__perm-hint { flex: 1 1 100%; color: var(--fg-2); line-height: 1.5; }
+/* 长期记忆（片 2）：一块可折叠的偏好清单，条目就地可改、可忘掉 */
+.lk-agent__mem { border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
+.lk-agent__mem > summary { padding: 5px 8px; font-size: var(--text-xs); color: var(--fg-2); cursor: pointer; }
+.lk-agent__mem-list {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 0 8px 6px; max-height: 170px; overflow-y: auto;
+}
+.lk-agent__mem-empty { padding: 2px 0 4px; font-size: var(--text-xs); color: var(--fg-2); line-height: 1.6; }
+.lk-agent__mem-item { display: flex; align-items: center; gap: 4px; }
+.lk-agent__mem-input {
+  flex: 1; min-width: 0; padding: 3px 6px;
+  border: 1px solid var(--border); border-left: 3px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--fg);
+  font-size: var(--text-xs); font-family: var(--font-body); outline: none;
+}
+/* 左边缘一道 accent = 这条是「从对话里总结」来的（手写/手改的没有这道边） */
+.lk-agent__mem-item[data-src="auto"] .lk-agent__mem-input { border-left-color: var(--accent); }
+.lk-agent__mem-input:focus { border-color: var(--accent); }
+.lk-agent__mem-x {
+  width: 18px; height: 18px; flex: none; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--fg-2); font-size: 13px; line-height: 1; cursor: pointer;
+}
+.lk-agent__mem-x:hover { color: var(--danger); background: var(--surface-2); }
+.lk-agent__mem-acts { display: flex; gap: 6px; padding: 0 8px 8px; }
+.lk-agent__mem-btn {
+  padding: 3px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: transparent; color: var(--fg-2);
+  font-size: var(--text-xs); font-family: var(--font-body); cursor: pointer;
+}
+.lk-agent__mem-btn:hover { color: var(--accent); border-color: var(--accent); }

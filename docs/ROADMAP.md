@@ -169,7 +169,7 @@
 三个设计问题用户当场拍的板：**权限**「和真 agent 软件一样，有禁止，部分执行和 YOLO 什么的」／**引擎**「沿用设置里的双模式」／**快捷键** `Ctrl+K`。
 
 - [x] **第 1 片（2026-09-15 完成）**：`Ctrl+K` 呼出**右侧停靠面板**（主区不动）+ 对话 + **上下文注入**（`src/ui/agent-context.ts` 的 `buildContext()`：当前世界/时间线/时间指针/各类设定/**你正在编的那一条**）+ 对话落盘（IPC `agent:load/save` → `%APPDATA%\lingkuang\agent\chat.json`）—— 细节见 `ARCHITECTURE.md` 与 `BUGS.md` 第二十四轮
-- [ ] **第 2 片**：长期记忆（**偏好总结，可见可改**）+ 三档权限骨架（**只读 / 逐项确认 / YOLO**）
+- [x] **第 2 片（2026-09-15 完成）**：**长期记忆**（`src/ui/agent-memory.ts` —— 面板里可见可改可删，手写与「从对话里总结」两种来源，落 `%APPDATA%\lingkuang\agent\memory.json`；记忆拼进**系统提示**而不是会被截断的历史）+ **三档权限骨架**（`AgentPerm = 'readonly' | 'confirm' | 'yolo'`，定义在 `src/ui/settings.ts`、默认 `'confirm'`；`src/ui/agent-perm.ts` 的 `gateWrite()` 是第 3 片写工具的闸门，权限同时写进提示词免得模型谎称「已改好」）—— 细节见 `BUGS.md` 第二十五轮
 - [ ] **第 3 片**：工具协议 + 第一批工具 + 提议卡片 —— **走文本 JSON 指令，不依赖 function calling**（本地 7B 的工具调用基本不可用）
 - [ ] 引擎沿用设置里的双模式（Ollama / OpenAI 兼容），**不新增配置项**；快捷键是应用内 keydown，不用 Electron `globalShortcut`（免抢系统按键）
 

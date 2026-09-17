@@ -5,6 +5,11 @@ import { currentWorld } from '../store/store';
 /** 演变（设定库的版本历史）的三种模式，用户 2026-09-13 选「都做，把模式放到设置里面」 */
 export type EvolveMode = 'manual' | 'auto' | 'locked';
 
+/** 助手（Ctrl+K 那个）能动手到什么程度，用户 2026-09-15：
+ *  「和真 agent 软件一样，有禁止，部分执行和 YOLO 什么的」⇒ 只读 / 逐项确认 / YOLO 三档。
+ *  存取与闸门在 `src/ui/agent-perm.ts`，这里只放类型与默认值（沿用 `EvolveMode` 的做法）。 */
+export type AgentPerm = 'readonly' | 'confirm' | 'yolo';
+
 interface Settings {
   aiMode: 'ollama' | 'api';
   baseUrl: string;
@@ -21,6 +26,7 @@ interface Settings {
   motionSpeed: number;      // 速度倍率（改的是时长：300ms ÷ 倍率）
   motionStagger: number;    // 行错峰 ms（一行比上一行晚多少）
   motionEnterDx: number;    // 入场距离 px（同时是出场距离，往左走同样的量）
+  agentPerm: AgentPerm;     // 助手能动手到什么程度（只读 / 逐项确认 / YOLO；闸门在 src/ui/agent-perm.ts）
 }
 
 const DEFAULTS: Settings = {
@@ -37,6 +43,9 @@ const DEFAULTS: Settings = {
   motionSpeed: 1,
   motionStagger: 10,
   motionEnterDx: 32,
+  /* 默认「逐项确认」：助手想改稿子得先给一张提议卡片、创作者点「应用」才落盘
+     —— 既不是什么都不让做（那样它没用），也不是一上来就全自动（那样风险太高）。 */
+  agentPerm: 'confirm',
 };
 
 export function loadSettings(): Settings {

@@ -15,6 +15,47 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第二十五轮（2026-09-15）· 灵框助手第 2 片：长期记忆 + 三档权限骨架（**新功能** + 一条测试隔离缺陷）
+
+承第二十四轮（第 1 片：`Ctrl+K` 对话框 + 上下文注入 + 对话落盘）。本片补上用户原话里剩下的两半：**「有记忆，能总结创作者的偏好等」**、**「和真 agent 软件一样，有禁止，部分执行和 YOLO 什么的」**。
+
+新增 / 改动：`src/ui/agent-memory.ts`（新）/ `src/ui/agent-model.ts`（新）/ `src/ui/agent-perm.ts`（新）/ `src/ui/agent.ts` / `src/ui/settings.ts` / `src/style.css` / `tools/e2e/agent-memory.cjs`（新）/ `tools/e2e/seed-agent-memory.cjs`（新）。
+
+### 一、三档权限（用户 2026-09-15 拍的方向）
+
+- `src/ui/settings.ts` 新增 `export type AgentPerm = 'readonly' | 'confirm' | 'yolo';`（定义放这里，避免 `agent-perm.ts` 与 `settings.ts` 循环 import），`Settings.agentPerm`，**默认 `'confirm'`（逐项确认）** —— 既不是什么都不让做，也不是一上来就全自动。
+- `src/ui/agent-perm.ts`：`PERM_LABEL = { readonly: '只读', confirm: '逐项确认', yolo: 'YOLO' }`、`PERM_HINT`（人话解释）、`getAgentPerm()`、`setAgentPerm(p)`（变了才 `saveSettings` + 广播 `lingkuang-agent-perm`）、**`gateWrite(): 'deny' | 'propose' | 'allow'`**（readonly→deny / confirm→propose / yolo→allow —— 第 3 片的每个写工具执行前都要问它）、`permissionPrompt()`。
+- 面板头行下面一行「权限」下拉（`#lk-agent-perm`）+ 提示文案（`#lk-agent-perm-hint`），面板根元素带 `data-gate`（e2e 直接读，不必反射模块）。
+- ⭐ **权限必须进系统提示词，不能只当 UI**：`permissionPrompt()` 明确写「你现在改不了任何东西…不要说你已经改了」。不写这句，模型会一口答应「我帮你改好了」——那是最糟的幻觉（用户以为稿子改了）。
+
+### 二、长期记忆（可见可改，落主进程）
+
+- `src/ui/agent-memory.ts`：`MemoryItem { id; text; at; src: 'auto' | 'manual' }`；`getMemory()` / `adoptFromDisk(raw)` / `addMemory(text, src = 'manual')` / `updateMemory(id, text)` / `removeMemory(id)` / `setMemorySink(fn | null)` / `parsePrefs(raw)` / `summarizePrefs(history)` / `memoryPrompt()`。额度 `MEM_MAX = 60`（满了挤掉最旧）、`TEXT_MAX = 90`、`SUM_MAX = 8`、`SUM_LOOKBACK = 24`；id 走 `src/store/ids.ts` 的 `uid('m')`（AGENTS.md 硬规矩）。
+- **记忆模块自己不碰 IPC**：`agent:save` 是**整包**写（chat + memory 同一次），所以由 `src/ui/agent.ts` 用 `setMemorySink(persist)` 注册回调 —— 两个模块各持一份 chat 迟早写歪。落盘形状 = `%APPDATA%\lingkuang\agent\memory.json` **裸数组**（与 `chat.json` 一致，方便人看/手改/备份）。
+- 面板里 `<details>`「长期记忆（N 条偏好）」：每条一个输入框（改了就存）+ ×（忘掉）+ 左缘一道 `--accent` 标 `src="auto"`（这条是总结来的，不是手写的）；「＋ 手动加一条」；「从对话里总结」→ `summarizePrefs()` 把最近 24 条对话喂给模型，要求**只输出 JSON 字符串数组**，`parsePrefs()` 剥代码栏 + 抠第一对 `[]` + 只取字符串项 + 去重（按 `normText()` 去空白/标点/大小写）；同样的偏好再总结一遍会提示「这几条已经记过了」而不是重复记。
+- 记忆拼进**系统提示**（`【创作者偏好（长期记忆）】`），不是塞在历史末尾 —— 历史会被 `slice(-HISTORY_SEND)`（16 条）截掉，塞那儿等于迟早丢。
+
+### 三、e2e 为什么需要「假引擎」后门
+
+`src/ui/agent-model.ts` 的 `agentAsk(messages, opts)` 包一层 `aiChat`，并在最前面读 `window.__lkAgentMock`：字符串 / 字符串数组（按顺序 shift）/ 函数 `(msgs) => string` ⇒ 直接返回 `{ text, model: 'mock' }`，否则走真实 `aiChat`。理由：**e2e 里不能真连 Ollama**（片 2 的偏好总结、片 3 的 JSON 指令都依赖模型输出），跟 `LINGKUANG_TEST_*` 是同一个「测试后门」传统（AGENTS.md 有专门一节）。写成函数那种还能在测试里抓「这次到底喂了什么提示词」——★12 就是靠它证明**记忆真的进了 system**。
+
+### 四、⚠️ 测试隔离缺陷（本片自己踩到，已修）
+
+- 现象：`agent-memory.cjs` 第一次跑 **15/15**，隔一轮再跑 **14/15**，★1 报 `cur: "yolo"`。
+- 根因：★1 断言「默认档 = 逐项确认」，而上一轮跑完把 `agentPerm: 'yolo'` 写进了**测试 userData 的 localStorage**（`LINGKUANG_TEST_USERDATA` 隔离的是目录，不是「每轮都干净」）⇒ 脏起点下那条断言必然假挂。
+- 修法：`tools/e2e/seed-agent-memory.cjs` 里顺手 `fs.rmSync(<LINGKUANG_TEST_USERDATA>/Local Storage, { recursive: true, force: true })`，**只在 `LINGKUANG_TEST_USERDATA` 存在时才清**（绝不能碰用户正式 userData 的 localStorage）；重启后起点即「设置里没有 agentPerm」⇒ 默认档断言重新有意义。
+
+### 五、A/B 判别力（新断言先证明它测得出来）
+
+把片 2 的**已跟踪改动** stash 掉（`git stash push`，**不带 `-u`** —— 带 `-u` 会把新写的套件与 seed 脚本一起藏起来，第一版 A/B 就是这么空跑的：`Cannot find module ...\tools\e2e\agent-memory.cjs`）→ `npx vite build` → 复跑：
+`FAIL ★1 {"opts":[],"cur":"","gate":"","hint":""}`、`FAIL ★5 {"n":0,"rows":[],"summary":""}`、随后 `脚本异常: TypeError: Cannot read properties of null (reading 'click')`（旧面板根本没有记忆区）。恢复后 **15/15**。
+
+### 验证（二十五）
+
+- `npx tsc --noEmit` = 0、`npx vite build` = 0。
+- e2e `tools/e2e/agent-memory.cjs` **15/15**（夹具 `%TEMP%\lk-evault2` + `reset-entity-vault.cjs` + `seed-node.cjs` + `seed-agent-memory.cjs`）；关键实测：默认 `{cur:"confirm", gate:"propose"}`；盘上 seed 的 `m-seed-1` 启动后进清单；手动加/改/删三处面板与 `memory.json` 同步；切只读 `gate:"deny"`、切 YOLO `gate:"allow"` + `localStorage['lingkuang-settings'].agentPerm` 同步；假引擎抓到的 system `{n:2, chars:477, hasMemBlock:true, memText:true, ro:true}`；总结两条 → `note:"记下 2 条偏好"`、再总结 → `note:"这几条已经记过了"`；mock 给废话 → `note:"没看出新的稳定偏好（再多聊几轮试试）"` 且清单不动；`errs:[]`。
+- 回归：`agent-panel` 14/14、`settings-panel` 12/12、`toolbar-groups` 5/5、`data-load-clean` 6/6（一次只留一个实例 —— 铁律 30）。
+
 ## 第二十四轮（2026-09-15）· 灵框助手（内嵌 agent · 第 1 片）（**新功能** + 一条藏得很深的游标 bug）
 
 用户原话：「**我想让我们灵框的 ai 真的工作，类 agent，但是主要工作还是在灵框内，有一个自己的对话框，有记忆，能总结创作者的偏好等，还有一个灵框内全局快捷键，按下就能呼出 ai**」

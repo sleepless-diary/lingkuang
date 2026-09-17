@@ -4,22 +4,30 @@
  *  聊天时要能一边看着设定与正文改（遮罩会把主区盖住、点不动）。
  *
  *  它在 `src/tools/register.ts` 里登记为 `panel: true` 的工具，所以**完全不碰主区**
- *  （`openTool` 的面板分支不清 host、不建 `.lk-tool-slot`、不播错峰），
- *  需要时可以和设置面板同时开着 —— 两个面板各自 dispose，互不干扰。
+ *  （`openTool` 的面板分支不清 host、不建 `.lk-tool-slot`、不播错峰）。
+ *  注意 `registry.ts` 只有**一格** `disposePanel`：设置与助手同一时刻只能开一个。
  *
- *  片 1 只做：对话框 + 上下文注入 + 对话历史落盘 + Ctrl+K。
- *  长期记忆（偏好总结）与工具/权限在片 2 / 片 3。
+ *  片 1：对话框 + 上下文注入 + 对话历史落盘 + Ctrl+K。
+ *  片 2（本片）：长期记忆（可见可改可总结）+ 三档权限骨架（`src/ui/agent-perm.ts`）。
+ *  片 3：工具协议（文本 JSON 指令）+ 提议卡片 —— 那时才真正会改稿子。
  */
-import { aiChat, type ChatMsg } from './ai';
+import { type ChatMsg } from './ai';
+import { agentAsk } from './agent-model';
 import { buildContext, getAgentFocus } from './agent-context';
+import {
+  addMemory, adoptFromDisk, getMemory, memoryPrompt, removeMemory,
+  setMemorySink, summarizePrefs, updateMemory,
+} from './agent-memory';
+import { PERM_HINT, PERM_LABEL, gateWrite, getAgentPerm, permissionPrompt, setAgentPerm } from './agent-perm';
 import { isImeEnter } from './keys';
 import { escapeHtml } from './html';
-import { loadSettings } from './settings';
+import { loadSettings, type AgentPerm } from './settings';
 import type { Store } from '../store/store';
 
 const PANEL_ID = 'lk-agent-panel';
-/** 送给模型的历史条数上限（再往前的靠「上下文」与将来的长期记忆，不靠堆对话） */
+/** 送给模型的历史条数上限（再往前的靠「上下文」与长期记忆，不靠堆对话） */
 const HISTORY_SEND = 16;
+const PERMS: AgentPerm[] = ['readonly', 'confirm', 'yolo'];
 
 const SYS_HEAD = [
   '你是「灵框」里的创作助手。灵框是世界观创作工作台：创作者在里面管理世界观、时间线事件、设定条目（角色/地点/物品/组织等）。',
@@ -27,7 +35,7 @@ const SYS_HEAD = [
   '1. 用中文回答，简明扼要（默认 3-6 句；创作者说「展开」再展开）。',
   '2. 只依据下面「工作区现状」里给出的信息；没有的就直说没有、并指出可以去哪里补，不要编造设定。',
   '3. 提到设定时优先用现状里的原名与年份，别改名。',
-  '4. 你暂时不能直接改稿子（改稿能力在后续版本，且会先征得创作者同意）——请把建议写成可以直接抄走的一段话。',
+  '4. 沿用下面「创作者偏好」里的习惯（如果有）。',
 ].join('\n');
 
 let openEl: HTMLElement | null = null;
@@ -36,6 +44,8 @@ let disposeAll: (() => void) | null = null;
 let history: ChatMsg[] = [];
 let loaded = false;
 let busy = false;
+/** 「＋ 手动加一条」点了之后，列表里多出一行空输入框等着填 */
+let draft = false;
 
 const api = (): any => (window as any).lingkuangAPI;
 
@@ -43,8 +53,9 @@ export function isAgentPanelOpen(): boolean {
   return !!openEl && document.body.contains(openEl);
 }
 
-/* ── 历史落盘（主进程 `agent:load` / `agent:save`；放文件不放 localStorage：
-      这是创作者资产，要能备份、能查看、能手改） ────────────────────── */
+/* ── 落盘（主进程 `agent:load` / `agent:save`；放文件不放 localStorage：
+      这是创作者资产，要能备份、能查看、能手改）。
+      ⚠️ `agent:save` 是**整包写**：chat 与 memory 一起给，所以记忆的落盘也走这里。 ── */
 async function ensureLoaded(): Promise<void> {
   if (loaded) return;
   loaded = true;
@@ -55,6 +66,7 @@ async function ensureLoaded(): Promise<void> {
         .filter((m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
         .map((m: any) => ({ role: m.role, content: m.content } as ChatMsg));
     }
+    if (r?.ok) adoptFromDisk(r.memory);
   } catch {
     /* 读不到就从空开始，不挡对话 */
   }
@@ -62,7 +74,7 @@ async function ensureLoaded(): Promise<void> {
 
 function persist(): void {
   try {
-    void api()?.agentSave?.({ chat: history });
+    void api()?.agentSave?.({ chat: history, memory: getMemory() });
   } catch {
     /* 落盘失败不该影响这一次对话 */
   }
@@ -99,6 +111,42 @@ function renderCtx(): void {
   pre.textContent = buildContext(store);
 }
 
+/* 记忆区：一块 `<details>` + 若干可改的条目。用**事件委托**（列表会整体重画，
+   逐个绑监听会随重画丢）——改完失焦即存盘，× 即忘掉。 */
+function memRowHtml(id: string, text: string, src: string): string {
+  const mem = id ? ` data-mem-id="${escapeHtml(id)}"` : '';
+  return (
+    `<div class="lk-agent__mem-item"${mem} data-src="${escapeHtml(src)}">` +
+      `<input class="lk-agent__mem-input" value="${escapeHtml(text)}" placeholder="比如：人名偏好两三个字" />` +
+      (id ? '<button class="lk-agent__mem-x" data-mem-del="' + escapeHtml(id) + '" title="忘掉这一条">×</button>' : '') +
+    '</div>'
+  );
+}
+
+function renderMemory(): void {
+  const list = openEl?.querySelector('#lk-agent-mem-list');
+  if (!list) return;
+  const mem = getMemory();
+  const sum = openEl?.querySelector('#lk-agent-mem-summary');
+  if (sum) sum.textContent = `长期记忆（${mem.length} 条偏好）`;
+  const html = mem.map((it) => memRowHtml(it.id, it.text, it.src)).join('') + (draft ? memRowHtml('', '', 'manual') : '');
+  list.innerHTML = html || '<div class="lk-agent__mem-empty">还没记住什么。聊几轮后点「从对话里总结」，或者手动加一条。</div>';
+  if (draft) list.querySelector<HTMLInputElement>('.lk-agent__mem-item:last-child .lk-agent__mem-input')?.focus();
+}
+
+/* 权限：选了就存进设置（`lingkuang-settings`），并告诉模型它现在能动手到什么程度。
+   面板根上挂 `data-gate`（deny/propose/allow）——片 3 的写工具执行前问 `gateWrite()`，
+   e2e 也直接读这个属性（不必反射模块）。 */
+function renderPerm(): void {
+  if (!openEl) return;
+  const p = getAgentPerm();
+  const sel = openEl.querySelector<HTMLSelectElement>('#lk-agent-perm');
+  if (sel && sel.value !== p) sel.value = p;
+  const hint = openEl.querySelector('#lk-agent-perm-hint');
+  if (hint) hint.textContent = PERM_HINT[p];
+  openEl.dataset.gate = gateWrite();
+}
+
 function setNote(text: string, isErr = false): void {
   const el = openEl?.querySelector('#lk-agent-note');
   if (!el) return;
@@ -118,14 +166,17 @@ async function send(): Promise<void> {
   history.push({ role: 'user', content: text });
   renderMsgs();
   renderCtx();
-  const msgs: ChatMsg[] = [
-    { role: 'system', content: SYS_HEAD + '\n\n【工作区现状】\n' + buildContext(store) },
-    ...history.slice(-HISTORY_SEND),
-  ];
+  const sys = [
+    SYS_HEAD,
+    permissionPrompt(),
+    memoryPrompt(),
+    '【工作区现状】\n' + buildContext(store),
+  ].filter(Boolean).join('\n\n');
+  const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...history.slice(-HISTORY_SEND)];
   try {
-    const r = await aiChat(msgs, { temperature: 0.7, numPredict: 900 });
+    const r = await agentAsk(msgs, { temperature: 0.7, numPredict: 900 });
     history.push({ role: 'assistant', content: r.text || '（模型返回了空内容）' });
-    setNote(r.model ? '模型：' + r.model : '');
+    setNote(r.model === 'mock' ? '' : r.model ? '模型：' + r.model : '');
     persist();
   } catch (e) {
     /* 报错**不进历史**（否则会被反复喂回模型），只在面板底部提示 */
@@ -135,12 +186,35 @@ async function send(): Promise<void> {
   renderMsgs();
 }
 
+/* ── 从对话里总结偏好 ─────────────────────────────────────────────── */
+async function summarize(): Promise<void> {
+  if (busy || !openEl) return;
+  if (!history.length) {
+    setNote('还没聊过，没什么可总结的', true);
+    return;
+  }
+  busy = true;
+  setNote('正在读对话、总结偏好…');
+  try {
+    const cands = await summarizePrefs(history);
+    let n = 0;
+    for (const c of cands) if (addMemory(c, 'auto')) n++;
+    renderMemory();
+    setNote(n ? `记下 ${n} 条偏好` : (cands.length ? '这几条已经记过了' : '没看出新的稳定偏好（再多聊几轮试试）'));
+  } catch (e) {
+    setNote('总结失败：' + (e instanceof Error ? e.message : String(e)), true);
+  }
+  busy = false;
+}
+
 /* ── 开 / 关 ──────────────────────────────────────────────────────── */
 export function closeAgentPanel(): void {
   if (!openEl) return;
   openEl.remove();
   openEl = null;
   store = null;
+  draft = false;
+  setMemorySink(null);
   disposeAll?.();
   disposeAll = null;
   window.dispatchEvent(new CustomEvent('lingkuang-panel', { detail: { id: 'agent', open: false } }));
@@ -150,10 +224,12 @@ export function openAgentPanel(s: Store): () => void {
   if (isAgentPanelOpen()) return () => closeAgentPanel();
   store = s;
   const cfg = loadSettings();
+  const perm = getAgentPerm();
   const el = document.createElement('aside');
   el.id = PANEL_ID;
   el.className = 'lk-agent';
   el.setAttribute('role', 'dialog');
+  el.dataset.gate = gateWrite();
   el.innerHTML =
     '<div class="lk-agent__head">' +
       '<div class="lk-agent__title">灵框助手</div>' +
@@ -163,6 +239,21 @@ export function openAgentPanel(s: Store): () => void {
       '</div>' +
       '<button class="lk-agent__x" id="lk-agent-close" title="关闭（Esc）">×</button>' +
     '</div>' +
+    '<div class="lk-agent__perm">' +
+      '<span class="lk-agent__perm-lbl">权限</span>' +
+      '<select class="lk-agent__perm-sel" id="lk-agent-perm">' +
+        PERMS.map((p) => `<option value="${p}"${p === perm ? ' selected' : ''}>${PERM_LABEL[p]}</option>`).join('') +
+      '</select>' +
+      '<span class="lk-agent__perm-hint" id="lk-agent-perm-hint"></span>' +
+    '</div>' +
+    '<details class="lk-agent__mem">' +
+      '<summary id="lk-agent-mem-summary">长期记忆（0 条偏好）</summary>' +
+      '<div class="lk-agent__mem-list" id="lk-agent-mem-list"></div>' +
+      '<div class="lk-agent__mem-acts">' +
+        '<button class="lk-agent__mem-btn" id="lk-agent-mem-add">＋ 手动加一条</button>' +
+        '<button class="lk-agent__mem-btn" id="lk-agent-mem-sum">从对话里总结</button>' +
+      '</div>' +
+    '</details>' +
     '<details class="lk-agent__ctx"><summary>上下文（每次提问自动带上）</summary><pre id="lk-agent-ctx"></pre></details>' +
     '<div class="lk-agent__msgs" id="lk-agent-msgs"></div>' +
     '<div class="lk-agent__note" id="lk-agent-note"></div>' +
@@ -172,6 +263,7 @@ export function openAgentPanel(s: Store): () => void {
     '</div>';
   document.body.appendChild(el);
   openEl = el;
+  setMemorySink(persist);
 
   /* Esc 关闭 + 跟着 store 变（创作者一边聊一边改设定，焦点与上下文会变） */
   const onKey = (e: KeyboardEvent): void => {
@@ -185,9 +277,12 @@ export function openAgentPanel(s: Store): () => void {
      换条目是 UI 状态、不一定触发 store 通知，所以 `agent-context.ts` 会单独广播这个事件。 */
   const onFocus = (): void => { renderMeta(); renderCtx(); };
   window.addEventListener('lingkuang-agent-focus', onFocus);
+  const onPerm = (): void => { renderPerm(); };
+  window.addEventListener('lingkuang-agent-perm', onPerm);
   disposeAll = (): void => {
     window.removeEventListener('keydown', onKey);
     window.removeEventListener('lingkuang-agent-focus', onFocus);
+    window.removeEventListener('lingkuang-agent-perm', onPerm);
     unsub();
   };
 
@@ -201,11 +296,50 @@ export function openAgentPanel(s: Store): () => void {
     void send();
   });
 
+  /* 记忆：改文字（失焦/回车即存）、删条目、手动加、从对话总结 */
+  const memList = el.querySelector('#lk-agent-mem-list');
+  memList?.addEventListener('change', (e) => {
+    const inp = (e.target as HTMLElement).closest('.lk-agent__mem-input') as HTMLInputElement | null;
+    if (!inp) return;
+    const item = inp.closest('.lk-agent__mem-item') as HTMLElement | null;
+    const id = item?.dataset.memId ?? '';
+    const text = inp.value.trim();
+    if (!id) {
+      draft = false;
+      if (text) addMemory(text, 'manual');
+    } else {
+      updateMemory(id, text);
+    }
+    renderMemory();
+  });
+  memList?.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest('[data-mem-del]') as HTMLElement | null;
+    if (!btn) return;
+    removeMemory(btn.dataset.memDel || '');
+    renderMemory();
+  });
+  el.querySelector('#lk-agent-mem-add')?.addEventListener('click', () => {
+    draft = true;
+    const det = el.querySelector<HTMLDetailsElement>('.lk-agent__mem');
+    if (det) det.open = true;
+    renderMemory();
+  });
+  el.querySelector('#lk-agent-mem-sum')?.addEventListener('click', () => { void summarize(); });
+
+  /* 权限三档 */
+  const permSel = el.querySelector<HTMLSelectElement>('#lk-agent-perm');
+  permSel?.addEventListener('change', () => {
+    setAgentPerm(permSel.value as AgentPerm);
+    renderPerm();
+  });
+
   renderMsgs();
   renderMeta();
   renderCtx();
+  renderMemory();
+  renderPerm();
   setNote('');
-  void ensureLoaded().then(() => { renderMsgs(); });
+  void ensureLoaded().then(() => { renderMsgs(); renderMemory(); });
   if (ta) ta.focus();
   window.dispatchEvent(new CustomEvent('lingkuang-panel', { detail: { id: 'agent', open: true } }));
   return () => closeAgentPanel();
