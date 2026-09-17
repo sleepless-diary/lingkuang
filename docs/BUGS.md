@@ -15,6 +15,50 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第二十七轮（2026-09-15）· 灵框助手第 3.1 片：协议容错 + 格式纠错轮（**用户实测报的 bug**）
+
+> 用户原话（把助手在正式应用里的整段对话贴了回来）：
+> 「**你能试着改点东西吗**」→ 助手**只回了一坨裸 JSON**：
+> `{"set_field":{"entity":"霜精灵","field":"描述","value":"霜精灵是生活在北境冻原的神秘种族，拥有操控冰雪的能力。"}}`
+> —— 看起来它「说了要做」，实际上**什么也没发生**。
+
+### 一、根因：模型把动作写成了「工具名当键」的形状
+
+- `src/ui/agent-tools.ts` 的 `parseToolCall(raw)` 原来只认**正统形状** `{"tool":"…","args":{…}}`：
+  `if (typeof o.tool !== 'string' || !isObj(o.args)) return null;` ⇒ 用户这次模型给的
+  `{"set_field":{…}}` 里根本没有 `tool` 键 ⇒ 返回 null ⇒ `src/ui/agent.ts` 把它**当普通聊天**处理
+  ⇒ 裸 JSON 被原样画成一个助手气泡，卡片、落盘都不存在。
+- ⭐ 教训：**「模型没照格式回」不能等于「当聊天」** —— 对着一个只会说 JSON 的助手，
+  创作者看到的是一坨看不懂的东西，而它自己以为干完了。协议要**宽进严出**：进来的形状尽量认，
+  出去的动作只有一条路（`planWrite` → `Proposal`）。
+
+### 二、修法（宽进严出 + 回头纠正一次）
+
+- `src/ui/agent-tools.ts`：新增 `normalizeCall(obj)` 三种形状都认 —— ①正统 `{tool,args}`；
+  ②`{name|action|act, arguments|args|parameters|params|input}`；③**单键「工具名当键」`{set_field:{…}}`**（= 用户这次踩到的形状）
+  与「工具名当键 + 同级杂键」；参数摊平在顶层也认；值是 JSON 字符串先 `parse`；
+  `const PRIMARY: Record<string,string>` 兜「参数写成裸值」（`{"search":"银发"}` ⇒ `{q:'银发'}`）。
+  新导出 `looksLikeToolJson(raw)`（整条回复就是一个能 parse 的 JSON 对象）。
+  `parseToolCall` 重写为：剥代码栏 → **不以 `{` 开头直接 null**（守「前面有正文＝聊天」）→ parse 失败就截到最后一个 `}` 再试 → `normalizeCall`。
+- `toolsPrompt()` 补两条真例子 + 反面教材（`不要写成 {"动作名":{…}}`、`也不要写成 {"name":…,"arguments":…}`）。
+- `src/ui/agent.ts` 的 `send()` 循环：新增 `let fixed = false;` —— `!call && looksLikeToolJson(r.text)` 时
+  **不把裸 JSON 画出来**，而是塞一条 `FIX_NOTE`（`【格式提醒】…`）user 消息让它按格式重发（只纠一次，受 `MAX_ROUNDS = 3` 约束）；
+  还不行就 `setNote('它两次都没按动作格式回话，这次先算了（可以再问一次，或换个模型）', true)`。
+
+### 三、验证（二十七）
+
+- `npx tsc --noEmit` = 0、`npx vite build` = 0。
+- `tools/e2e/agent-tools.cjs` 从 15 项扩到 **19 项**，**19/19 PASS**：新增 ★15 ⭐「工具名当键」出卡片、
+  ★16 点应用后 `read_entity` 读回 `发色=墨黑`（**用户这条 bug 的回归测试**）、★17 裸值参数也认、
+  ★18 纠正一轮后模型照办 ⇒ 动作照常跑；★12 改成断言「`dumped === false`（裸 JSON 不许出现在任何气泡里）+ `__lkSeen[1]` 末条是 `【格式提醒】`」。
+- ⭐ **A/B（判别力）**：`git stash push -m ab-agent-tools-3-1 -- src/`（**只 stash 源码，保住新断言**）→ `npx vite build` → 复跑：
+  `FAIL ★4 {hasExample:false,hasWarn:false}`、`FAIL ★12 {dumped:true,last:"{\"tool\":\"fly_to_moon\",\"args\":{}}"}`、
+  `FAIL ★15 {cards:2}` + `FAIL 脚本异常: TypeError: Cannot read properties of null (reading 'click')` ⇒ 6 条失败；
+  `git stash pop` + 重建后回到 19/19。
+- 回归（各一份干净起点）：`agent-panel` 14/14、`agent-memory` 15/15、`settings-panel` 12/12、`toolbar-groups` 5/5、`data-load-clean` 6/6。
+- ⚠️ 测试口径：每一个**被认下来的动作**都会往 history push 一条 assistant 原文、渲染成 `.lk-agent__call`（`用到动作：X`）
+  ⇒ 断言必须用**自己的 before 快照 + delta**，别写跨 check 的硬编码总数（第一版就是这么误报的）。
+
 ## 第二十六轮（2026-09-15）· 灵框助手第 3 片：动作工具 + 提议卡片（**新功能**）
 
 承第二十五轮（第 2 片：长期记忆 + 三档权限骨架）。本片把助手从「只会说」变成「能动手」，并且**动手这件事必须经过你**。

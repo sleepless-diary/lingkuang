@@ -19,7 +19,7 @@ import {
   setMemorySink, summarizePrefs, updateMemory,
 } from './agent-memory';
 import { PERM_HINT, PERM_LABEL, gateWrite, getAgentPerm, permissionPrompt, setAgentPerm } from './agent-perm';
-import { isWriteTool, parseToolCall, planWrite, runReadTool, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
+import { isWriteTool, looksLikeToolJson, parseToolCall, planWrite, runReadTool, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
 import { isImeEnter } from './keys';
 import { escapeHtml } from './html';
 import { loadSettings, type AgentPerm } from './settings';
@@ -51,6 +51,13 @@ let draft = false;
 /* 动作（片 3）：`MAX_ROUNDS` = 只读动作最多连着跑几轮（模型看结果 → 再决定），
    防它在「列设定 → 再看一条 → 再列」里打转。`cards` = 这次会话里还没处理的提议卡片。 */
 const MAX_ROUNDS = 3;
+/* 模型把动作格式写歪时，用它回头纠正一次（只一次） */
+const FIX_NOTE =
+  '【格式提醒】你上一条不是合法的动作调用（我认不出来）。要动用动作，请整条回复只写一行：' +
+  '{"tool":"动作名","args":{…}} —— 键名必须是 tool 与 args，例如 ' +
+  '{"tool":"set_field","args":{"entity":"霜精灵","field":"描述","value":"…"}}。' +
+  '不要写成 {"动作名":{…}} 这种形状，也不要写成 {"name":…,"arguments":…}。' +
+  '如果只是想聊天，就直接说人话，别写 JSON。';
 let cards: { p: Proposal; done?: string; ignored?: boolean }[] = [];
 
 const api = (): any => (window as any).lingkuangAPI;
@@ -280,10 +287,23 @@ async function send(): Promise<void> {
   try {
     /* 一次提问 = 最多 MAX_ROUNDS 轮：模型要么说话（结束），要么要求一个只读动作
        （执行完把结果喂回去，让它接着说）。写入动作一轮就结束 —— 要么落盘要么等点击。 */
+    let fixed = false; /* ⭐ 格式纠错只做一次，免得跟模型来回拉锯 */
     for (let round = 0; round <= MAX_ROUNDS; round++) {
       const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...history.slice(-HISTORY_SEND)];
       const r = await agentAsk(msgs, cfg);
       const call = parseToolCall(r.text);
+      if (!call && looksLikeToolJson(r.text)) {
+        /* 想调动作、格式却写歪了（用户 2026-09-15 实测：`{"set_field":{…}}`）。
+           纠正一次（进历史、不进气泡），还不行就不再把这坨 JSON 糊到创作者脸上。 */
+        if (!fixed && round < MAX_ROUNDS) {
+          fixed = true;
+          history.push({ role: 'user', content: FIX_NOTE });
+          setNote('它发来的动作格式不对，我让它按格式重发了一次…');
+          continue;
+        }
+        setNote('它两次都没按动作格式回话，这次先算了（可以再问一次，或换个模型）', true);
+        break;
+      }
       if (!call) {
         history.push({ role: 'assistant', content: r.text || '（模型返回了空内容）' });
         setNote(r.model === 'mock' ? '' : r.model ? '模型：' + r.model : '');

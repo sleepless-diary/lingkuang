@@ -6,9 +6,12 @@
  *   ③ 权限档位说了算：只读档不执行、逐项确认档出卡片、YOLO 直接执行（写入路径只有一条）；
  *   ④ 不像动作的回复（工具名不认识 / 前面有散文）**当聊天**，不许悄悄执行。
  *
- * ⭐ 最要紧的两条断言：
+ * ⭐ 最要紧的几条断言：
  *   ★2 —— 只读结果真的进了**下一轮**喂给模型的 messages（而不是只画在屏幕上）；
- *   ★5 —— 点「应用」之前，数据一点没动（这才是「提议」的意义）。
+ *   ★7 —— 点「应用」之前，数据一点没动（这才是「提议」的意义）；
+ *   ★15 —— 「工具名当键」`{"set_field":{…}}` 也要认（用户 2026-09-15 实测踩到的形状，
+ *          当时的解析器只认 `{"tool":…,"args":…}` ⇒ 整坨 JSON 被当聊天画到脸上、什么都没发生）；
+ *   ★12 —— 认不出的裸 JSON 不再糊到脸上，而是回头纠正模型一次。
  *
  * 假引擎：`window.__lkAgentMock`（见 src/ui/agent-model.ts）——本套件用**函数形态**
  * 顺手把喂进去的 messages 存进 `window.__lkSeen`，好断言提示词里到底有什么。
@@ -96,6 +99,8 @@ async function main() {
     await sleep(250);
   };
   const rows = () => ev(`document.querySelectorAll('#cx-list [data-cx-id]').length`);
+  const calls = () => ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__call').length`);
+  const callTexts = () => ev(`[...document.querySelectorAll('#lk-agent-msgs .lk-agent__call')].map((c) => c.textContent)`);
   const props = () => ev(`[...document.querySelectorAll('#lk-agent-msgs .lk-agent__prop')].map((p) => ({ settled: p.classList.contains('is-settled'), h: (p.querySelector('.lk-agent__prop-h') || {}).textContent || '', note: (p.querySelector('.lk-agent__prop-note') || {}).textContent || '' }))`);
   const noteText = () => ev(`(document.getElementById('lk-agent-note') || {}).textContent || ''`);
   const lastBubble = () => ev(`(function () { const b = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__msg.is-ai .lk-agent__bubble')]; return b.length ? b[b.length - 1].textContent : ''; })()`);
@@ -126,9 +131,9 @@ async function main() {
   check('★3 ⭐只读结果真的喂回了下一轮（模型看得见，不是只给你看）',
     seen.n === 2 && seen.second.indexOf('【动作结果：list_entities】') >= 0 && seen.second.indexOf('银发少女') >= 0,
     { n: seen.n, hasResult: seen.second.indexOf('【动作结果') >= 0, hasName: seen.second.indexOf('银发少女') >= 0 });
-  check('★4 动作协议写进了系统提示（模型才知道能调什么）',
-    seen.first.indexOf('【你能用的动作】') >= 0 && seen.first.indexOf('{"tool":"动作名"') >= 0 && seen.first.indexOf('只读的可以随时用') >= 0,
-    { chars: seen.first.length, hasTools: seen.first.indexOf('【你能用的动作】') >= 0, hasFormat: seen.first.indexOf('{"tool":"动作名"') >= 0 });
+  check('★4 动作协议写进了系统提示（模型才知道能调什么，反面教材也在）',
+    seen.first.indexOf('【你能用的动作】') >= 0 && seen.first.indexOf('{"tool":"read_entity"') >= 0 && seen.first.indexOf('不要写成') >= 0,
+    { chars: seen.first.length, hasTools: seen.first.indexOf('【你能用的动作】') >= 0, hasExample: seen.first.indexOf('{"tool":"read_entity"') >= 0, hasWarn: seen.first.indexOf('不要写成') >= 0 });
   check('★5 只读动作结束后模型接着用普通话回答', (await lastBubble()).indexOf('列表我看过了') >= 0);
 
   /* ---------- ② 写入动作在「逐项确认」档 ⇒ 提议卡片 ---------- */
@@ -183,19 +188,85 @@ async function main() {
   check('★11 YOLO 档：不用点，直接就落盘了（档位也存进了设置）',
     yolo.gate === 'allow' && yolo.cards === 2 && yolo.rows === 3 && yolo.stored === 'yolo' && yolo.note.indexOf('已新建设定') >= 0, yolo);
 
-  /* ---------- ⑦ 不像动作的回复 ⇒ 当聊天 ---------- */
-  const callsBefore = await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__call').length`);
-  await setMock(['{"tool":"fly_to_moon","args":{}}']);
+  /* ---------- ⑦ 认不出的裸 JSON ⇒ 回头纠正一次（不糊到创作者脸上）---------- */
+  const callsBefore = await calls();
+  await setMock(['{"tool":"fly_to_moon","args":{}}', '我在。']);
   await ask('随便试试。');
-  const unknown = { calls: await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__call').length`), cards: (await props()).length, rows: await rows(), last: await lastBubble() };
-  check('★12 工具名不认识 ⇒ 当聊天处理（不执行、不出卡片）',
-    unknown.calls === callsBefore && unknown.cards === 2 && unknown.rows === 3 && unknown.last.indexOf('fly_to_moon') >= 0, unknown);
+  const unknown = {
+    before: callsBefore,
+    calls: await calls(),
+    texts: await callTexts(),
+    cards: (await props()).length, rows: await rows(),
+    note: await noteText(),
+    /* ⭐ 裸 JSON 不许出现在任何气泡里（用户实测就是被这坨 JSON 糊了一脸） */
+    dumped: await ev(`[...document.querySelectorAll('#lk-agent-msgs .lk-agent__bubble')].some((b) => b.textContent.indexOf('fly_to_moon') >= 0)`),
+    seen: await ev(`window.__lkSeen.length > 1 ? String(window.__lkSeen[1][window.__lkSeen[1].length - 1].content) : ''`),
+    last: await lastBubble(),
+  };
+  check('★12 认不出的裸 JSON：回头纠正一次，不冒卡片、不落盘、也不把 JSON 当回答画出来',
+    unknown.calls === callsBefore && unknown.cards === 2 && unknown.rows === 3 && unknown.dumped === false &&
+    unknown.seen.indexOf('【格式提醒】') >= 0 && unknown.last.indexOf('我在。') >= 0,
+    unknown);
 
+  /* ---------- ⑧ 名字当键（用户 2026-09-15 实测的形状）也要认 ---------- */
+  await setPerm('confirm');
+  await setMock(['{"set_field":{"entity":"银发少女","field":"发色","value":"墨黑"}}']);
+  await ask('把银发少女的发色改成墨黑。');
+  const keyed = await props();
+  check('★15 ⭐「工具名当键」的形状也认下来了（这次真的出卡片而不是一坨 JSON）',
+    keyed.length === 3 && keyed[2].h.indexOf('改字段：银发少女 · 发色') >= 0 && (await rows()) === 3,
+    { cards: keyed.length, card: keyed[2], note: await noteText() });
+
+  await ev(`document.querySelector('#lk-agent-msgs [data-prop-ok="2"]').click(); true`);
+  await sleep(700);
+  const keyedDone = await props();
+  await setMock(['{"tool":"read_entity","args":{"name":"银发少女"}}', '好，我记住了。']);
+  await ask('再看一眼她的发色。');
+  const afterApply = {
+    note: keyedDone[2].note,
+    tool: await ev(`(function () { const t = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__tool')]; return t.length ? t[t.length - 1].textContent : ''; })()`),
+  };
+  check('★16 应用之后字段真的变了（再读一次：发色=墨黑）',
+    keyedDone[2].settled === true && afterApply.note.indexOf('改成 墨黑') >= 0 && afterApply.tool.indexOf('发色=墨黑') >= 0,
+    afterApply);
+
+  /* ---------- ⑨ 参数写成裸值（{"search":"银发"}）也要认 ---------- */
+  const c17 = await calls();
+  await setMock(['{"search":"银发"}', '找到了。']);
+  await ask('搜一下「银发」。');
+  const bare = {
+    before: c17, calls: await calls(),
+    tool: await ev(`(function () { const t = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__tool')]; return t.length ? t[t.length - 1].textContent : ''; })()`),
+  };
+  check('★17 参数写成裸值也认（search 的主参数兜成 q）',
+    bare.calls === c17 + 1 && bare.tool.indexOf('银发少女') >= 0, bare);
+
+  /* ---------- ⑩ 纠正之后模型照办了 ⇒ 动作真的跑起来 ---------- */
+  const c18 = await calls();
+  await setMock(['{"fly_to_moon":{"x":1}}', '{"tool":"list_nodes","args":{}}', '这条时间线我看过了。']);
+  await ask('看看时间线。');
+  const rescued = {
+    before: c18,
+    calls: await calls(),
+    lastCall: await ev(`(function () { const c = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__call')]; return c.length ? c[c.length - 1].textContent : ''; })()`),
+    cards: (await props()).length, rows: await rows(), last: await lastBubble(),
+  };
+  check('★18 ⭐纠正一轮之后模型照办 ⇒ 只读动作照常跑起来（用户的场景本该这样自愈）',
+    rescued.calls === c18 + 1 && rescued.lastCall.indexOf('list_nodes') >= 0 &&
+    rescued.cards === 3 && rescued.rows === 3 && rescued.last.indexOf('这条时间线我看过了') >= 0,
+    rescued);
+
+  /* ---------- ⑪ 前面带正文的 JSON ⇒ 还是当聊天 ---------- */
+  const c13 = await calls();
   await setMock(['你可以这样写：\n{"tool":"create_entity","args":{"name":"测试假调用","type":"角色"}}']);
   await ask('给我个例子？');
-  const prose = { calls: await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__call').length`), cards: (await props()).length, rows: await rows(), last: await lastBubble() };
+  const prose = {
+    before: c13,
+    calls: await calls(),
+    cards: (await props()).length, rows: await rows(), last: await lastBubble(),
+  };
   check('★13 前面带散文的 JSON ⇒ 当聊天（免得举例被误当调用）',
-    prose.calls === callsBefore && prose.cards === 2 && prose.rows === 3 && prose.last.indexOf('你可以这样写') >= 0, prose);
+    prose.calls === c13 && prose.cards === 3 && prose.rows === 3 && prose.last.indexOf('你可以这样写') >= 0, prose);
 
   const errs = await ev(`window.__errs`);
   check('★14 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

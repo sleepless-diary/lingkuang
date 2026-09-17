@@ -83,45 +83,115 @@ export function toolsPrompt(): string {
     '【你能用的动作】',
     '只读的可以随时用，我会立刻把结果给你；写入的不会直接生效，会先变成一张要创作者点「应用」的提议卡片。',
     ...rows,
-    '要动用某个动作时，**整条回复只写一行 JSON**，别夹散文、别加解释：',
-    '{"tool":"动作名","args":{…}}',
+    '要动用某个动作时，**整条回复只写一行 JSON**，别夹散文、别加解释。两个键的名字必须是 tool 和 args：',
+    '{"tool":"read_entity","args":{"name":"安德希亚城"}}',
+    '{"tool":"set_field","args":{"entity":"霜精灵","field":"描述","value":"霜精灵是生活在北境冻原的种族。"}}',
+    '⚠️ 不要写成 {"动作名":{…}}（例如 {"set_field":{…}}），也不要写成 {"name":…,"arguments":…} —— 那样我认不出来。',
     '不需要用动作时就用平常的话回答。一次只提一个动作。',
   ].join('\n');
 }
 
 /* ---------------- 解析模型回复 ---------------- */
 
+/* ⭐ 各家的模型写法五花八门（用户 2026-09-15 实测：模型把动作写成了
+ *   `{"set_field":{"entity":"霜精灵","field":"描述","value":"…"}}` —— 工具名当键，
+ *   那时解析器只认正统 `{"tool":…,"args":…}` ⇒ 整坨 JSON 被当聊天画到脸上、什么也没发生）。
+ *   所以这里把「名字」的写法全认下来，参数位置也容错；实在认不出才返回 null。 */
+const ARG_KEYS = ['args', 'arguments', 'parameters', 'params', 'input'];
+/** 参数写成裸值（`{"search":"雪"}`）时，这个动作的主参数叫什么 */
+const PRIMARY: Record<string, string> = {
+  list_entities: 'type',
+  read_entity: 'name',
+  list_nodes: '',
+  search: 'q',
+  create_entity: 'name',
+  set_field: 'value',
+  append_doc: 'text',
+  create_node: 'title',
+  rename_entity: 'name',
+};
+
+const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '');
+const knownTool = (v: unknown): string | null => {
+  const n = str(v);
+  return n && findTool(n) ? n : null;
+};
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/** 把各种形状掰成参数对象；掰不动就退到该动作的主参数名 */
+function toArgs(tool: string, v: unknown): ToolArgs {
+  let raw = v;
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw); /* 值本身是 JSON 字符串 */
+    } catch {
+      raw = v;
+    }
+  }
+  if (isObj(raw)) return raw as ToolArgs;
+  const key = PRIMARY[tool];
+  return key ? ({ [key]: raw } as ToolArgs) : {};
+}
+
+/** 认出来的动作名 + 参数；认不出返回 null */
+export function normalizeCall(obj: unknown): ToolCall | null {
+  if (!isObj(obj)) return null;
+  const o = obj as Record<string, unknown>;
+  /* ① 正统 {tool|name|action|act, args|arguments|…}；名字认得出就顺便收参数 */
+  const direct = knownTool(o.tool) ?? knownTool(o.name) ?? knownTool(o.action) ?? knownTool(o.act);
+  if (direct) {
+    for (const k of ARG_KEYS) if (k in o) return { tool: direct, args: toArgs(direct, o[k]) };
+    const rest: ToolArgs = {}; /* 参数摊平在顶层 */
+    for (const [k, v] of Object.entries(o)) if (!['tool', 'name', 'action', 'act'].includes(k)) rest[k] = v;
+    return { tool: direct, args: rest };
+  }
+  /* ② 工具名当键 —— {"set_field":{…}}（本地小模型很爱这么写） */
+  const keys = Object.keys(o);
+  if (keys.length === 1) {
+    const t = knownTool(keys[0]);
+    if (t) return { tool: t, args: toArgs(t, o[keys[0]]) };
+  }
+  /* ③ 工具名当键 + 同级还夹了别的键（{"set_field":{…},"说明":"…"}）：取第一个认识的那个 */
+  for (const k of keys) {
+    const t = knownTool(k);
+    if (t) return { tool: t, args: toArgs(t, o[k]) };
+  }
+  return null;
+}
+
 /** 从模型回复里抠出工具调用；不是调用就返回 null（当普通聊天处理） */
 export function parseToolCall(raw: string): ToolCall | null {
   const text = String(raw ?? '').replace(/```[a-zA-Z]*/g, '').trim();
-  if (!text) return null;
   /* 整段就是一个 JSON 才认 —— 免得回答里提到例子被误当成调用 */
-  let body = text;
-  if (!body.startsWith('{')) {
-    const at = body.indexOf('{"tool"');
-    if (at < 0) return null;
-    const end = body.lastIndexOf('}');
-    if (end <= at) return null;
-    body = body.slice(at, end + 1);
-    if (text.slice(0, at).trim().length > 0) return null; /* 前面有正文 ⇒ 是解释，不是调用 */
-  }
+  if (!text.startsWith('{')) return null;
+  const end = text.lastIndexOf('}');
+  if (end < 0) return null;
   let obj: unknown;
   try {
-    obj = JSON.parse(body);
+    obj = JSON.parse(text);
   } catch {
-    return null;
+    try {
+      obj = JSON.parse(text.slice(0, end + 1)); /* 后面还挂着一句话，切到最后一个 } 再试 */
+    } catch {
+      return null;
+    }
   }
-  if (!obj || typeof obj !== 'object') return null;
-  const o = obj as { tool?: unknown; args?: unknown };
-  if (typeof o.tool !== 'string' || !o.tool.trim()) return null;
-  if (!findTool(o.tool.trim())) return null;
-  const args = o.args && typeof o.args === 'object' && !Array.isArray(o.args) ? (o.args as ToolArgs) : {};
-  return { tool: o.tool.trim(), args };
+  return normalizeCall(obj);
+}
+
+/** 整条回复就是一个 JSON 对象、但没能映射到任何一个动作 —— 多半是格式写歪了 */
+export function looksLikeToolJson(raw: string): boolean {
+  const text = String(raw ?? '').replace(/```[a-zA-Z]*/g, '').trim();
+  if (!text.startsWith('{') || !text.endsWith('}')) return false;
+  try {
+    return isObj(JSON.parse(text));
+  } catch {
+    return false;
+  }
 }
 
 /* ---------------- 小工具 ---------------- */
 
-const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '');
 const num = (v: unknown): number | null => {
   const n = typeof v === 'number' ? v : Number(str(v));
   return Number.isFinite(n) ? n : null;
