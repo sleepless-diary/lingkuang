@@ -31,6 +31,7 @@ import { createPropsPanel, type PropsPanel } from './props-panel';
 import { createEvolutionRail, type Rail } from './evolution-rail';
 import { createVaultNotices, type VaultNotices } from './vault-notice';
 import { loadSettings } from './settings';
+import { setAgentFocus } from './agent-context';
 import {
   epochOfNodes, frameDiff, nearestVersion, normalizeFrames, patchSummary, statesOf, versionAtNode, type EntityState,
 } from '../store/evolution';
@@ -708,9 +709,27 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   /** 换目标（换条目 / 换页签）：**先把正文结算掉再改选择**。
    *  反过来的话，`render()` 开头那次 flush 会把旧条目的正文写进新选中的条目 —— 实测过的坑。
    *  flush 之后不销毁编辑器：同模式内换条目走就地换内容（保留 tiptap 实例与滚动位置）。 */
+  /** 上报「创作者此刻在编哪一条」给灵框助手（`src/ui/agent-context.ts`）。
+   *  助手的上下文里那段「正在编 · 设定 / 事件」就是它喂的（字段 + 正文）。
+   *  调用点只有两处：换目标之后、以及骨架每次画完（`syncNewBox()` 尾巴）——
+   *  **不在 store 订阅里上报**（那条路每 360ms 走一次，白抖）。 */
+  function reportAgentFocus(): void {
+    const world = store.activeWorld;
+    if (mode === 'entity') {
+      const e = store.data.worldsets[world]?.entities?.[activeId];
+      setAgentFocus(e ? { kind: 'entity', world, id: e.id, title: e.name } : null);
+      return;
+    }
+    const tgt = nodeTarget;
+    if (!tgt) { setAgentFocus(null); return; }
+    const n = store.data.worldsets[tgt.world]?.timelines?.[tgt.tlId]?.nodes.find((x) => x.id === tgt.nodeId);
+    setAgentFocus(n ? { kind: 'node', world: tgt.world, id: n.id, title: n.title } : null);
+  }
+
   function switchTarget(mutate: () => void): void {
     if (docEditor) docEditor.flush();   /* 只结算，不 dispose（dispose 交给整块 render 那条路） */
     mutate();
+    reportAgentFocus();
     if (swapBody()) return;
     pendingEnter = true;   /* 这是用户主动切换：整块重建时播一次入场 */
     render();
@@ -1349,6 +1368,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       rollText(btn.querySelector<HTMLElement>('.lk-roll'), isEntity ? '实体' : '节点');
     }
     syncNewType();
+    /* 骨架重画一律收尾在这一句上（render() 与 mountBody() 都会走到）⇒ 助手那边「正在编」跟着刷新 */
+    reportAgentFocus();
   }
 
   /** 顶栏那个「类型 ▾」跟着**你正在编的那条**走：换条目 / 换类别 / 换了它的类型之后自动对上。
@@ -1753,6 +1774,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     dropGhost();   /* 转场里的幽灵层跟着工具一起收（它还挂在 #cx-body 上） */
     window.removeEventListener('lingkuang-settings', onSettings);
     vaultNotices?.dispose();
+    setAgentFocus(null);   /* 工具切走：助手的「正在编」跟着清掉，否则上下文里挂着一条你看不见的条目 */
     vaultNotices = null;
     /* 切走工具时把未失焦的正文也结算掉，再销毁 tiptap 实例 */
     if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }

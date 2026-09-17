@@ -952,3 +952,63 @@ body {
   text-align: center;
   line-height: 1.7;
 }
+
+/* ── 灵框助手（右侧停靠对话框；Ctrl+K 呼出，见 `src/ui/agent.ts`） ──────────────
+   停靠而非遮罩：用户 2026-09-17「类 agent，但主要工作还是在灵框内」——
+   聊的时候还能继续看/改设定与正文，所以它只在右边占一条，不盖主区。 */
+.lk-agent {
+  position: fixed; right: 0; top: 0; bottom: 0; width: 380px; z-index: 1800;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 12px 10px;
+  background: var(--surface); color: var(--fg);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: -14px 0 34px rgba(0, 0, 0, .26);
+  animation: lk-fade var(--motion-base) var(--ease-standard) both;
+}
+.lk-agent__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lk-agent__title { font-size: var(--text-sm); font-weight: 600; color: var(--fg); }
+.lk-agent__chips { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.lk-agent__chip {
+  padding: 2px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
+  font-size: var(--text-xs); color: var(--fg-2); white-space: nowrap;
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis;
+}
+.lk-agent__chip.is-focus { color: var(--accent); border-color: var(--accent); }
+.lk-agent__x {
+  width: 24px; height: 24px; flex: none; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--fg-2); font-size: 16px; line-height: 1; cursor: pointer;
+}
+.lk-agent__x:hover { color: var(--fg); background: var(--surface-2); }
+.lk-agent__ctx { border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
+.lk-agent__ctx > summary { padding: 5px 8px; font-size: var(--text-xs); color: var(--fg-2); cursor: pointer; }
+.lk-agent__ctx > pre {
+  margin: 0; padding: 8px; max-height: 190px; overflow: auto;
+  font-size: var(--text-xs); line-height: 1.6; color: var(--fg-2); white-space: pre-wrap;
+}
+.lk-agent__msgs { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.lk-agent__empty { padding: 14px 6px; font-size: var(--text-xs); color: var(--fg-2); line-height: 1.8; }
+.lk-agent__msg { display: flex; }
+.lk-agent__msg.is-user { justify-content: flex-end; }
+.lk-agent__bubble {
+  max-width: 86%; padding: 7px 10px; border-radius: var(--radius-md);
+  font-size: var(--text-sm); line-height: 1.7; white-space: pre-wrap; word-break: break-word;
+}
+.lk-agent__msg.is-user .lk-agent__bubble { background: var(--accent); color: var(--accent-on); }
+.lk-agent__msg.is-ai .lk-agent__bubble { background: var(--surface-2); color: var(--fg); border: 1px solid var(--border-soft); }
+.lk-agent__note { min-height: 15px; font-size: var(--text-xs); color: var(--fg-2); }
+.lk-agent__note.is-err { color: var(--danger); }
+.lk-agent__input { display: flex; flex-direction: column; gap: 6px; }
+.lk-agent__input textarea {
+  width: 100%; min-height: 56px; resize: vertical; padding: 7px 9px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--fg);
+  font-size: var(--text-sm); font-family: var(--font-body); line-height: 1.6; outline: none;
+}
+.lk-agent__input textarea:focus { border-color: var(--accent); }
+.lk-agent__send {
+  align-self: flex-end; padding: 5px 18px;
+  border: 1px solid var(--accent); border-radius: var(--radius-sm);
+  background: var(--accent); color: var(--accent-on);
+  font-size: var(--text-sm); font-family: var(--font-body); cursor: pointer;
+}
+.lk-agent__send:hover { background: var(--accent-hover); }

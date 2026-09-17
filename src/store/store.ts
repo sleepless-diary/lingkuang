@@ -15,10 +15,23 @@ export interface Store {
   canRedo(): boolean;
 }
 
+/** 时间线游标落位规则（建店时 / 换世界时 / 撤销重做后三处共用）：
+ *  优先 `order` 里第一条真实存在的时间线，否则第一条，都没有则空串。
+ *  ⚠️ 建店时**必须**用它初始化 `activeTimeline`：以前初始化成空串、只有 `setActiveWorld`
+ *  与撤销/重做才会落位（`update()` 不碰游标），于是「启动后没点过世界页签」的实例里
+ *  `store.activeTimeline === ''` —— 沙盘和工作台各自写了兜底（`src/ui/timeline.ts:89`
+ *  / `src/ui/shell.ts:139`）所以没露馅，但 `src/ui/agent-context.ts` 的 `buildContext()`
+ *  是直取的 ⇒ 助手第一次开口时**整段时间线块凭空消失**（E2E `agent-panel` ★5 抓到）。 */
+function pickTimeline(ws: Worldset | undefined): string {
+  const tls = ws?.timelines;
+  if (!tls) return '';
+  return (ws.order ?? []).find((id) => tls[id]) || Object.keys(tls)[0] || '';
+}
+
 function createStore(initial: WorldData): Store {
   let data: WorldData = initial;
   let activeWorld = Object.keys(initial.worldsets)[0] ?? '';
-  let activeTimeline = '';
+  let activeTimeline = pickTimeline(initial.worldsets[activeWorld]);
   const listeners = new Set<(s: Store) => void>();
   /* 撤销/重做：JSON 快照栈（上限 100） */
   const undoStack: WorldData[] = [];
@@ -42,15 +55,10 @@ function createStore(initial: WorldData): Store {
      世界页签一个都不高亮，看起来像撤销把数据毁掉了（其实是游标悬空）。
      这里按 setActiveWorld / setActiveTimeline 同样的规则重新落位到仍然存在的项。 */
   const reseatSelection = (): void => {
-    if (!data.worldsets[activeWorld]) {
-      activeWorld = Object.keys(data.worldsets)[0] ?? '';
-      activeTimeline = '';
-    }
+    if (!data.worldsets[activeWorld]) activeWorld = Object.keys(data.worldsets)[0] ?? '';
     const ws = data.worldsets[activeWorld];
     if (!ws) { activeTimeline = ''; return; }
-    if (!ws.timelines[activeTimeline]) {
-      activeTimeline = (ws.order ?? []).find((id) => ws.timelines[id]) || Object.keys(ws.timelines)[0] || '';
-    }
+    if (!ws.timelines[activeTimeline]) activeTimeline = pickTimeline(ws);
   };
 
   const store: Store = {
@@ -65,7 +73,7 @@ function createStore(initial: WorldData): Store {
       if (!data.worldsets[name]) return;
       activeWorld = name;
       const ws = data.worldsets[name];
-      activeTimeline = (ws.order ?? []).find((id) => ws.timelines[id]) || Object.keys(ws.timelines)[0] || '';
+      activeTimeline = pickTimeline(ws);
       notify();
     },
     setActiveTimeline(id) {

@@ -15,6 +15,33 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第二十四轮（2026-09-15）· 灵框助手（内嵌 agent · 第 1 片）（**新功能** + 一条藏得很深的游标 bug）
+
+用户原话：「**我想让我们灵框的 ai 真的工作，类 agent，但是主要工作还是在灵框内，有一个自己的对话框，有记忆，能总结创作者的偏好等，还有一个灵框内全局快捷键，按下就能呼出 ai**」
+三个设计问题用户当场拍了：**权限**「和真 agent 软件一样，有禁止，部分执行和 YOLO 什么的」（⇒ 三档：只读 / 逐项确认 / YOLO）、**引擎**「沿用设置里的双模式」（不新增配置项）、**快捷键** `Ctrl+K`。
+⚠️ 这一轮**推翻了 `docs/ROADMAP.md` 第 5 节原来那句「不做 agent 模式（暂定）」** —— 那句已随本轮改写，别按旧文档推理。
+
+本片交付（`src/ui/agent.ts`（新）/ `src/ui/agent-context.ts`（新）/ `src/tools/register.ts` / `src/ui/shell.ts` / `main.js` / `preload.js` / `src/style.css` / `src/store/store.ts` / `src/ui/codex.ts`）：
+
+- **右侧停靠面板**（不是设置那种全屏遮罩）：`#lk-agent-panel`、`position:fixed; right:0; width:380px; z-index:1800` —— 聊天时要能继续看/编主区。头行 = 标题 + 模型 chip + 焦点 chip + ×；`<details>` 里摊开**这次真正喂给模型的上下文**（可自查、也方便 e2e 断言）；消息区 + 输入框；`Ctrl+K` / 左栏「助手」按钮 / Esc 三种开合。Enter 发送（`isImeEnter()` 挡中文输入法候选回车，Shift+Enter 换行）。**报错不进历史**（只在状态行显示），成功才落盘。
+- **上下文注入**（`src/ui/agent-context.ts` 的 `buildContext(store, budget = 4000)`）：世界名与世界数、当前时间线前 12 条节点（年 + 标题 + 种类）、时间指针年份、各实体类型计数与名字（每类最多 6 个）、以及**「你正在编」**那一条的字段与正文。喂数据点 = `src/ui/codex.ts` 的 `reportAgentFocus()`（`switchTarget()` 里 `mutate()` 之后、`syncNewBox()` 尾巴、dispose 各调一次）→ `setAgentFocus()`；焦点**内容有变**才广播 `lingkuang-agent-focus`（`sameFocus()` 去重）—— **换条目是 UI 状态、不一定动数据**，光靠 store 订阅刷不动面板。
+- **落盘**：IPC `agent:load` / `agent:save` → `%APPDATA%\lingkuang\agent\chat.json`（**裸数组**，`AGENT_CHAT_MAX = 200` 截尾）+ `memory.json`（留给第 2 片）。放主进程不放 localStorage 的理由：**它是创作者资产，要能备份、能看、能手改**。测试后门：`LINGKUANG_TEST_DATA` 存在时落在其同级 `agent/` 目录。
+- 快捷键是**应用内** keydown（`src/ui/shell.ts` 的 `bindPanelEvents()` 里注册，模块级 `let shellStore: Store | null = null` 供它取 store）—— **不用 Electron `globalShortcut`**，免得抢系统按键。
+
+**⚠️ 抓到的产品 bug（藏得很深）：启动时 `store.activeTimeline` 是空串**
+
+- 现象：助手上下文里**整段时间线块凭空消失**（`agent-panel` ★5 报 `timeline:false`、上下文只有 128 字符）。
+- 根因：`src/store/store.ts` 原 `let activeTimeline = '';`，只有 `setActiveWorld` / `setActiveTimeline` / `undo` / `redo` 会落位，**`update()` 根本不碰游标** ⇒ 启动后没点过世界栏的实例里它是空的。别处都自己写了兜底（`src/ui/timeline.ts`、`src/ui/shell.ts` 都有本地 `activeTimelineId()` 回退第一条），所以一直没露馅 —— **只有直接取 `store.activeTimeline` 的 `src/ui/agent-context.ts` 撞上了**。
+- 修法：新增未导出 `function pickTimeline(ws: Worldset | undefined): string`（`(ws.order ?? []).find((id) => tls[id]) || Object.keys(tls)[0] || ''`），用于建店 / `reseatSelection()` / `setActiveWorld()` **三处** —— 建店时就落位，别再让"第一帧没有游标"这种状态存在。
+- A/B：改前 `{timeline:false,node:false,len:128}` → 改后 `{timeline:true,node:true,len:173}`。
+
+**两条测试纪律（本轮踩到，已记进 `tools/e2e/README.md` 铁律 30）**：
+
+- **别同时跑两个 CDP 测试实例**：窗口互相遮挡 ⇒ 渲染进程不再产帧 ⇒ 套件里的 `Page.captureScreenshot` 永久挂住（`motion-switch` 当场 600s 超时被 pwsh 杀掉；套件的 CDP `send()` 没有超时，所以是"挂死"而不是"报错"）。单独一个实例复跑 **25/25**。
+- **一个套件 = 一份自己的干净起点**：本轮两次假红都是串跑造成的 —— `workbench-add-node` 建了 4 个节点后再跑 `codex-tree-view` ⇒ **19/22**；`workbench-tree-folders` 跑在了 `lk-evault2` 而不是它自己的 `lk-edtree` ⇒ **23/29**。各自 reset + seed + 重启后 **22/22 / 29/29**。
+
+e2e `tools/e2e/agent-panel.cjs` **14 项全绿**（夹具 = `%TEMP%\lk-evault2` + `seed-agent-chat.cjs`）；回归全绿：`codex-node-tab` 18/18、`codex-tree-view` 22/22、`codex-switch-target` 7/7、`workbench-tree-folders` 29/29、`workbench-add-node` 19/19、`settings-panel` 12/12、`toolbar-groups` 5/5、`data-load-clean` 6/6、`motion-switch` 25/25。
+
 ## 第二十三轮（2026-09-14）· 「这件事改变了谁」：演变的反向视图（**新功能**）
 
 > 用户原话：「**好，你先去写新功能吧，我在上课**」（他不在，我按之前给过的选单自主选了这个方向）。

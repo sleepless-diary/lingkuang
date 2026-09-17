@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
   saveFormats: (formats) => ipcRenderer.invoke('formats:save', formats),
   /* character generator word bank (data/character_lib.json) */
   loadCharLib: () => ipcRenderer.invoke('lib:load'),
+  /* 灵框助手：对话历史 + 长期记忆（主进程写 userData/agent/*.json，与 vault 一样是可备份的资产） */
+  agentLoad: () => ipcRenderer.invoke('agent:load'),
+  agentSave: (payload) => ipcRenderer.invoke('agent:save', payload),
   /* word association via local Ollama (qwen2.5:7b) */
   associate: (word) => ipcRenderer.invoke('ai:associate', word),
   /* write character lib (staged words export) */

@@ -19,7 +19,7 @@
 
 | 路径 | 职责 |
 |---|---|
-| `main.js` | Electron 主进程。IPC：`data:load/save`（世界观）、`settings`、`lib`（词库）、`ai:associate`（联想）、`ai:classify`（词分类）、`aiChat()`（双模式 LLM 调用）、`vault:*`（Obsidian 文稿：`scan`/`write`/`write-entity`/`delete`/`delete-entity`/`delete-timeline`/`delete-world`/`trash-list`/`trash-restore`/`trash-purge`）、`formats:load/save`（结构体格式）、`backup:list/create/restore/export/import`（备份管理）、`app:flush-sync`（退出前同步落盘） |
+| `main.js` | Electron 主进程。IPC：`data:load/save`（世界观）、`settings`、`lib`（词库）、`ai:associate`（联想）、`ai:classify`（词分类）、`aiChat()`（双模式 LLM 调用）、`vault:*`（Obsidian 文稿：`scan`/`write`/`write-entity`/`delete`/`delete-entity`/`delete-timeline`/`delete-world`/`trash-list`/`trash-restore`/`trash-purge`）、`formats:load/save`（结构体格式）、`backup:list/create/restore/export/import`（备份管理）、`app:flush-sync`（退出前同步落盘）、`agent:load/save`（灵框助手的**对话与记忆** → `%APPDATA%\lingkuang\agent\chat.json`（裸数组，`AGENT_CHAT_MAX = 200` 截尾）+ `memory.json`；测试时落 `LINGKUANG_TEST_DATA` 同级 `agent/`） |
 | `preload.js` | contextBridge 安全桥，暴露 `window.lingkuangAPI` |
 | `index.html` | Vite 入口（`<div id="app">` + `<script src="/src/main.ts">`） |
 | `mcp-server.js` | MCP 服务器（`query_timeline` / `query_node` / `search_world` / `query_loop`） |
@@ -27,7 +27,7 @@
 | `src/calendar.ts` | **历法系统**：可编辑历法模型（`Calendar`/`TimePoint`/`toEpoch`/`fromEpoch`），默认公历 |
 | `src/store/` | 数据层：`store.ts`（单一数据源 + 订阅）、`actions.ts`（修改入口）、`types.ts`（领域类型） |
 | `src/tools/` | `registry.ts`（工具栏工具注册表 + `Tool.group` 左栏分组；`openTool()` 给每次打开发一个**工具格** `.lk-tool-slot`——见「工具宿主」一段）+ `register.ts`（工具定义） |
-| `src/ui/shell.ts` | 壳 UI：世界栏 + 工具栏 + 沙盘 + 工具宿主 |
+| `src/ui/shell.ts` | 壳 UI：世界栏 + 工具栏 + 沙盘 + 工具宿主。工具栏最开头调 `bindPanelEvents()`（面板型工具的按钮高亮同步 + **`Ctrl+K` 呼出灵框助手**；那个作用域里没有 store ⇒ 用模块级 `let shellStore: Store \| null = null`，在 `renderToolbar(store)` 里赋值） |
 | `src/ui/timeline.ts` | 世界沙盘时间线（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针） |
 | `src/ui/inspire.ts` | 灵感触发器（随机角色生成 + 词义联想入口） |
 | `src/ui/assoc.ts` | 词义联想**无限画布**（力导向 + 单线聚焦 + 视窗平移/缩放 + 拖节点贴边自动推视窗 + 手动摆过的节点钉住，钉住上限 `PIN_YIELD = 420`）；拖拽中只免"手里那一格"、线的另一头照常受力（＝线上的拉力）；没有世界边界（`HOME_W/HOME_H` 只是初始落点区与 SVG 作图区），框外连线靠 `.assoc__lines { overflow: visible }`；宿主高度由 `src/ui/inspire.ts` 的 `fitAssocHeight()` 让开 sticky 工具条，滚动容器用 `scrollParent()` 现找 |
@@ -35,6 +35,8 @@
 | `src/ui/vault-notice.ts` | **外部改动提示条**（原 `src/ui/editor.ts` 里的 `addHint` 那一套）：`createVaultNotices({ getHost, store, getCurrentNodeId, say? })` → `{ checkBodyTag(world, tlId, nodeId, doc, title), refresh(), dispose() }`。两件事：① Obsidian 把某个节点 `.md` 的 `「#描述：」`/`「#正文：」` 标签删了（或增删了字段）→ 一条提示 + 「恢复格式」一键写回；② 启动时被 `src/main.ts` 自动补回标签的那些文件，告知一声（可「不再提示」）。⚠️ 提示是**累积列表**（key 去重），切条目**不清空** —— 用户得能看见哪个文件出过事；⚠️ 宿主元素延后取（工作台 `render()` 会整块重建 DOM）⇒ 每次 render 之后调 `refresh()` 重画；⚠️ 两个 window 监听在 `dispose()` 里移除（否则每开一次工作台多积一对，它们持有整个模块作用域） |
 | `src/ui/props-panel.ts` | **公共属性面板**（节点与实体共用**同一份**「改字段」实现，编辑器和设定库都调它）：`createPropsPanel({ store, host, status?, getTarget, patchTarget })` → `{ render(node, isEntity?), hide() }`；`PropsTarget` 是两边共用的身份联合类型。内含 AE 式 scrub（`createScrubField`）与历法推进的时间控件。⚠️ 面板构建后**刻意不重渲染**（避免销毁拖拽中的 scrub 控件），所以提交要走 `patchTarget`（从 store 取最新 properties 再合并） |
 | `src/ui/ai-workbench.ts` / `roleplay.ts` / `tavern.ts` | AI 工作台 / 角色扮演 / 酒馆剧情推演 |
+| `src/ui/agent.ts` | **灵框助手**（内嵌 agent 第 1 片，用户 2026-09-15：「ai 真的工作，类 agent…有一个自己的对话框…全局快捷键」）：`openAgentPanel(store)` / `closeAgentPanel()` / `isAgentPanelOpen()` / `toggleAgentPanel(store)`。**右侧停靠**（`position:fixed; right:0; width:380px; z-index:1800`，**不接管主区** —— 聊天时照样能编稿子）；`Ctrl+K` / 左栏「助手」按钮 / Esc 三种开合，开关都广播 `lingkuang-panel` 让按钮同步高亮。它也是 **`Tool.panel = true` 的面板型工具**（与 `settings-panel.ts` 同一条路，但 `registry.ts` 只有**一格** `disposePanel` ⇒ 两个面板不能同时开）。发请求 = `aiChat([{role:'system',content: SYS_HEAD + '\\n\\n【工作区现状】\\n' + buildContext(store)}, ...history.slice(-HISTORY_SEND)])`；**报错不进历史**，成功才 push + 落盘 |
+| `src/ui/agent-context.ts` | 助手的**上下文打包**（原则仍是 ROADMAP §5 的「应用层查好再塞」，比让模型自己查可靠）：`setAgentFocus(f: AgentFocus \| null)` / `getAgentFocus()` / `buildContext(store, budget = 4000)`。`AgentFocus = { kind: 'entity' \| 'node'; world: string; id: string; title: string }`。内容 = 当前世界（与世界数）、当前时间线前 12 条节点（年/标题/种类）、**时间指针年份**（⚠️ 取 `fromEpoch(calendarOf(tl), cursor).anchor.year` —— 写成 `tp.year` 会静默 undefined）、各类型计数与名字、以及「正在编」那一条的字段与正文。喂数据点 = `src/ui/codex.ts` 的 `reportAgentFocus()`（`switchTarget()` 内 / `syncNewBox()` 尾巴 / dispose）；焦点**变了**才广播 `lingkuang-agent-focus`（换条目是 UI 状态、不一定动数据，光靠 store 订阅刷不动面板） |
 | `src/ui/map.ts` | 手绘矢量地图（区域 + 标记） |
 | `src/ui/detail.ts` / `node-form.ts` | 节点详情 / 新建节点表单（详情面板里的「模板字段」区按节点种类渲染该种类的结构化字段，直接可填） |
 | `src/ui/settings.ts` | 设置项的**存储与表单**（AI 引擎 / 画布偏好 / 设定演变 / **换条目转场**四组旋钮，存 localStorage `lingkuang-settings`；`loadSettings()` / `saveSettings()` / `renderSettingsInto(el, store)`）。转场那四个键：`motionSwap`(开) / `motionSpeed`(1×，除以时长) / `motionStagger`(10ms) / `motionEnterDx`(32px)，`codex.ts` 的 `playSwap()` 每次读取 |

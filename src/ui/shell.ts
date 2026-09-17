@@ -214,7 +214,7 @@ function renderTimelineTabs(store: Store): void {
 }
 
 function renderToolbar(store: Store): void {
-  bindPanelEvents();
+  shellStore = store; bindPanelEvents();
   const bar = document.getElementById('lk-toolbar');
   const toolHost = document.getElementById('lk-tool-host');
   if (!bar || !toolHost) return;
@@ -283,9 +283,26 @@ function syncPanelButtons(): void {
 }
 
 /* 只挂一次：`renderToolbar` 每次重建工具栏都会走一遍，重复注册会把同一个回调堆起来 */
+/* 壳里留一份 store 引用：`bindPanelEvents()` 是模块级函数、作用域里没有 store，
+   而 **Ctrl+K** 要能直接开「灵框助手」（不该先逼用户去点工具按钮）。 */
+let shellStore: Store | null = null;
+
 let panelEvtBound = false;
 function bindPanelEvents(): void {
   if (panelEvtBound) return;
   panelEvtBound = true;
   window.addEventListener('lingkuang-panel', () => syncPanelButtons());
+  /* **Ctrl+K 呼出助手**（用户选定 Ctrl+K）：走应用内 keydown，**不用 Electron 的 globalShortcut**
+     —— 全局热键会跟系统/别的软件抢按键（Ctrl+K 在编辑器里到处都是），而用户要的是「灵框内」呼出。
+     再按一次收起；只认单按 Ctrl/Cmd+K（带 Shift/Alt 的组合让给别人）。 */
+  window.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+    if (e.key !== 'k' && e.key !== 'K') return;
+    const t = listTools().find((x) => x.id === 'agent');
+    if (!t?.panel) return;
+    e.preventDefault();
+    if (t.isOpen?.()) t.close?.();
+    else if (shellStore) openTool('agent', document.getElementById('lk-module-view') as HTMLElement, shellStore);
+    syncPanelButtons();
+  });
 }

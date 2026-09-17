@@ -1334,6 +1334,38 @@ ipcMain.handle('vault:unwatch', () => {
    打包后 __dirname 位于 app.asar 内部，asar 是只读归档，往里写会失败；
    而项目约定「数据写 %APPDATA%\lingkuang\，不写项目目录」。所以读优先用户副本、
    缺失时回落到种子，写一律写用户副本。 */
+/* ── IPC: 灵框助手的落盘（对话历史 + 长期记忆） ──────────────────────────
+   两份文件都在 userData 下（测试时跟着 LINGKUANG_TEST_DATA 走同一个临时目录）：
+     agent/chat.json   对话历史
+     agent/memory.json 长期记忆（偏好条目）
+   为什么用主进程写文件而不是 localStorage：① 这是**创作者资产**（助手记住了什么），
+   要能像 vault 一样被备份、查看、手改；② localStorage 清缓存就没了、容量也小。 */
+const AGENT_DIR = () => (process.env.LINGKUANG_TEST_DATA
+  ? path.join(path.dirname(process.env.LINGKUANG_TEST_DATA), 'agent')
+  : path.join(app.getPath('userData'), 'agent'));
+const AGENT_CHAT_MAX = 200;
+const agentFile = (name) => path.join(AGENT_DIR(), name);
+function agentRead(name) {
+  try { return JSON.parse(fs.readFileSync(agentFile(name), 'utf8')); } catch (e) { return null; }
+}
+ipcMain.handle('agent:load', () => {
+  const chat = agentRead('chat.json');
+  const memory = agentRead('memory.json');
+  return { ok: true, chat: Array.isArray(chat) ? chat : [], memory: Array.isArray(memory) ? memory : [] };
+});
+ipcMain.handle('agent:save', (e, payload) => {
+  try {
+    fs.mkdirSync(AGENT_DIR(), { recursive: true });
+    const chat = Array.isArray(payload && payload.chat) ? payload.chat : [];
+    /* 只留最近 AGENT_CHAT_MAX 条：历史是给「接着聊」用的，不是归档（归档在 vault / 备份里） */
+    fs.writeFileSync(agentFile('chat.json'), JSON.stringify(chat.slice(-AGENT_CHAT_MAX), null, 2), 'utf8');
+    if (Array.isArray(payload && payload.memory)) {
+      fs.writeFileSync(agentFile('memory.json'), JSON.stringify(payload.memory, null, 2), 'utf8');
+    }
+    return { ok: true };
+  } catch (err) { return { ok: false, error: err.code || String(err) }; }
+});
+
 const LIB_SEED = () => path.join(__dirname, 'data', 'character_lib.json');
 const LIB_FILE = () => path.join(app.getPath('userData'), 'character_lib.json');
 ipcMain.handle('lib:load', () => {
