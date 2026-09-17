@@ -19,7 +19,7 @@ import { currentWorld } from '../store/store';
 import type { Entity, TimelineNode } from '../store/types';
 import { epochOfNodes, isEmptyPatch, patchSummary, versionAtNode } from '../store/evolution';
 import { escapeHtml } from './html';
-import { cloneIntoLayer, flipRows, ghostLayerFor, rowsEnter, rowsLeaveAndRemove, rowsLeaveTotal, smoothBoxHeight, topsOf } from './motion';
+import { cloneIntoLayer, flipRows, ghostLayerFor, rowsDropIn, rowSlideIn, rowsLeaveAndRemove, rowsLeaveTotal, smoothBoxHeight, topsOf } from './motion';
 import { loadSettings } from './settings';
 
 export interface RailDeps {
@@ -80,14 +80,16 @@ export function createEvolutionRail(deps: RailDeps): Rail {
      **不改**正在看的版本（那一版还不存在，没什么可看）。
      状态放这里而不是 render 里重建，否则一重画就弹回收起。 */
   let showAll = false;
-  /** 帧条上"展开/收起"用的动效参数：与左树文件夹的弹出/收回**同一档**（往上 8px、180ms、错峰 14ms、
-   *  封顶 120ms —— 2026-09-14 用户：「文件收起的动画快一点，现在有一点停滞感」，两处一起调快才是一套）。 */
-  /* 帧条那些行（展开出来的虚化行 / 收起时退场的行）的出入场参数。
-     用户 2026-09-14 第三轮：「**帧面板节点的出入场换成左右移动（就像正文面板一样）**」
-     ⇒ 不再用"上下 8px"（`dy`），改成与正文行级转场同一套左右位移：
-     出场 `0 / 原地 → 左移 dx`（慢→快）、入场 `从右 dx → 原地`（快→慢）。
-     ⚠️ `rowsLeave` 里 **`dy` 优先于 `dx`** ⇒ 这里绝不能给 `dy`。 */
-  const EXIT = { dx: 32, dur: 200, step: 12, maxDelay: 96 } as const;
+  /* 帧条那些行（展开出来的虚化行 / 收起时退场的行 / 新记的一格）的出入场参数：
+     **与左树（设定库那个文件夹树）同一套** —— 用户 2026-09-15：「节点的入场和出场还是参考我们
+     文件树的管理吧」（上一版是左右位移，见 git 历史）。三件事各对一个原语：
+      · 展开露出来的虚化行 → `rowsDropIn`（从上方 `-dy` 落下来 + 渐显，与左树展开文件夹一样）；
+      · 收起时退场的行     → `rowsLeaveAndRemove(…, EXIT)`（往上 `-dy` 淡出 ⇒ 给 `dy` 不给 `dx`）；
+      · 新记的一格         → `rowSlideIn`（从**左侧**滑进来，与左树"新出现的行"一样）。
+     ⚠️ `rowsLeave` 里 **`dy` 优先于 `dx`** ⇒ 走左右时绝不能给 `dy`；反过来这里就是要给 `dy`。 */
+  const EXIT = { dy: 8, dur: 150, step: 12, maxDelay: 96 } as const;
+  /** 展开时那批虚化行的落位参数（= `rowsDropIn` 的默认：往下 8px、260ms、错峰 22ms、封顶 240ms）。 */
+  const DROP = { dy: 8, dur: 260, step: 22, maxDelay: 240 } as const;
   /* 节点 epoch 只按世界缓存：拖帧条、改字段都会重画这一条，不必每次都算年表 */
   let cacheWorld = '';
   let cacheEpoch: Map<string, number> = new Map();
@@ -300,33 +302,44 @@ export function createEvolutionRail(deps: RailDeps): Rail {
         if (!k) return;                       /* "还没有版本"那句话、裁切层里的幽灵都不是帧条的行 */
         rowsNow.push(el); keys.push(k); tops.push(now.tops[i]);
       });
+      /* 这一刀里挂在行上的动画，全部收进 `rowAnims`：盒子的夹子要**等它们都落定**才松开（`hold`）
+         —— 否则框的高度动画先结束时（收起那一路：框 `delay 174 + dur 240 = 414ms` 就完了，
+         而被让位的行要到 `174 + 320 = 494ms` 才落定），被钉在旧位置的行就成了多出来的可滚溢出，
+         当场冒出一条竖直滚动条（用户 2026-09-15：「帧面板会闪一瞬间的滚动条」，
+         实测那 80ms 里 `offsetWidth - clientWidth = 16px`）。 */
+      const rowAnims: Animation[] = [];
       if (!cold) {
         /* 让位（FLIP）：位置变了的行从旧位置滑到新位置，**越高的越先动**。
            ⚠️ `maxShift` 要放宽：帧条是个**能滚的盒子**，一次展开真能把行推下去好几百像素，
            那是真位移、必须演；`flipRows` 默认 240px 会把它当成"整块换形态"而跳过
            （看不见的行不演也无妨，所以按"盒子可见高度 + 一格"给）。 */
-        flipRows(rowsNow, keys, tops, prev, {
+        rowAnims.push(...flipRows(rowsNow, keys, tops, prev, {
           dur: FLIP_DUR,
           delay: opts.rowDelay ?? 0,
           step: FLIP_STEP,
           maxDelay: FLIP_MAX,
           maxShift: Math.max(240, (box.clientHeight || 0) + ROW_H),
-        });
+        }));
         if (opts.enterNew !== false) {
-          /* 这次重画里**新冒出来的格子**（记了一帧、删了一帧、换了一条设定）从右边滑进来，
-             一行比一行晚 `EXIT.step` —— 与展开时那批虚化行同一套姿势。
+          /* 这次重画里**新冒出来的格子**（记了一帧、删了一帧、换了一条设定）**从左边滑进来** ——
+             与左树里"新出现的行"同一套姿势；一行比一行晚 `EXIT.step`。
              （展开那条路给 `enterNew: false`，它要按"离最近的一版多远"自己排序，见点击委托处） */
           let n = 0;
           rowsNow.forEach((el) => {
             if (prev.has(el.getAttribute('data-cx-key') || '')) return;
-            rowsEnter([el], { dx: EXIT.dx, dur: EXIT.dur, step: 0, maxDelay: 0, start: Math.min(n * EXIT.step, EXIT.maxDelay) });
+            const a = rowSlideIn(el, { delay: Math.min(n * EXIT.step, EXIT.maxDelay) });
+            if (a) rowAnims.push(a);
             n++;
           });
         }
       }
+      const hold = rowAnims.reduce((m, a) => {
+        const t = a.effect?.getTiming();
+        return Math.max(m, Number(t?.delay ?? 0) + Number(t?.duration ?? 0));
+      }, 0);
       /* 外面的框（整条时间线的高度）跟着行一起演。收起那一路由调用方把 `boxDelay` 给成
          "退场总时长"（`rowsLeaveTotal`）—— 虚化行先走完、框再收（见 `RailRenderOpts` 的说明）。 */
-      smoothBoxHeight(box, boxBefore, { delay: opts.boxDelay ?? 0 });
+      smoothBoxHeight(box, boxBefore, { delay: opts.boxDelay ?? 0, hold });
       /* 存下这一刀的布局（**动画开演之前**量的）：等下一批开始时才提交成 `rowTops`（见上面的说明） */
       pendingTops = new Map(keys.map((k, i) => [k, tops[i]]));
       lastRenderAt = performance.now();
@@ -411,19 +424,18 @@ export function createEvolutionRail(deps: RailDeps): Rail {
          收起时行与框都等它**走完**再动**（用户 2026-09-14：「收起时节点要先出场，外面的框再收起」；
          被让位的行同理 —— 不等的话虚化行还没淡走、下面的行已经补上来，同一处两份内容，铁律 26）。 */
       const exitMs = ghosts.length ? rowsLeaveTotal(ghosts.length, EXIT) : 0;
-      const boxDelay = ghosts.length ? exitMs : (upcoming ? Math.round(rowsLeaveTotal(upcoming, EXIT) * 0.5) : 0);
+      const boxDelay = ghosts.length ? exitMs : (upcoming ? Math.round(rowsLeaveTotal(upcoming, DROP) * 0.5) : 0);
       /* 展开那条路的入场**不交给 render**：它要按"离最近的一版多远"排序（`orderByDistance`），
-         顺序只在点击这一刻量得到 ⇒ `enterNew: false`，下面自己调 `rowsEnter`。 */
+         顺序只在点击这一刻量得到 ⇒ `enterNew: false`，下面自己调 `rowsDropIn`。 */
       render({ enterNew: false, rowDelay: exitMs, boxDelay });
       const fresh = [...host.querySelectorAll<HTMLElement>('.lk-rail__row')].filter((r) => !before.has(r.dataset.rail ?? ''));
       if (ghosts.length) {
         rowsLeaveAndRemove(ghosts, EXIT);
       } else if (fresh.length) {
-        /* 入场：**离最近的一版越近的越先出现**（`orderByDistance` 已按距离升序排好），从**右边**滑进来。
-           ⚠️ `rowsEnter` 的 `start` 默认是 `dur`（那是给"先出后进"的正文转场用的）；帧条这里**必须
-           显式给 0**，否则整批要等 200ms 才开始动 —— 框都在长了行还没出来。 */
+        /* 入场：**离最近的一版越近的越先出现**（`orderByDistance` 已按距离升序排好），
+           与左树展开文件夹一样**从上方落下来**（`rowsDropIn`）。 */
         const enter = orderByDistance([...host.querySelectorAll<HTMLElement>('.lk-rail__row')], fresh, false);
-        rowsEnter(enter, { dx: EXIT.dx, dur: EXIT.dur, step: EXIT.step, maxDelay: EXIT.maxDelay, start: 0 });
+        rowsDropIn(enter, DROP);
       }
       return;
     }

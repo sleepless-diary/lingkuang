@@ -22,7 +22,6 @@ const PORT = process.env.LK_CDP_PORT || '9334';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 function check(n, ok, extra) { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${extra !== undefined ? '   ' + JSON.stringify(extra) : ''}`); }
-
 async function main() {
   let target = null;
   for (let i = 0; i < 120; i++) {
@@ -106,8 +105,11 @@ async function main() {
     const bt = ba[0] ? ba[0].effect.getTiming() : null; const bk = ba[0] ? ba[0].effect.getKeyframes() : null;
     /* 被**挤下去**的行（让位 / FLIP）：用户 2026-09-14「已有的帧节点的位置变化也要平滑」——
        帧条是个能滚的盒子，一次展开真能把下面的格子推下去几百像素，以前是瞬间跳的。
-       只认"上下位移"的那种动画（transform 以 translateY 开头）；入场/退场那两批走的是 translateX。 */
-    const moving = [...box2.querySelectorAll('.lk-rail__row')].flatMap((r) => r.getAnimations().map((a) => {
+       只认"上下位移"的那种动画（transform 以 translateY 开头）。
+       ⚠️ 2026-09-15 起**入场那批也走上下**了（用户：「节点的入场和出场还是参考我们文件树的管理吧」）
+       ⇒ 必须把"这次新冒出来的行"排除掉，否则它们会被当成让位行（★4e 就是这么假挂的）。 */
+    const freshSet = new Set(fresh.map((r) => r.dataset.rail));
+    const moving = [...box2.querySelectorAll('.lk-rail__row')].filter((r) => !freshSet.has(r.dataset.rail)).flatMap((r) => r.getAnimations().map((a) => {
       const kf = a.effect.getKeyframes(); const t = a.effect.getTiming();
       return { id: r.dataset.rail || 'base', d: t.delay, dur: t.duration, fill: t.fill,
         tfFrom: kf[0].transform, tfTo: kf[kf.length - 1].transform };
@@ -138,18 +140,18 @@ async function main() {
   /* ⚠️ 铁律 15：WAAPI 关键帧里的数值**可能是字符串也可能是数字**（同一个 `{opacity: 0}` 在不同
      属性上读出来不一样）⇒ 一律 `String()` 之后比。 */
   const S = (v) => String(v);
-  check('★1 展开时虚化行**逐行**出现（4 格 · 单行 200ms · 逐行晚 12ms）',
-    (exp.info || []).length === 4 && JSON.stringify(delays(exp.info)) === JSON.stringify([0, 12, 24, 36])
-      && (exp.info || []).every((x) => x.dur === 200), exp.info);
+  check('★1 展开时虚化行**逐行**出现（4 格 · 单行 260ms · 逐行晚 22ms —— 与左树文件夹同一档）',
+    (exp.info || []).length === 4 && JSON.stringify(delays(exp.info)) === JSON.stringify([0, 22, 44, 66])
+      && (exp.info || []).every((x) => x.dur === 260), exp.info);
   check('★2 顺序 = **离最近的一版越近越先出现**（距离序列单调递增；种子两端都有版本 ⇒ 与 DOM 顺序不同）',
     JSON.stringify(byDelay(exp.info)) === JSON.stringify(['n-ro-2', 'n-ro-5', 'n-ro-3', 'n-ro-4'])
       && monotone(distSeq(exp.order, exp.info, 1), 1)
       && distSeq(exp.order, exp.info, 1)[0] < distSeq(exp.order, exp.info, 1).slice(-1)[0],
     { order: byDelay(exp.info), dist: distSeq(exp.order, exp.info, 1) });
-  check('★3 入场 = **从右边滑进来**（`translateX(+32px)` → 原位），不是上下弹（用户 2026-09-14：「帧面板节点的出入场换成左右移动（就像正文面板一样）」）',
+  check('★3 入场 = **从上方落下来**（`translateY(-8px)` → 原位，与左树展开文件夹同一套；用户 2026-09-15：「节点的入场和出场还是参考我们文件树的管理吧」）',
     (exp.info || []).length === 4 && (exp.info || []).every((x) => S(x.opFrom) === '0' && S(x.opTo) === '0.4')
-      && (exp.info || []).every((x) => x.tfFrom === 'translateX(32px)' && x.tfTo === 'none'), (exp.info || []).map((x) => [S(x.opFrom), S(x.opTo)]));
-  check('★3b 入场的 `start` 必须是 **0**（`rowsEnter` 默认是 `dur`，那是给"先出后进"的正文转场用的 —— 帧条只有入场，等一个 dur 才动就白等）',
+      && (exp.info || []).every((x) => x.tfFrom === 'translateY(-8px)' && x.tfTo === 'none'), (exp.info || []).map((x) => [S(x.opFrom), S(x.opTo)]));
+  check('★3b 第一行**当下就动**（`delay` 最小值为 0：帧条只有入场，谁也不许先白等一个 dur —— `rowsEnter` 的 `start` 默认是 dur，那是"先出后进"的正文转场才要的）',
     Math.min(...delays(exp.info)) === 0, delays(exp.info));
   check('★4 最外层那个框的高度**也演**，而且**晚一步**（delay > 0 · fill both 先冻在旧高度）',
     exp.boxAnimN === 1 && exp.boxDelay > 0 && exp.boxFill === 'both'
@@ -157,9 +159,10 @@ async function main() {
     { before: exp.before, boxFrom: exp.boxFrom, boxTo: exp.boxTo, boxDelay: exp.boxDelay, boxDur: exp.boxDur });
   check('★4b 展开的那一 tick 里框还没长高（冻在旧高度上，尺寸靠动画给）', exp.after === exp.before, { before: exp.before, after: exp.after });
   /* ⚠️ 用户 2026-09-14：「**展开后外面的框高度会闪**」—— 根因就是这一条盯的东西：
-     量目标高度那一刻，入场行还在 `translateX(32px)` 上（位移会撑出**横向**可滚动溢出）
+     量目标高度那一刻，入场行还在位移里（那一版走的是 `translateX(32px)`，位移会撑出**横向**可滚动溢出）
      ⇒ `overflow:auto` 的盒子当场长出一条 15px 的横向滚动条 ⇒ 动画终点 = 内容 + 滚动条；
-     等行们落定、滚动条一走，框就"闪"矮一下（修前实测终点 363.333px vs 自然 348px）。 */
+     等行们落定、滚动条一走，框就"闪"矮一下（修前实测终点 363.333px vs 自然 348px）。
+     现在入场改走上下（★3）、横向溢出没了，但"**先钉 `overflow` 再量**"这条纪律照样得守着。 */
   check('★4c 框的动画终点 = **它真正想要的高度**（不含滚动条；否则演完会闪一下）',
     Math.abs(parseFloat(exp.boxTo) - Math.min(exp.boxScrollH, exp.boxMaxH)) <= 1.5,
     { boxTo: exp.boxTo, scrollH: exp.boxScrollH, maxH: exp.boxMaxH });
@@ -234,9 +237,9 @@ async function main() {
       && monotone(distSeq(col.order, col.info, -1), -1)
       && distSeq(col.order, col.info, -1)[0] > distSeq(col.order, col.info, -1).slice(-1)[0],
     { order: byDelay(col.info), dist: distSeq(col.order, col.info, -1) });
-  check('★8 退场 = **往左滑走**（不透明度起点 0.4；`translateX(-32px)` 收尾 —— 与入场同一根轴，方向相反）',
+  check('★8 退场 = **往上淡出**（不透明度起点 0.4；`translateY(-8px)` 收尾 —— 入场动画的倒放，与左树收起文件夹同款）',
     (col.info || []).length === 4 && (col.info || []).every((x) => S(x.opFrom) === '0.4' && S(x.opTo) === '0')
-      && (col.info || []).every((x) => x.tfTo === 'translateX(-32px)'), (col.info || []).map((x) => [S(x.opFrom), S(x.opTo)]));
+      && (col.info || []).every((x) => x.tfTo === 'translateY(-8px)'), (col.info || []).map((x) => [S(x.opFrom), S(x.opTo)]));
   check('★9 裁切层**停在旧高度**（否则退场中的虚化行会被裁没）· 而框的目标高度已经变矮了',
     Math.abs((col.layerH ?? 0) - col.boxBefore) <= 2 && parseFloat(col.boxTo) < col.boxBefore - 40
       && col.boxAnimN === 1 && col.boxDelay > 0 && col.boxFill === 'both'
@@ -256,15 +259,65 @@ async function main() {
       && /^translateY\(18[0-9](\.\d+)?px\)$/.test(String(col.moving[0].tfFrom)) && col.moving[0].tfTo === 'none',
     { moving: col.moving, allAnims: col.allAnims, rowsNow: col.rowsNow, boxDelay: col.boxDelay });
 
+
   const gone = await waitFor(async () => await ev(`document.querySelectorAll('.lk-ghost-layer').length === 0`), 4000);
   const cleanBox = await waitFor(async () => await ev(`document.querySelector('.lk-rail__rows').getAnimations().length === 0`), 6000);
   const after = await ev(`(() => { const b = document.querySelector('.lk-rail__rows');
     return { h: Math.round(b.getBoundingClientRect().height), styleH: b.style.height, anims: b.getAnimations().length,
+      ovf: b.style.overflow, barW: b.offsetWidth - b.clientWidth,
       ghosts: document.querySelectorAll('.lk-rail__rows .lk-rail__row.is-ghost').length,
       frames: document.querySelectorAll('#cx-rail .lk-rail__row.is-frame').length }; })()`);
-  check('★10 演完就收干净：裁切层摘掉、帧条只剩「初稿 + 两格有版本」、框缩回展开前的高度',
-    gone && cleanBox && after.ghosts === 0 && after.frames === 2 && after.styleH === '' && after.anims === 0
-      && Math.abs(after.h - exp.before) <= 2, { gone, cleanBox, after, expBefore: exp.before });
+  /* `ovf` 也盯着：★12 那个夹子**最终必须松开** —— 一直夹着的话帧条再也不能滚（"选中行滚进视野"静默失效）。 */
+  check('★10 演完就收干净：裁切层摘掉、帧条只剩「初稿 + 两格有版本」、框缩回展开前的高度、夹子松开且不留滚动条',
+    gone && cleanBox && after.ghosts === 0 && after.frames === 2 && after.styleH === '' && after.anims === 0 && after.ovf === ''
+      && after.barW === 0 && Math.abs(after.h - exp.before) <= 2, { gone, cleanBox, after, expBefore: exp.before });
+
+  /* ⭐ 用户 2026-09-15：「**帧面板会闪一瞬间的滚动条**」—— 机制（探针实测）：
+     收起时框的高度动画 delay 174 + dur 240 = 414ms 先结束，而被让位的那一格还要到 494ms 才落定；
+     夹子一松，那格（fill both 钉在 translateY(+184px)）就成了多出来的可滚溢出
+     ⇒ overflow:auto 的盒当场冒出一条 **16px 宽**的竖直滚动条，等行落定又消失。
+
+     ⚠️ 两个环境事实把这条断言挤到了角落里，写法必须避开：
+      ① 两次点击（展开 + 收起）挤在**同一个 tick** 里时，第二刀看到的是"已经换好的新 DOM" 
+        ⇒ 高度没变化，什么动画都不建（实测 sameEl:false / boxAnimN:0）；
+      ② 窗口有时是会推进动画的（不是每个实例都 hidden），fill none 的动画演完就从
+        getAnimations() 里消失、被钉的行也回到自然位置 ⇒ 那一刻本来就没有溢出，断言会时绿时红。
+     ⇒ 先展开并**等它落定**，再在**同一个同步块**里：点收起 → 暂停全部动画 → 把框的高度动画推到底 → 把被让位的行
+     按回起点 → 读数。那一刻就是"框先结束、行还在飞"。 */
+  await ev(`(() => { const t = document.querySelector('#cx-rail [data-rail-toggle]');
+    if (t && !document.querySelector('.lk-rail__rows .lk-rail__row.is-ghost')) t.click(); return true; })()`);
+  const railExpanded = await waitFor(async () => await ev(`!!document.querySelector('.lk-rail__rows .lk-rail__row.is-ghost')`), 3000);
+  await sleep(500);                                    /* 让展开那一刀的重画与动画都落定（见 ①） */
+  const hold = await ev(`(async () => {
+    const tgl = document.querySelector('#cx-rail [data-rail-toggle]');
+    if (!tgl) return { err: 'no toggle' };
+    tgl.click();                                                        /* 收起（这一次单独一刀） */
+    /* ⚠️ 只暂停**行**的动画（把它按回起点），框的动画要让它**正常跑到结束** ——
+       老代码的松夹子路径就是框动画的 a.finished.then(finish)；把它一并暂停就永远触发不到
+       那条路，这条断言就变成两边都绿的废断言（A/B 实测过：旧代码也 26/26）。 */
+    const b = document.querySelector('.lk-rail__rows');
+    for (const r of [...b.querySelectorAll('.lk-rail__row')]) for (const a of r.getAnimations()) {
+      try { a.pause(); a.currentTime = 0; } catch (e) { /* 不可暂停 */ }
+    }
+    const boxAnim = b.getAnimations()[0];
+    if (boxAnim && boxAnim.playState !== 'finished') boxAnim.finish();   /* 「框先结束」（未暂停 ⇒ finished 会 resolve） */
+    await null; await null; await null;                                  /* 把 finished → finish() 那个微任务队列跑完 */
+    const r6 = [...b.querySelectorAll('.lk-rail__row')].find((r) => r.dataset.rail === 'n-ro-6');
+    const a6 = r6 ? r6.getAnimations()[0] : null;
+    const out = { inline: b.style.overflow, barW: b.offsetWidth - b.clientWidth, barH: b.offsetHeight - b.clientHeight,
+      clientH: b.clientHeight, scrollH: b.scrollHeight, rowTf: a6 ? a6.effect.getKeyframes()[0].transform : null,
+      r6Top: r6 ? Math.round(r6.getBoundingClientRect().top - b.getBoundingClientRect().top) : null,
+      boxAnimN: b.getAnimations().length };
+    /* 收尾：取消动画（行回自然位置；幽灵层的 kill 会跟着 promise 拒绝一起跑掉），
+       状态回到"收起完"给 ★10 用。框的夹子由它自己的兜底定时器松开（hold 比框动画长 ⇒ 不提前松手）。 */
+    for (const a of document.getAnimations()) { try { a.cancel(); } catch (e) { /* 已取消 */ } }
+    return out;
+  })()`);
+  check('★12 框的高度动画先结束时，盒子**还夹着**（那一刻被钉在旧位置的行正是"闪出来的滚动条"的成因）',
+    railExpanded && hold.inline === 'hidden' && hold.barW === 0 && hold.barH === 0
+      && hold.rowTf === 'translateY(184px)' && hold.scrollH > hold.clientH, { railExpanded, ...hold });
+  /* ★12 自己又走了两刀重画，等这批快照提交（BATCH_MS = 80）再进 ★10 */
+  await sleep(250);
 
   /* ── ③ 「记一帧」那条路：新格子入场 + 已有的格子让位 + 整条时间线高度一起演 ────────────
      用户 2026-09-14 深夜：「**已有的帧节点的位置变化也要平滑，时间线长度也一样**」——
@@ -283,33 +336,39 @@ async function main() {
     const add = document.querySelector('#cx-rail [data-rail-add]');
     if (!add) return { err: 'no add button' };
     add.click();
-    /* 这一路的动画可能在 store 通知之后的几个微任务/定时器里才挂上 ⇒ 给一小段时间再读。
-       （隐藏窗口里动画**不推进**，所以等几百毫秒读到的是"定格的起点参数"，不是演完的终态） */
-    await new Promise((r) => setTimeout(r, 260));
-    const box = document.querySelector('.lk-rail__rows');
-    const rows = [...box.querySelectorAll('.lk-rail__row')];
-    const anims = rows.flatMap((r) => r.getAnimations().map((a) => {
+    /* ⚠️ 动画必须**在点击的同一个同步块里**读：窗口有时是会推进动画的（不是每个实例都 hidden），
+       这条路上的动画 fill none（delay 0）—— 一旦演完就从 getAnimations() 里消失，
+       等 260ms 再读只能读到空的（★10c/★10d 就是这么时绿时红的）。 */
+    const box0 = document.querySelector('.lk-rail__rows');
+    const rows0 = [...box0.querySelectorAll('.lk-rail__row')];
+    const anims = rows0.flatMap((r) => r.getAnimations().map((a) => {
       const kf = a.effect.getKeyframes(); const t = a.effect.getTiming();
       return { id: r.dataset.rail || 'base', d: t.delay, dur: t.duration,
         tfFrom: kf[0].transform, tfTo: kf[kf.length - 1].transform };
     }));
-    const ba = box.getAnimations(); const bt = ba[0] ? ba[0].effect.getTiming() : null; const bk = ba[0] ? ba[0].effect.getKeyframes() : null;
+    const ba0 = box0.getAnimations(); const bt0 = ba0[0] ? ba0[0].effect.getTiming() : null;
+    const bk0 = ba0[0] ? ba0[0].effect.getKeyframes() : null;
+    /* 再等一小会儿读"长高之后"的终态（这一条不依赖动画对象） */
+    await new Promise((r) => setTimeout(r, 260));
+    const box = document.querySelector('.lk-rail__rows');
     return { before, after: Math.round(box.getBoundingClientRect().height), pre: [...pre],
-      fresh: rows.filter((r) => !pre.has(r.dataset.cxKey || '')).map((r) => r.dataset.rail),
-      anims, boxAnimN: ba.length, boxDelay: bt ? bt.delay : null, boxFill: bt ? bt.fill : null,
-      boxFrom: bk ? bk[0].height : null, boxTo: bk ? bk[bk.length - 1].height : null,
+      fresh: rows0.filter((r) => !pre.has(r.dataset.cxKey || '')).map((r) => r.dataset.rail),
+      anims, boxAnimN: ba0.length, boxDelay: bt0 ? bt0.delay : null, boxFill: bt0 ? bt0.fill : null,
+      boxFrom: bk0 ? bk0[0].height : null, boxTo: bk0 ? bk0[bk0.length - 1].height : null,
       frames: document.querySelectorAll('#cx-rail .lk-rail__row.is-frame').length };
   })()`);
   const enterAnim = (addFrame.anims || []).find((x) => x.id === 'n-ro-2' && String(x.tfFrom).indexOf('translateX') === 0);
   const shiftAnim = (addFrame.anims || []).find((x) => x.id === 'n-ro-6' && String(x.tfFrom).indexOf('translateY') === 0);
-  check('★10b 记一帧：**新格子从右边滑进来**（`translateX(32px)` → 原位，与展开时那批虚化行同一套姿势）',
-    !!enterAnim && enterAnim.tfTo === 'none' && addFrame.fresh.includes('n-ro-2'), addFrame);
+  check('★10b 记一帧：**新格子从左边滑进来**（`translateX(-24px)` → 原位，与左树"新出现的行"同一套姿势）',
+    !!enterAnim && enterAnim.tfFrom === 'translateX(-24px)' && enterAnim.tfTo === 'none' && addFrame.fresh.includes('n-ro-2'), addFrame);
   check('★10c 记一帧：**它下面的格子让位**（FLIP `translateY(-46px)` → 原位 · delay 0 —— 一行 = 一格 46px）',
     !!shiftAnim && shiftAnim.d === 0 && shiftAnim.tfFrom === 'translateY(-46px)' && shiftAnim.tfTo === 'none', shiftAnim);
   check('★10d 记一帧：**整条时间线的高度也演**（框从旧高度长一格，不再是瞬间跳）',
     addFrame.boxAnimN >= 1 && Math.abs(parseFloat(addFrame.boxFrom) - addFrame.before) <= 2
       && parseFloat(addFrame.boxTo) > addFrame.before + 30 && addFrame.frames === 3,
     { before: addFrame.before, after: addFrame.after, boxFrom: addFrame.boxFrom, boxTo: addFrame.boxTo, frames: addFrame.frames });
+
+
 
   const errs = await ev(`JSON.stringify(window.__errs)`);
   check('★11 全程没有未捕获异常', errs === '[]', errs);

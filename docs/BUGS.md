@@ -859,6 +859,65 @@ FLIP delay = 退场总时长（两条都由量出来的数比，不写死）、`
   「＋ 记一帧」按钮已经脱离文档，`click()` 什么都不发生（第一版就是这么白点的：`frames` 一直是 2）。
   **按钮必须重新 `querySelector`。**
 
+### 二十四、帧面板"闪一瞬间的滚动条" + 帧条出入场改回文件树那套（用户 2026-09-15 一条）
+
+用户原话：「**帧面板会闪一瞬间的滚动条**，节点的**入场和出场还是参考我们文件树的管理吧**」。
+
+#### ① 闪出来的滚动条：夹子松早了（`src/ui/motion.ts` 的 `smoothBoxHeight`）
+- 机制（探针 `tools/e2e/.tmp-railbar*.cjs` 实测）：收起帧条时
+  **框的高度动画** `delay 174 + dur 240 = 414ms` 先结束，而**被让位的那一格**要 `delay 174 + dur 320 = 494ms`
+  才落定；`smoothBoxHeight` 原来在框动画一结束（`a.finished.then(finish)`）就把 `overflow` 还回去，
+  那一刻被 `fill:'both'` 钉在 `translateY(+184px)` 的行**仍在盒子外面** ⇒ 多出一段可滚溢出
+  ⇒ `.lk-rail__rows`（`overflow:auto`）当场冒出一条 **16px 宽**的竖直滚动条，等行落定又消失。
+  实测那一刻：`{inline:"", barW:16, clientH:138, scrollH:322, rowTf:"translateY(184px)"}`。
+- 修法：`smoothBoxHeight(el, from, { dur, delay, hold })` 新增 **`hold`** = "盒子里面的动画还要飞这么久，
+  **别提前松手**"；`until = Math.max(dur + delay, hold)`，**只有 `until <= dur + delay`**（框自己的动画就是
+  最后一件要飞的事）时才让 `finished` 直接松手，否则交给兜底定时器。帧条那边把这一刀里挂在行上的动画
+  全收进 `rowAnims`，用 `max(delay + duration)` 算 `hold` 传进去。
+- 顺带修掉一个**静默失效**：`prevOverflow = el.style.overflow` 是"读现场"，连着重画两刀时第二刀读到的
+  已经是第一刀写进去的 `hidden` ⇒ 永久留在 `hidden` 上（那个盒再也滚不动、"选中行滚进视野"失灵）。
+  现在用 `pinBox`/`unpinBox` + `WeakMap` 记账：**只记第一次钉住之前的值**，计数归零才还原。
+
+#### ② 帧条出入场 = 左树（设定库文件夹树）那套（`src/ui/evolution-rail.ts`）
+- 上一版（2026-09-14）是**左右位移**（`EXIT = { dx: 32, dur: 200, … }`）。用户改主意：
+  「参考我们文件树的管理吧」⇒ 三件事各对一个**左树同款**原语：
+  展开露出来的虚化行 → **`rowsDropIn`**（从上方 `-8px` 落下来 + 渐显，260ms、错峰 22ms）；
+  收起退场的行 → **`rowsLeaveAndRemove(…, EXIT)`**（往上 `-8px` 淡出，150ms、错峰 12ms、封顶 96ms）；
+  新记的一格 → **`rowSlideIn`**（从**左侧** `-24px` 滑进来）。
+- ⚠️ `rowsLeave` 里 **`dy` 优先于 `dx`** ⇒ 走左右时绝不能给 `dy`，反过来（现在）就是要给 `dy`；
+  上一版那条"`rowsEnter` 的 `start` 必须显式给 0"的坑随 `rowsEnter` 一起退场（现改用 `rowsDropIn`）。
+- ⚠️ 左树与帧条**共用 `smoothBoxHeight`** ⇒ `hold` 只影响传了它的调用点（帧条），左树那边默认 0、行为不变。
+- 距离排序（近的先出现 / 远的先退场）**保留**：仍由 `orderByDistance` 决定数组顺序，
+  `rowsDropIn` 按数组下标给错峰。
+
+#### 验证（二十四）
+- `tools/e2e/rail-order.cjs` 25 → **26 项**：★1（260ms / 错峰 22）、★3（`translateY(-8px)` → 原位）、
+  ★8（退场 `→ translateY(-8px)`）、★10b（新格子 `translateX(-24px)` → 原位）、
+  ★4e 的 `moving` 过滤掉"这次新冒出来的行"（入场现在也走上下，不改会把它当成让位行）、
+  新增 ★12（"框先结束、行还在飞"那一刻**必须还夹着**：`inline === 'hidden' && barW === 0 && barH === 0`）。
+  ⇒ 干净起点 **26/26**（连开两个新实例各一次都 26/26）。
+- **A/B（铁律 9）**：`Copy-Item` 备份 `src/ui/motion.ts` + `src/ui/evolution-rail.ts` → `git checkout --`
+  → `vite build` ⇒ **21/26**，挂的正是 ★1/★3/★8/★10b（用词）与 ★12（dump `{"inline":"","barW":16,
+  "clientH":138,"scrollH":322,"rowTf":"translateY(184px)"}` = 用户看到的那条滚动条）。
+- `tools/e2e/entity-evolution.cjs` **49/49**（★0f3 改成 `translateY(-8px)/0 → none/0.4` + 260ms、
+  ★0f4 改成 `none/0.4 → translateY(-8px)/0` + 150ms）；A/B 旧代码 **47/49**（只挂这两条）。
+- 回归：`codex-list-motion` 25/25、`codex-swap-motion` 14/14、`codex-smooth-switch` 28/28、
+  `codex-node-tab` 18/18；`tsc --noEmit` / `vite build` exit 0。
+- ⚠️ **写这条断言必须先想清楚"窗口推不推进动画"**：测试实例有的 hidden（WAAPI 冻在起点）、
+  有的会推进（`fill:'none'` 的动画演完就从 `getAnimations()` 里消失、被钉的行也回到自然位置——
+  那一刻**本来就没有**溢出）。第一版 ★12 把"全部动画都 `pause()`"当保险，结果老代码的
+  `a.finished.then(finish)` 永远触发不到 ⇒ **两边都绿**（旧代码也 26/26）。
+  正确写法：**只暂停"行"的动画**（把行按回起点），让**框的动画正常 finish**，再等几个微任务让
+  `finished → finish()` 跑完，然后读数。★12 现在正是这样，A/B 才有判别力。
+- ⚠️ 两次点击（展开 + 收起）挤在**同一个 tick** 里时，第二刀看到的是"已经换好的新 DOM" ⇒ 什么动画都不建
+  （实测 `sameEl:false` / `boxAnimN:0`）⇒ ★12 必须**先展开、单独等它落定（500ms），再收起并同步测量**。
+- ⚠️ `rail-order.cjs` 是**一次性套件**（★10 会真的记一帧，`n-ro-2` 从此有了版本 ⇒ 再跑同一实例会
+  13/26，ghost 数从 4 变 3）。跑之前必须 reset + `seed-rail-order.cjs` + 重启。
+- ⚠️ `entity-evolution` 那 4 条老账（★5/★5b/★10d/★14b，见第二十一轮「七」的偶发）本轮又出现一次
+  （45/49），**重跑一次干净起点就 49/49**，且 A/B 旧代码那次也没复现 ⇒ 与本轮改动无关；
+  另有一次 48/49 挂在 ★0d（`chrome 461`），dump 显示 `win:[2134,1354]` —— **窗口尺寸没吃到**
+  `LINGKUANG_TEST_WINDOW_SIZE`，是测试环境问题、不是产品。
+
 ## 第二十一轮（2026-09-13）· 演变：实体的版本历史（新功能 + 两条自查出来的 bug）
 
 > **目的**（用户 2026-09-12 提、09-13 细化）：给每个世界一套 git ——

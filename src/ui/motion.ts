@@ -52,6 +52,7 @@ export function staggerIn(container: HTMLElement | null): void {
   container.classList.add('lk-enter-stagger');
 }
 
+
 /** **一次性**错峰：给容器的子项依次注入延迟并播一次入场，跑完把类与行内延迟都清掉。
  *
  *  与 `staggerIn` 的唯一区别是「一次性 vs 常驻」，两者都不能混用：
@@ -408,6 +409,29 @@ export function cloneIntoLayer(layer: HTMLElement, rect: DOMRect, el: HTMLElemen
   return g;
 }
 
+/* ── `smoothBoxHeight` 的"夹子"账本 ─────────────────────────────────────────────
+   盒子在动画期间必须 `overflow:hidden`。两个坑共用这个账本：
+   ① **连着重画两刀**时，第二刀读到的 `el.style.overflow` 已经是第一刀写的 `hidden`，照抄就会永久
+      留在 `hidden` 上（帧条那个盒再也滚不动、"选中行滚进视野"静默失效）；
+   ② 两刀**同时飞**时，先结束的那一刀不许把夹子松开（另一刀的行还在飞 ⇒ 当场冒滚动条）。 */
+const boxPinCount = new WeakMap<HTMLElement, number>();
+const boxPinPrev = new WeakMap<HTMLElement, string>();
+
+function pinBox(el: HTMLElement): void {
+  const n = (boxPinCount.get(el) ?? 0) + 1;
+  boxPinCount.set(el, n);
+  if (n === 1) boxPinPrev.set(el, el.style.overflow);   /* 只记**第一次**钉住之前的那个值 */
+  el.style.overflow = 'hidden';
+}
+
+function unpinBox(el: HTMLElement): void {
+  const n = (boxPinCount.get(el) ?? 1) - 1;
+  if (n > 0) { boxPinCount.set(el, n); return; }
+  boxPinCount.delete(el);
+  el.style.overflow = boxPinPrev.get(el) ?? '';
+  boxPinPrev.delete(el);
+}
+
 /** **一个元素自己**的高度变化也演出来（左树外面那个框 / 帧条的滚动盒）。`from` = 变化前量到的高度；
  *  新高度当场量（此刻还没钉住）。位移太小就什么都不做。演完把 `overflow` 还回去、取消动画
  *  （`fill:'none'` ⇒ 落回自然高度，与动画终点一致，不会跳）。
@@ -417,26 +441,36 @@ export function cloneIntoLayer(layer: HTMLElement, rect: DOMRect, el: HTMLElemen
  *  ⚠️ 给了 `delay` 就**必须 `fill:'both'`** —— 否则延迟期间元素已经落到新高度（＝当场跳完），
  *  等延迟过完又从旧高度演一遍（与 `flipRows` 同一个坑）。
  *  ⚠️ 目标高度是**先把 `overflow` 钉成 `hidden` 之后**量的：否则这一刻还在演的入场动画（位移会
- *  撑出可滚动溢出）会让盒子上多出一条滚动条，终点高度就把滚动条也算进去 ⇒ 演完"闪"一下。 */
-export function smoothBoxHeight(el: HTMLElement | null, from: number, o: { dur?: number; delay?: number } = {}): Animation | null {
+ *  撑出可滚动溢出）会让盒子上多出一条滚动条，终点高度就把滚动条也算进去 ⇒ 演完"闪"一下。
+ *
+ *  `hold` = "盒子里面的动画还要飞这么久（ms），**别提前松手**"：框自己的高度动画常常比里面的行动画
+ *  先结束（收起时"行退完才收框"只保证**开始**晚，行还会继续飞），那一刻把 `overflow` 还回去，
+ *  被钉在旧位置（`fill:'both'`）的行就成了多出来的可滚溢出 ⇒ **当场冒出一条竖直滚动条**，
+ *  等行落定又消失 —— 用户 2026-09-15：「帧面板会闪一瞬间的滚动条」。
+ *  实测（收起帧条）：框 `delay 174 + dur 240 = 414ms` 结束，而被让位的行还要到 `494ms` 才落定，
+ *  中间那 80ms 里 `offsetWidth - clientWidth = 16px`（一条滚动条）。 */
+
+export function smoothBoxHeight(el: HTMLElement | null, from: number, o: { dur?: number; delay?: number; hold?: number } = {}): Animation | null {
   if (!el || motionReduced() || !(from > 0)) return null;
-  const prevOverflow = el.style.overflow;
   /* ⚠️ **先钉住 overflow 再量目标高度**：`overflow:auto` 的盒子在"里面的行正演着入场"的这一刻量，
      量到的是**内容 + 滚动条**（`.lk-rail__rows` 里入场行 `translateX(32px)` 会临时撑出横向可滚
      溢出 ⇒ 多出一条 15px 的横条）⇒ 动画终点比自然高度高一条滚动条，演完滚动条一走框就"闪"一下
      （用户 2026-09-14：「展开后外面的框高度会闪」；实测 363.333px vs 自然 348px）。
      `overflow:hidden` 期间不渲染滚动条，量到的才是**内容高度**。 */
-  el.style.overflow = 'hidden';       /* 动画期间必须裁住：框还矮着的时候里面的行会溢出去 */
+  pinBox(el);                         /* 动画期间必须裁住：框还矮着的时候里面的行会溢出去 */
   const to = el.getBoundingClientRect().height;
-  if (Math.abs(to - from) < 1.5) { el.style.overflow = prevOverflow; return null; }
+  if (Math.abs(to - from) < 1.5) { unpinBox(el); return null; }
   const dur = o.dur ?? 240;           /* 与 `.lk-ghost-layer` 的过渡时长同档（见 src/style.css） */
   const delay = o.delay ?? 0;
+  /* 夹子最早什么时候能松 = **框自己的动画跑完**与 `hold`（里面的行动画还要飞多久）取大者 */
+  const until = Math.max(dur + delay, o.hold ?? 0);
   const a = el.animate([{ height: `${from}px` }, { height: `${to}px` }],
     { duration: dur, delay, easing: EASE_DECEL, fill: delay > 0 ? 'both' : 'none' });
   let done = false;
-  const finish = (): void => { if (done) return; done = true; el.style.overflow = prevOverflow; try { a.cancel(); } catch { /* 已取消 */ } };
-  a.finished.then(finish).catch(() => { /* 被取消过 */ });
-  window.setTimeout(finish, dur + delay + 400);
+  const finish = (): void => { if (done) return; done = true; unpinBox(el); try { a.cancel(); } catch { /* 已取消 */ } };
+  /* 只有"框自己的动画就是最后一件要飞的事"时才让它一结束就松手；否则交给兜底定时器（见 hold） */
+  if (until <= dur + delay) a.finished.then(finish).catch(() => { /* 被取消过 */ });
+  window.setTimeout(finish, until + 400);
   return a;
 }
 
