@@ -7,13 +7,16 @@
  * 会话的存储与纯逻辑在 `src/ui/ai-sessions.ts`（落 `agent/sessions.json`，裸数组）。
  */
 import type { Store } from '../store/store';
+import { currentWorld } from '../store/store';
+import { entityTypeOf } from '../store/entities';
+import type { Entity } from '../store/types';
 import { aiChat, type ChatMsg } from './ai';
 import { isImeEnter } from './keys';
 import { renderRoleplay } from './roleplay';
 import { renderTavern } from './tavern';
 import {
   adoptSessions, clearHistory, createSession, ensureSessionsLoaded, listSessions, linkSummary,
-  persistSessions, pushMsg, removeSession, renameSession, sessionPrompt, setActiveSession,
+  pushMsg, removeSession, renameSession, sessionPrompt, setActiveSession, setSessionPersona,
   setSessionSink, toggleLink, activeSession, isLinked,
   type AiSession, type SessionRole,
 } from './ai-sessions';
@@ -82,28 +85,20 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       `<span style="font-size:11px;color:var(--accent);border:1px solid var(--accent);border-radius:var(--radius-pill);padding:1px 7px;margin-left:7px;">${roleOfLabel(s)}</span>` +
       `<span style="font-size:11px;color:var(--fg-2);margin-left:8px;">${esc(linkSummary(s))}</span>` +
       `<span style="font-size:11px;color:var(--fg-2);margin-left:8px;">${s.history.length} 条</span>` +
-      `<button id="ai-edit-persona" style="margin-left:10px;${BTN}">角色设定</button>` +
-      `<button id="ai-clear" style="margin-left:6px;${BTN}">清空对话</button>`;
+      `<span style="font-size:11px;color:var(--fg-2);margin-left:10px;">人设</span>` +
+      `<select id="ai-persona" style="${INPUT}margin-left:5px;max-width:190px;">` + personaOptions(store, s.personaId ?? '') + '</select>' +
+      `<button id="ai-clear" style="margin-left:6px;${BTN}">清空对话</button>` +
+      '<div style="font-size:11px;color:var(--fg-2);margin-top:4px;">人设就是设定库里的一条：改人设去「设定库」改那条角色，这里只选人（内容每次发消息时现取）。</div>';
     headEl.querySelector('#ai-clear')?.addEventListener('click', () => {
       if (!window.confirm(`清空「${s.name}」的对话？只清这一个会话。`)) return;
       clearHistory(s.id);
       renderLog(); renderHead();
       setNote('已清空');
     });
-    headEl.querySelector('#ai-edit-persona')?.addEventListener('click', () => {
-      const box = document.createElement('div');
-      box.style.cssText = 'margin-top:8px;display:flex;gap:6px;';
-      box.innerHTML = `<textarea id="ai-persona" rows="3" style="flex:1;min-width:0;resize:vertical;${INPUT}">${esc(s.persona ?? '')}</textarea>` +
-        `<button id="ai-persona-ok" style="${BTN}">存</button>`;
-      headEl.appendChild(box);
-      (box.querySelector('#ai-persona') as HTMLTextAreaElement).focus();
-      box.querySelector('#ai-persona-ok')?.addEventListener('click', () => {
-        s.persona = (box.querySelector('#ai-persona') as HTMLTextAreaElement).value.trim();
-        persistSessions();
-        box.remove();
-        renderHead();
-        setNote('角色设定已存（进这个会话的系统提示）');
-      });
+    (headEl.querySelector('#ai-persona') as HTMLSelectElement | null)?.addEventListener('change', (e) => {
+      setSessionPersona(s.id, (e.target as HTMLSelectElement).value);
+      renderHead();
+      setNote('人设已选：内容每次发消息时从设定库现取，改了那边立刻生效');
     });
   };
 
@@ -198,7 +193,7 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     pushMsg(id, { role: 'user', content: text });
     renderLog(); renderHead();
     setNote('在想…');
-    const sys = sessionPrompt(s);
+    const sys = sessionPrompt(s, personaTextOf(store, s));
     const msgs: ChatMsg[] = sys ? [{ role: 'system', content: sys }] : [];
     msgs.push(...s.history);
     try {
@@ -228,6 +223,38 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     setNote('本地 ' + MODEL + ' · 会话存在 agent/sessions.json（能手看手改）');
     inputEl.focus();
   });
+}
+
+/** 人设下拉：设定库里的所有条目（带类型名）。用户 2026-09-18：「会话直接选择人设进行聊天」 */
+function personaOptions(store: Store, cur: string): string {
+  const ws = currentWorld(store);
+  /* ⚠️ `Worldset.entities` 是 Record<string, Entity>（**不是数组**）—— 写成 [...entities] 会
+     `TypeError: i is not iterable`（2026-09-18 实测：整个 renderHead 挂掉、右边全空）。 */
+  const es = Object.values((ws?.entities ?? {}) as Record<string, Entity>);
+  const out = ['<option value="">不选人设</option>'];
+  for (const e of es) {
+    const tn = entityTypeOf(ws, e)?.name ?? '';
+    out.push(`<option value="${e.id}"${e.id === cur ? ' selected' : ''}>${esc(e.name)}${tn ? '（' + esc(tn) + '）' : ''}</option>`);
+  }
+  if (cur && !es.some((e) => e.id === cur)) out.push('<option value="" selected>（人设已不在设定库）</option>');
+  return out.join('');
+}
+
+/** 人设正文**现取**（不给会话存副本）：字段 + 正文，就是设定库里那条角色此刻的样子 ——
+ *  这样在设定库改了人设，会话里下一次发言立刻按新人设说。 */
+function personaTextOf(store: Store, s: AiSession): string {
+  if (!s.personaId) return '';
+  const ws = currentWorld(store);
+  const e = ((ws?.entities ?? {}) as Record<string, Entity>)[s.personaId];
+  if (!e) return '';
+  const tn = entityTypeOf(ws, e)?.name ?? '';
+  const lines = [`【人设】${e.name}${tn ? '（' + tn + '）' : ''}`, `  文件：${ws?.name ?? ''}/_设定/${tn}/${e.name}.md`];
+  const props = (e.properties ?? {}) as Record<string, unknown>;
+  const kv = Object.keys(props).filter((k) => String(props[k] ?? '') !== '').map((k) => `${k}=${String(props[k])}`);
+  if (kv.length) lines.push('  字段：' + kv.join('；'));
+  const doc = String((e as any).doc ?? '').trim();
+  if (doc) lines.push('  正文：' + doc.slice(0, 600));
+  return lines.join('\n');
 }
 
 function esc(s: string): string {

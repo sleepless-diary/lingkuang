@@ -18,8 +18,10 @@ export interface AiSession {
   id: string;
   name: string;
   role: SessionRole;
-  /** 角色/视角/主控的设定文本（进系统提示；主会话一般留空） */
-  persona?: string;
+  /** 人设 = **设定库里某一条实体**的 id。用户 2026-09-18：「**人设直接复用我们的角色系统，
+   *  修改人设去设定库里面，会话直接选择人设进行聊天**」—— 这里只存指针（不存文本），
+   *  每次发消息时从 store 现取 ⇒ 在设定库改了那条角色，会话里立刻生效。 */
+  personaId?: string;
   /** 连着的会话 id：酒馆＝连接会话，剧情推演＝挂一个主控 */
   links?: string[];
   history: ChatMsg[];
@@ -74,13 +76,13 @@ export function adoptSessions(raw: unknown): void {
       id: x.id,
       name: x.name,
       role: isRole(x.role) ? x.role : 'character',
-      persona: typeof x.persona === 'string' ? x.persona : '',
+      personaId: typeof x.personaId === 'string' ? x.personaId : '',
       links: Array.isArray(x.links) ? x.links.filter((y: unknown) => typeof y === 'string') : [],
       history: Array.isArray(x.history) ? (x.history.map(normMsg).filter(Boolean) as ChatMsg[]) : [],
       at: typeof x.at === 'number' ? x.at : Date.now(),
     }));
   if (!list.some((s) => s.role === 'main')) {
-    list.unshift({ id: uid('s'), name: '主会话', role: 'main', persona: '', links: [], history: [], at: Date.now() });
+    list.unshift({ id: uid('s'), name: '主会话', role: 'main', personaId: '', links: [], history: [], at: Date.now() });
   }
   if (!list.some((s) => s.id === activeId)) activeId = list[0].id;
 }
@@ -114,12 +116,21 @@ export function setActiveSession(id: string): void {
   activeId = id;
 }
 
-export function createSession(name: string, role: SessionRole = 'character', persona = ''): AiSession {
-  const s: AiSession = { id: uid('s'), name: name.trim() || '新会话', role, persona, links: [], history: [], at: Date.now() };
+export function createSession(name: string, role: SessionRole = 'character', personaId = ''): AiSession {
+  const s: AiSession = { id: uid('s'), name: name.trim() || '新会话', role, personaId, links: [], history: [], at: Date.now() };
   list.push(s);
   activeId = s.id;
   persist();
   return s;
+}
+
+/** 给会话选人设（人设本体在设定库里，这里只记 id） */
+export function setSessionPersona(id: string, personaId: string): void {
+  const s = list.find((x) => x.id === id);
+  if (!s || (s.personaId ?? '') === personaId) return;
+  s.personaId = personaId;
+  s.at = Date.now();
+  persist();
 }
 
 export function renameSession(id: string, name: string): void {
@@ -183,14 +194,16 @@ export function clearHistory(id: string): void {
 }
 
 /** 生成这个会话的系统提示：角色设定 + 连着谁（只带尾巴，标明「这是别的会话说的」） */
-export function sessionPrompt(s: AiSession | null = activeSession()): string {
+export function sessionPrompt(s: AiSession | null = activeSession(), personaText = ''): string {
   if (!s) return '';
   const parts: string[] = [];
-  if (s.role === 'main') parts.push('这是创作者的主会话：他在写世界观，你直接帮他。');
-  if (s.role === 'director') parts.push('你在这个会话里是**主控**：负责调度剧情走向、给别的角色分配处境，不要代替创作者做最终决定。');
-  if (s.role === 'character') parts.push('你在这个会话里**扮演一个角色**：只用这个角色的视角与口吻说话。');
-  if (s.role === 'perspective') parts.push('你在这个会话里代表**某个视角**：只从这个角度观察与评述。');
-  if (s.persona) parts.push('角色 / 视角的设定如下：\n' + s.persona);
+  /* ⚠️ 2026-09-18 用户实测反馈：「**你是不是给主会话加提示词了，这个 ai 有明显倾向**」——
+     所以主会话**一句人设都不加**（原来那句「他在写世界观，你直接帮他」正是倾向的来源）。
+     其余角色也只说「你在扮演谁」，人设正文一律来自设定库（`personaText` 由界面现取）。 */
+  if (s.role === 'director') parts.push('你是这次会话的主控，负责调度剧情走向。');
+  else if (s.role === 'character') parts.push('你扮演下面这条角色。');
+  else if (s.role === 'perspective') parts.push('你从下面这个视角说话。');
+  if (personaText) parts.push(personaText);
   for (const l of linkedSessions(s)) {
     const tail = l.history.slice(-LINK_TAIL);
     if (!tail.length) continue;

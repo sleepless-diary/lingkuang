@@ -122,6 +122,23 @@ async function main() {
     !!mainS && !!charS && Array.isArray(mainS.links) && mainS.links[0] === charS.id && charS.name === '艾德温',
     { n: (disk1 ?? []).length, links: mainS?.links, charId: charS?.id });
 
+  /* ── ④b 人设 = **设定库里的一条**（用户 2026-09-18：「人设直接复用我们的角色系统，
+     修改人设去设定库里面，会话直接选择人设进行聊天」）：会话只记人设 id，正文每次现取。 ── */
+  const persona = await ev(`(() => {
+    const sel = document.querySelector('#ai-persona');
+    if (!sel) return { has: false };
+    const opts = [...sel.options].map((o) => o.textContent);
+    const target = [...sel.options].find((o) => o.textContent.indexOf('银发少女') === 0);
+    sel.value = target ? target.value : '';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return { has: true, opts, picked: target ? target.textContent : '' };
+  })()`);
+  const diskP = await waitSessions((v) => v.some((s) => !!s.personaId));
+  const withP = (diskP ?? []).find((s) => !!s.personaId);
+  check('★4b 人设来自**设定库**（下拉列出设定库条目、第一项是「不选人设」；选中后会话里只记人设 id，旧的自填文本字段已消失）',
+    persona.has === true && persona.opts[0] === '不选人设' && persona.opts.some((o) => o.indexOf('银发少女') === 0)
+      && !!withP && typeof withP.personaId === 'string' && withP.personaId.length > 2 && !('persona' in withP),
+    { opts: persona.opts, picked: persona.picked, personaId: withP?.personaId });
   /* ── ⑤ 双击重命名（Electron 没有 window.prompt，所以是就地输入框） ── */
   await ev(`(() => {
     const rows = [...document.querySelectorAll('#ai-sess [data-s]')];
