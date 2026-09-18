@@ -400,6 +400,60 @@ async function main() {
       chatFirst: Array.isArray(chatDisk) ? (chatDisk[0]?.content ?? null) : null,
     });
 
+  /* ── ⑨ 上下文分割（第 3.6 片）：把上面的对话切出上下文，系统提示词与长期记忆照常 ──
+     用户 2026-09-18：「加一个分割上下文的功能，可分开之前的上下文但是保留系统提示词和记忆」。 ── */
+  /* Ctrl+K 是开关：前面几步可能已把面板开着或关掉了 ⇒ 先确保它是开的（否则按钮找不到） */
+  for (let i = 0; i < 6; i++) {
+    if (await ev(`!!document.getElementById('lk-agent-panel')`)) break;
+    await ev(ctrlK);
+    await sleep(400);
+  }
+  const preSplit = await ev(`(() => {
+    const btn = document.querySelector('#lk-agent-split');
+    const t = document.querySelector('#lk-agent-ctx')?.textContent ?? '';
+    return {
+      hasBtn: !!btn, label: btn?.textContent ?? '',
+      ctxWork: t.indexOf('【工作区】') >= 0,
+      mem: !!document.querySelector('#lk-agent-mem-summary'),
+      wraps: document.querySelectorAll('#lk-agent-msgs .lk-agent__cutwrap').length,
+    };
+  })()`);
+  await ev(`document.getElementById('lk-agent-split')?.click(); true`);
+  await sleep(300);
+  const split = await ev(`(() => {
+    const cut = document.querySelector('#lk-agent-msgs .lk-agent__cut');
+    const wraps = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__cutwrap')];
+    const t = document.querySelector('#lk-agent-ctx')?.textContent ?? '';
+    return {
+      label: document.querySelector('#lk-agent-split')?.textContent ?? '',
+      cutText: cut?.textContent ?? '',
+      cutN: wraps.filter((w) => w.classList.contains('is-cut')).length,
+      allN: wraps.length,
+      ctxWork: t.indexOf('【工作区】') >= 0,
+      note: document.querySelector('#lk-agent-note')?.textContent ?? '',
+    };
+  })()`);
+  check('★16 「分割上下文」：插入分割线、线以上全部标成「不再发给模型」并写明条数，按钮变「取消分割」；系统提示词与记忆区照旧',
+    preSplit.hasBtn === true && preSplit.label === '分割上下文' && preSplit.wraps > 0 && preSplit.ctxWork === true && preSplit.mem === true
+      && split.label === '取消分割' && split.cutText.indexOf('不再发给模型') > 0
+      && split.cutN === split.allN && split.cutN === preSplit.wraps
+      && split.cutText.indexOf('以上 ' + split.allN + ' 条') > 0 && split.ctxWork === true,
+    { pre: preSplit, after: split });
+  /* 落盘是异步的（persist 走 agent:save）⇒ 轮询 chat.json，别死等 */
+  /* 分割按钮有 350ms 去抖（防重复接线双触发）⇒ 真人也要隔一下再点「取消分割」 */
+  await sleep(500);
+  const diskDiv = await (async () => {
+    const rd = () => { try { const v = JSON.parse(fs.readFileSync(path.join(agentDir(), 'chat.json'), 'utf8')); return Array.isArray(v) ? v : null; } catch { return null; } };
+    for (let i = 0; i < 14; i++) { const v = rd(); if (v && v.some((m) => m && m.div === true)) return v; await sleep(500); }
+    return rd();
+  })();
+  await ev(`document.getElementById('lk-agent-split')?.click(); true`);
+  await sleep(300);
+  const unSplit = await ev(`(() => ({ cut: !!document.querySelector('#lk-agent-msgs .lk-agent__cut'), label: document.querySelector('#lk-agent-split')?.textContent ?? '', marked: document.querySelectorAll('#lk-agent-msgs .lk-agent__cutwrap.is-cut').length }))()`);
+  check('★17 分割会落盘（chat.json 里多一条 div:true，重开面板仍在）＋「取消分割」能撤销（线与压暗都消失）',
+    Array.isArray(diskDiv) && diskDiv.filter((m) => m && m.div === true).length === 1
+      && unSplit.cut === false && unSplit.label === '分割上下文' && unSplit.marked === 0,
+    { divN: Array.isArray(diskDiv) ? diskDiv.filter((m) => m && m.div === true).length : null, unSplit });
   const errs = await ev(`window.__errs`);
   check('★13 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 

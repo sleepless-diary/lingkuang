@@ -1102,3 +1102,18 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: content-box; }
 ::-webkit-scrollbar-corner { background: transparent; }
+
+/* ── 上下文分割线（第 3.6 片，`src/ui/agent.ts`）─────────────────────────────
+   用户 2026-09-18：「加一个分割上下文的功能，可分开之前的上下文但是保留系统提示词和记忆」。
+   线以上的对话**仍然在 chat.json 里**（只是不再发给模型）⇒ 显示上压暗，不隐藏。 */
+.lk-agent__cutwrap.is-cut { opacity: .42; }
+.lk-agent__cut {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; color: var(--fg-2); margin: 4px 0;
+}
+.lk-agent__cut::before, .lk-agent__cut::after { content: ''; flex: 1; border-top: 1px dashed var(--border-strong); }
+.lk-agent__split {
+  background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  color: var(--fg-2); font-size: 11px; padding: 2px 7px; cursor: pointer; white-space: nowrap; margin-left: auto;
+}
+.lk-agent__split:hover { color: var(--accent); border-color: var(--accent); }

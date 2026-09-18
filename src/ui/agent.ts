@@ -88,15 +88,56 @@ export function isAgentPanelOpen(): boolean {
 /* ── 落盘（主进程 `agent:load` / `agent:save`；放文件不放 localStorage：
       这是创作者资产，要能备份、能查看、能手改）。
       ⚠️ `agent:save` 是**整包写**：chat 与 memory 一起给，所以记忆的落盘也走这里。 ── */
+/** 会话里的**上下文分割线**（用户 2026-09-18：「加一个分割上下文的功能，可分开之前的上下文但是保留系统提示词和记忆」）。
+ *  它自己不是消息，只是「从这里往上不再发给模型」的界碑；落盘存成 { role:'system', content:'', div:true }
+ *  —— chat.json 仍是裸数组、能手看手改，渲染时画成一条虚线。 */
+type AgentMsg = ChatMsg & { div?: boolean };
+
+/** 最后一条分割线**之后**的下标（没有分割线 = 0）。渲染与发送**共用它**，免得两处算法漂移。 */
+export function cutIndex(list: ChatMsg[]): number {
+  let at = 0;
+  list.forEach((m, i) => { if ((m as AgentMsg).div === true) at = i + 1; });
+  return at;
+}
+
+/** 真正发给模型的历史：分割线之上只留在文件里给人看。系统提示词与长期记忆不受影响（每次现拼）。 */
+export function sentHistory(list: ChatMsg[], max = HISTORY_SEND): ChatMsg[] {
+  return list.slice(cutIndex(list)).slice(-max);
+}
+
+/** 分割 / 取消分割（按钮文案在 renderMsgs 里同步；接线挂在面板根上做事件委托，只接一次） */
+let lastSplitAt = 0;
+function splitContext(): void {
+  const now = Date.now();
+  /* 一次点击只算一次：重复接线/双触发会让「分割」当场被自己撤销（2026-09-18 实测到过） */
+  if (now - lastSplitAt < 350) return;
+  lastSplitAt = now;
+  const cut = cutIndex(history);
+  if (cut > 0) {
+    for (let i = history.length - 1; i >= 0; i--) {
+      if ((history[i] as AgentMsg).div === true) { history.splice(i, 1); break; }
+    }
+    setNote('已取消分割：上面那些对话又回到上下文里了');
+  } else {
+    if (!history.length) { setNote('还没有对话，不用分割'); return; }
+    const above = history.length;
+    history.push({ role: 'system', content: '', div: true } as AgentMsg);
+    setNote('已分割：上面 ' + above + ' 条不再发给模型（系统提示词与长期记忆照常）');
+  }
+  persist();
+  renderMsgs();
+}
+
 async function ensureLoaded(): Promise<void> {
   if (loaded) return;
   loaded = true;
   try {
     const r = await api()?.agentLoad?.();
     if (r?.ok && Array.isArray(r.chat)) {
+      /* ⚠️ 分割线（div:true）也要读回来，否则重开面板「分割」就白做了 */
       history = r.chat
-        .filter((m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
-        .map((m: any) => ({ role: m.role, content: m.content } as ChatMsg));
+        .filter((m: any) => m && typeof m.content === 'string' && (m.div === true || m.role === 'user' || m.role === 'assistant'))
+        .map((m: any) => (m.div === true ? ({ role: 'system', content: '', div: true } as AgentMsg) : ({ role: m.role, content: m.content } as AgentMsg)));
     }
     if (r?.ok) adoptFromDisk(r.memory);
     if (r?.ok) loadActivity(r.activity);
@@ -167,11 +208,32 @@ function cardHtml(i: number, c: { p: Proposal; done?: string; ignored?: boolean 
 function renderMsgs(): void {
   const box = openEl?.querySelector('#lk-agent-msgs');
   if (!box) return;
+  const cut = cutIndex(history);
   const head = history.length
-    ? history.map(msgHtml).join('')
+    ? history
+        .map((m, i) => {
+          if ((m as AgentMsg).div === true) {
+            return (
+              '<div class="lk-agent__cut">上下文分割：以上 ' + i +
+              ' 条不再发给模型（系统提示词与长期记忆照常）</div>'
+            );
+          }
+          return `<div class="lk-agent__cutwrap${i < cut ? ' is-cut' : ''}">${msgHtml(m)}</div>`;
+        })
+        .join('')
     : '<div class="lk-agent__empty">问点什么吧。比如「这条时间线的冲突还缺什么」「帮我把正在编的那条设定写细一点」。</div>';
   box.innerHTML = head + cards.map((c, i) => cardHtml(i, c)).join('');
   box.scrollTop = box.scrollHeight;
+  /* 分割按钮的文案在这里同步；**接线只接一次** —— 挂在面板根上做事件委托，
+     逐个按钮绑会在整块重画时重复接（一次点击跑两遍 = 分割当场被自己撤销）。 */
+  const btn = openEl?.querySelector('#lk-agent-split') as HTMLButtonElement | null;
+  if (btn) btn.textContent = cut > 0 ? '取消分割' : '分割上下文';
+  if (openEl && openEl.dataset.splitBound !== '1') {
+    openEl.dataset.splitBound = '1';
+    openEl.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement | null)?.id === 'lk-agent-split') splitContext();
+    });
+  }
 }
 
 function renderMeta(): void {
@@ -320,7 +382,8 @@ async function send(): Promise<void> {
        （执行完把结果喂回去，让它接着说）。写入动作一轮就结束 —— 要么落盘要么等点击。 */
     let fixed = false; /* ⭐ 格式纠错只做一次，免得跟模型来回拉锯 */
     for (let round = 0; round <= MAX_ROUNDS; round++) {
-      const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...history.slice(-HISTORY_SEND)];
+      /* 分割线之上的对话**不发给模型**（系统提示词、记忆、工作区现状都在 sys 里，照旧每次现拼） */
+      const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...sentHistory(history)];
       const r = await agentAsk(msgs, cfg);
       const call = parseToolCall(r.text);
       if (!call && looksLikeToolJson(r.text)) {
@@ -424,6 +487,7 @@ export function openAgentPanel(s: Store): () => void {
         `<span class="lk-agent__chip" id="lk-agent-model">${escapeHtml((cfg.aiMode === 'api' ? 'API' : '本地') + ' · ' + cfg.model)}</span>` +
         '<span class="lk-agent__chip is-focus" id="lk-agent-focus">没打开条目</span>' +
       '</div>' +
+      '<button class="lk-agent__split" id="lk-agent-split" title="把上面的对话切出上下文（系统提示词与长期记忆照常）">分割上下文</button>' +
       '<button class="lk-agent__x" id="lk-agent-close" title="关闭（Esc）">×</button>' +
     '</div>' +
     '<div class="lk-agent__perm">' +
