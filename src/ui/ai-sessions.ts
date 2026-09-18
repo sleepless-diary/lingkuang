@@ -1,0 +1,207 @@
+/** AI 工具的**会话管理**（第 3.4 片）。
+ *
+ * 用户 2026-09-18 的原话：「**有会话管理的那种，选定一个主会话，其他会话可以作为角色或者不同视角，
+ * 酒馆就是连接不同的会话，剧情推演就是加一个主控会话**」。
+ * 两点已定：① 每个会话**各自一份独立历史**，「连接」= 把被连会话最近若干条拼进上下文（不是共享历史）；
+ * ② 界面 = 左边一列会话列表（新建/重命名/删除/选中）+ 右边对话。
+ *
+ * 落盘 `%APPDATA%\lingkuang\agent\sessions.json`（**裸数组**，与 `chat.json` / `memory.json` 同款：
+ * 创作者资产，要能手看、手改、备份），走 `preload.js` 的 `agentLoad()` / `agentSave({ sessions })`
+ * —— `main.js` 的 `agent:save` 是「**给了才写**」，只带 sessions 的那次保存不会碰 chat/memory/activity。
+ */
+import { uid } from '../store/ids';
+import type { ChatMsg } from './ai';
+
+export type SessionRole = 'main' | 'character' | 'perspective' | 'director';
+
+export interface AiSession {
+  id: string;
+  name: string;
+  role: SessionRole;
+  /** 角色/视角/主控的设定文本（进系统提示；主会话一般留空） */
+  persona?: string;
+  /** 连着的会话 id：酒馆＝连接会话，剧情推演＝挂一个主控 */
+  links?: string[];
+  history: ChatMsg[];
+  at: number;
+}
+
+export const ROLE_LABEL: Record<SessionRole, string> = {
+  main: '主会话',
+  character: '角色',
+  perspective: '视角',
+  director: '主控',
+};
+
+const ROLES: SessionRole[] = ['main', 'character', 'perspective', 'director'];
+/** 单个会话最多留多少条（历史是给「接着聊」用的，不是归档） */
+const HIST_MAX = 120;
+/** 「连接」只带被连会话最近这么多条 —— 全带会把上下文撑爆，也会让主控盖过当前会话 */
+export const LINK_TAIL = 8;
+
+const api = (): any => (window as any).lingkuangAPI ?? {};
+
+let list: AiSession[] = [];
+let activeId = '';
+let sink: ((sessions: AiSession[]) => void) | null = null;
+let loadOnce: Promise<void> | null = null;
+
+/** 落盘口子由 `src/ui/ai-workbench.ts` 注入（它和助手一样：写盘只有一个地方，各模块各持一份迟早写歪） */
+export function setSessionSink(fn: ((sessions: AiSession[]) => void) | null): void {
+  sink = fn;
+}
+
+function persist(): void {
+  try { sink?.(list); } catch { /* 落盘失败不该打断聊天 */ }
+}
+
+function isRole(x: unknown): x is SessionRole {
+  return typeof x === 'string' && (ROLES as string[]).indexOf(x) >= 0;
+}
+
+function normMsg(m: any): ChatMsg | null {
+  if (!m || typeof m.content !== 'string') return null;
+  const role = m.role === 'user' || m.role === 'assistant' || m.role === 'system' ? m.role : 'assistant';
+  return { role, content: m.content } as ChatMsg;
+}
+
+/** 磁盘 → 内存。空（第一次用 / 文件被删）就建一个「主会话」：用户第一眼得看到能打字的地方 */
+export function adoptSessions(raw: unknown): void {
+  const arr = Array.isArray(raw) ? raw : [];
+  list = arr
+    .filter((x: any) => x && typeof x.id === 'string' && typeof x.name === 'string')
+    .map((x: any): AiSession => ({
+      id: x.id,
+      name: x.name,
+      role: isRole(x.role) ? x.role : 'character',
+      persona: typeof x.persona === 'string' ? x.persona : '',
+      links: Array.isArray(x.links) ? x.links.filter((y: unknown) => typeof y === 'string') : [],
+      history: Array.isArray(x.history) ? (x.history.map(normMsg).filter(Boolean) as ChatMsg[]) : [],
+      at: typeof x.at === 'number' ? x.at : Date.now(),
+    }));
+  if (!list.some((s) => s.role === 'main')) {
+    list.unshift({ id: uid('s'), name: '主会话', role: 'main', persona: '', links: [], history: [], at: Date.now() });
+  }
+  if (!list.some((s) => s.id === activeId)) activeId = list[0].id;
+}
+
+/** 懒加载一次（AI 工具第一次打开时调；重复调用共享同一个 promise） */
+export function ensureSessionsLoaded(): Promise<void> {
+  if (!loadOnce) {
+    loadOnce = (async () => {
+      try {
+        const r = await api().agentLoad?.();
+        adoptSessions(r && r.sessions);
+      } catch {
+        adoptSessions([]);
+      }
+    })();
+  }
+  return loadOnce;
+}
+
+/** 改了会话自己的字段（名字以外，比如 persona）之后要落盘时手动调一次 */
+export function persistSessions(): void { persist(); }
+
+export function listSessions(): AiSession[] { return list; }
+
+export function activeSession(): AiSession | null {
+  return list.find((s) => s.id === activeId) ?? list[0] ?? null;
+}
+
+export function setActiveSession(id: string): void {
+  if (!list.some((s) => s.id === id)) return;
+  activeId = id;
+}
+
+export function createSession(name: string, role: SessionRole = 'character', persona = ''): AiSession {
+  const s: AiSession = { id: uid('s'), name: name.trim() || '新会话', role, persona, links: [], history: [], at: Date.now() };
+  list.push(s);
+  activeId = s.id;
+  persist();
+  return s;
+}
+
+export function renameSession(id: string, name: string): void {
+  const s = list.find((x) => x.id === id);
+  if (!s) return;
+  const next = name.trim();
+  if (!next || next === s.name) return;
+  s.name = next;
+  s.at = Date.now();
+  persist();
+}
+
+export function removeSession(id: string): void {
+  const s = list.find((x) => x.id === id);
+  /* 主会话是「总在那儿」的那一格：删了会让人无处落笔，也断了所有连接 */
+  if (!s || s.role === 'main') return;
+  list = list.filter((x) => x.id !== id);
+  for (const other of list) if (other.links && other.links.length) other.links = other.links.filter((l) => l !== id);
+  if (activeId === id) activeId = list[0]?.id ?? '';
+  persist();
+}
+
+export function isLinked(id: string): boolean {
+  const s = activeSession();
+  return !!s && !!s.links && s.links.indexOf(id) >= 0;
+}
+
+/** 把另一个会话连进当前会话 / 断开（酒馆＝连角色会话，剧情推演＝连一个主控） */
+export function toggleLink(id: string): boolean {
+  const s = activeSession();
+  if (!s || s.id === id) return false;
+  const links = s.links ?? (s.links = []);
+  const i = links.indexOf(id);
+  if (i >= 0) links.splice(i, 1);
+  else links.push(id);
+  s.at = Date.now();
+  persist();
+  return i < 0;
+}
+
+export function linkedSessions(s: AiSession = activeSession() as AiSession): AiSession[] {
+  if (!s || !s.links || !s.links.length) return [];
+  return s.links.map((id) => list.find((x) => x.id === id)).filter(Boolean) as AiSession[];
+}
+
+export function pushMsg(id: string, m: ChatMsg): void {
+  const s = list.find((x) => x.id === id);
+  if (!s) return;
+  s.history.push(m);
+  if (s.history.length > HIST_MAX) s.history.splice(0, s.history.length - HIST_MAX);
+  s.at = Date.now();
+  persist();
+}
+
+export function clearHistory(id: string): void {
+  const s = list.find((x) => x.id === id);
+  if (!s || !s.history.length) return;
+  s.history = [];
+  s.at = Date.now();
+  persist();
+}
+
+/** 生成这个会话的系统提示：角色设定 + 连着谁（只带尾巴，标明「这是别的会话说的」） */
+export function sessionPrompt(s: AiSession | null = activeSession()): string {
+  if (!s) return '';
+  const parts: string[] = [];
+  if (s.role === 'main') parts.push('这是创作者的主会话：他在写世界观，你直接帮他。');
+  if (s.role === 'director') parts.push('你在这个会话里是**主控**：负责调度剧情走向、给别的角色分配处境，不要代替创作者做最终决定。');
+  if (s.role === 'character') parts.push('你在这个会话里**扮演一个角色**：只用这个角色的视角与口吻说话。');
+  if (s.role === 'perspective') parts.push('你在这个会话里代表**某个视角**：只从这个角度观察与评述。');
+  if (s.persona) parts.push('角色 / 视角的设定如下：\n' + s.persona);
+  for (const l of linkedSessions(s)) {
+    const tail = l.history.slice(-LINK_TAIL);
+    if (!tail.length) continue;
+    const text = tail.map((m) => `${m.role === 'user' ? '创作者' : '对方'}：${m.content.slice(0, 200)}`).join('\n');
+    parts.push(`【连着的会话：${l.name}（${ROLE_LABEL[l.role]}）】最近 ${tail.length} 条，旧 → 新：\n${text}`);
+  }
+  return parts.join('\n\n');
+}
+
+/** 给界面用的一句话：「连了谁」 */
+export function linkSummary(s: AiSession | null = activeSession()): string {
+  const linked = s ? linkedSessions(s) : [];
+  return linked.length ? '连着：' + linked.map((l) => l.name).join('、') : '没连别的会话';
+}

@@ -15,6 +15,21 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第三十一轮（2026-09-18）· AI 工具的**多会话**（用户要求：主会话 + 角色/视角会话；酒馆＝连会话，剧情推演＝加主控）
+
+> 用户原话：「**有会话管理的那种，选定一个主会话，其他会话可以作为角色或者不同视角，酒馆就是连接不同的会话，剧情推演就是加一个主控会话**」。
+> 已定两点：① 每个会话**各自一份独立历史**，「连接」= 把被连会话最近 `LINK_TAIL = 8` 条拼进系统提示（不是共享历史）；② 界面 = 左边一列会话列表（新建 / 重命名 / 删除 / 选中 / 连接）+ 右边对话。
+
+### 新增
+- `src/ui/ai-sessions.ts`（新）：`AiSession = { id; name; role: 'main' | 'character' | 'perspective' | 'director'; persona?; links?: string[]; history: ChatMsg[]; at }`；`ROLE_LABEL`；`HIST_MAX = 120`（单个会话最多留这么多条）；导出 `adoptSessions(raw)`（磁盘 → 内存，空则建一个「主会话」）/ `ensureSessionsLoaded()`（懒加载一次，共享同一个 promise）/ `listSessions` / `activeSession` / `setActiveSession` / `createSession(name, role, persona)` / `renameSession` / `removeSession`（**主会话不可删**；删别的会话会把所有人 `links` 里的它摘掉）/ `toggleLink` / `isLinked` / `linkedSessions` / `pushMsg`（超 `HIST_MAX` 从头部裁）/ `clearHistory` / `sessionPrompt()`（角色 / 视角 / 主控的设定 + 连接块）/ `linkSummary()` / `persistSessions()` / `setSessionSink(fn)`。id 走 `uid('s')`。
+- `src/ui/ai-workbench.ts`（重写）：左栏 = 会话列表（`#ai-sess`；＋新建带「名字 + 角色/视角/主控」、**双击就地改名**、每行 `连/断` 与 `×`）+ 底部「角色扮演 / 酒馆推演」两个入口（仍走 `renderRoleplay` / `renderTavern`）；右栏 = 会话头（`#ai-head`：名字 + 角色 chip + 连着谁 + 条数 + 「角色设定」+「清空对话」）+ 对话流（`#ai-log`）+ 输入框（Enter 发送，`isImeEnter` 放行输入法，Shift+Enter 换行）。发送 = `sessionPrompt()` 作 system + **该会话自己的** `history`，走 `aiChat(msgs, { model: 'qwen3:14b', temperature: 0.85, numPredict: 500 })`。
+- `main.js`：`agent:load` 的返回体加 `sessions`（`agentRead('sessions.json')`，非数组给 `[]`）；`agent:save` 加 `sessions` 分支（`payload.sessions` 是数组才写；渲染层已按 `HIST_MAX` 裁过，这里**不再截**）—— 沿用「**给了才写**」，所以只带 sessions 的那次保存不会碰 chat / memory / activity。落盘 `<userData>/agent/sessions.json`（**裸数组**，与 `chat.json` / `memory.json` 同款：能手看手改）。
+- 落盘口子只有一个：`setSessionSink` + 400ms 节流（和助手同一条教训——各模块各持一份内存状态，迟早写歪）。
+
+### 测试
+- 新增 `tools/e2e/ai-sessions.cjs`：**9/9 PASS**（★0 界面齐、★1 默认「主会话」被选中、★2 新建角色会话后右栏跟着切、★3 连接后 head 说得出连了谁、★4 `sessions.json` 落盘且主会话的 `links[0]` 就是那个角色会话的 id、★5 双击改名左栏与磁盘都改、★6 主会话**没有**删除键 + 角色会话删掉后左栏与磁盘都没了、★7 `agent:load` 会把 sessions 一起给渲染层、★8 全程无未捕获异常）。⚠️ **本套件不发消息**：`aiChat()` 要连本地 Ollama，测试机上没有模型；「历史各自独立」「连接只带尾巴」由 `pushMsg` / `sessionPrompt` 的纯逻辑保证。
+- ⚠️ 两条踩坑：① `window.confirm` 在 Electron 里是**真模态框** —— e2e 不 stub 掉，`Runtime.evaluate` 会一直挂着；② **Enter 结算不能只靠 `inp.blur()`**：无焦点窗口（`LINGKUANG_TEST_WINDOW_NOFOCUS=1`）里元素根本没拿到焦点，`blur()` 不派发事件 ⇒ 名字白改（★5 第一跑就挂在这）；改成 Enter 直接调 `done()`（带 `settled` 幂等，blur 仍作「点别处」那条路）。
+
 ## 第三十轮（2026-09-18）· 助手把「最近看过」当成「正在看」（**用户实测报的 bug**）+ 面板右侧滑入滑出 + 全应用滚动条
 
 > 用户原话：「**这个 ai 说我一直停留在同一个文件，修一下**，顺便给左侧的 ai 工具加个对话，还有我希望这个面板入场时是从右侧平滑入场，出场时也是向右平滑出场，对话里面的滚动条不要用原生的，或者换一下风格，与我们的风格匹配」。

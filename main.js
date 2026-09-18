@@ -1354,7 +1354,15 @@ ipcMain.handle('agent:load', () => {
   const chat = agentRead('chat.json');
   const memory = agentRead('memory.json');
   const activity = agentRead('activity.json');
-  return { ok: true, chat: Array.isArray(chat) ? chat : [], memory: Array.isArray(memory) ? memory : [], activity: Array.isArray(activity) ? activity : [] };
+  /* AI 工具的多会话（第 3.4 片）：一次全给渲染层，它自己决定选中哪一个 */
+  const sessions = agentRead('sessions.json');
+  return {
+    ok: true,
+    chat: Array.isArray(chat) ? chat : [],
+    memory: Array.isArray(memory) ? memory : [],
+    activity: Array.isArray(activity) ? activity : [],
+    sessions: Array.isArray(sessions) ? sessions : [],
+  };
 });
 ipcMain.handle('agent:save', (e, payload) => {
   try {
@@ -1371,6 +1379,11 @@ ipcMain.handle('agent:save', (e, payload) => {
     if (Array.isArray(payload && payload.activity)) {
       /* 流水是「近况」不是归档：留最近 AGENT_ACT_MAX 条就够模型判断他在忙什么 */
       fs.writeFileSync(agentFile('activity.json'), JSON.stringify(payload.activity.slice(-AGENT_ACT_MAX), null, 2), 'utf8');
+    }
+    if (Array.isArray(payload && payload.sessions)) {
+      /* AI 工具的多会话（第 3.4 片）：每个会话自己的历史在渲染层已经裁过上限，
+         这里只落盘、不再截，免得把「会话槽」整个吃掉。 */
+      fs.writeFileSync(agentFile('sessions.json'), JSON.stringify(payload.sessions, null, 2), 'utf8');
     }
     return { ok: true };
   } catch (err) { return { ok: false, error: err.code || String(err) }; }
