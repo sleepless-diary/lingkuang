@@ -31,6 +31,16 @@
 - src/style.css：`.lk-agent__cutwrap.is-cut { opacity: .42 }`、`.lk-agent__cut`（两侧虚线）、`.lk-agent__split`。
 - tools/e2e/agent-panel.cjs：★16（插线、线以上全部标成不再发送、写明条数、`【工作区】` 与记忆区照旧）、★17（落盘 div:true 恰好一条，再点一次能撤销）。**21/21 PASS**。
 
+### 补充（同日，用户复看后提的）
+
+> 用户原话：「**其实取消分割可以做在线旁边，鼠标悬浮在线上时显示一个叉，按下就能重新连接上下文**」。
+
+- 面板头上的按钮**恒定是「分割上下文」**（不再在两种文案间切），撤销改到**分割线自己身上**：
+  `renderMsgs()` 给 `.lk-agent__cut` 里加一个 `<button class="lk-agent__cut-x" data-cut-x="1" title="重新接上这段上下文（上面的对话又发给模型）">×</button>`；
+  `src/style.css` 里它平时 `opacity: 0`（不占视线），`.lk-agent__cut:hover` 或 `:focus-visible` 时才浮出来 —— 悬浮出现、点一下就接回。
+- 逻辑拆成两个函数（原来是一个 toggle）：`splitContext()` 只负责插线（去抖 350ms 仍在），新增 `unsplitContext()` 只负责摘线；
+  面板根上的**事件委托**按目标分流：`target.id === 'lk-agent-split'` ⇒ 插线，`target.dataset.cutX === '1'` ⇒ 摘线。
+- e2e ★16/★17 跟着改：按钮恒为「分割上下文」、线身必须带那个叉、撤销改成点线上的叉。**21/21 PASS**。
 ### ⭐ 三条踩坑
 1. **src/ui/agent.ts 是 CRLF**：node 补丁脚本里用 \n 拼多行 old 会**静默匹配 0 处**（edit 工具不受影响，它按行匹配）。CRLF 文件里的多行替换要用 /\r?\n/ 正则 —— 这一片连着踩了两回。
 2. **一次点击跑了两遍** ⇒ 分割线刚插上就被同一个函数摘掉（实测：chat.json 里明明有 div:true，界面上却什么都没有）。修法 = 接线改成**挂在面板根上的事件委托**（openEl.dataset.splitBound 只接一次），再给 splitContext() 加 **350ms 去抖**兜底；e2e 点「取消分割」前要 sleep(500)（真人也得隔一下）。

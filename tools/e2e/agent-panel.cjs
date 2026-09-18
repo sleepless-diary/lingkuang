@@ -427,6 +427,7 @@ async function main() {
     return {
       label: document.querySelector('#lk-agent-split')?.textContent ?? '',
       cutText: cut?.textContent ?? '',
+      cutX: !!document.querySelector('.lk-agent__cut .lk-agent__cut-x'),
       cutN: wraps.filter((w) => w.classList.contains('is-cut')).length,
       allN: wraps.length,
       ctxWork: t.indexOf('【工作区】') >= 0,
@@ -435,7 +436,7 @@ async function main() {
   })()`);
   check('★16 「分割上下文」：插入分割线、线以上全部标成「不再发给模型」并写明条数，按钮变「取消分割」；系统提示词与记忆区照旧',
     preSplit.hasBtn === true && preSplit.label === '分割上下文' && preSplit.wraps > 0 && preSplit.ctxWork === true && preSplit.mem === true
-      && split.label === '取消分割' && split.cutText.indexOf('不再发给模型') > 0
+      && split.label === '分割上下文' && split.cutX === true && split.cutText.indexOf('不再发给模型') > 0
       && split.cutN === split.allN && split.cutN === preSplit.wraps
       && split.cutText.indexOf('以上 ' + split.allN + ' 条') > 0 && split.ctxWork === true,
     { pre: preSplit, after: split });
@@ -447,10 +448,11 @@ async function main() {
     for (let i = 0; i < 14; i++) { const v = rd(); if (v && v.some((m) => m && m.div === true)) return v; await sleep(500); }
     return rd();
   })();
-  await ev(`document.getElementById('lk-agent-split')?.click(); true`);
+  /* 重新接上是在**分割线本身**上（鼠标移上去才显形的那个叉），不在面板头 */
+  await ev(`document.querySelector('.lk-agent__cut .lk-agent__cut-x')?.click(); true`);
   await sleep(300);
   const unSplit = await ev(`(() => ({ cut: !!document.querySelector('#lk-agent-msgs .lk-agent__cut'), label: document.querySelector('#lk-agent-split')?.textContent ?? '', marked: document.querySelectorAll('#lk-agent-msgs .lk-agent__cutwrap.is-cut').length }))()`);
-  check('★17 分割会落盘（chat.json 里多一条 div:true，重开面板仍在）＋「取消分割」能撤销（线与压暗都消失）',
+  check('★17 分割会落盘（chat.json 里多一条 div:true，重开面板仍在）＋点线上的叉能重新接上（线与压暗都消失、按钮不变）',
     Array.isArray(diskDiv) && diskDiv.filter((m) => m && m.div === true).length === 1
       && unSplit.cut === false && unSplit.label === '分割上下文' && unSplit.marked === 0,
     { divN: Array.isArray(diskDiv) ? diskDiv.filter((m) => m && m.div === true).length : null, unSplit });

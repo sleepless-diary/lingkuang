@@ -1112,6 +1112,14 @@ body {
   font-size: 11px; color: var(--fg-2); margin: 4px 0;
 }
 .lk-agent__cut::before, .lk-agent__cut::after { content: ''; flex: 1; border-top: 1px dashed var(--border-strong); }
+/* 线自己就是「重新接上」的开关：平时藏起来（不占视线），鼠标移上去才浮出一个叉 */
+.lk-agent__cut-x {
+  opacity: 0; transition: opacity var(--motion-fast) var(--ease-standard);
+  background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
+  color: var(--fg-2); font-size: 11px; line-height: 1; padding: 1px 6px; cursor: pointer;
+}
+.lk-agent__cut:hover .lk-agent__cut-x, .lk-agent__cut-x:focus-visible { opacity: 1; }
+.lk-agent__cut-x:hover { color: var(--accent); border-color: var(--accent); }
 .lk-agent__split {
   background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   color: var(--fg-2); font-size: 11px; padding: 2px 7px; cursor: pointer; white-space: nowrap; margin-left: auto;

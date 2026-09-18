@@ -105,25 +105,28 @@ export function sentHistory(list: ChatMsg[], max = HISTORY_SEND): ChatMsg[] {
   return list.slice(cutIndex(list)).slice(-max);
 }
 
-/** 分割 / 取消分割（按钮文案在 renderMsgs 里同步；接线挂在面板根上做事件委托，只接一次） */
-let lastSplitAt = 0;
+/** 分割 / 重新接上（按钮在面板头上；「重新接上」在分割线本身上 —— 鼠标移上去才出现那个叉） */
+let lastActionAt = 0;
 function splitContext(): void {
-  const now = Date.now();
-  /* 一次点击只算一次：重复接线/双触发会让「分割」当场被自己撤销（2026-09-18 实测到过） */
-  if (now - lastSplitAt < 350) return;
-  lastSplitAt = now;
-  const cut = cutIndex(history);
-  if (cut > 0) {
-    for (let i = history.length - 1; i >= 0; i--) {
-      if ((history[i] as AgentMsg).div === true) { history.splice(i, 1); break; }
-    }
-    setNote('已取消分割：上面那些对话又回到上下文里了');
-  } else {
-    if (!history.length) { setNote('还没有对话，不用分割'); return; }
-    const above = history.length;
-    history.push({ role: 'system', content: '', div: true } as AgentMsg);
-    setNote('已分割：上面 ' + above + ' 条不再发给模型（系统提示词与长期记忆照常）');
+  if (Date.now() - lastActionAt < 350) return;
+  lastActionAt = Date.now();
+  if (!history.length) { setNote('还没有对话，不用分割'); return; }
+  const above = history.length;
+  history.push({ role: 'system', content: '', div: true } as AgentMsg);
+  setNote('已分割：上面 ' + above + ' 条不再发给模型；想接回来，把鼠标放到那条线上点叉');
+  persist();
+  renderMsgs();
+}
+
+/** 重新接上这段上下文 = 摘掉分割线（用户 2026-09-18：「取消分割可以做在线旁边，
+ *  鼠标悬浮在线上时显示一个叉，按下就能重新连接上下文」） */
+function unsplitContext(): void {
+  if (Date.now() - lastActionAt < 350) return;
+  lastActionAt = Date.now();
+  for (let i = history.length - 1; i >= 0; i--) {
+    if ((history[i] as AgentMsg).div === true) { history.splice(i, 1); break; }
   }
+  setNote('已重新接上：上面那些对话又回到上下文里了');
   persist();
   renderMsgs();
 }
@@ -214,8 +217,10 @@ function renderMsgs(): void {
         .map((m, i) => {
           if ((m as AgentMsg).div === true) {
             return (
-              '<div class="lk-agent__cut">上下文分割：以上 ' + i +
-              ' 条不再发给模型（系统提示词与长期记忆照常）</div>'
+                            '<div class="lk-agent__cut">上下文分割：以上 ' + i +
+              ' 条不再发给模型（系统提示词与长期记忆照常）' +
+              '<button class="lk-agent__cut-x" data-cut-x="1" title="重新接上这段上下文（上面的对话又发给模型）">×</button>' +
+              '</div>'
             );
           }
           return `<div class="lk-agent__cutwrap${i < cut ? ' is-cut' : ''}">${msgHtml(m)}</div>`;
@@ -227,11 +232,14 @@ function renderMsgs(): void {
   /* 分割按钮的文案在这里同步；**接线只接一次** —— 挂在面板根上做事件委托，
      逐个按钮绑会在整块重画时重复接（一次点击跑两遍 = 分割当场被自己撤销）。 */
   const btn = openEl?.querySelector('#lk-agent-split') as HTMLButtonElement | null;
-  if (btn) btn.textContent = cut > 0 ? '取消分割' : '分割上下文';
+  if (btn) btn.textContent = '分割上下文';
   if (openEl && openEl.dataset.splitBound !== '1') {
     openEl.dataset.splitBound = '1';
     openEl.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement | null)?.id === 'lk-agent-split') splitContext();
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.id === 'lk-agent-split') splitContext();
+      else if (target.dataset.cutX === '1') unsplitContext();
     });
   }
 }
