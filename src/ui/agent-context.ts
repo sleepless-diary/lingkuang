@@ -6,6 +6,7 @@ import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import type { Entity, PropValue, Timeline, TimelineNode, Worldset } from '../store/types';
 import { calendarOf, fromEpoch } from '../calendar';
+import { activityBlock } from './agent-activity';
 
 /** 「创作者现在在看哪一条」——由工作台（`src/ui/codex.ts`）上报，助手据此知道该关心什么 */
 export interface AgentFocus {
@@ -13,6 +14,9 @@ export interface AgentFocus {
   world: string;
   id: string;
   title: string;
+  /** 他是在哪儿看着这条：设定库工作台（`'codex'`，缺省）还是世界沙盘的时间线（`'timeline'`）。
+   *  用户 2026-09-18：「时间轴面板也要让它能看到我在哪个文件」——沙盘那边点节点同样上报，只是换个说法。 */
+  view?: 'codex' | 'timeline';
 }
 
 /** vault 里的实体根目录名（与 `main.js` 的 `ENTITY_DIR`/`entityPath` 一致）：
@@ -33,7 +37,7 @@ let live = true;
 function sameFocus(a: AgentFocus | null, b: AgentFocus | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
-  return a.kind === b.kind && a.world === b.world && a.id === b.id && a.title === b.title;
+  return a.kind === b.kind && a.world === b.world && a.id === b.id && a.title === b.title && a.view === b.view;
 }
 
 function announce(): void {
@@ -128,6 +132,10 @@ function focusBlock(ws: Worldset): string {
   const age = live
     ? ''
     : '\n  （他刚才在看这一条，现在切到别的功能去了 —— 他说「这个」多半仍指它，拿不准就先问一句）';
+  /* 同一个节点，在沙盘时间线上点开和在设定库里点开，助手该说的话不一样（用户 2026-09-18 要求时间轴也上报） */
+  const place = f.view === 'timeline'
+    ? '\n  在哪：世界沙盘的时间线上（他刚点开这条看）'
+    : '\n  在哪：设定库工作台';
   if (f.kind === 'entity') {
     const e = ws.entities?.[f.id];
     if (!e) return '';
@@ -136,6 +144,7 @@ function focusBlock(ws: Worldset): string {
     const doc = clip(e.doc, 600);
     return `【创作者此刻打开的那一条】设定「${e.name}」（${tname}）`
       + `\n  文件：${ws.name}/${ENTITY_DIR}/${tname}/${e.name}.md`
+      + `${place}`
       + `${fields ? '\n  字段：' + fields : ''}${doc ? '\n  正文：' + doc : ''}${age}`;
   }
   let node: TimelineNode | undefined;
@@ -151,6 +160,7 @@ function focusBlock(ws: Worldset): string {
   return `【创作者此刻打开的那一条】事件「${node.year ?? '?'} 年 ${node.title}」`
     + `${node.kind && node.kind !== '事件' ? '（' + node.kind + '）' : ''}`
     + `\n  文件：${ws.name}/${tlName}/${kind}/${node.title}.md`
+    + `${place}`
     + `${node.desc ? '\n  简述：' + clip(node.desc, 200) : ''}`
     + `${fields ? '\n  字段：' + fields : ''}`
     + `${doc ? '\n  正文：' + doc : ''}${age}`;
@@ -160,7 +170,7 @@ function focusBlock(ws: Worldset): string {
 const NO_FOCUS = '【创作者此刻打开的那一条】（没有：他没打开任何条目。'
   + '他说「这个 / 这条 / 当前 / 我打开的文件」时，直接问他指的是哪一条，不要拿世界名或时间线名糊弄）';
 
-/** 打包当前工作区现状（世界 / **此刻打开的那一条** / 时间线 / 设定），超预算整体截断 */
+/** 打包当前工作区现状（世界 / **此刻打开的那一条** / 时间线 / 设定 / **他最近做过的事**），超预算整体截断 */
 export function buildContext(store: Store, budget = 4000): string {
   const ws = currentWorld(store);
   if (!ws) return '【工作区】还没有世界观';
@@ -168,6 +178,9 @@ export function buildContext(store: Store, budget = 4000): string {
   const parts: string[] = [
     `【工作区】当前世界「${ws.name}」（共 ${names.length} 个世界：${names.slice(0, 8).join('、')}）`,
     focusBlock(ws) || NO_FOCUS,
+    /* 他最近改过什么（用户 2026-09-18：「能不能让这个 ai 能读到我的过去操作行为」）。
+       排在焦点之后：先知道他在看哪一条，再看他刚才动过什么，顺序反了他会以为流水是当下这一条。 */
+    activityBlock(),
     timelineBlock(ws, store.activeTimeline),
     entitiesBlock(ws),
   ];

@@ -5,6 +5,7 @@ import { disposeCurrentTool } from './tools/registry';
 import { undoWithVault, redoWithVault } from './store/actions';
 import { ensureEntityTypes, ensureEntityFields } from './store/entities';
 import { showShellAlert, removeShellAlert } from './ui/alert';
+import { watchActivity } from './ui/agent-activity';
 import './style.css';
 
 /** JSON 缓存判损信息（主进程 `data:load` 回传）。null = 正常。
@@ -448,6 +449,10 @@ async function main() {
   /* 在落盘订阅注册后才补全，确保 store.update 能触发落盘写回 .md（type/precision/kind + 格式字段） */
   ensureAllFormatFields(store);
   ensureEntityLayer(store);
+  /* 助手要读的「他最近做过的事」（操作流水）：差分式记在内存里 + 防抖落盘。
+     必须挂在上面两条**之后** —— 它们在补全格式字段时也会 store.update，早挂就会把
+     启动归一化写盘记成创作者的操作，助手一开口就以为他刚动过一堆东西。 */
+  watchActivity(store);
   const host = document.getElementById('app')!;
   renderShell(store, host);
   /* 判损横幅必须挂在壳渲染之后（宿主 #lk-alerts 在那之前不存在）。

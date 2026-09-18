@@ -15,6 +15,31 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第二十九轮（2026-09-18）· 助手：回执不叠话 + 记得你最近动过什么 + 沙盘也报焦点（**用户实测报的 bug + 两条要求**）
+
+> 用户原话：「**修改后正文和下一句回答一起出来了**，还有**能不能让这个 ai 能读到我的过去操作行为**，
+> **时间轴面板也要让它能看到我在哪个文件**」。三件事一起做：一条体验 bug、两条把「助手知道你在干什么」补全。
+
+### 一 根因（「一起出来了」不是渲染挤压，是模型两段并成一条）
+
+- 现场：`%APPDATA%\lingkuang\agent\chat.json` 尾部 —— `[27] assistant` 裸 JSON `{"set_field":{…}}`（工具名当键形状，第 3.1 片容错已认，渲染成「用到动作：set_field」）→ `[28] user` `【动作结果：set_field】已把「艾德温·霜冠」的 描述 改成 …` → `[29] user` **创作者的新提问「软件给你暴露了哪些工具」** → `[30] assistant` **一条消息里先答旧事再答新事**（开头「当前修改已经完成。现在你可以在"艾德温·霜冠"的描述中看到修改的内容：…」然后空行接「软件给你暴露了以下工具：…」）。
+- 为什么会被答成一条：动作结果 `[28]` 与用户新问题 `[29]` **都是 user 角色**，且先后落在同一次请求里 ⇒ 模型一轮里把「回执的汇报」和「新问题的答案」都写了。
+- 第二层：**同一句结果文本被画两遍** —— 卡片结算时 `c.done = r.note`（`.lk-agent__prop-note`）里一遍，紧接着 push 的 `【动作结果】${r.note}` 又渲染成 `.lk-agent__tool` 一遍。
+- 排除项：`.lk-agent__msgs` 是 `gap:8px` 的 flex 列（`src/style.css:990`），结果块与气泡**本来就分开**，不是「挤在同一个气泡里」。
+
+### 二 修法（三刀）
+
+- **回执不叠话**：`src/ui/agent.ts` 的 `SYS_HEAD` 新增规则 6 —— 「【动作结果：…】是**你自己动作的系统回执**，界面上已经单独显示了那块结果 —— 不要为它写汇报、也不要复述改成了什么；创作者紧接着问别的就直接答那件事，别把回执的汇报和那个答案混在同一条回复里」。两条 `history.push` 的结果文本尾巴统一加「（系统回执，界面已单独显示这块，不必复述）」；卡片结算文案 `c.done = '已应用'`（原来是整句 `r.note`）。
+- **操作流水**（新文件 `src/ui/agent-activity.ts`）：全仓写入都走 `store.update`，但它只有 mutator、**没有语义标签** ⇒ 埋点必漏，所以用**差分**：`watchActivity(store)` 订在 `src/main.ts` 的 `ensureAllFormatFields()`/`ensureEntityLayer()` **之后**（在那之前挂，启动归一化写盘会被记成创作者的操作），每次 store 变化防抖 `BATCH_MS = 500` 后对快照做 diff，吐人话（`新建了世界/时间线/事件/设定`、`把事件「X」挪到了 N 年`、`改了设定「X」的字段「发色」`、`写了…的正文`、`给设定「X」记了一版演变`…），最多 `MAX = 80` 条、进上下文只取 `SHOW = 12`、一次改动最多 `MAX_LINES = 6` 行（多的折成「还有 N 处改动」）。块 `【他最近做过的事】` 插在 `buildContext()` 里焦点块**之后**（先知道他在看哪一条、再看他刚才动过什么）。落盘 `activity.json` 走 `agent:save` 的 `activity` 键 + `agent:load` 返回；助手自己代劳的改动用 `agentActing()` 打 2s 窗口标尾注「（灵框助手代劳）」。
+- **沙盘也报焦点**：`src/ui/shell.ts` 的 `mountTimeline(store, timelineBody, (node) => …)` 回调开头 `setAgentFocus({ kind: 'node', world: currentWorld(store).name, id: node.id, title: node.title, view: 'timeline' })`；`AgentFocus` 新增 `view?: 'codex' | 'timeline'`（`sameFocus()` 也比 view），`focusBlock()` 按 view 写一行「在哪：世界沙盘的时间线上（他刚点开这条看）」/「在哪：设定库工作台」；`src/tools/registry.ts` 的 `openTool()` 普通分支在 `disposeCurrent?.()` **之前**加 `setAgentFocusLive(false)`（换工具＝离开那个视图，只降级不清空；各工具渲染时自己再 `setAgentFocus` 升回 live）。
+
+### 三 验证
+
+- `tools/e2e/agent-panel.cjs` **19/19 PASS**（新增 ★6d 沙盘点开事件 ⇒ chip「正在编事件：王国的建立」+ 文件行 + 在哪行；★14 改一个字段后 ctx 里出现 `【他最近做过的事】…改了设定「银发少女」的字段「发色」` + 尾注；★15 `activity.json` 落盘且**只带 activity 的那次保存不抹 chat.json**）。回归 `agent-tools` 19/19、`agent-memory` 15/15、`settings-panel` 12/12、`toolbar-groups` 5/5。
+- **A/B 判别力**（`git stash push -m ab-activity-20260918 -- src/` 只藏源码、保住新断言 → `npx vite build` → 重播夹具 + 重启）：旧 build **15/19**，挂的正好是本片四条新能力（★6c/★6d/★14/★15）。
+- ⭐ 两条口径教训：① **`main.js` 的 `agent:save` 原来是「无条件写 chat」**（`const chat = Array.isArray(payload.chat) ? payload.chat : []` 然后照样 `writeFileSync`）⇒ 只传 activity 会把对话历史抹成 `[]`；改成「**给了才写**」（`Array.isArray(payload && payload.chat)` 才写），★15 就是这条的回归测试。② 测试实例 `LINGKUANG_TEST_WINDOW_NOFOCUS=1` ⇒ 页面 hidden ⇒ 定时器被节流，`BATCH_MS = 500` + `SAVE_MS = 1500` 的落盘晚于纸面值 ⇒ 断言要**轮询落盘当同步点**（改前先 `unlinkSync(activity.json)`，否则上次的残留会让轮询立刻通过），不能死等固定毫秒。
+- ⭐ 沙盘选中的事件是 **pointer 事件**，不是 `click`：`src/ui/timeline.ts:357` 的 `wrap.addEventListener('pointerdown')` 记 `nodeDragId`，`src/ui/timeline.ts:440-453` 的 `window.addEventListener('pointerup')` 里 `wasNodeClick = nodeDragId && !nodeDragMoved` 才 `selectedId = n.id; render(); onSelect(n)` ⇒ e2e 必须派 `PointerEvent('pointerdown')`（`button: 0`、`buttons: 1`、带 clientX/clientY/pointerId/pointerType）给节点元素 + `PointerEvent('pointerup')` 给 window，**且不能派 pointermove**（否则被当成拖动、不选中）。`el.click()` 一辈子选不中。
+
 ## 第二十八轮（2026-09-18）· 助手「看不到我此刻打开的文件」（**用户实测报的 bug**）
 
 > 用户原话：「这个 ai 看不到我此时打开的文件」。紧接着的真实对话里，它只会答世界名 ——

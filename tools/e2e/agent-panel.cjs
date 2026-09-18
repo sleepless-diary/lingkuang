@@ -178,6 +178,39 @@ async function main() {
   check('★6b ⭐切到别的工具：焦点**只降级不清空**（chip 变「最近在看」、上下文里那条与它的文件路径仍在）',
     away.chip === '最近在看：王国的建立' && away.keep === true && away.file === true && away.note === true && away.noFocus === false,
     away);
+
+  /* ── ③b-2 ⭐⭐ 2026-09-18 用户第二条：「时间轴面板也要让它能看到我在哪个文件」
+     —— 沙盘上点开一个事件，助手那边得认，而且要标明这是**沙盘的时间线**（不是设定库工作台）。 ── */
+  const tlClk = await ev(`(() => {
+    const el = document.querySelector('#lk-pane-timeline .tl__n[data-id]');
+    if (!el) return { clicked: false };
+    /* ⭐ 沙盘选中**不是 click**：src/ui/timeline.ts:357 在 wrap 上听 pointerdown（只记 nodeDragId），
+       真正置 selectedId + 调 onSelect 的是 src/ui/timeline.ts:440 **window 上的 pointerup**
+       （nodeDragId && !nodeDragMoved 才算点击）—— 只派发 click 一辈子选不中。
+       这里照真实鼠标补这两个事件；**不派 pointermove**，否则 nodeDragMoved 置真、被当成拖动。 */
+    const r = el.getBoundingClientRect();
+    const base = { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0 };
+    el.dispatchEvent(new PointerEvent('pointerdown', Object.assign({}, base, { buttons: 1 })));
+    window.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, base, { buttons: 0 })));
+    return { clicked: true, id: el.dataset.id, title: el.textContent.trim() };
+  })()`);
+  await sleep(700);
+  const sandboxFocus = await ev(`(() => {
+    const chip = document.querySelector('#lk-agent-focus')?.textContent ?? '';
+    const t = document.querySelector('#lk-agent-ctx')?.textContent ?? '';
+    return {
+      chip,
+      focusNode: t.includes('【创作者此刻打开的那一条】事件「312 年 王国的建立」'),
+      file: t.includes('文件：测试世界观/主线/事件/王国的建立.md'),
+      place: t.includes('在哪：世界沙盘的时间线上'),
+      note: t.includes('现在切到别的功能去了'),
+    };
+  })()`);
+  check('★6d ⭐沙盘上点开一个事件：助手也认（chip 升回「正在编事件」、上下文标「在哪：世界沙盘的时间线上」、降级标记消失）',
+    tlClk.clicked === true && sandboxFocus.chip === '正在编事件：王国的建立' && sandboxFocus.focusNode === true
+      && sandboxFocus.file === true && sandboxFocus.place === true && sandboxFocus.note === false,
+    { id: tlClk.id, ...sandboxFocus });
+
   await ev(escKey);
   await sleep(200);
   await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
@@ -187,10 +220,10 @@ async function main() {
   const back = await ev(`(() => {
     const chip = document.querySelector('#lk-agent-focus')?.textContent ?? '';
     const t = document.querySelector('#lk-agent-ctx')?.textContent ?? '';
-    return { chip, backLive: chip.indexOf('正在编') === 0, keep: t.includes('【创作者此刻打开的那一条】'), note: t.includes('现在切到别的功能去了') };
+    return { chip, backLive: chip.indexOf('正在编') === 0, keep: t.includes('【创作者此刻打开的那一条】'), note: t.includes('现在切到别的功能去了'), place: t.includes('在哪：设定库工作台') };
   })()`);
-  check('★6c 切回工作台 ⇒ 升回「正在编」（降级标记消失）',
-    back.backLive === true && back.keep === true && back.note === false, back);
+  check('★6c 切回工作台 ⇒ 升回「正在编」（降级标记消失、位置说回「设定库工作台」）',
+    back.backLive === true && back.keep === true && back.note === false && back.place === true, back);
   await ev(escKey);
   await sleep(200);
   /* ⭐ ★12 的「主区没被重建」判据要拿**当前**的工作台根比 —— ★6b/★6c 刚切过工具，
@@ -276,6 +309,60 @@ async function main() {
     agentFirst === true && swapped.agent === false && swapped.settings === true && swapped.sameRoot === true
       && reOpen.agent === true && reOpen.settings === false && reOpen.sameRoot === true,
     { agentFirst, swapped, reOpen });
+
+  /* ── ⑧ 助手读得到「他最近做过的事」（操作流水：`src/ui/agent-activity.ts`）──
+     用户 2026-09-18：「能不能让这个 ai 能读到我的过去操作行为」。
+     它是**差分**不是埋点：全仓写入都走 `store.update`，但它只有 mutator、没有语义标签
+     （工作台直改字段 / tiptap 失焦提交 / 回收站恢复全在里面），埋点必漏 ⇒ 只认「数据真的变了」。
+     这里模拟的就是最普通的一条路径：在工作台里改一个字段。 */
+  await ev(escKey);
+  await sleep(300);
+  /* 先删掉上一次跑留下的流水：★15 靠「文件里有 发色」当同步点，残留会让我们在写盘之前就通过 */
+  try { fs.unlinkSync(path.join(agentDir(), 'activity.json')); } catch (e) { /* 没有就算了 */ }
+  await ev(`document.querySelector('#cx-list [data-cx-id="e-e2e-1"]')?.click(); true`);
+  await sleep(700);
+  const setHair = await ev(`(() => {
+    const el = [...document.querySelectorAll('#cx-fields > div')].find((r) => r.firstElementChild?.textContent === '发色')?.querySelector('input,textarea,select');
+    if (!el) return null;
+    el.value = '墨黑';
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return el.value;
+  })()`);
+  /* 差分防抖 BATCH_MS=500 + 流水落盘节流 SAVE_MS=1500 ⇒ 等够再开面板读上下文。
+     ⚠️ 测试窗口 `LINGKUANG_TEST_WINDOW_NOFOCUS=1` ⇒ 页面 hidden ⇒ 定时器被节流，
+     实际落盘时刻会晚于「500+1500ms」的纸面值（实测晚了几秒）⇒ **轮询而不是死等**，
+     并把「文件到了」当同步点：push() 先于 scheduleSave()，文件里有这条 ⇒ 内存里必然也有。 */
+  let actDisk = null;
+  for (let i = 0; i < 14; i++) {
+    await sleep(700);
+    try { actDisk = JSON.parse(fs.readFileSync(path.join(agentDir(), 'activity.json'), 'utf8')); } catch (e) { actDisk = null; }
+    if (Array.isArray(actDisk) && actDisk.some((a) => a && typeof a.text === 'string' && a.text.indexOf('发色') >= 0)) break;
+  }
+  await ev(ctrlK);
+  await sleep(400);
+  const act = await ev(`(() => {
+    const t = document.querySelector('#lk-agent-ctx')?.textContent ?? '';
+    return {
+      hasBlock: t.includes('【他最近做过的事】'),
+      hasLine: t.includes('改了设定「银发少女」的字段「发色」'),
+      hasTail: t.includes('（这些是他自己动手改的；标着「灵框助手代劳」的才是你改的。）'),
+      line: (t.split('\\n').find((l) => l.includes('发色')) ?? '').trim(),
+    };
+  })()`);
+  check('★14 ⭐助手看得到创作者过去的操作（改一个字段 ⇒ 上下文里冒出【他最近做过的事】+ 那句人话）',
+    setHair === '墨黑' && act.hasBlock === true && act.hasLine === true && act.hasTail === true, act);
+
+  let chatDisk = null;
+  try { chatDisk = JSON.parse(fs.readFileSync(path.join(agentDir(), 'chat.json'), 'utf8')); } catch (e) { chatDisk = null; }
+  check('★15 流水自己落盘，且**只带 activity 的那次保存不会把对话历史抹掉**（`agent:save` 是「给了才写」）',
+    Array.isArray(actDisk) && actDisk.some((a) => a && typeof a.text === 'string' && a.text.indexOf('发色') >= 0)
+      && Array.isArray(chatDisk) && chatDisk.length === 2 && chatDisk[0]?.content === 'E2E-A',
+    {
+      actN: Array.isArray(actDisk) ? actDisk.length : actDisk,
+      actLast: Array.isArray(actDisk) ? (actDisk[actDisk.length - 1]?.text ?? null) : null,
+      chatN: Array.isArray(chatDisk) ? chatDisk.length : chatDisk,
+      chatFirst: Array.isArray(chatDisk) ? (chatDisk[0]?.content ?? null) : null,
+    });
 
   const errs = await ev(`window.__errs`);
   check('★13 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

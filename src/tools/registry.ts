@@ -1,6 +1,7 @@
 /** 灵框 · 工具注册表（工具栏）——模块 = 大视图（灵感/编辑器/AI…） */
 import type { Store } from '../store/store';
 import { cascadeIn } from '../ui/motion';
+import { setAgentFocusLive } from '../ui/agent-context';
 export interface Tool {
   id: string;
   name: string;
@@ -64,6 +65,10 @@ export function openTool(id: string, host: HTMLElement, store?: Store): void {
     if (typeof ret === 'function') disposePanel = ret;
     return;
   }
+  /* 换工具＝离开了那个视图：助手那边的焦点**降级不清空**（他刚才在看哪一条仍然是问题
+     「这个」的最可能所指，而且切走再切回来要能接上，见 docs/BUGS.md 第二十八轮）。
+     注意：各工具自己渲染时会再 `setAgentFocus(...)` 把 live 拉回 true，所以这里不会误伤。 */
+  setAgentFocusLive(false);
   disposeCurrent?.();
   disposeCurrent = null;
   host.innerHTML = '';               /* 摘掉上一格（连同那个工具的 DOM） */

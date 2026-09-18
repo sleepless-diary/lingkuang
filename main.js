@@ -1338,12 +1338,14 @@ ipcMain.handle('vault:unwatch', () => {
    两份文件都在 userData 下（测试时跟着 LINGKUANG_TEST_DATA 走同一个临时目录）：
      agent/chat.json   对话历史
      agent/memory.json 长期记忆（偏好条目）
+     agent/activity.json 创作者的操作流水（他最近改了什么 —— 助手据此知道他在忙什么）
    为什么用主进程写文件而不是 localStorage：① 这是**创作者资产**（助手记住了什么），
    要能像 vault 一样被备份、查看、手改；② localStorage 清缓存就没了、容量也小。 */
 const AGENT_DIR = () => (process.env.LINGKUANG_TEST_DATA
   ? path.join(path.dirname(process.env.LINGKUANG_TEST_DATA), 'agent')
   : path.join(app.getPath('userData'), 'agent'));
 const AGENT_CHAT_MAX = 200;
+const AGENT_ACT_MAX = 80;
 const agentFile = (name) => path.join(AGENT_DIR(), name);
 function agentRead(name) {
   try { return JSON.parse(fs.readFileSync(agentFile(name), 'utf8')); } catch (e) { return null; }
@@ -1351,16 +1353,24 @@ function agentRead(name) {
 ipcMain.handle('agent:load', () => {
   const chat = agentRead('chat.json');
   const memory = agentRead('memory.json');
-  return { ok: true, chat: Array.isArray(chat) ? chat : [], memory: Array.isArray(memory) ? memory : [] };
+  const activity = agentRead('activity.json');
+  return { ok: true, chat: Array.isArray(chat) ? chat : [], memory: Array.isArray(memory) ? memory : [], activity: Array.isArray(activity) ? activity : [] };
 });
 ipcMain.handle('agent:save', (e, payload) => {
   try {
     fs.mkdirSync(AGENT_DIR(), { recursive: true });
-    const chat = Array.isArray(payload && payload.chat) ? payload.chat : [];
-    /* 只留最近 AGENT_CHAT_MAX 条：历史是给「接着聊」用的，不是归档（归档在 vault / 备份里） */
-    fs.writeFileSync(agentFile('chat.json'), JSON.stringify(chat.slice(-AGENT_CHAT_MAX), null, 2), 'utf8');
+    /* 「给了才写」：操作流水会单独调一次 agent:save（只带 activity），
+       旧写法在没有 chat 时把 chat.json 写成空数组 —— 那就等于把对话历史抹了。 */
+    if (Array.isArray(payload && payload.chat)) {
+      /* 只留最近 AGENT_CHAT_MAX 条：历史是给「接着聊」用的，不是归档（归档在 vault / 备份里） */
+      fs.writeFileSync(agentFile('chat.json'), JSON.stringify(payload.chat.slice(-AGENT_CHAT_MAX), null, 2), 'utf8');
+    }
     if (Array.isArray(payload && payload.memory)) {
       fs.writeFileSync(agentFile('memory.json'), JSON.stringify(payload.memory, null, 2), 'utf8');
+    }
+    if (Array.isArray(payload && payload.activity)) {
+      /* 流水是「近况」不是归档：留最近 AGENT_ACT_MAX 条就够模型判断他在忙什么 */
+      fs.writeFileSync(agentFile('activity.json'), JSON.stringify(payload.activity.slice(-AGENT_ACT_MAX), null, 2), 'utf8');
     }
     return { ok: true };
   } catch (err) { return { ok: false, error: err.code || String(err) }; }

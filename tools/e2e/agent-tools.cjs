@@ -151,8 +151,9 @@ async function main() {
   await ev(`document.querySelector('#lk-agent-msgs [data-prop-ok="0"]').click(); true`);
   await sleep(800);
   const card1b = await props();
+  /* 卡片上只留一句短文案「已应用」：那句长说明下面已经有一块【动作结果】在显示了（2026-09-18 改） */
   check('★8 点「应用」之后才真落盘（设定树里多了一行）',
-    (await rows()) === 2 && card1b[0].settled === true && card1b[0].note.indexOf('已新建设定') >= 0,
+    (await rows()) === 2 && card1b[0].settled === true && card1b[0].note.indexOf('已应用') >= 0,
     { rows: await rows(), card: card1b[0] });
 
   /* ---------- ④「忽略」什么都不做 ---------- */
@@ -227,7 +228,7 @@ async function main() {
     tool: await ev(`(function () { const t = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__tool')]; return t.length ? t[t.length - 1].textContent : ''; })()`),
   };
   check('★16 应用之后字段真的变了（再读一次：发色=墨黑）',
-    keyedDone[2].settled === true && afterApply.note.indexOf('改成 墨黑') >= 0 && afterApply.tool.indexOf('发色=墨黑') >= 0,
+    keyedDone[2].settled === true && afterApply.note.indexOf('已应用') >= 0 && afterApply.tool.indexOf('发色=墨黑') >= 0,
     afterApply);
 
   /* ---------- ⑨ 参数写成裸值（{"search":"银发"}）也要认 ---------- */

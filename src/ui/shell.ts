@@ -11,6 +11,7 @@ import { confirmDialog, promptDialog } from './confirm';
 import { currentWorld } from '../store/store';
 import { renderNodeForm } from './node-form';
 import { staggerIn } from './motion';
+import { setAgentFocus } from './agent-context';
 
 export function renderShell(store: Store, host: HTMLElement): void {
   registerAllTools();
@@ -45,6 +46,10 @@ export function renderShell(store: Store, host: HTMLElement): void {
   renderTimelineTabs(store);
   const timelineBody = document.getElementById('lk-pane-timeline')?.querySelector('.lk-pane-body') as HTMLElement;
   mountTimeline(store, timelineBody, (node) => {
+    /* 沙盘上点开一个事件：助手那边的「他此刻在看哪一条」要跟着走
+       —— 用户 2026-09-18：「时间轴面板也要让它能看到我在哪个文件」。
+       `view: 'timeline'` 让上下文里写「在哪：世界沙盘的时间线上」，跟设定库工作台区分开。 */
+    setAgentFocus({ kind: 'node', world: currentWorld(store).name, id: node.id, title: node.title, view: 'timeline' });
     const toolHost = document.getElementById('lk-tool-host');
     if (!toolHost) return;
     const tlId = store.activeTimeline && currentWorld(store).timelines[store.activeTimeline]

@@ -14,6 +14,7 @@
 import { type ChatMsg } from './ai';
 import { agentAsk } from './agent-model';
 import { buildContext, getAgentFocus, isAgentFocusLive } from './agent-context';
+import { agentActing, loadActivity, recentActivity } from './agent-activity';
 import {
   addMemory, adoptFromDisk, getMemory, memoryPrompt, removeMemory,
   setMemorySink, summarizePrefs, updateMemory,
@@ -40,6 +41,15 @@ const SYS_HEAD = [
   '5. 创作者说「这个 / 这条 / 当前 / 我现在打开的文件 / 这个面板」时，指的就是现状里【创作者此刻打开的那一条】；' +
     '回答要**点名那一条**（名字 + 它是什么），问文件就报它那一行「文件：」的路径。' +
     '若那一栏写着「没有」，就直接问他现在开的是哪一条，别拿世界名、时间线名糊弄过去。',
+  /* 用户 2026-09-18 实测：改完之后「修改结果」和「下一句回答」一起冒出来 ——
+     根因是模型把动作回执的汇报与下一个问题的答案写进了同一条回复（回执与他的新提问都是 user 消息，一轮里全答了）。
+     界面已经把回执单独画成一块，模型再复述一遍纯属重复。 */
+  '6. 【动作结果：…】是**你自己动作的系统回执**，界面上已经单独显示了那块结果 —— 不要为它写汇报、' +
+    '也不要复述改成了什么；创作者紧接着问别的就直接答那件事，别把回执的汇报和那个答案混在同一条回复里。',
+  /* 用户 2026-09-18：「能不能让这个 ai 能读到我的过去操作行为」 */
+  '7. 现状里若有【他最近做过的事】，那是**创作者自己动手改的**操作流水（不是你干的；' +
+    '标着「灵框助手代劳」的才是你干的）。可以用它回答「我刚才改了什么」「我改到哪一步了」，' +
+    '别问他做过的事（现状里就有），也别把那些改动说成是你做的。',
 ].join('\n');
 
 let openEl: HTMLElement | null = null;
@@ -83,6 +93,7 @@ async function ensureLoaded(): Promise<void> {
         .map((m: any) => ({ role: m.role, content: m.content } as ChatMsg));
     }
     if (r?.ok) adoptFromDisk(r.memory);
+    if (r?.ok) loadActivity(r.activity);
   } catch {
     /* 读不到就从空开始，不挡对话 */
   }
@@ -90,7 +101,7 @@ async function ensureLoaded(): Promise<void> {
 
 function persist(): void {
   try {
-    void api()?.agentSave?.({ chat: history, memory: getMemory() });
+    void api()?.agentSave?.({ chat: history, memory: getMemory(), activity: recentActivity() });
   } catch {
     /* 落盘失败不该影响这一次对话 */
   }
@@ -242,8 +253,9 @@ function handleWrite(call: ToolCall): void {
     return;
   }
   if (gate === 'allow') {
+    agentActing();
     const r = plan.proposal.apply();
-    history.push({ role: 'user', content: `【动作结果：${call.tool}】${r.note}` });
+    history.push({ role: 'user', content: `【动作结果：${call.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
     setNote(r.note);
     return;
   }
@@ -267,9 +279,11 @@ function onCardClick(e: Event): void {
     setNote('现在是「只读」档，改权限才能落盘', true);
     return;
   }
+  agentActing();
   const r = c.p.apply();
-  c.done = r.note;
-  history.push({ role: 'user', content: `【动作结果：${c.p.tool}】${r.note}` });
+  /* 卡片上只留一句短话：这句长说明下面已经有一块【动作结果】了，同一条话画两遍很吵 */
+  c.done = '已应用';
+  history.push({ role: 'user', content: `【动作结果：${c.p.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
   persist();
   renderMsgs();
   setNote(r.note);
