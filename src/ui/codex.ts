@@ -31,7 +31,7 @@ import { createPropsPanel, type PropsPanel } from './props-panel';
 import { createEvolutionRail, type Rail } from './evolution-rail';
 import { createVaultNotices, type VaultNotices } from './vault-notice';
 import { loadSettings } from './settings';
-import { setAgentFocus } from './agent-context';
+import { setAgentFocus, setAgentFocusLive } from './agent-context';
 import {
   epochOfNodes, frameDiff, nearestVersion, normalizeFrames, patchSummary, statesOf, versionAtNode, type EntityState,
 } from '../store/evolution';
@@ -1774,7 +1774,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     dropGhost();   /* 转场里的幽灵层跟着工具一起收（它还挂在 #cx-body 上） */
     window.removeEventListener('lingkuang-settings', onSettings);
     vaultNotices?.dispose();
-    setAgentFocus(null);   /* 工具切走：助手的「正在编」跟着清掉，否则上下文里挂着一条你看不见的条目 */
+    setAgentFocusLive(false);   /* 工具切走：**不清空**助手的焦点，只降级成「最近在看」——
+                                   否则创作者去看一眼沙盘再问「这个文件」，助手就只剩世界名可说（2026-09-18 用户实测） */
     vaultNotices = null;
     /* 切走工具时把未失焦的正文也结算掉，再销毁 tiptap 实例 */
     if (docEditor) { docEditor.flush(); docEditor.dispose(); docEditor = null; }

@@ -123,16 +123,20 @@ async function main() {
       timeline: t.includes('【当前时间线】') && t.includes('个事件）'),
       node: t.includes('312 王国的建立'),
       setting: t.includes('【设定】共 1 条') && t.includes('银发少女'),
-      focusEnt: t.includes('【正在编·设定】银发少女'),
+      focusEnt: t.includes('【创作者此刻打开的那一条】设定「银发少女」'),
+      /* ⭐ 2026-09-18：创作者问「主要是哪个文件」⇒ 上下文里得真有文件路径可报 */
+      focusFile: t.includes('文件：测试世界观/_设定/角色/银发少女.md'),
+      /* ⭐ 焦点块必须排在【设置】/【当前时间线】**前面**（小模型读到后面就不看了） */
+      focusFirst: t.indexOf('【创作者此刻打开的那一条】') < t.indexOf('【设定】共'),
       fields: t.includes('发色=银白'),
       doc: t.includes('正文：实体自己的正文。'),
     };
   })()`);
   check('★4 焦点小标签 + 模型标签（本地/API · 模型名）',
     ctx1.chip === '正在编：银发少女' && /（本地|API）|(本地|API) · /.test(ctx1.model), { chip: ctx1.chip, model: ctx1.model });
-  check('★5 上下文打包到了世界 / 时间线 / 设定清单 / **正在编那一条**（字段 + 正文）',
-    ctx1.world && ctx1.timeline && ctx1.node && ctx1.setting && ctx1.focusEnt && ctx1.fields && ctx1.doc && ctx1.len > 80,
-    { world: ctx1.world, timeline: ctx1.timeline, node: ctx1.node, setting: ctx1.setting, focusEnt: ctx1.focusEnt, fields: ctx1.fields, doc: ctx1.doc, len: ctx1.len });
+  check('★5 上下文打包到了世界 / 时间线 / 设定清单 / **正在编那一条**（字段 + 正文 + 文件路径，且排在设定清单前）',
+    ctx1.world && ctx1.timeline && ctx1.node && ctx1.setting && ctx1.focusEnt && ctx1.focusFile && ctx1.focusFirst && ctx1.fields && ctx1.doc && ctx1.len > 80,
+    { world: ctx1.world, timeline: ctx1.timeline, node: ctx1.node, setting: ctx1.setting, focusEnt: ctx1.focusEnt, focusFile: ctx1.focusFile, focusFirst: ctx1.focusFirst, fields: ctx1.fields, doc: ctx1.doc, len: ctx1.len });
 
   /* ── ③ ⭐ 换条目：「正在编」跟着换（UI 状态不动数据，靠 lingkuang-agent-focus 事件） ── */
   const nodeClk = await ev(`(() => {
@@ -145,13 +149,58 @@ async function main() {
   const ctx2 = await ev(`(() => {
     const chip = document.querySelector('#lk-agent-focus')?.textContent ?? '';
     const t = document.querySelector('#lk-agent-ctx')?.textContent ?? '';
-    return { chip, focusNode: t.includes('【正在编·事件】312 年 王国的建立'), ent: t.includes('【正在编·设定】银发少女') };
+    return { chip, focusNode: t.includes('【创作者此刻打开的那一条】事件「312 年 王国的建立」'), ent: t.includes('【创作者此刻打开的那一条】设定「银发少女」') };
   })()`);
   check('★6 ⭐ 换到时间线节点：助手的「正在编」与上下文**当场跟着换**（不需要任何数据改动）',
     nodeClk.clicked === true && ctx2.chip === '正在编事件：王国的建立' && ctx2.focusNode === true && ctx2.ent === false,
     { row: nodeClk.title, chip: ctx2.chip, focusNode: ctx2.focusNode, ent: ctx2.ent });
 
+  /* ── ③b ⭐⭐ 2026-09-18 用户实测：「这个 ai 看不到我此时打开的文件」——
+     切到别的工具（去看一眼沙盘）之后，焦点**不许被清空**，只降级成「最近在看」，
+     那条的文件路径仍要留在上下文里；切回工作台再升回「正在编」。 ── */
+  await ev(escKey);
+  await sleep(200);
+  await ev(`document.querySelector('[data-tool="sandbox"]').click(); true`);
+  await sleep(900);
+  await ev(ctrlK);
+  await sleep(400);
+  const away = await ev(`(() => {
+    const chip = document.querySelector('#lk-agent-focus')?.textContent ?? '';
+    const t = document.querySelector('#lk-agent-ctx')?.textContent ?? '';
+    return {
+      chip,
+      keep: t.includes('【创作者此刻打开的那一条】事件「312 年 王国的建立」'),
+      file: t.includes('文件：测试世界观/主线/事件/王国的建立.md'),
+      note: t.includes('现在切到别的功能去了'),
+      noFocus: t.includes('（没有：他没打开任何条目'),
+    };
+  })()`);
+  check('★6b ⭐切到别的工具：焦点**只降级不清空**（chip 变「最近在看」、上下文里那条与它的文件路径仍在）',
+    away.chip === '最近在看：王国的建立' && away.keep === true && away.file === true && away.note === true && away.noFocus === false,
+    away);
+  await ev(escKey);
+  await sleep(200);
+  await ev(`document.querySelector('[data-tool="codex"]').click(); true`);
+  await sleep(1200);
+  await ev(ctrlK);
+  await sleep(400);
+  const back = await ev(`(() => {
+    const chip = document.querySelector('#lk-agent-focus')?.textContent ?? '';
+    const t = document.querySelector('#lk-agent-ctx')?.textContent ?? '';
+    return { chip, backLive: chip.indexOf('正在编') === 0, keep: t.includes('【创作者此刻打开的那一条】'), note: t.includes('现在切到别的功能去了') };
+  })()`);
+  check('★6c 切回工作台 ⇒ 升回「正在编」（降级标记消失）',
+    back.backLive === true && back.keep === true && back.note === false, back);
+  await ev(escKey);
+  await sleep(200);
+  /* ⭐ ★12 的「主区没被重建」判据要拿**当前**的工作台根比 —— ★6b/★6c 刚切过工具，
+     `#cx-root` 本来就是新元素了（换工具会重建工具宿主）。这里重新采一次基线。 */
+  await ev(`(function () { window.__cx = document.querySelector('#cx-root'); return !!window.__cx; })()`);
+
   /* ── ④ 对话历史：从盘上进对话框（seed-agent-chat.cjs 播的两条） ── */
+  /* ⭐ ★6b/★6c 会开关面板，这里先把面板重新呼出来再读（否则读到的是已被移除的容器 ⇒ 假 FAIL） */
+  await ev(ctrlK);
+  await sleep(500);
   const hist = await ev(`(() => {
     const box = document.getElementById('lk-agent-msgs');
     const msgs = [...(box?.querySelectorAll('.lk-agent__msg') ?? [])];

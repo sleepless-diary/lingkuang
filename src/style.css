@@ -974,6 +974,8 @@ body {
   max-width: 190px; overflow: hidden; text-overflow: ellipsis;
 }
 .lk-agent__chip.is-focus { color: var(--accent); border-color: var(--accent); }
+/* 「最近在看」：工作台已切走，焦点降级保留（AI 仍看得见你刚才开的那一条）—— 用中性色，不抢眼 */
+.lk-agent__chip.is-stale { color: var(--fg-2); border-color: var(--border-strong); border-style: dashed; }
 .lk-agent__x {
   width: 24px; height: 24px; flex: none; border: 0; border-radius: var(--radius-sm);
   background: transparent; color: var(--fg-2); font-size: 16px; line-height: 1; cursor: pointer;

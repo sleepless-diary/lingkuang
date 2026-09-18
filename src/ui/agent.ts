@@ -13,7 +13,7 @@
  */
 import { type ChatMsg } from './ai';
 import { agentAsk } from './agent-model';
-import { buildContext, getAgentFocus } from './agent-context';
+import { buildContext, getAgentFocus, isAgentFocusLive } from './agent-context';
 import {
   addMemory, adoptFromDisk, getMemory, memoryPrompt, removeMemory,
   setMemorySink, summarizePrefs, updateMemory,
@@ -37,6 +37,9 @@ const SYS_HEAD = [
   '2. 只依据下面「工作区现状」里给出的信息；没有的就直说没有、并指出可以去哪里补，不要编造设定。',
   '3. 提到设定时优先用现状里的原名与年份，别改名。',
   '4. 沿用下面「创作者偏好」里的习惯（如果有）。',
+  '5. 创作者说「这个 / 这条 / 当前 / 我现在打开的文件 / 这个面板」时，指的就是现状里【创作者此刻打开的那一条】；' +
+    '回答要**点名那一条**（名字 + 它是什么），问文件就报它那一行「文件：」的路径。' +
+    '若那一栏写着「没有」，就直接问他现在开的是哪一条，别拿世界名、时间线名糊弄过去。',
 ].join('\n');
 
 let openEl: HTMLElement | null = null;
@@ -161,7 +164,15 @@ function renderMeta(): void {
   if (chip) chip.textContent = `${cfg.aiMode === 'api' ? 'API' : '本地'} · ${cfg.model}`;
   const f = getAgentFocus();
   const fchip = openEl.querySelector('#lk-agent-focus');
-  if (fchip) fchip.textContent = f ? (f.kind === 'entity' ? `正在编：${f.title}` : `正在编事件：${f.title}`) : '没打开条目';
+  if (fchip) {
+    /* 三态：正在编（工作台在屏幕上）／最近在看（切到别的工具去了，焦点留着降级）／没打开条目 */
+    fchip.textContent = !f
+      ? '没打开条目'
+      : isAgentFocusLive()
+        ? (f.kind === 'entity' ? `正在编：${f.title}` : `正在编事件：${f.title}`)
+        : `最近在看：${f.title}`;
+    fchip.classList.toggle('is-stale', !!f && !isAgentFocusLive());
+  }
 }
 
 function renderCtx(): void {

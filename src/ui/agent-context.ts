@@ -15,7 +15,18 @@ export interface AgentFocus {
   title: string;
 }
 
+/** vault 里的实体根目录名（与 `main.js` 的 `ENTITY_DIR`/`entityPath` 一致）：
+ *  `<世界>/_设定/<类型>/<名字>.md`；节点是 `<世界>/<时间线>/<种类>/<标题>.md`（见 `main.js` 的 `nodePath`）。 */
+const ENTITY_DIR = '_设定';
+
 let focus: AgentFocus | null = null;
+
+/* 「这一条现在还开在屏幕上吗」。2026-09-18 用户实测报的 bug：「这个 ai 看不到我此时打开的文件」——
+   他一问「主要是哪个文件」，助手只答出世界名（它在工作台里明明答得又准又点名）。
+   根因之一：切走工具（比如去看一眼沙盘）时这里被 `setAgentFocus(null)` 清空，
+   于是助手只剩「工作区 / 时间线 / 设定」可依 —— 那点信息只够它说「测试世界观的文件」。
+   现在**不清空、只降级**：焦点留着并标注「他刚才在看这一条，现在切到别的功能去了」。 */
+let live = true;
 
 /** 两条焦点是不是同一条（同 kind/世界/id/名字）。工作上每一次 render 都会上报一次，
  *  内容没变就不该广播 —— 否则助手的上下文预览每 360ms 重画一遍。 */
@@ -25,13 +36,29 @@ function sameFocus(a: AgentFocus | null, b: AgentFocus | null): boolean {
   return a.kind === b.kind && a.world === b.world && a.id === b.id && a.title === b.title;
 }
 
-export function setAgentFocus(f: AgentFocus | null): void {
-  if (sameFocus(focus, f)) return;
-  focus = f;
+function announce(): void {
   /* 广播给助手面板：它的「正在编」小标签与上下文预览要跟着换。
      光靠 store 订阅不够 —— **换条目是 UI 状态，不一定动数据**（点一下左树另一行就不会有 store 通知）。 */
   window.dispatchEvent(new CustomEvent('lingkuang-agent-focus'));
 }
+
+export function setAgentFocus(f: AgentFocus | null): void {
+  /* 工作台真的报了焦点 ⇒ 它就在屏幕上，重新算「现役」 */
+  const nextLive = f ? true : live;
+  if (sameFocus(focus, f) && nextLive === live) return;
+  focus = f;
+  live = nextLive;
+  announce();
+}
+
+/** 工作台从屏幕上撤走（`src/ui/codex.ts` 的 dispose）——**不清空焦点**，只降级为「最近在看」。 */
+export function setAgentFocusLive(v: boolean): void {
+  if (live === v) return;
+  live = v;
+  announce();
+}
+
+export function isAgentFocusLive(): boolean { return live; }
 
 export function getAgentFocus(): AgentFocus | null { return focus; }
 
@@ -92,42 +119,57 @@ function entitiesBlock(ws: Worldset): string {
   return `【设定】共 ${list.length} 条\n${lines.join('\n')}`;
 }
 
-/** 「你正在编」——焦点条目的字段与正文（各自截断，正文给得多一点，那是创作者真正在写的东西） */
+/** 「创作者此刻打开的那一条」——焦点条目的字段与正文（各自截断，正文给得多一点，那是创作者真正在写的东西）。
+ *  ⚠️ 这一块在 `buildContext()` 里排在**第二位**（紧跟【工作区】）：用户 2026-09-18 实测「AI 看不到我打开的文件」，
+ *  除了切工具被清空，另一个原因是它原来排在最后一行 —— 小模型读到后面就不看了。**它就是这条消息的主角，得放前面。** */
 function focusBlock(ws: Worldset): string {
   const f = focus;
   if (!f || f.world !== ws.name) return '';
+  const age = live
+    ? ''
+    : '\n  （他刚才在看这一条，现在切到别的功能去了 —— 他说「这个」多半仍指它，拿不准就先问一句）';
   if (f.kind === 'entity') {
     const e = ws.entities?.[f.id];
     if (!e) return '';
     const tname = ws.entityTypes?.[e.typeId]?.name ?? e.typeId;
     const fields = fieldsOf(e.properties);
     const doc = clip(e.doc, 600);
-    return `【正在编·设定】${e.name}（${tname}）${fields ? '\n  字段：' + fields : ''}${doc ? '\n  正文：' + doc : ''}`;
+    return `【创作者此刻打开的那一条】设定「${e.name}」（${tname}）`
+      + `\n  文件：${ws.name}/${ENTITY_DIR}/${tname}/${e.name}.md`
+      + `${fields ? '\n  字段：' + fields : ''}${doc ? '\n  正文：' + doc : ''}${age}`;
   }
   let node: TimelineNode | undefined;
+  let tlName = '';
   for (const tl of Object.values(ws.timelines ?? {})) {
     node = (tl.nodes ?? []).find((n) => n.id === f.id);
-    if (node) break;
+    if (node) { tlName = tl.name; break; }
   }
   if (!node) return '';
   const fields = fieldsOf(node.properties);
   const doc = clip(node.doc, 600);
-  return `【正在编·事件】${node.year ?? '?'} 年 ${node.title}${node.kind ? '（' + node.kind + '）' : ''}`
+  const kind = node.kind ? node.kind : '事件';
+  return `【创作者此刻打开的那一条】事件「${node.year ?? '?'} 年 ${node.title}」`
+    + `${node.kind && node.kind !== '事件' ? '（' + node.kind + '）' : ''}`
+    + `\n  文件：${ws.name}/${tlName}/${kind}/${node.title}.md`
     + `${node.desc ? '\n  简述：' + clip(node.desc, 200) : ''}`
     + `${fields ? '\n  字段：' + fields : ''}`
-    + `${doc ? '\n  正文：' + doc : ''}`;
+    + `${doc ? '\n  正文：' + doc : ''}${age}`;
 }
 
-/** 打包当前工作区现状（世界 / 时间线 / 设定 / 正在编的那一条），超预算整体截断 */
+/** 助手不知道该看哪一条时，**别让它拿世界名糊弄** —— 直接把「问清是哪一条」写进上下文 */
+const NO_FOCUS = '【创作者此刻打开的那一条】（没有：他没打开任何条目。'
+  + '他说「这个 / 这条 / 当前 / 我打开的文件」时，直接问他指的是哪一条，不要拿世界名或时间线名糊弄）';
+
+/** 打包当前工作区现状（世界 / **此刻打开的那一条** / 时间线 / 设定），超预算整体截断 */
 export function buildContext(store: Store, budget = 4000): string {
   const ws = currentWorld(store);
   if (!ws) return '【工作区】还没有世界观';
   const names = Object.keys(store.data.worldsets ?? {});
   const parts: string[] = [
     `【工作区】当前世界「${ws.name}」（共 ${names.length} 个世界：${names.slice(0, 8).join('、')}）`,
+    focusBlock(ws) || NO_FOCUS,
     timelineBlock(ws, store.activeTimeline),
     entitiesBlock(ws),
-    focusBlock(ws),
   ];
   return clip(parts.filter(Boolean).join('\n'), budget);
 }
