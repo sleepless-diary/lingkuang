@@ -15,6 +15,27 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第三十三轮（2026-09-18）· 上下文分割（用户要求：可分开之前的上下文，但保留系统提示词和记忆）
+
+> 用户原话：「**加一个分割上下文的功能，可分开之前的上下文但是保留系统提示词和记忆**」。
+> 做法 = 会话里插一条**分割线**：线以上的对话**仍然留在 chat.json 里**（能手看手改、能翻回去看），只是**不再发给模型**；
+> 系统提示词（SYS_HEAD + 权限 + 动作协议）、长期记忆（memoryPrompt）、工作区现状（buildContext）都是每次发送**现拼**的，完全不受分割影响。
+
+### 实现
+- src/ui/agent.ts：新增 `type AgentMsg = ChatMsg & { div?: boolean }`（分割线落盘成 `{ role:'system', content:'', div:true }`，所以 chat.json 仍是裸数组）；
+  新增 `export function cutIndex(list)`（最后一条分割线**之后**的下标 —— 渲染与发送**共用它**，免得两处算法漂移）与 `export function sentHistory(list, max = HISTORY_SEND)`（`list.slice(cutIndex(list)).slice(-max)`）；
+  send() 里 `...history.slice(-HISTORY_SEND)` 改成 `...sentHistory(history)`；
+  ⚠️ **ensureLoaded() 的过滤器原来只认 user/assistant，分割线会被读丢**（重开面板就白分割了）⇒ 加 `m.div === true` 分支；
+  renderMsgs() 把线以上的消息包进 `.lk-agent__cutwrap.is-cut`（压暗、不隐藏）并画 `.lk-agent__cut`「上下文分割：以上 N 条不再发给模型（系统提示词与长期记忆照常）」；
+  面板头新增 `#lk-agent-split`（文案在「分割上下文」/「取消分割」之间切），`splitContext()` 插线/摘线后 persist() + renderMsgs()。
+- src/style.css：`.lk-agent__cutwrap.is-cut { opacity: .42 }`、`.lk-agent__cut`（两侧虚线）、`.lk-agent__split`。
+- tools/e2e/agent-panel.cjs：★16（插线、线以上全部标成不再发送、写明条数、`【工作区】` 与记忆区照旧）、★17（落盘 div:true 恰好一条，再点一次能撤销）。**21/21 PASS**。
+
+### ⭐ 三条踩坑
+1. **src/ui/agent.ts 是 CRLF**：node 补丁脚本里用 \n 拼多行 old 会**静默匹配 0 处**（edit 工具不受影响，它按行匹配）。CRLF 文件里的多行替换要用 /\r?\n/ 正则 —— 这一片连着踩了两回。
+2. **一次点击跑了两遍** ⇒ 分割线刚插上就被同一个函数摘掉（实测：chat.json 里明明有 div:true，界面上却什么都没有）。修法 = 接线改成**挂在面板根上的事件委托**（openEl.dataset.splitBound 只接一次），再给 splitContext() 加 **350ms 去抖**兜底；e2e 点「取消分割」前要 sleep(500)（真人也得隔一下）。
+3. **Ctrl+K 是开关** ⇒ e2e 里「先按 Ctrl+K 再找按钮」会随机找不到（前面几步可能已经把面板开着）。改成**轮询到面板真的存在**为止。
+
 ## 第三十二轮（2026-09-18）· 会话人设**复用设定库**（用户实测反馈：主会话有明显倾向）
 
 > 用户原话：「**你是不是给主会话加提示词了，这个 ai 有明显倾向，人设直接复用我们的角色系统，修改人设去设定库里面，会话直接选择人设进行聊天**」。
