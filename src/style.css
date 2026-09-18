@@ -963,8 +963,14 @@ body {
   background: var(--surface); color: var(--fg);
   border-left: 1px solid var(--border-strong);
   box-shadow: -14px 0 34px rgba(0, 0, 0, .26);
-  animation: lk-fade var(--motion-base) var(--ease-standard) both;
+  /* 从右侧滑入 / 向右滑出（用户 2026-09-18）：停靠式面板是"推"出来的抽屉，用位移而不是淡入 ——
+     淡入看着像内容在原地闪一下。JS 侧：入 DOM 后强制重排再加 `.is-in`，关闭时摘掉它。 */
+  transform: translateX(100%);
+  transition: transform var(--motion-base) var(--ease-standard);
 }
+.lk-agent.is-in { transform: translateX(0); }
+/* 滑出途中 DOM 还没摘（要等动画走完才 remove），这段时间里不许再吃到点击 */
+.lk-agent.is-out { pointer-events: none; }
 .lk-agent__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .lk-agent__title { font-size: var(--text-sm); font-weight: 600; color: var(--fg); }
 .lk-agent__chips { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
@@ -1083,3 +1089,16 @@ body {
 .lk-agent__prop-btn.is-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
 .lk-agent__prop-btn.is-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-on); }
 .lk-agent__prop-note { font-size: var(--text-xs); color: var(--muted); }
+
+/* ── 滚动条（用户 2026-09-18：「对话里面的滚动条不要用原生的，或者换一下风格，与我们的风格匹配」）──
+   全应用统一一套：细、圆角、无箭头、无轨道底色，颜色只走 tokens（深 chrome 滑块 + 透明轨道）。
+   实现要点：滑块用 `background-clip: content-box` + 透明边框撑成"细条"——这样视觉上是 4px 的细线，
+   但命中区域仍有 10px 宽（直接写 `width: 4px` 会变得很难拖）。 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong); background-clip: content-box;
+  border: 3px solid transparent; border-radius: var(--radius-pill);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }

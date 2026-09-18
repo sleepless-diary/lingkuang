@@ -54,6 +54,17 @@ async function main() {
     return r.result?.result?.value;
   };
   const agentBtn = `[...document.querySelectorAll('#lk-toolbar .lk-tool-btn')].find((b) => b.dataset.tool === 'agent')`;
+  /** 面板关闭是**演着走**的（先右滑 320ms 再 remove，见 `src/ui/agent.ts` 的 `closeAgentPanel()`）——
+   *  断言「它没了」必须轮询。测试窗口 `LINGKUANG_TEST_WINDOW_NOFOCUS=1` ⇒ hidden ⇒ 定时器被节流到
+   *  ~1s，固定 sleep(300) 会假挂（2026-09-18 实测 ★9/★10/★11 三条一起挂）。 */
+  const waitGone = async (sel, ms = 3000) => {
+    const t0 = Date.now();
+    for (;;) {
+      if (!(await ev(`!!document.getElementById(${JSON.stringify(sel)})`))) return true;
+      if (Date.now() - t0 > ms) return false;
+      await sleep(200);
+    }
+  };
   const ctrlK = `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })); true`;
   const escKey = `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`;
 
@@ -89,11 +100,25 @@ async function main() {
   const opened = await ev(`(() => {
     const p = document.getElementById('lk-agent-panel');
     if (!p) return { exists: false };
-    const r = p.getBoundingClientRect();
     const cs = getComputedStyle(p);
+    /* ⭐ 入场是"从右往左滑"（用户 2026-09-18：从右侧平滑入场）：先读**入场前**的几何 ——
+       .lk-agent 本体是 transform: translateX(100%)，加 .is-in 才回到 0。
+       ⚠️ 测试窗口 hidden ⇒ CSS 过渡不推进（currentTime 恒 0）⇒ 光 sleep 永远量到 -380，
+       必须 getAnimations().forEach(a => a.finish()) 手动推到终态再量。 */
+    const r0 = p.getBoundingClientRect();
+    const offscreen = Math.round(window.innerWidth - r0.right);
+    const trans = cs.transitionProperty + ' ' + cs.transitionDuration;
+    /* ⭐ 「入场前整块在视口外」不能靠量实时几何 —— 窗口可见时 320ms 里它就滑到位了（offscreen=0），
+       窗口被遮住时又永远停在 100%（offscreen=-380）。所以去读 **CSS 里声明的**基础位移：
+       .lk-agent 本体是 transform: translateX(100%)，加 .is-in 才回到 0。 */
+    const baseX = [...document.styleSheets].flatMap((s) => { try { return [...s.cssRules]; } catch { return []; } })
+      .filter((r) => r.selectorText === '.lk-agent').map((r) => r.style.transform)[0] ?? null;
+    p.getAnimations().forEach((a) => a.finish());
+    const r = p.getBoundingClientRect();
     return {
       exists: true, pos: cs.position, inBody: p.parentElement === document.body,
-      right: Math.round(window.innerWidth - r.right), width: Math.round(r.width), height: Math.round(r.height),
+      right: Math.round(window.innerWidth - r.right), offscreen, trans, base: baseX,
+      width: Math.round(r.width), height: Math.round(r.height),
       z: cs.zIndex,
       sameRoot: document.querySelector('#cx-root') === window.__cx,
       mvLen: document.getElementById('lk-module-view').innerHTML.length,
@@ -103,9 +128,11 @@ async function main() {
       input: !!p.querySelector('#lk-agent-input'), send: !!p.querySelector('#lk-agent-send'),
     };
   })()`);
-  check('★1 Ctrl+K 呼出助手：悬浮（fixed、挂 body 上）、**贴右停靠**（右边距 0、宽 380、通高）',
+  check('★1 Ctrl+K 呼出助手：悬浮（fixed、挂 body 上）、**贴右停靠**（右边距 0、宽 380、通高）、且是**从右侧滑入**（入场前整块在视口外）',
     opened.exists === true && opened.pos === 'fixed' && opened.inBody === true
-      && opened.right === 0 && opened.width === 380 && opened.height > 400,
+      && opened.right === 0 && (opened.base === 'translateX(100%)' || opened.base === 'translate(100%)')
+      && opened.trans.indexOf('transform') === 0
+      && opened.width === 380 && opened.height > 400,
     opened);
   check('★2 主区**一动不动**：`#cx-root` 是同一个元素、主区 HTML 没被换、模块视图仍显示、按钮亮着',
     opened.sameRoot === true && opened.mvLen === pre.mvLen && opened.mvShown === true && opened.active === true,
@@ -169,14 +196,19 @@ async function main() {
     const t = document.querySelector('#lk-agent-ctx')?.textContent ?? '';
     return {
       chip,
-      keep: t.includes('【创作者此刻打开的那一条】事件「312 年 王国的建立」'),
+      /* ⭐ 2026-09-18 用户实测：「这个 ai 说我一直停留在同一个文件」——
+         降级之后标题**不许再自称「此刻打开的那一条」**，改称「最近打开过的那一条」；
+         并且上下文里必须有一行说清他此刻人在哪个界面（★6b-view）。 */
+      keep: t.includes('【创作者最近打开过的那一条】事件「312 年 王国的建立」'),
       file: t.includes('文件：测试世界观/主线/事件/王国的建立.md'),
-      note: t.includes('现在切到别的功能去了'),
+      note: t.includes('他刚才看过'),
+      view: t.includes('【创作者此刻在哪】界面：世界沙盘'),
       noFocus: t.includes('（没有：他没打开任何条目'),
     };
   })()`);
-  check('★6b ⭐切到别的工具：焦点**只降级不清空**（chip 变「最近在看」、上下文里那条与它的文件路径仍在）',
-    away.chip === '最近在看：王国的建立' && away.keep === true && away.file === true && away.note === true && away.noFocus === false,
+  check('★6b ⭐切到别的工具：焦点**只降级不清空**（chip 变「最近在看」、标题改「最近打开过的那一条」、那条与文件路径仍在、并标明他此刻在沙盘）',
+    away.chip === '最近在看：王国的建立' && away.keep === true && away.file === true && away.note === true
+      && away.view === true && away.noFocus === false,
     away);
 
   /* ── ③b-2 ⭐⭐ 2026-09-18 用户第二条：「时间轴面板也要让它能看到我在哪个文件」
@@ -203,12 +235,13 @@ async function main() {
       focusNode: t.includes('【创作者此刻打开的那一条】事件「312 年 王国的建立」'),
       file: t.includes('文件：测试世界观/主线/事件/王国的建立.md'),
       place: t.includes('在哪：世界沙盘的时间线上'),
-      note: t.includes('现在切到别的功能去了'),
+      note: t.includes('他刚才看过'),
+      view: t.includes('【创作者此刻在哪】界面：世界沙盘'),
     };
   })()`);
-  check('★6d ⭐沙盘上点开一个事件：助手也认（chip 升回「正在编事件」、上下文标「在哪：世界沙盘的时间线上」、降级标记消失）',
+  check('★6d ⭐沙盘上点开一个事件：助手也认（chip 升回「正在编事件」、上下文标「在哪：世界沙盘的时间线上」、界面行也说沙盘、降级标记消失）',
     tlClk.clicked === true && sandboxFocus.chip === '正在编事件：王国的建立' && sandboxFocus.focusNode === true
-      && sandboxFocus.file === true && sandboxFocus.place === true && sandboxFocus.note === false,
+      && sandboxFocus.file === true && sandboxFocus.place === true && sandboxFocus.view === true && sandboxFocus.note === false,
     { id: tlClk.id, ...sandboxFocus });
 
   await ev(escKey);
@@ -220,10 +253,10 @@ async function main() {
   const back = await ev(`(() => {
     const chip = document.querySelector('#lk-agent-focus')?.textContent ?? '';
     const t = document.querySelector('#lk-agent-ctx')?.textContent ?? '';
-    return { chip, backLive: chip.indexOf('正在编') === 0, keep: t.includes('【创作者此刻打开的那一条】'), note: t.includes('现在切到别的功能去了'), place: t.includes('在哪：设定库工作台') };
+    return { chip, backLive: chip.indexOf('正在编') === 0, keep: t.includes('【创作者此刻打开的那一条】'), note: t.includes('他刚才看过'), place: t.includes('在哪：设定库工作台'), view: t.includes('【创作者此刻在哪】界面：设定库') };
   })()`);
-  check('★6c 切回工作台 ⇒ 升回「正在编」（降级标记消失、位置说回「设定库工作台」）',
-    back.backLive === true && back.keep === true && back.note === false && back.place === true, back);
+  check('★6c 切回工作台 ⇒ 升回「正在编」（降级标记消失、位置说回「设定库工作台」、界面行说回设定库）',
+    back.backLive === true && back.keep === true && back.note === false && back.place === true && back.view === true, back);
   await ev(escKey);
   await sleep(200);
   /* ⭐ ★12 的「主区没被重建」判据要拿**当前**的工作台根比 —— ★6b/★6c 刚切过工具，
@@ -263,25 +296,25 @@ async function main() {
 
   /* ── ⑥ 三种开关：Esc / Ctrl+K / 左栏按钮 ── */
   await ev(escKey);
-  await sleep(300);
+  const escGone = await waitGone('lk-agent-panel');
   const byEsc = await ev(`({ panel: !!document.getElementById('lk-agent-panel'), active: ${agentBtn}.classList.contains('is-active') })`);
-  check('★9 Esc 关闭面板，左栏按钮高亮同步熄灭', byEsc.panel === false && byEsc.active === false, byEsc);
+  check('★9 Esc 关闭面板（滑出后摘掉 DOM），左栏按钮高亮同步熄灭', escGone === true && byEsc.panel === false && byEsc.active === false, byEsc);
 
   await ev(ctrlK);
   await sleep(300);
   const again = await ev(`!!document.getElementById('lk-agent-panel')`);
   await ev(ctrlK);
-  await sleep(300);
+  const kGone = await waitGone('lk-agent-panel');
   const toggled = await ev(`!!document.getElementById('lk-agent-panel')`);
-  check('★10 Ctrl+K 是开关（再按一次关掉，不是"再开一层"）', again === true && toggled === false, { again, toggled });
+  check('★10 Ctrl+K 是开关（再按一次关掉，不是"再开一层"）', again === true && kGone === true && toggled === false, { again, kGone, toggled });
 
   await ev(`${agentBtn}.click(); true`);
   await sleep(300);
   const byBtn = await ev(`!!document.getElementById('lk-agent-panel')`);
   await ev(`${agentBtn}.click(); true`);
-  await sleep(300);
+  const btnGone = await waitGone('lk-agent-panel');
   check('★11 左栏「助手」按钮同样能开关（面板型工具，与设置同一套机制）',
-    byBtn === true && (await ev(`!!document.getElementById('lk-agent-panel')`)) === false);
+    byBtn === true && btnGone === true && (await ev(`!!document.getElementById('lk-agent-panel')`)) === false, { byBtn, btnGone });
 
   /* ── ⑦ 同屏只有一个面板：`src/tools/registry.ts` 只有一格 `disposePanel`，开第二个会 dispose 掉第一个
      （面板型工具的既有设计 —— 设置本来就是全屏遮罩，不该跟别的挤在一起）。
@@ -290,6 +323,9 @@ async function main() {
   await sleep(300);
   const agentFirst = await ev(`!!document.getElementById('lk-agent-panel')`);
   await ev(`document.querySelector('[data-tool="settings"]').click(); true`);
+  /* ⭐ 助手让位是**演着走**的（右滑 320ms 才 remove DOM）⇒ 必须轮询等它真没了，
+     否则这里会读到"助手还在"而假挂（同 ★9/★10/★11）。 */
+  const agentGone = await waitGone('lk-agent-panel');
   await sleep(400);
   const swapped = await ev(`({
     agent: !!document.getElementById('lk-agent-panel'),
@@ -305,10 +341,10 @@ async function main() {
     settings: !!document.getElementById('lk-settings-panel'),
     sameRoot: document.querySelector('#cx-root') === window.__cx,
   })`);
-  check('★12 面板只有一格：开设置 ⇒ 助手让位；关设置后主区没动、助手还能再呼出',
-    agentFirst === true && swapped.agent === false && swapped.settings === true && swapped.sameRoot === true
+  check('★12 面板只有一格：开设置 ⇒ 助手让位（滑出后 DOM 也摘掉）；关设置后主区没动、助手还能再呼出',
+    agentFirst === true && agentGone === true && swapped.agent === false && swapped.settings === true && swapped.sameRoot === true
       && reOpen.agent === true && reOpen.settings === false && reOpen.sameRoot === true,
-    { agentFirst, swapped, reOpen });
+    { agentFirst, agentGone, swapped, reOpen });
 
   /* ── ⑧ 助手读得到「他最近做过的事」（操作流水：`src/ui/agent-activity.ts`）──
      用户 2026-09-18：「能不能让这个 ai 能读到我的过去操作行为」。

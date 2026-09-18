@@ -15,6 +15,24 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第三十轮（2026-09-18）· 助手把「最近看过」当成「正在看」（**用户实测报的 bug**）+ 面板右侧滑入滑出 + 全应用滚动条
+
+> 用户原话：「**这个 ai 说我一直停留在同一个文件，修一下**，顺便给左侧的 ai 工具加个对话，还有我希望这个面板入场时是从右侧平滑入场，出场时也是向右平滑出场，对话里面的滚动条不要用原生的，或者换一下风格，与我们的风格匹配」。
+> 本片做 ①（本条）+ ③（滑入滑出）+ ④（滚动条）；②（AI 工具多会话）另起一片。
+
+### 已修复
+- [x] **助手断定「你还在看 X」**。证据 = `%APPDATA%\lingkuang\agent\chat.json` 共 37 条：用户问「哪个文件」→ 它答「艾德温·霜冠」；用户「你看错了，不是这个界面」→ 仍答同一条；用户「现在呢」→ **一字不改又答一遍**。根因两条：
+  - 降级（`live = false`）只追加一句「他刚才在看这一条…」，**标题仍写着【创作者此刻打开的那一条】** ⇒ 小模型读成「他现在还在看」；
+  - 上下文里**根本没有「他此刻在哪个工具界面」这一维** ⇒ 它没依据知道人已经切走了。
+  修法：`src/ui/agent-context.ts` 新增 `setAgentView(name: string)` / `getAgentView()` + `viewBlock()`（`【创作者此刻在哪】界面：<工具名>`，**排在【工作区】之后、焦点之前**）；`focusBlock()` 的标题按 live 分叉（`【创作者此刻打开的那一条】` / `【创作者最近打开过的那一条】`）、降级文案改成「这一条**不是**他此刻在看的…要先看上面那行【创作者此刻在哪】」；`NO_FOCUS` 尾巴补「也不要把【他最近做过的事】里的东西当成他此刻在看的东西」。工具名上报点 = `src/tools/registry.ts` 的 `openTool()`（`setAgentView(tool.name)`；**面板型工具不报**，因为它不换主区）+ `src/ui/shell.ts` 的沙盘分支（沙盘不走 `openTool`，自己 `setAgentView('世界沙盘')`）；`src/ui/agent.ts` 的 `SYS_HEAD` 规则 5 补「先看【创作者此刻在哪】那一行；若焦点栏写的是【创作者最近打开过的那一条】，说明他已经切走了，不许说『你正在看 / 你还停留在这一条』」。
+- [x] **助手面板从右侧平滑入场 / 向右平滑出场**（用户 ③）：`.lk-agent` 本体 `transform: translateX(100%)` + `transition: transform var(--motion-base) var(--ease-standard)`；打开时 `document.body.appendChild` 后 `void el.offsetWidth` 强制重排再加 `.is-in` → `translateX(0)`（不加就会把两次样式变更合并、看不到过渡）；关闭时摘 `.is-in`、加 `.is-out`（`pointer-events:none` —— 滑出途中 `isAgentPanelOpen()` 已是 false 但 DOM 还在，不许再被点到），`transitionend`（`ev.target === el && ev.propertyName === 'transform'`）后 `remove()`，兜底 `setTimeout(..., motionReduced() ? 0 : 420)`（隐藏窗口里定时器被节流到 ~1s，两次 drop 幂等）。
+- [x] **全应用滚动条换细窄圆角**（用户 ④）：`src/style.css` 末尾新增 `::-webkit-scrollbar`（10px）/ `::-webkit-scrollbar-thumb`（`background: var(--border-strong)` + `background-clip: content-box` + `border: 3px solid transparent` + `border-radius: var(--radius-pill)` ⇒ 视觉 4px 细条、命中区仍 10px；hover 用 `--muted`）/ `::-webkit-scrollbar-track`（透明）/ `::-webkit-scrollbar-corner`。颜色只走 tokens、无黄色系，全应用一次生效。
+
+### 测试
+- `tools/e2e/agent-panel.cjs` **19/19**。新增/改动：★6b/★6d 断言 `【创作者此刻在哪】界面：世界沙盘`、★6c 断言界面不再是沙盘；★6b/★6d 的 `note` 改认新文案 `他刚才看过`；★1 新增「从右侧滑入」判据（读 CSSOM 里 `.lk-agent` 声明的 `transform`（`translateX(100%)` 被规范化成 `translate(100%)`）+ `transition` 含 `transform`，终态几何靠 `getAnimations().forEach(a => a.finish())` 推 —— hidden 窗口里 CSS 过渡不推进）；★9/★10/★11/★12 从固定 `sleep(300)` 改成轮询 `waitGone(sel)`。
+- A/B 判别力（`git stash push -m ab-focus-view-20260918 -- src/` → `npx vite build` → 干净实例重跑）：HEAD 构建 **15/19**，挂的正好是本片新能力 ★1（无 transform、过渡是 `all 0s`）/★6b/★6c/★6d（没有界面行）；`stash pop` + 重建后 19/19。
+- ⭐ 两条测试铁律（本轮踩到）：① **每个套件跑前必须重起干净实例** —— 在同一个已被跑过的实例上连跑第二遍，残留状态会造出一大片假挂（实测 ★0 `panel:true`、★5 `fields:false`、★6 `chip:""`、★15 `actN:null`）；② **`.cjs` 里反引号模板内部的注释不能写反引号**（会闭合模板 ⇒ `SyntaxError: missing ) after argument list`，`node --check` 才拦得住）。
+
 ## 第二十九轮（2026-09-18）· 助手：回执不叠话 + 记得你最近动过什么 + 沙盘也报焦点（**用户实测报的 bug + 两条要求**）
 
 > 用户原话：「**修改后正文和下一句回答一起出来了**，还有**能不能让这个 ai 能读到我的过去操作行为**，

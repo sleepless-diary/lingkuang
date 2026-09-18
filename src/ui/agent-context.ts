@@ -66,6 +66,20 @@ export function isAgentFocusLive(): boolean { return live; }
 
 export function getAgentFocus(): AgentFocus | null { return focus; }
 
+/* 「他此刻在哪个界面」。用户 2026-09-18 实测：他明明切去了别的功能，问「哪个文件」时助手
+   还是一口咬定「你正在看艾德温·霜冠」，连问两次都不改口 —— 因为上下文里**根本没有界面这一维**，
+   焦点降级那句「他刚才在看这一条」反被它读成「他现在还在看」。
+   界面名由 `src/tools/registry.ts` 的 `openTool()`（工具名）与 `src/ui/shell.ts` 的沙盘分支上报。 */
+let view = '';
+
+export function setAgentView(name: string): void {
+  if (view === name) return;
+  view = name;
+  announce();
+}
+
+export function getAgentView(): string { return view; }
+
 /** 单行压平 + 截断（模型不需要保留排版，反而浪费 token） */
 function clip(s: string | null | undefined, n: number): string {
   const t = (s ?? '').replace(/\s+/g, ' ').trim();
@@ -129,9 +143,12 @@ function entitiesBlock(ws: Worldset): string {
 function focusBlock(ws: Worldset): string {
   const f = focus;
   if (!f || f.world !== ws.name) return '';
+  /* 降级时标题也得换掉：还写「此刻打开的那一条」，模型会当成「他现在就在看」（用户实测连问两次都不改口） */
+  const head = live ? '【创作者此刻打开的那一条】' : '【创作者最近打开过的那一条】';
   const age = live
     ? ''
-    : '\n  （他刚才在看这一条，现在切到别的功能去了 —— 他说「这个」多半仍指它，拿不准就先问一句）';
+    : '\n  （这一条**不是**他此刻在看的：他刚才看过，随后切去了别的功能 —— 他说「这个」多半仍指它，'
+      + '但要先看上面那行【创作者此刻在哪】，拿不准就问他一句）';
   /* 同一个节点，在沙盘时间线上点开和在设定库里点开，助手该说的话不一样（用户 2026-09-18 要求时间轴也上报） */
   const place = f.view === 'timeline'
     ? '\n  在哪：世界沙盘的时间线上（他刚点开这条看）'
@@ -142,7 +159,7 @@ function focusBlock(ws: Worldset): string {
     const tname = ws.entityTypes?.[e.typeId]?.name ?? e.typeId;
     const fields = fieldsOf(e.properties);
     const doc = clip(e.doc, 600);
-    return `【创作者此刻打开的那一条】设定「${e.name}」（${tname}）`
+    return `${head}设定「${e.name}」（${tname}）`
       + `\n  文件：${ws.name}/${ENTITY_DIR}/${tname}/${e.name}.md`
       + `${place}`
       + `${fields ? '\n  字段：' + fields : ''}${doc ? '\n  正文：' + doc : ''}${age}`;
@@ -157,7 +174,7 @@ function focusBlock(ws: Worldset): string {
   const fields = fieldsOf(node.properties);
   const doc = clip(node.doc, 600);
   const kind = node.kind ? node.kind : '事件';
-  return `【创作者此刻打开的那一条】事件「${node.year ?? '?'} 年 ${node.title}」`
+  return `${head}事件「${node.year ?? '?'} 年 ${node.title}」`
     + `${node.kind && node.kind !== '事件' ? '（' + node.kind + '）' : ''}`
     + `\n  文件：${ws.name}/${tlName}/${kind}/${node.title}.md`
     + `${place}`
@@ -168,7 +185,15 @@ function focusBlock(ws: Worldset): string {
 
 /** 助手不知道该看哪一条时，**别让它拿世界名糊弄** —— 直接把「问清是哪一条」写进上下文 */
 const NO_FOCUS = '【创作者此刻打开的那一条】（没有：他没打开任何条目。'
-  + '他说「这个 / 这条 / 当前 / 我打开的文件」时，直接问他指的是哪一条，不要拿世界名或时间线名糊弄）';
+  + '他说「这个 / 这条 / 当前 / 我打开的文件」时，直接问他指的是哪一条，不要拿世界名或时间线名糊弄，'
+  + '也不要把【他最近做过的事】里的东西当成他此刻在看的东西）';
+
+/** 「他此刻在哪个界面」——单独一条、排在【工作区】之后：光有焦点不够，
+ *  模型得先知道他现在人在哪个工具里，才不会把「最近打开过的」说成「你正在看」。 */
+function viewBlock(): string {
+  if (!view) return '';
+  return `【创作者此刻在哪】界面：${view}`;
+}
 
 /** 打包当前工作区现状（世界 / **此刻打开的那一条** / 时间线 / 设定 / **他最近做过的事**），超预算整体截断 */
 export function buildContext(store: Store, budget = 4000): string {
@@ -177,6 +202,7 @@ export function buildContext(store: Store, budget = 4000): string {
   const names = Object.keys(store.data.worldsets ?? {});
   const parts: string[] = [
     `【工作区】当前世界「${ws.name}」（共 ${names.length} 个世界：${names.slice(0, 8).join('、')}）`,
+    viewBlock(),
     focusBlock(ws) || NO_FOCUS,
     /* 他最近改过什么（用户 2026-09-18：「能不能让这个 ai 能读到我的过去操作行为」）。
        排在焦点之后：先知道他在看哪一条，再看他刚才动过什么，顺序反了他会以为流水是当下这一条。 */

@@ -1,7 +1,7 @@
 /** 灵框 · 工具注册表（工具栏）——模块 = 大视图（灵感/编辑器/AI…） */
 import type { Store } from '../store/store';
 import { cascadeIn } from '../ui/motion';
-import { setAgentFocusLive } from '../ui/agent-context';
+import { setAgentFocusLive, setAgentView } from '../ui/agent-context';
 export interface Tool {
   id: string;
   name: string;
@@ -69,6 +69,9 @@ export function openTool(id: string, host: HTMLElement, store?: Store): void {
      「这个」的最可能所指，而且切走再切回来要能接上，见 docs/BUGS.md 第二十八轮）。
      注意：各工具自己渲染时会再 `setAgentFocus(...)` 把 live 拉回 true，所以这里不会误伤。 */
   setAgentFocusLive(false);
+  /* 只降级焦点不够：模型还得知道**人去了哪个界面**，否则它继续把「最近打开过的那一条」
+     说成「你正在看这个文件」（用户 2026-09-18：「这个 ai 说我一直停留在同一个文件」）。 */
+  setAgentView(tool.name);
   disposeCurrent?.();
   disposeCurrent = null;
   host.innerHTML = '';               /* 摘掉上一格（连同那个工具的 DOM） */

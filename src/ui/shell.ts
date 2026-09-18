@@ -11,7 +11,7 @@ import { confirmDialog, promptDialog } from './confirm';
 import { currentWorld } from '../store/store';
 import { renderNodeForm } from './node-form';
 import { staggerIn } from './motion';
-import { setAgentFocus } from './agent-context';
+import { setAgentFocus, setAgentView } from './agent-context';
 
 export function renderShell(store: Store, host: HTMLElement): void {
   registerAllTools();
@@ -257,6 +257,8 @@ function renderToolbar(store: Store): void {
         /* 这条分支不走 openTool，得自己结算上一个工具的清理函数：
            否则「编辑器 → 世界沙盘」会把 tiptap 实例 + 订阅 + 全局监听留在后台。 */
         disposeCurrentTool();
+        /* 沙盘不走 openTool，界面名得自己上报（助手据此知道他现在人在沙盘里） */
+        setAgentView('世界沙盘');
         if (moduleView) { moduleView.style.display = 'none'; moduleView.innerHTML = ''; }
         if (toolHost) { toolHost.style.display = ''; toolHost.innerHTML = ''; }
         if (right) right.style.display = '';

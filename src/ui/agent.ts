@@ -21,6 +21,7 @@ import {
 } from './agent-memory';
 import { PERM_HINT, PERM_LABEL, gateWrite, getAgentPerm, permissionPrompt, setAgentPerm } from './agent-perm';
 import { isWriteTool, looksLikeToolJson, parseToolCall, planWrite, runReadTool, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
+import { motionReduced } from './motion';
 import { isImeEnter } from './keys';
 import { escapeHtml } from './html';
 import { loadSettings, type AgentPerm } from './settings';
@@ -40,7 +41,12 @@ const SYS_HEAD = [
   '4. 沿用下面「创作者偏好」里的习惯（如果有）。',
   '5. 创作者说「这个 / 这条 / 当前 / 我现在打开的文件 / 这个面板」时，指的就是现状里【创作者此刻打开的那一条】；' +
     '回答要**点名那一条**（名字 + 它是什么），问文件就报它那一行「文件：」的路径。' +
-    '若那一栏写着「没有」，就直接问他现在开的是哪一条，别拿世界名、时间线名糊弄过去。',
+    '若那一栏写着「没有」，就直接问他现在开的是哪一条，别拿世界名、时间线名糊弄过去。' +
+    /* 用户 2026-09-18 实测：助手被纠正「你看错了，不是这个界面」之后，仍连着两轮答「你正在看 XX」——
+       根因是上下文里只有「最近打开过的那一条」，没有任何「他此刻在哪个界面」的信息。 */
+    '先看现状里【创作者此刻在哪】那一行写的界面名 —— 那才是他现在人在的地方。' +
+    '若焦点那一栏写的是【创作者最近打开过的那一条】，说明**他已经切走了**：不许说「你正在看 / 你还停留在这一条」，' +
+    '要么按【创作者此刻在哪】回答，要么直接问他现在指的是哪一条。',
   /* 用户 2026-09-18 实测：改完之后「修改结果」和「下一句回答」一起冒出来 ——
      根因是模型把动作回执的汇报与下一个问题的答案写进了同一条回复（回执与他的新提问都是 user 消息，一轮里全答了）。
      界面已经把回执单独画成一块，模型再复述一遍纯属重复。 */
@@ -377,7 +383,20 @@ async function summarize(): Promise<void> {
 /* ── 开 / 关 ──────────────────────────────────────────────────────── */
 export function closeAgentPanel(): void {
   if (!openEl) return;
-  openEl.remove();
+  const el = openEl;
+  /* 向右滑出（用户 2026-09-18：「出场时也是向右平滑出场」）：先摘掉 .is-in 让它滑回去，
+     动画走完再 remove —— 直接 remove 会"啪"地消失，剩下的状态清理照旧立刻做。
+     ⚠️ 滑出期间 `isAgentPanelOpen()` 已经是 false，但 DOM 还在 ⇒ 必须 `pointer-events:none`
+     （`.is-out`），否则那 300ms 里面板上的按钮还能被点到。
+     ⚠️ 兜底定时器给 420ms 而不是 320ms：隐藏窗口（测试实例）里定时器被节流到 ~1s，
+     真机上 transitionend 会先到（那时就摘掉了），两者都摘一次是幂等的。 */
+  el.classList.remove('is-in');
+  el.classList.add('is-out');
+  const drop = (): void => { el.remove(); };
+  el.addEventListener('transitionend', (ev) => {
+    if (ev.target === el && ev.propertyName === 'transform') drop();
+  }, { once: true });
+  window.setTimeout(drop, motionReduced() ? 0 : 420);
   openEl = null;
   store = null;
   draft = false;
@@ -431,6 +450,10 @@ export function openAgentPanel(s: Store): () => void {
     '</div>';
   document.body.appendChild(el);
   openEl = el;
+  /* 从右侧滑入：以"滑出位"（CSS 里 `.lk-agent` 的 translateX(100%)）入 DOM，下一帧再上 .is-in。
+     中间必须强制重排（读 offsetWidth），否则浏览器把两次样式变更合并成一次、根本看不到过渡。 */
+  void el.offsetWidth;
+  el.classList.add('is-in');
   setMemorySink(persist);
 
   /* Esc 关闭 + 跟着 store 变（创作者一边聊一边改设定，焦点与上下文会变） */
