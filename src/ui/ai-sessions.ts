@@ -200,10 +200,19 @@ export function sessionPrompt(s: AiSession | null = activeSession(), personaText
   /* ⚠️ 2026-09-18 用户实测反馈：「**你是不是给主会话加提示词了，这个 ai 有明显倾向**」——
      所以主会话**一句人设都不加**（原来那句「他在写世界观，你直接帮他」正是倾向的来源）。
      其余角色也只说「你在扮演谁」，人设正文一律来自设定库（`personaText` 由界面现取）。 */
-  if (s.role === 'director') parts.push('你是这次会话的主控，负责调度剧情走向。');
-  else if (s.role === 'character') parts.push('你扮演下面这条角色。');
-  else if (s.role === 'perspective') parts.push('你从下面这个视角说话。');
-  if (personaText) parts.push(personaText);
+  /* ⭐ 用户 2026-09-18 复看：「**为什么不选人设也是这样子**」—— 原来**不选人设也照样发一句
+     「你扮演下面这条角色。」**（后面什么都没有），那等于明确邀请模型自己编一个人设
+     （qwen3:14b 当场就长出「紫色烟雾里的星辰旅人」那一套）。现在**没有人设就一句角色框架都不发**。 */
+  if (personaText) {
+    if (s.role === 'director') parts.push('你是这次会话的主控，负责调度剧情走向。');
+    else if (s.role === 'character') parts.push('你扮演下面这条角色。');
+    else if (s.role === 'perspective') parts.push('你从下面这个视角说话。');
+    parts.push(personaText);
+  } else {
+    /* 没选人设 = 普通聊天。模型自己爱演（那是它的训练倾向），这里给一条反向约束；
+       想让它自由发挥就把这行删掉。 */
+    parts.push('这次会话没有指定人设：按普通写作助手回答，不要扮演角色、不要写旁白或动作描写。');
+  }
   for (const l of linkedSessions(s)) {
     const tail = l.history.slice(-LINK_TAIL);
     if (!tail.length) continue;
