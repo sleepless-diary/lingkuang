@@ -63,6 +63,11 @@ console.log('  ' + FORMATS);
 /* 顺带播一条**有正文的实体**：用来验证「节点页签 → 实体页签」切换时正文框不会串文档
    （两个页签各有一份不同的正文，才测得出来） */
 const d = JSON.parse(fs.readFileSync(DATA, 'utf8'));
+/* ⚠️ 全新目录上这个世界的 key 还没写进 worldbuilding.json —— 世界是**第二次启动**从 vault
+   目录里扫出来的，而本脚本要在那之前播实体。老写法直接 `w.entities = …` 会同 TypeError
+   （`Cannot set properties of undefined (setting 'entities')`），"起一次应用 → 播种 → 再起"
+   这条干净流程就在这一步断掉。按需建出来即可（形状与 `src/store/actions.ts` 的 addWorld 一致）。 */
+if (!d.worldsets[WS]) d.worldsets[WS] = { name: WS, timelines: {}, order: [], docs: {} };
 const w = d.worldsets[WS];
 if (process.env.LK_SEED_ORDER === '1') {
   const leaps = (y) => Math.floor((y + 3) / 4) - Math.floor((y + 99) / 100) + Math.floor((y + 399) / 400);

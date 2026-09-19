@@ -1,6 +1,23 @@
-/** 新建节点表单（常驻工具）——标题 + 时间文本（支持 "312" / "312年7月"）+ 类型 */
+/** **新建节点面板**（专用创建面板）——名字 + 年份 + 种类 + 模板字段 + 创建/取消
+ *
+ *  它跟 `src/ui/detail.ts` 的**节点信息面板**是两件事，刻意不复用：
+ *   · 信息面板回答「这个**已经存在**的节点长什么样」（标题 / 时间 / 类型 / 精度 / 描述 /
+ *     因果 / 正文 / 删除，还有演变那一套）；
+ *   · 这个面板回答「新节点该是什么」—— 身份三项（名字 / 年份 / 种类）+ 该种类的**模板字段**，
+ *     一次填完按「创建」落库。
+ *
+ *  用户 2026-09-19：「给创建节点做专门适配（创建面板要有名字/年份/种类/模板字段 + 创建/取消，
+ *  不要复用节点信息面板，现在连创建按钮都没有）」。此前那一版是「点＋节点就立刻建一个叫
+ *  「新节点」的节点、再打开信息面板」——名字是占位的、种类没得选、模板字段也来不及填，
+ *  而且整个面板里根本没有「创建」这个动作可点。
+ *
+ *  模板字段复用 `src/ui/fields.ts` 的 `fieldRow()`（与信息面板 / 设定库工作台同一套控件）。
+ *  已填的值先攒在本地的 `props` 字典里、**换种类时只重画控件不丢值**，等「创建」时随
+ *  `addNode(..., { properties })` 一次落库（`src/store/actions.ts` 的 addNode 是 `...node`
+ *  透传，properties 原样进 store；空值由 `src/main.ts` 的 `ensureAllFormatFields` 补默认值）。
+ */
 import type { Store } from '../store/store';
-import type { Timeline } from '../store/types';
+import type { Timeline, FormatField, PropValue } from '../store/types';
 import { PRECISION_LABELS } from '../store/types';
 import type { Calendar } from '../calendar';
 import { buildYearTable, calendarOf, fromEpoch } from '../calendar';
@@ -8,6 +25,7 @@ import { addNode } from '../store/actions';
 import { isImeEnter } from './keys';
 import { escapeHtml } from './html';
 import { enter } from './motion';
+import { fieldRow } from './fields';
 
 /** 公历平均年宽（365.25 天）。与 `src/ui/timeline.ts:100` 的坐标轴口径一致：
  *  坐标轴是公历 epoch 秒，只有「epoch 秒 → 年」的粗估才用它。 */
@@ -100,15 +118,19 @@ function fmtCursorTime(cal: Calendar, tl: Timeline | undefined, epoch: number): 
   return s;
 }
 
+/* 这个面板的字段不多，样式就写在两处常量里，别在模板里散着调 */
+const LBL = 'font-size:var(--text-xs);color:var(--fg-2);';
+const INP = 'background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;font-family:inherit;';
+
 export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tlName: string): void {
-  /* 默认时间 = 当前时间指针（world.timeCursor，epoch 秒）→ 该时间线历法下的人类可读文本 */
+  /* 默认年份 = 当前时间指针（world.timeCursor，epoch 秒）→ 该时间线历法下的人类可读文本 */
   const ws = store.data.worldsets[store.activeWorld];
   const tl = ws?.timelines[tlId];
   const cal = calendarOf(tl ?? {});
   const cursor = ws?.timeCursor;
-  const defaultTime = cursor !== null && cursor !== undefined ? fmtCursorTime(cal, tl, cursor) : '';
+  const defaultYear = cursor !== null && cursor !== undefined ? fmtCursorTime(cal, tl, cursor) : '';
   /* 种类（模板）：决定这个节点有哪些属性字段，也决定它在 vault 里落进哪个文件夹。
-     以前这个表单完全没有入口 → 所有节点都只能是「事件」，角色/地点/物品/组织那几套模板用不上。 */
+     以前这个表单完全没有入口 → 所有节点都只能是「事件」。 */
   const formats = store.data.formats ?? {};
   const kindList = Object.keys(formats).length ? Object.keys(formats) : ['事件'];
   const defKind = kindList.includes('事件') ? '事件' : kindList[0];
@@ -116,76 +138,109 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
     .map((k) => `<option value="${escapeHtml(k)}"${k === defKind ? ' selected' : ''}>${escapeHtml(k)}（${(formats[k]?.fields ?? []).length} 个字段）</option>`)
     .join('');
   host.innerHTML = `
-    <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
-      <div style="font-size:15px;font-weight:600;color:var(--fg);">添加节点 · ${tlName}</div>
-      <div style="display:flex;flex-direction:column;gap:4px;">
-        <label style="font-size:var(--text-xs);color:var(--fg-2);">标题</label>
-        <input id="nf-title" type="text" placeholder="节点标题" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;"/>
+    <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;user-select:none;">
+      <div>
+        <div style="font-size:15px;font-weight:600;color:var(--fg);">新建节点</div>
+        <div style="font-size:var(--text-xs);color:var(--fg-2);margin-top:2px;">建在「${escapeHtml(tlName)}」</div>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;">
-        <label style="font-size:var(--text-xs);color:var(--fg-2);">时间（默认=当前指示器）</label>
-        <input id="nf-time" type="text" value="${defaultTime}" placeholder="312 或 312年7月/7月15日 或 312-7-15 或 312年7月15日9时" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;"/>
+        <label style="${LBL}" for="nf-title">名字</label>
+        <input id="nf-title" type="text" placeholder="节点名字" style="${INP}"/>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <label style="${LBL}" for="nf-time">年份（默认 = 时间指针）</label>
+        <input id="nf-time" type="text" value="${escapeHtml(defaultYear)}" placeholder="312 或 312年7月 / 312年7月15日 / 312-7-15" style="${INP}"/>
         <div id="nf-time-hint" style="font-size:10px;color:var(--fg-2);font-family:var(--font-mono);min-height:14px;"></div>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;">
-        <label style="font-size:var(--text-xs);color:var(--fg-2);">描述</label>
-        <textarea id="nf-desc" placeholder="节点描述（可留空）" style="width:100%;height:60px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;resize:vertical;font-family:inherit;line-height:1.5;"></textarea>
+        <label style="${LBL}" for="nf-kind">种类（模板 · 在左栏「结构体管理」里定义）</label>
+        <select id="nf-kind" style="${INP}cursor:pointer;">${kindOpts}</select>
       </div>
-      <div style="display:flex;flex-direction:column;gap:4px;">
-        <label style="font-size:var(--text-xs);color:var(--fg-2);">正文（Markdown · #字段：值 行 + 正文）</label>
-        <textarea id="nf-doc" placeholder="#事件：&#10;节点正文…" style="width:100%;height:120px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;resize:vertical;font-family:var(--font-mono);line-height:1.6;"></textarea>
-      </div>
-      <div style="display:flex;flex-direction:column;gap:4px;">
-        <label style="font-size:var(--text-xs);color:var(--fg-2);">类型</label>
-        <select id="nf-type" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;">
-          <option value="world_event">世界事件</option>
-          <option value="story_event">剧情事件</option>
-        </select>
-      </div>
-      <div style="display:flex;flex-direction:column;gap:4px;">
-        <label style="font-size:var(--text-xs);color:var(--fg-2);">种类（决定这个节点有哪些属性字段 · 在「结构体管理」里定义）</label>
-        <select id="nf-kind" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:6px 8px;font-size:var(--text-sm);outline:none;">${kindOpts}</select>
-      </div>
+      <div id="nf-props" style="display:flex;flex-direction:column;gap:6px;border-top:1px dashed var(--border-soft);padding-top:8px;"></div>
+      <div id="nf-err" style="font-size:var(--text-xs);color:#c0392b;display:none;"></div>
       <div style="display:flex;gap:8px;">
-        <button id="nf-ok" style="flex:1;background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:7px;font-size:var(--text-sm);cursor:pointer;">确定</button>
+        <button id="nf-ok" style="flex:1;background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:7px;font-size:var(--text-sm);cursor:pointer;">创建</button>
         <button id="nf-cancel" style="flex:1;background:var(--surface-2);color:var(--fg-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px;font-size:var(--text-sm);cursor:pointer;">取消</button>
       </div>
-      <div id="nf-err" style="font-size:var(--text-xs);color:#c0392b;display:none;"></div>
+      <details style="border-top:1px dashed var(--border-soft);padding-top:8px;">
+        <summary style="${LBL}cursor:pointer;">其他（可留空 · 建完也能在信息面板里改）</summary>
+        <div style="display:flex;flex-direction:column;gap:10px;padding-top:10px;">
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <label style="${LBL}" for="nf-type">类型</label>
+            <select id="nf-type" style="${INP}cursor:pointer;">
+              <option value="world_event">世界事件</option>
+              <option value="story_event">剧情事件</option>
+            </select>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <label style="${LBL}" for="nf-desc">描述</label>
+            <textarea id="nf-desc" placeholder="节点描述（可留空）" style="${INP}width:100%;height:56px;resize:vertical;line-height:1.5;"></textarea>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <label style="${LBL}" for="nf-doc">正文（Markdown · #字段：值 行 + 正文）</label>
+            <textarea id="nf-doc" placeholder="#事件：&#10;节点正文…" style="${INP}width:100%;height:110px;resize:vertical;font-family:var(--font-mono);line-height:1.6;"></textarea>
+          </div>
+        </div>
+      </details>
     </div>`;
 
   const title = host.querySelector('#nf-title') as HTMLInputElement;
   const time = host.querySelector('#nf-time') as HTMLInputElement;
-  const type = host.querySelector('#nf-type') as HTMLSelectElement;
   const kindSel = host.querySelector('#nf-kind') as HTMLSelectElement;
+  const propsBox = host.querySelector('#nf-props') as HTMLElement;
+  const type = host.querySelector('#nf-type') as HTMLSelectElement;
   const desc = host.querySelector('#nf-desc') as HTMLTextAreaElement;
   const docBox = host.querySelector('#nf-doc') as HTMLTextAreaElement;
   const err = host.querySelector('#nf-err') as HTMLElement;
-  title.focus();
 
-  /* 创建节点时实时自动匹配时间精度：输入即显示解析结果（精度/校验），不用等落库 */
-  const timeHint = host.querySelector('#nf-time-hint') as HTMLElement | null;
-  function updateTimeHint() {
-    if (!timeHint) return;
-    const raw = time.value.trim();
-    if (!raw) { timeHint.textContent = ''; return; }
-    const p = parseTimeText(raw, cal);
-    if (!p) { timeHint.textContent = '⚠ 无法识别（支持 年月日时分秒 或任意分隔符）'; timeHint.style.color = 'var(--fg-2)'; return; }
-    const precLabel = PRECISION_LABELS[p.precision] ?? p.precision;
-    timeHint.textContent = `✅ 精度：${precLabel}（内部年=${p.year}）`;
-    timeHint.style.color = 'var(--accent)';
+  /* 模板字段的值按**字段名**攒着：换种类只重画控件，已经填过的值不丢，
+     切回去还在（用户可能先点几下种类看看各套模板长什么样） */
+  const props: Record<string, PropValue> = {};
+
+  /** 某个种类声明了哪些字段（权威 = `formats`，见 docs/ARCHITECTURE.md「种类（模板）与节点」） */
+  function fieldsOf(kind: string): FormatField[] {
+    return store.data.formats?.[kind]?.fields ?? [];
   }
-  time?.addEventListener('input', updateTimeHint);
-  updateTimeHint();
 
-  function submit() {
+  /** 重画模板字段区（换种类时调）。控件形态与信息面板 / 工作台共用 `fieldRow()`。 */
+  function renderTemplateFields(): void {
+    const kind = kindSel.value;
+    const fields = fieldsOf(kind);
+    propsBox.textContent = '';
+    const head = document.createElement('div');
+    head.style.cssText = LBL;
+    head.textContent = fields.length ? `${kind} · 模板字段` : `「${kind}」这个种类还没有字段（在左栏「结构体管理」里加）`;
+    propsBox.appendChild(head);
+    for (const f of fields) {
+      propsBox.appendChild(fieldRow(f, props[f.name], (v) => { props[f.name] = v; }, 58));
+    }
+  }
+
+  function showErr(msg: string): void {
+    err.textContent = msg;
+    err.style.display = '';
+  }
+
+  function close(): void {
+    host.innerHTML = '';
+  }
+
+  function submit(): void {
     const t = title.value.trim();
-    if (!t) { showErr('标题不能为空'); title.focus(); return; }
+    if (!t) { showErr('名字不能为空'); title.focus(); return; }
     const parsed = parseTimeText(time.value, cal);
-    if (time.value.trim() && !parsed) { showErr('时间格式：312 | 312年7月 | 312年7月15日 | 312-7-15 或 312.7.15.8.30.45（分隔符任意）'); return; }
+    if (time.value.trim() && !parsed) { showErr('年份格式：312 | 312年7月 | 312年7月15日 | 312-7-15（分隔符任意）'); return; }
+    /* 只带走**当前种类模板里**的字段：换过种类时 props 里可能留着上一套的键，
+       多余键虽会被 `ensureAllFormatFields` 抹掉，但没必要先写脏再清 */
+    const properties: Record<string, PropValue> = {};
+    for (const f of fieldsOf(kindSel.value)) {
+      const v = props[f.name];
+      if (v !== undefined) properties[f.name] = v;
+    }
     addNode(store, tlId, {
       title: t,
       type: type.value as 'world_event' | 'story_event',
-      kind: kindSel?.value || undefined,   /* 种类=模板；决定它在 vault 里落进哪个文件夹 */
+      kind: kindSel.value || undefined,   /* 种类=模板；决定它在 vault 里落进哪个文件夹 */
       year: parsed?.year ?? 0,
       precision: parsed?.precision ?? 'year',
       month: parsed?.month,
@@ -195,18 +250,38 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
       second: parsed?.second,
       desc: desc.value.trim() || undefined,
       doc: docBox.value,   /* 正文（Markdown） */
+      properties,
     });
-    host.innerHTML = '';
+    close();
   }
-  function showErr(msg: string) {
-    err.textContent = msg;
-    err.style.display = '';
+
+  /* 年份输入即显示解析结果（精度/校验），不用等落库 */
+  const timeHint = host.querySelector('#nf-time-hint') as HTMLElement | null;
+  function updateTimeHint(): void {
+    if (!timeHint) return;
+    const raw = time.value.trim();
+    if (!raw) { timeHint.textContent = ''; return; }
+    const p = parseTimeText(raw, cal);
+    if (!p) { timeHint.textContent = '⚠ 无法识别（支持 年月日时分秒 或任意分隔符）'; timeHint.style.color = 'var(--fg-2)'; return; }
+    const precLabel = PRECISION_LABELS[p.precision] ?? p.precision;
+    timeHint.textContent = `✅ 精度：${precLabel}（内部年=${p.year}）`;
+    timeHint.style.color = 'var(--accent)';
   }
-  /* 面板入场（DESIGN.md 第 7 节）。本函数是一次性的（无订阅、提交即 host.innerHTML='' 关闭），
+
+  title.focus();
+  renderTemplateFields();
+  kindSel.addEventListener('change', renderTemplateFields);
+  time.addEventListener('input', updateTimeHint);
+  updateTimeHint();
+
+  /* 面板入场（DESIGN.md 第 7 节）。本函数是一次性的（无订阅、提交/取消即 host.innerHTML='' 关闭），
      所以直接播即可，不需要防重播。 */
   enter(host);
   host.querySelector('#nf-ok')?.addEventListener('click', submit);
-  host.querySelector('#nf-cancel')?.addEventListener('click', () => (host.innerHTML = ''));
-  /* 输入法组字期的回车是「上屏候选词」，不是提交（见 src/ui/keys.ts） */
-  time.addEventListener('keydown', (e) => { if (e.key !== 'Enter' || isImeEnter(e)) return; submit(); });
+  host.querySelector('#nf-cancel')?.addEventListener('click', close);
+  /* 输入法组字期的回车是「上屏候选词」，不是提交（见 src/ui/keys.ts）。
+     名字/年份两栏回车都等于「创建」（模板字段那几行归 fieldRow 自己管：回车=提交该字段） */
+  for (const el of [title, time]) {
+    el.addEventListener('keydown', (e) => { if (e.key !== 'Enter' || isImeEnter(e)) return; submit(); });
+  }
 }

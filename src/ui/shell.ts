@@ -148,10 +148,16 @@ function activeTimelineId(store: Store): string | undefined {
   return valid || Object.keys(ws.timelines)[0];
 }
 
-/* 时间线 tabs 的签名缓存（id/name/count/active）。拖动节点时 timeline.ts 每帧
-   saveNodeDoc(..., { undo: false }) → store 通知 → 这里被调一次；无条件重写
-   innerHTML 会每帧重建整个 tab 栏并重绑监听（拖动掉帧的来源）。签名没变就不动 DOM。 */
-let timelineTabsSig = '';
+/* 时间线 tabs 的两份缓存（用户 2026-09-19：「点创建节点时主线页签会上下弹动」）：
+   · `timelineTabsIds` = 页签的**集合**（id 顺序）；只有它变了（新建/删除时间线）才重建 DOM；
+   · `timelineTabsActive` = 当前选中，用来分辨「换页签」（显式切换 ⇒ 允许播错峰入场）。
+   计数与名字一律**就地改**，绝不重写 innerHTML —— 容器上常驻的 `.lk-enter-stagger`
+   会给每个新建的子元素播一次 `lk-wake`（上浮 8px + 逐个错峰），于是"建一个节点、
+   整条页签栏上下弹一下"（计数变了就重建是这里的病根）。
+   顺带保住原来那个目的：拖动节点时每帧一次 store 通知不再重建 tab 栏、不再重绑监听。 */
+let timelineTabsIds: string[] = [];
+let timelineTabsActive = '';
+let timelineTabsBuilt = false;
 
 /** 时间线 tabs（沙盘 pane-head）：切换时间线 + 新建 */
 function renderTimelineTabs(store: Store): void {
@@ -181,40 +187,68 @@ function renderTimelineTabs(store: Store): void {
       const toolHost = document.getElementById('lk-tool-host');
       if (toolHost && id) renderNodeForm(store, toolHost, id, tl.name);
     });
-    timelineTabsSig = '';   /* head 重建后 .lk-tl-tabs 是空容器，下面必须重建一次内容 */
+    timelineTabsBuilt = false;   /* head 重建后 .lk-tl-tabs 是空容器，下面必须重建一次内容 */
+    timelineTabsIds = [];
+    timelineTabsActive = '';
   }
   /* 撤销/重做按钮的可用态：随每次 store 通知刷新（这里在早退之前，签名不变也要刷） */
   syncHistoryButtons(store);
   /* 只更新 tabs 容器内容（不覆盖整个 head，保留沙盘工具 appendChild 节点） */
   if (tabs) {
-    /* 签名只由 (id, name, count, active) 决定：这四样没变就跳过重建 */
-    const sig = JSON.stringify(ids.map((id) => [id, ws.timelines[id]?.name ?? '?', ws.timelines[id]?.nodes.length ?? 0, id === active]));
-    if (sig === timelineTabsSig) return;
-    timelineTabsSig = sig;
-    const tabsHtml = ids
-      .map(
-        (id) =>
-          `<button class="lk-tl-tab${id === active ? ' is-active' : ''}" data-tl="${escapeHtml(id)}">${escapeHtml(ws.timelines[id]?.name ?? '?')}<span class="cnt">${ws.timelines[id]?.nodes.length ?? 0}</span></button>`
-      )
-      .join('');
-    tabs.innerHTML = tabsHtml + `<button class="lk-tl-tab is-new" id="lk-tl-new" title="新建时间线">＋</button>`;
-    staggerIn(tabs);   /* 页签错峰入场（签名没变时上面已早退，拖动不会重放） */
-    tabs.querySelectorAll('.lk-tl-tab[data-tl]').forEach((el) => {
-      const id = (el as HTMLElement).dataset.tl!;
-      el.addEventListener('click', () => store.setActiveTimeline(id));
-      el.addEventListener('contextmenu', (ev) => {
-        ev.preventDefault();
-        const tl = ws.timelines[id];
-        void confirmDialog({
-          title: `删除时间线「${tl?.name ?? '?'}」？`,
-          message: `将移除该时间线的 ${tl?.nodes.length ?? 0} 个节点；vault 里对应目录会移入回收站。`,
-          detail: '可从工具栏「回收站」恢复。',
-          confirmText: '删除',
-          danger: true,
-        }).then((okDel) => { if (okDel) removeTimeline(store, id); });
+    const activeKey = active ?? '';
+    /* 结构签名只由「页签的 id 顺序」决定 —— 集合没变就不碰 DOM */
+    const sameSet = timelineTabsBuilt
+      && timelineTabsIds.length === ids.length
+      && ids.every((id, i) => timelineTabsIds[i] === id);
+    /* 「换页签」是**显式切换**（motion.ts 的纪律允许播入场错峰），数据变化不是 */
+    const switched = timelineTabsActive !== activeKey;
+    if (!sameSet) {
+      timelineTabsBuilt = true;
+      timelineTabsIds = [...ids];
+      timelineTabsActive = activeKey;
+      const tabsHtml = ids
+        .map(
+          (id) =>
+            `<button class="lk-tl-tab${id === active ? ' is-active' : ''}" data-tl="${escapeHtml(id)}"><span class="nm">${escapeHtml(ws.timelines[id]?.name ?? '?')}</span><span class="cnt">${ws.timelines[id]?.nodes.length ?? 0}</span></button>`
+        )
+        .join('');
+      tabs.innerHTML = tabsHtml + `<button class="lk-tl-tab is-new" id="lk-tl-new" title="新建时间线">＋</button>`;
+      staggerIn(tabs);   /* 页签错峰入场：只有「页签集合变了」这一条路会重建 DOM */
+      tabs.querySelectorAll('.lk-tl-tab[data-tl]').forEach((el) => {
+        const id = (el as HTMLElement).dataset.tl!;
+        el.addEventListener('click', () => store.setActiveTimeline(id));
+        el.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          const tl = ws.timelines[id];
+          void confirmDialog({
+            title: `删除时间线「${tl?.name ?? '?'}」？`,
+            message: `将移除该时间线的 ${tl?.nodes.length ?? 0} 个节点；vault 里对应目录会移入回收站。`,
+            detail: '可从工具栏「回收站」恢复。',
+            confirmText: '删除',
+            danger: true,
+          }).then((okDel) => { if (okDel) removeTimeline(store, id); });
+        });
       });
-    });
-    tabs.querySelector('#lk-tl-new')?.addEventListener('click', () => addTimeline(store, '新时间线'));
+      tabs.querySelector('#lk-tl-new')?.addEventListener('click', () => addTimeline(store, '新时间线'));
+    } else {
+      /* 集合没变：名字 / 计数 / 选中态**就地更新**（不重建 ⇒ 不重播入场） */
+      tabs.querySelectorAll<HTMLElement>('.lk-tl-tab[data-tl]').forEach((el) => {
+        const id = el.dataset.tl as string;
+        const tl = ws.timelines[id];
+        const label = tl?.name ?? '?';
+        const nm = el.querySelector('.nm');
+        if (nm && nm.textContent !== label) nm.textContent = label;
+        const n = String(tl?.nodes.length ?? 0);
+        const cnt = el.querySelector('.cnt');
+        if (cnt && cnt.textContent !== n) cnt.textContent = n;
+        if (id === active) el.classList.add('is-active');
+        else el.classList.remove('is-active');
+      });
+      if (switched) {
+        timelineTabsActive = activeKey;
+        staggerIn(tabs);   /* 换页签：显式切换，播一次错峰（e2e motion-switch ★15 断言这条） */
+      }
+    }
   }
 }
 
