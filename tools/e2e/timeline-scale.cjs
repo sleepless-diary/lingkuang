@@ -170,6 +170,15 @@ async function main() {
     panned === true && panDelta === PAN_PX && common.length >= 2 && deltas.length === 1 && deltas[0] === PAN_PX,
     { panDelta, expect: PAN_PX, common: common.slice(0, 5), deltas });
 
+  /* ── ⑦ 反复切「非线性」不许堆积按钮（用户 2026-09-19 实测：切一次多一个） ── */
+  const dup = await ev(`(() => {
+    const btn = document.getElementById('lk-nonlinear');
+    if (!btn) return { has: false };
+    for (let i = 0; i < 6; i++) btn.click();
+    return { has: true, n: document.querySelectorAll('#lk-nonlinear').length, inState: !!document.querySelector('#lk-state #lk-nonlinear') };
+  })()`);
+  check('★6 反复切非线性不会堆积按钮（切换 6 次后全局只有 1 个 #lk-nonlinear，且在状态区里）',
+    dup.has === true && dup.n === 1 && dup.inState === true, dup);
   const errs = await ev(`window.__errs`);
   check('★5 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 

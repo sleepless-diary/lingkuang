@@ -682,7 +682,10 @@ export function mountTimeline(
       stateEl.style.cssText = 'display:flex;gap:6px;align-items:center;flex-shrink:0;margin-right:10px;padding-right:10px;border-right:1px solid var(--border-soft);';
       TL_HEAD.insertBefore(stateEl, TL_HEAD.firstChild);
     }
-    stateEl.innerHTML = '';
+    /* ⚠️ 只摘掉自己那一块（`ui` 的 id 就是 `#lk-story-ui`）。整块 `innerHTML = ''` 会把
+       `renderExtraTools()` 搬过来的「非线性」一起抹掉，之后它再搬一次 ⇒ **每切一次非线性就多一个按钮**
+       （用户 2026-09-19 实测）。 */
+    stateEl.querySelectorAll('#lk-story-ui').forEach((el) => el.remove());
     stateEl.appendChild(ui);
 
     /* 「＋剧情线」是**工具**（做一件事），放右上角 #lk-tools；左边状态区只留那个下拉。 */
@@ -1096,6 +1099,7 @@ export function mountTimeline(
       <button class="lk-tl-tab${nonlinearMode ? ' is-active' : ''}" id="lk-nonlinear" title="非线性：按序列顺序均匀排列">非线性</button>`;
 
     /* 把它搬进面板头最左的状态区（顺序：非线性 | 全览下拉）。 */
+    TL_HEAD.querySelectorAll('#lk-state #lk-nonlinear').forEach((el) => el.remove());   /* 去重：只留一个 */
     const stateBox = TL_HEAD.querySelector('#lk-state');
     const nlBtn = ext.querySelector('#lk-nonlinear');
     if (stateBox && nlBtn) stateBox.insertBefore(nlBtn, stateBox.firstChild);
