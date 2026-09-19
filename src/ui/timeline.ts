@@ -530,8 +530,12 @@ export function mountTimeline(
     }
     if (dragging) {
       zoomHold = null;                     /* 手动拖动平移：解除缩放锚点 */
-      view.panX += e.clientX - lastX;
-      targetView.panX = view.panX;      /* 拖动 = 1:1，不给缓动插队 */
+      if (nonlinearMode) {
+        nlPan += e.clientX - lastX;     /* 非线性有自己那套游标（见滚轮那段注释） */
+      } else {
+        view.panX += e.clientX - lastX;
+        targetView.panX = view.panX;    /* 拖动 = 1:1，不给缓动插队 */
+      }
       lastX = e.clientX;
       render();
       return;
@@ -576,6 +580,23 @@ export function mountTimeline(
     'wheel',
     (e) => {
       e.preventDefault();
+      /* 非线性模式有**自己的一套**视图游标（nlPan/nlZoom）：那一支的 x 是序列序、与时间无关，
+         复用 view.panX/spacing 会让两种模式互相踩（切回线性时整条时间线被推到天边）。
+         旧行为是这一支根本不响应滚轮 ⇒ 节点看起来"钉在屏幕上"。 */
+      if (nonlinearMode) {
+        if (e.altKey) {
+          const rect = wrap.getBoundingClientRect();
+          const mx = e.clientX - rect.left;
+          const before = (mx - 50 - nlPan) / nlZoom;                 /* 鼠标下的"缩放前坐标" */
+          nlZoom = Math.min(8, Math.max(0.2, nlZoom * (e.deltaY < 0 ? 1.2 : 1 / 1.2)));
+          nlPan = mx - 50 - before * nlZoom;                          /* 把那一点钉在原地 */
+        } else {
+          /* 平移只认一个轴（Shift+滚轮时 Chromium 把量塞进 deltaX）—— 与下面线性分支同一规则 */
+          nlPan -= e.deltaX !== 0 ? e.deltaX : e.deltaY;
+        }
+        render();
+        return;
+      }
       if (e.altKey) {
         const rect = wrap.getBoundingClientRect();
         const mx = e.clientX - rect.left;
@@ -600,6 +621,7 @@ export function mountTimeline(
   wrap.style.cursor = 'grab';               /* 画布默认抓手（拖动时变 grabbing） */
   wrap.addEventListener('dblclick', (e) => {
     if ((e.target as HTMLElement).closest('.tl__n')) return;
+    if (nonlinearMode) { nlPan = 0; nlZoom = 1; render(); return; }   /* 非线性：双击＝回到"刚好铺满" */
     fitAll();
   });
   /* 吸管模式提示：激活时 wrap 加类 + 光标变 copy */
@@ -748,8 +770,11 @@ export function mountTimeline(
        一动指针就跳回剧情线」就是这么来的（下拉的 change 处理器里紧接着的那次 renderStoryUI()
        当场就把选择改回去了，指针都不用动）。 */
     const ids = new Set(lines.map((l) => l.id));
+    /* ⭐ 默认**全览**（用户 2026-09-19：「我希望默认打开灵框时是全览」）：以前这里会自动落到
+       第一条剧情线 ⇒ 一进沙盘就是聚焦态（线外内容被截断）。现在**不自动聚焦** ——
+       只有用户自己在下拉里选了哪条线才聚焦；聚焦的那条被删掉也退回全览。 */
     if (!linePinned || (activeLineId !== null && !ids.has(activeLineId))) {
-      activeLineId = lines[0]?.id ?? null;
+      activeLineId = null;
     }
     linePinned = true;   /* 走过一次就当作"已初始化"，之后世界历史/空世界都保持用户的选择 */
     const lineOpts = lines
@@ -1246,12 +1271,19 @@ export function mountTimeline(
     });
     document.getElementById('lk-nonlinear')?.addEventListener('click', () => {
       nonlinearMode = !nonlinearMode;
+      /* 进非线性时把那一套游标归零：它是**独立**的画布视图，沿用上次的平移会让人一进来
+         就对着空白（而且和线性视图的 panX 根本不是一套坐标）。 */
+      if (nonlinearMode) { nlPan = 0; nlZoom = 1; }
       renderExtraTools();
       render();
     });
   }
 
   /* ══════════ 非线性模式（序列顺序 · 等距横排）══════════ */
+  /* 非线性模式**自己那套**视图游标：这一支的 x 是序列序、与时间无关，复用 `view.panX/spacing`
+     会让两种模式互相踩（切回线性时整条时间线被推到天边）。进出这个模式时归零（见按钮那边）。 */
+  let nlPan = 0;
+  let nlZoom = 1;
   function renderNonlinear() {
     const tl = timeline();
     if (!tl || !nonlinearMode) return;
@@ -1266,7 +1298,11 @@ export function mountTimeline(
        照原样排会得到 330→420→450→312→500 这种乱序，等于把功能废掉。
        线性视图靠 x 坐标表达时间，所以不受数组顺序影响；这个模式只把「距离」换成等距。 */
     const ordered = nodes.slice().sort((a, b) => nodeEpoch(a) - nodeEpoch(b));
-    const pitch = Math.max(24, (wrap.clientWidth - 100) / Math.max(1, ordered.length));
+    /* 等距仍然等距，但整条带子必须**可平移、可缩放**：旧写法 pitch 只由窗口宽度算、
+       x 里也没有 panX ⇒ 节点钉死在屏幕上，节点比屏宽时尾巴既看不到也够不着
+       （用户 2026-09-19：「非线性下节点固定在屏幕上了」）。 */
+    const basePitch = Math.max(24, (wrap.clientWidth - 100) / Math.max(1, ordered.length));
+    const pitch = Math.max(8, basePitch * nlZoom);
     /* 顶部标尺是按**时间**画刻度的，而这里的 x 是序列序 → 刻度与节点对不上；
        标尺正是这个模式要排除的「时间干扰」，清空（切回线性时 baseRender 会重画）。 */
     scaleEl.innerHTML = '';
@@ -1274,7 +1310,7 @@ export function mountTimeline(
       `<div class="tl-line" style="left:0;right:0;"></div>` +
       ordered
         .map((node, i) => {
-          const x = 50 + i * pitch;
+          const x = 50 + i * pitch + nlPan;
           /* 年份放「名字的对侧」，两边都不打架：世界事件的名字在圆点下方
              （.tl__n.is-world .tl__name{top:22px}）→ 年份在上；剧情事件的名字在上方
              （.is-story → top:-19px）→ 年份在下。calc(50%) 跟着节点的 top:50% 走。 */

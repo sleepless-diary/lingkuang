@@ -86,6 +86,12 @@ async function main() {
   await ev(`document.querySelector('[data-tool="sandbox"]').click(); true`);
   await sleep(700);
 
+  /* ── ⓪ 启动默认 = 全览（用户 2026-09-19：「我希望默认打开灵框时是全览」）——
+     这一条**不碰下拉**，量的就是 renderStoryUI 的初始选择：以前它会自动落到第一条剧情线。 ── */
+  const boot = await stableView();
+  check('★0a 启动默认就是「— 全览 —」（不碰下拉）：6 个节点全在、无断口',
+    boot.sel === '' && boot.nodes.length === 6 && boot.cuts === 0, { sel: boot.sel, nodes: boot.nodes.length, cuts: boot.cuts });
+
   /* ── ① 全览：六个节点都在，标尺没有断口（对照组） ── */
   await setLine('');
   const full = await stableView();
