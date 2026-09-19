@@ -44,6 +44,14 @@ export function mountTimeline(
   const cursorEl = host.querySelector('.tl-cursor') as HTMLElement;
   const cursorTimeEl = cursorEl.querySelector('.tl-cursor-time') as HTMLElement;
   const view: View = { panX: 0, panY: 0, spacing: 2 };
+  /* ── 分段映射（第 4.0 片 C 底座）的缓存 ──
+     聚焦一条剧情线时，段与段之间的空隙要从时间轴上**压掉**（见 rebuildWarp 那段注释）。
+     状态声明放在这里（而不是跟函数放在剧情线那一节）：`timeToX/xToTime` 会在这之前就被调用，
+     `let` 有 TDZ —— 在这里先落地成 null，早调用就按"不压缩"走。 */
+  type WarpSeg = { a: number; b: number; base: number };   // 真实年区间 [a,b] + 它在压缩轴上的起点
+  let warpSegs: WarpSeg[] | null = null;
+  let warpTotal = 0;
+  let warpReady = false;
   /* ── 平滑视图（第 3.9 片）─────────────────────────────────────────────
      用户 2026-09-18：「**除了拖动以外都做成平滑切换**：时间线的滚动、标尺的缩放、标尺的移动」，
      拖动除外（拖动时鼠标变抓手）。滚轮不再直接改 view，而是改 targetView，再由每帧循环把 view 逼近它：
@@ -103,8 +111,8 @@ export function mountTimeline(
 
   /* ── 坐标换算：出入公历 epoch 秒；spacing 为 px/年，内部用平均年宽(SEC_PER_YEAR)换算 ──
      ⚠️ 位置定位用近似年宽，日期显示用 fromEpoch 精确(公历闰年) */
-  function timeToX(e: number): number { return (e / SEC_PER_YEAR) * view.spacing + view.panX + 40; }
-  function xToTime(x: number): number { return (x - 40 - view.panX) / view.spacing * SEC_PER_YEAR; }
+  function timeToX(e: number): number { return year2w(e / SEC_PER_YEAR) * view.spacing + view.panX + 40; }
+  function xToTime(x: number): number { return w2year((x - 40 - view.panX) / view.spacing) * SEC_PER_YEAR; }
 
   /* ── 历法刻度辅助：节点/时间点 → 绝对刻度（统一坐标轴单位）── */
   function cal(): Calendar {
@@ -275,9 +283,12 @@ export function mountTimeline(
       let s = Math.floor(s0 / grid) * grid;
       for (let i = 0; s <= s1 && i <= MAX_TICKS; i++) { mainSec.push(s); s += grid; }
     }
+    /* 聚焦时：段间空隙在屏幕上宽度为 0 ⇒ 落在空隙里的刻度要**剔掉**（否则全叠在接缝上）。
+       取刻度的成本由「可见宽度 / 主刻度间距」决定（stepSec 随 spacing 走），剔掉不增加成本。 */
+    const ticks = warpSegs ? mainSec.filter((s) => inWarpSeg(s / SEC_PER_YEAR)) : mainSec;
     let html = '';
-    for (let i = 0; i < mainSec.length; i++) {
-      const s = mainSec[i];
+    for (let i = 0; i < ticks.length; i++) {
+      const s = ticks[i];
       const x = timeToX(s);
       const t = fmtScale(s, unit);
       /* 用历法数值判断是否「整单位边界」：日档=1号、月档=1月，才显示上一级；其他档看上一级变化 */
@@ -294,8 +305,14 @@ export function mountTimeline(
     }
     /* 小刻度：在**相邻主刻度之间**等分插（旧代码用 start + k*subStep，年档会累计漂移） */
     let subHtml = '';
-    for (let i = 0; i + 1 < mainSec.length; i++) {
-      const a = mainSec[i], b = mainSec[i + 1];
+    for (let i = 0; i + 1 < ticks.length; i++) {
+      const a = ticks[i], b = ticks[i + 1];
+      /* 接缝：相邻两个主刻度之间只要「压缩轴上的距离 < 真实距离」，就说明中间隔着被截断的区段
+         —— 那里既不插小刻度（插出来是假的密度），也不假装连续，画一个断口标记。 */
+      if (warpSegs && (year2w(b / SEC_PER_YEAR) - year2w(a / SEC_PER_YEAR)) < (b - a) / SEC_PER_YEAR - 1e-9) {
+        subHtml += `<div class="tl__axis-cut" style="left:${Math.round((timeToX(a) + timeToX(b)) / 2)}px;">⋯</div>`;
+        continue;
+      }
       for (let k = 1; k < subDiv; k++) {
         const s = a + (b - a) * (k / subDiv);
         subHtml += `<div class="tl__axis-tick tl__axis-tick--minor" style="left:${timeToX(s)}px;"></div>`;
@@ -421,9 +438,13 @@ export function mountTimeline(
     const ys = tl.nodes.map((n) => n.year ?? 0);
     const yLo = Math.min(...ys), yHi = Math.max(...ys);
     setYearTable(yLo - 50, yHi + 50);
-    const epochs = tl.nodes.map((n) => nodeEpoch(n));        /* 节点 epoch 秒（用 O(1) table） */
+    /* 聚焦时只 fit **线内**节点，而且跨度要在**压缩轴**上量 —— 线外的年份在屏幕上已被压掉，
+       拿真实年份算出来的 spacing 会让两段挤在左边一小撮。 */
+    rebuildWarp();
+    const fitNodes = storyMode === 'focus' && activeLine() ? tl.nodes.filter((n) => inLine(n.year)) : tl.nodes;
+    const epochs = (fitNodes.length ? fitNodes : tl.nodes).map((n) => nodeEpoch(n));   /* 节点 epoch 秒（用 O(1) table） */
     const loE = Math.min(...epochs), hiE = Math.max(...epochs);
-    const lo = loE / SEC_PER_YEAR, hi = hiE / SEC_PER_YEAR;  /* 转成年(近似)，spacing 为 px/年 */
+    const lo = year2w(loE / SEC_PER_YEAR), hi = year2w(hiE / SEC_PER_YEAR);  /* 压缩轴上的年 */
     const span = Math.max(1, hi - lo);
     targetView.spacing = Math.min(40, Math.max(0.05, (wrap.clientWidth - 120) / span));
     targetView.panX = 40 - lo * targetView.spacing;
@@ -646,6 +667,76 @@ export function mountTimeline(
     const ln = activeLine();
     if (!ln) return false;
     return ln.segments.some((s) => (s.end === null || s.end === undefined ? t >= s.start : t >= s.start && t <= s.end));
+  }
+
+  /* ══════════ 分段映射（第 4.0 片 C）：聚焦时把段间的空隙从时间轴上压掉 ══════════
+     用户 2026-09-19：「我想要的剧情线其实是**剧情线之外的内容（包括时间线）全部截断**，
+     如果剧情线之间是多段时间则**连接两段时间**（剔除中间的节点和时间线）」。
+     做法：真实年 ↔ **压缩年** 一层单调映射 —— 每段按原长度保留、段间空隙长度归零，
+     段内相对位置与段的先后都不变。`timeToX / xToTime` 是时间与屏幕之间的**唯一**通道
+     （节点、标尺、指针、色带、点击/拖动、滚轮缩放锚点全走它们）⇒ 底座接在这里，
+     上层一个都不用改；段外节点早就在 `render` 包装器里按 `inLine()` 过滤掉了。
+     ⚠️ 与 `docs/ROADMAP.md` 的「非线性模式：节点间时间插值（默认关）」共用这一层：
+     那边是再叠一层段内映射，两者都改 `year2w/w2year` 这一对出入口。 */
+
+  /** 重算压缩轴。段是**年**为单位（0.1 精度）；`end === null` = 开放段，延伸到最大节点年。
+   *  重叠/乱序的段先排序再合并，保证映射单调（段内不可能出现负长度）。 */
+  function rebuildWarp(): void {
+    if (!warpReady || storyMode !== 'focus') { warpSegs = null; warpTotal = 0; return; }
+    const ln = activeLine();
+    const segs = (ln?.segments ?? [])
+      .map((s) => {
+        const a = Number(s.start);
+        const b = s.end === null || s.end === undefined ? openEndYear(a) : Number(s.end);
+        return { a: Math.min(a, b), b: Math.max(a, b) };
+      })
+      .filter((s) => Number.isFinite(s.a) && Number.isFinite(s.b) && s.b > s.a)
+      .sort((x, y) => x.a - y.a);
+    const merged: { a: number; b: number }[] = [];
+    for (const s of segs) {
+      const last = merged[merged.length - 1];
+      if (last && s.a <= last.b) last.b = Math.max(last.b, s.b);   /* 重叠/相接 ⇒ 并成一段 */
+      else merged.push({ ...s });
+    }
+    let cum = 0;
+    warpSegs = merged.map((m) => { const o = { a: m.a, b: m.b, base: cum }; cum += m.b - m.a; return o; });
+    if (!warpSegs.length) warpSegs = null;
+    warpTotal = cum;
+  }
+
+  /** 真实年 → 压缩年（单调不减）。空隙里的年份一律落到接缝上（段尾）。 */
+  function year2w(y: number): number {
+    const segs = warpSegs;
+    if (!segs) return y;
+    const first = segs[0], last = segs[segs.length - 1];
+    if (y <= first.a) return y - first.a;                     /* 第一段之前：保持与段首的距离 */
+    if (y >= last.b) return last.base + (last.b - last.a) + (y - last.b);   /* 最后一段之后：不压缩 */
+    for (const s of segs) {
+      if (y <= s.b) return y >= s.a ? s.base + (y - s.a) : s.base;   /* 段内按原长；空隙贴到接缝 */
+    }
+    return warpTotal;
+  }
+
+  /** 压缩年 → 真实年（year2w 的逆；段外同样线性延续） */
+  function w2year(w: number): number {
+    const segs = warpSegs;
+    if (!segs) return w;
+    const first = segs[0], last = segs[segs.length - 1];
+    if (w <= first.base) return w + first.a;
+    const lastW = last.base + (last.b - last.a);
+    if (w >= lastW) return last.b + (w - lastW);
+    for (const s of segs) {
+      const end = s.base + (s.b - s.a);
+      if (w <= end) return s.a + (w - s.base);
+    }
+    return lastW;
+  }
+
+  /** 这个**真实年**在不在（压缩后真正可见的）某一段里。全览时恒真。 */
+  function inWarpSeg(y: number): boolean {
+    const segs = warpSegs;
+    if (!segs) return true;
+    return segs.some((s) => y >= s.a - 1e-9 && y <= s.b + 1e-9);
   }
 
   function renderStoryUI() {
@@ -871,6 +962,7 @@ export function mountTimeline(
   const origRender = render;
   render = function () {
     const tl = timeline();
+    rebuildWarp();   /* 段被编辑过 / 换了线 / 换了模式，压缩轴都要跟着重算（段很少，成本可忽略） */
     if (tl && storyMode === 'focus' && activeLine()) {
       const nodes = tl.nodes.filter((n) => inLine(n.year));
       track.innerHTML = lineHtmlOf(nodes);
@@ -894,6 +986,11 @@ export function mountTimeline(
 
   renderStoryUI();
   renderSegPanel();
+  /* 到这里剧情线那几个状态（storyMode / activeLineId / linePinned）才真正可用 ⇒ 打开映射并重画一次
+     （:608 那次 render() 跑在剧情线那一段之前，那时只能按「不压缩」画）。 */
+  warpReady = true;
+  rebuildWarp();
+  render();
 
   /* 段列表面板（右侧）：聚焦剧情线时显示段列表，可删段 */
   function renderSegPanel() {

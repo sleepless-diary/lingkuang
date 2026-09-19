@@ -425,6 +425,20 @@ body {
   height: 100%;
   border-left: 1px solid var(--border-soft);
 }
+/* 断口（第 4.0 片 C）：聚焦剧情线时段间的空隙被**压掉**了，标尺在这里"跳过了一段时间"。
+   画一个居中的小省略号，让人明白数字的中断是故意的、不是标尺出错；
+   ⚠️ 它同时替代了那一段的小刻度（renderScale 的接缝分支）：不插假密度。 */
+.tl__axis-cut {
+  position: absolute;
+  top: 1px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 10px;
+  color: var(--accent);
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 2;
+}
 /* 主刻度：粗、更高、带文字；长度 = 小刻度的 1.5 倍 */
 .tl__axis-tick--major {
   border-left: 2px solid var(--fg-2);
