@@ -685,6 +685,17 @@ export function mountTimeline(
     stateEl.innerHTML = '';
     stateEl.appendChild(ui);
 
+    /* 「＋剧情线」是**工具**（做一件事），放右上角 #lk-tools；左边状态区只留那个下拉。 */
+    const toolsBox = TL_HEAD.querySelector('#lk-tools');
+    if (toolsBox && !document.getElementById('lk-line-new')) {
+      const b = document.createElement('button');
+      b.className = 'lk-tl-tab is-new';
+      b.id = 'lk-line-new';
+      b.title = '新建剧情线（先覆盖整条时间线，随后在右侧面板里编辑区段）';
+      b.textContent = '＋剧情线';
+      toolsBox.appendChild(b);
+    }
+
     ui.querySelector('#lk-brush')?.addEventListener('click', () => {
       brushing = !brushing;
       renderStoryUI();
@@ -700,7 +711,7 @@ export function mountTimeline(
       renderStoryUI();
       renderSegPanel();
     });
-    ui.querySelector('#lk-line-new')?.addEventListener('click', () => {
+    document.getElementById('lk-line-new')?.addEventListener('click', () => {
       if (pendingSegs.length === 0) {
         /* B 步（右侧创建面板）之前：先用整条时间线的跨度做默认区段，保证「＋剧情线」立刻可见、可聚焦 */
         const ys = (timeline()?.nodes ?? []).map((nd) => nd.year ?? 0);
@@ -985,7 +996,7 @@ export function mountTimeline(
           <button id="lp-plus" style="width:24px;height:24px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);cursor:pointer;">＋</button>
         </div>
         <button id="lp-del" style="background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:6px;font-size:var(--text-sm);cursor:pointer;">删除循环</button>
-        <div style="font-size:var(--text-xs);color:var(--fg-2);">提示：双击时间线上的循环框打开此面板</div>
+
       </div>`;
     toolHost.querySelector('#lp-minus')?.addEventListener('click', () => {
       const tid = activeTimelineId();

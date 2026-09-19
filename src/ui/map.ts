@@ -88,7 +88,8 @@ export function renderMap(store: Store, host: HTMLElement): void {
     host.querySelectorAll('.map-mode').forEach((b) => (b as HTMLElement).style.background = 'none');
     const btn = host.querySelector(`.map-mode[data-mode="${m}"]`) as HTMLElement;
     if (btn) btn.style.background = 'rgba(158,194,98,.2)';
-    hint.textContent = m === 'region' ? '拖拽画区域（松开闭合）' : m === 'marker' ? '点击放置标记' : '拖拽平移';
+    hint.textContent = m === 'region' ? '区域' : m === 'marker' ? '标记' : '平移';
+    hint.title = m === 'region' ? '拖拽画区域（松开闭合）' : m === 'marker' ? '点击放置标记' : '拖拽平移';
   }
   host.querySelectorAll('.map-mode').forEach((b) =>
     (b as HTMLElement).addEventListener('click', () => setMode((b as HTMLElement).dataset.mode as Mode))

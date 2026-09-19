@@ -27,7 +27,7 @@ export function renderShell(store: Store, host: HTMLElement): void {
           </header>
           <section class="lk-sandbox" id="lk-sandbox">
             <div class="lk-pane lk-pane-timeline" id="lk-pane-timeline">
-              <div class="lk-pane-head">世界沙盘 · 时间线 <span class="lk-ph">（功能迁移中）</span></div>
+              <div class="lk-pane-head"></div>
               <div class="lk-pane-body lk-placeholder">时间线视图</div>
             </div>
             <div class="lk-pane lk-pane-map" id="lk-pane-map">
@@ -167,7 +167,7 @@ function renderTimelineTabs(store: Store): void {
   let nodeBtn = head.querySelector('#lk-node-new') as HTMLElement | null;
   if (!tabs) {
     head.innerHTML =
-      `<span class="lk-pane-title">世界沙盘 · 时间线</span><button class="lk-tl-tab is-new" id="lk-undo" title="撤销 (Ctrl+Z)">↶</button><button class="lk-tl-tab is-new" id="lk-redo" title="重做 (Ctrl+Y)">↷</button><span class="lk-tl-tabs"></span><button class="lk-tl-tab is-new" id="lk-node-new" title="新建节点">＋节点</button><span id="lk-tools" style="display:flex;gap:4px;align-items:center;flex-shrink:0;"></span>`;
+      `<button class="lk-tl-tab is-new" id="lk-undo" title="撤销 (Ctrl+Z)">↶</button><button class="lk-tl-tab is-new" id="lk-redo" title="重做 (Ctrl+Y)">↷</button><span class="lk-tl-tabs"></span><button class="lk-tl-tab is-new" id="lk-node-new" title="新建节点">＋节点</button><span id="lk-tools" style="display:flex;gap:4px;align-items:center;flex-shrink:0;"></span>`;
     tabs = head.querySelector('.lk-tl-tabs') as HTMLElement;
     undoBtn = head.querySelector('#lk-undo');
     redoBtn = head.querySelector('#lk-redo');
