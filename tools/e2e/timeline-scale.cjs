@@ -179,6 +179,20 @@ async function main() {
   })()`);
   check('★6 反复切非线性不会堆积按钮（切换 6 次后全局只有 1 个 #lk-nonlinear，且在状态区里）',
     dup.has === true && dup.n === 1 && dup.inState === true, dup);
+  /* ── ⑧ 「＋节点」必须开**节点信息面板**（和点击节点同一套 UI）——
+     用户 2026-09-19：「创建节点的面板为什么和节点的信息面板不一致」。 ── */
+  const made = await ev(`(() => {
+    const before = document.querySelectorAll('#lk-pane-timeline .tl__n').length;
+    const btn = document.getElementById('lk-node-new');
+    if (!btn) return { has: false };
+    btn.click();
+    return { has: true, before };
+  })()`);
+  await sleep(700);
+  const madeAfter = await ev(`(() => ({ n: document.querySelectorAll('#lk-pane-timeline .tl__n').length, host: (document.getElementById('lk-tool-host')?.textContent ?? '').slice(0, 80) }))()`);
+  check('★7 「＋节点」建出节点并直接开**同一个**信息面板（节点数 +1，面板里出现该节点的名字）',
+    made.has === true && madeAfter.n === made.before + 1 && madeAfter.host.indexOf('新节点') >= 0,
+    { before: made.before, after: madeAfter.n, host: madeAfter.host });
   const errs = await ev(`window.__errs`);
   check('★5 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 

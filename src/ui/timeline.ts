@@ -5,8 +5,10 @@ import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { getTimeline, setTimeCursor, saveNodeDoc, addLoop, setLoopCount, removeLoop, copyNode, removeNode } from '../store/actions';
 import { uid } from '../store/ids';
+import { addNode } from '../store/actions';
+import { renderNodeDetail } from './detail';
 import type { Timeline, TimelineNode, Storyline, Loop } from '../store/types';
-import { renderNodeForm } from './node-form';
+
 import { isEyedropActive, pick } from './eyedrop';
 import { escapeHtml } from './html';
 import { confirmDialog } from './confirm';
@@ -1251,7 +1253,15 @@ export function mountTimeline(
             const tid = activeTimelineId();
             if (!tl || !tid) return;
             const toolHost = document.getElementById('lk-tool-host');
-            if (toolHost) renderNodeForm(store, toolHost, tid, tl.name);
+            if (toolHost) {
+              /* 用户 2026-09-19：「创建节点的面板为什么和**节点的信息面板**不一致」⇒ 不再另开一套新建表单：
+                 直接建一个节点，然后开**同一个**信息面板 —— 节点侧从此只有一套 UI。 */
+              const yr0 = tl.nodes?.length ? Math.max(...tl.nodes.map((n0) => n0.year ?? 0)) : 0;
+              const nid0 = addNode(store, tid, { title: '新节点', year: yr0 });
+              const tv0 = store.data.worldsets[store.activeWorld]?.timelines[tid];
+              const nn0 = tv0?.nodes.find((n0) => n0.id === nid0);
+              if (nn0) renderNodeDetail(store, toolHost, nn0, tid, () => { /* store 订阅会刷新左树 */ });
+            }
           }],
           ['剧情线笔刷', () => { brushing = !brushing; renderStoryUI(); }],
           ['新建循环', () => { renderExtraTools(); document.getElementById('lk-loop-new')?.dispatchEvent(new MouseEvent('click')); }],
