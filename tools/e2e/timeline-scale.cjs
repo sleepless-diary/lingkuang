@@ -53,6 +53,12 @@ async function main() {
   const uniq = [...new Set(diffs)];
   check('★1 年档刻度的年份是等差（同一个步长，不跳年）', allYear === false ? false : uniq.length === 1 && uniq[0] > 0, { years, diffs, uniq });
 
+  /* ── ①b ⭐ 用户的原话：「省略的区域不固定，有时候是 182 有时候变成 186」——
+     刻度网格必须锚在**全局原点**上，相位只由 step 决定；旧代码锚在视窗左边缘，平移一格相位就翻。 ── */
+  const step = uniq.length === 1 ? uniq[0] : 0;
+  const phaseOk = step > 0 && years.every((y) => y !== null && ((y % step) + step) % step === 0);
+  check('★1b 刻度落在全局网格上（年份 ≡ 0 mod 步长）—— 省略的年份不该随平移/视窗改变',
+    phaseOk, { step, years, phases: years.map((y) => (y === null ? null : ((y % step) + step) % step)) });
   /* ── ② 像素上也要等距（历法进位正确 ⇒ 整年之间是等宽的） ── */
   const gaps = [];
   for (let i = 1; i < before.length; i++) gaps.push(before[i].x - before[i - 1].x);

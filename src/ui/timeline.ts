@@ -176,31 +176,38 @@ export function mountTimeline(
     const stepYears = Math.max(1, Math.round(stepSec / SEC_PER_YEAR));
     const stepDays = Math.max(1, Math.round(stepSec / 86400));
     const stepMonths = Math.max(1, Math.round(stepSec / (SEC_PER_YEAR / 12)));
+    /* ⭐ 刻度网格锚在**全局原点**上（不是视窗左边缘）。用户 2026-09-18 实测：
+       「省略的区域不固定，有时候是 182 有时候变成 186」—— 旧代码的 `start` 取「左边缘所在的那一格」，
+       于是**平移一格整条网格的相位就翻过去**（180/185/190 → 182/187/192），同一缩放档下省略的年份会变。
+       现在：年档取 stepYears 的整数倍年、月档取「自 0 年起的月序号」的整数倍、日档取「自 epoch 起的整日序号」的倍数，
+       时/分本来就是秒网格 —— **相位只由 step 决定，跟平移和视窗宽度无关**。 */
+    const mod = (n: number, s: number): number => ((n % s) + s) % s;
     const tp0 = fromEpoch(cal(), start, getYearTable());
     const mainSec: number[] = [];
     const MAX_TICKS = 4000;                  /* 保险：极端缩放下别把 DOM 画爆 */
     if (unit === '年') {
-      for (let i = 0; mainSec.length <= MAX_TICKS; i++) {
-        const s = toEpoch(cal(), timePointOf(tp0.anchor.year + i * stepYears, { month: 1, day: 1 }), getYearTable());
+      const y0 = tp0.anchor.year - mod(tp0.anchor.year, stepYears);
+      const yEnd = fromEpoch(cal(), s1, getYearTable()).anchor.year;
+      for (let y = y0; y <= yEnd && mainSec.length <= MAX_TICKS; y += stepYears) {
+        const s = toEpoch(cal(), timePointOf(y, { month: 1, day: 1 }), getYearTable());
         if (s > s1) break;
         mainSec.push(s);
       }
     } else if (unit === '月') {
-      for (let i = 0; mainSec.length <= MAX_TICKS; i++) {
-        /* 月序号跨年要拆成「进位到年 + 取模到月」（见下面那条老注释的坑） */
-        const mAbs = tp0.values.month + i * stepMonths;
-        const addYears = Math.floor((mAbs - 1) / 12);
-        const month = ((mAbs - 1) % 12) + 1;
-        const s = toEpoch(cal(), timePointOf(tp0.anchor.year + addYears, { month, day: 1 }), getYearTable());
+      const ord0 = tp0.anchor.year * 12 + (tp0.values.month - 1);
+      const tpEnd = fromEpoch(cal(), s1, getYearTable());
+      const ordEnd = tpEnd.anchor.year * 12 + (tpEnd.values.month - 1);
+      for (let ord = ord0 - mod(ord0, stepMonths); ord <= ordEnd && mainSec.length <= MAX_TICKS; ord += stepMonths) {
+        const y = Math.floor(ord / 12);
+        const mo = mod(ord, 12) + 1;
+        const s = toEpoch(cal(), timePointOf(y, { month: mo, day: 1 }), getYearTable());
         if (s > s1) break;
         mainSec.push(s);
       }
     } else if (unit === '日') {
-      for (let i = 0; mainSec.length <= MAX_TICKS; i++) {
-        const s = toEpoch(cal(), timePointOf(tp0.anchor.year, { month: tp0.values.month, day: tp0.values.day + i * stepDays }), getYearTable());
-        if (s > s1) break;
-        mainSec.push(s);
-      }
+      const daySpan = stepDays * 86400;
+      let s = Math.floor(s0 / daySpan) * daySpan;
+      for (let i = 0; s <= s1 && i <= MAX_TICKS; i++) { mainSec.push(s); s += daySpan; }
     } else {
       const grid = unit === '时' ? 3600 : 60;
       let s = Math.floor(s0 / grid) * grid;
