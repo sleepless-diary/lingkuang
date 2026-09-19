@@ -61,6 +61,16 @@ async function main() {
   await ev(`document.querySelector('[data-tool="sandbox"]').click(); true`);
   await sleep(700);
 
+  /* 前置：显式切回「— 全览 —」。本套件量的「6 个节点」＝全览下的全部节点，而聚态下
+     非线性只排线内节点（`renderNonlinear` 现在会按聚焦过滤）——上一份套件
+     （storyline-focus）的收尾状态正是"聚焦中"，不重置的话这里会只看到 4 个（套件顺序耦合）。 */
+  await ev(`(() => {
+    const s = document.getElementById('lk-line-sel');
+    if (s && s.value !== '') { s.value = ''; s.dispatchEvent(new Event('change', { bubbles: true })); }
+    return s ? s.value : null;
+  })()`);
+  await sleep(700);
+
   const lin = await view();
   check('★0 前置：线性视图下 6 个节点都在、有标尺刻度',
     lin.n === 6 && lin.majors >= 2 && lin.nonlinear === false, { n: lin.n, majors: lin.majors });

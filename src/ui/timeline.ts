@@ -944,8 +944,12 @@ export function mountTimeline(
     render();
   });
 
-  /* 剧情线范围条（时间线上色带）+ 遮罩 */
-  function renderStoryOverlay() {    const ln = activeLine();
+  /* 剧情线范围条（时间线上色带）+ 遮罩。
+     ⚠️ `nonlinear === true` 时**两层都清空**：非线性模式把 x 换成了序列序（与时间无关），
+     而这两层是按 `timeToX(年份)` 画的 ⇒ 叠上去只会盖错地方（用户 2026-09-19 报的
+     「非线性和聚焦同时开有 bug」）。参数化而不是在里面读 `nonlinearMode`：那是 `let`，
+     而这个函数在它的声明**之前**就会被调用（启动那次 render）—— 直接读会 TDZ 抛错。 */
+  function renderStoryOverlay(nonlinear = false) {    const ln = activeLine();
     /* 遮罩 */
     let mask = wrap.querySelector('#lk-story-mask') as HTMLElement | null;
     if (!mask) {
@@ -955,6 +959,13 @@ export function mountTimeline(
       wrap.appendChild(mask);
     }
     mask.innerHTML = '';
+    /* 非线性：遮罩没有意义（它按时间画），把色带也一起清掉再走 —— 那一条带子表示的是
+       "剧情线覆盖了哪一段**时间**"，而这一支的 x 是序列序。 */
+    if (nonlinear) {
+      const bar0 = wrap.querySelector('.tl__storybar');
+      if (bar0) bar0.innerHTML = '';
+      return;
+    }
     /* segments 为空时 Math.min()/Math.max() 返回 ±Infinity，yearEpoch(Infinity) 会让
        toEpoch 的按年累加变成真·死循环 —— 必须先判空 */
     if (storyMode === 'focus' && ln && ln.segments.length) {
@@ -1287,7 +1298,11 @@ export function mountTimeline(
   function renderNonlinear() {
     const tl = timeline();
     if (!tl || !nonlinearMode) return;
-    const nodes = tl.nodes;
+    /* 聚焦时只排**线内**节点 —— 与线性视图同一套语义（聚焦＝只看这条线上的事）：
+       非线性只是把"距离"换成等距，不该把线外的东西又放回来。
+       （用户 2026-09-19：「非线性和聚焦做一下适配，现在两个同时开有bug」。） */
+    const focusOn = storyMode === 'focus' && !!activeLine();
+    const nodes = focusOn ? tl.nodes.filter((n) => inLine(n.year)) : tl.nodes;
     if (!nodes.length) return;
     /* 排版与线性视图一致（节点都落在轴线上、剧情事件名字在上、世界事件名字在下），
        区别只有两点：x 一律等距（与年份无关），以及每个节点自带年份标签。
@@ -1334,7 +1349,14 @@ export function mountTimeline(
   render = function () {
     /* 非线性分支也要重画因果线：节点已按序列重排，若只 return，
        causesSvg 里留着上一帧线性布局的箭头，指向空白处 */
-    if (nonlinearMode) { renderNonlinear(); renderLoops(); renderStoryOverlay(); drawCauses(); return; }
+    if (nonlinearMode) {
+      /* 传 true：那一支的 x 是序列序、与时间无关，时间遮罩/色带在那里只会盖错地方 */
+      renderNonlinear();
+      renderLoops();
+      renderStoryOverlay(true);
+      drawCauses();
+      return;
+    }
     baseRender();
     renderLoops();
   };

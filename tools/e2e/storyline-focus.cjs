@@ -53,6 +53,11 @@ async function main() {
     return {
       nodes, ticks,
       cuts: document.querySelectorAll('#lk-pane-timeline .tl__axis-cut').length,
+      /* 非线性 × 聚焦那条：遮罩几块、色带几段、节点是不是等距 */
+      masks: document.querySelectorAll('#lk-story-mask > div').length,
+      bands: document.querySelectorAll('.tl__storybar-seg').length,
+      nonlinear: !!document.getElementById('lk-nonlinear')?.classList.contains('is-active'),
+      gaps: (() => { const xs = nodes.map((n) => n.x); return xs.slice(1).map((x, i) => x - xs[i]); })(),
       sel: document.getElementById('lk-line-sel')?.value ?? null,
       nLines: document.querySelectorAll('#lk-line-sel option').length - 1,
       years: ticks.map((t) => { const m = /^(-?\\d+)年$/.exec(t.label); return m ? Number(m[1]) : null; }).filter((y) => y !== null),
@@ -141,6 +146,30 @@ async function main() {
   check('★5 切回「— 全览 —」完全还原：6 个节点都回来、断口消失、标尺重新覆盖被截断的区间',
     back.sel === '' && back.nodes.length === 6 && back.cuts === 0 && back.years.some((y) => y > 200 && y < 4000),
     { sel: back.sel, nodes: back.nodes.length, cuts: back.cuts, hasGapTick: back.years.some((y) => y > 200 && y < 4000) });
+
+  /* ── ⑥ 非线性 × 聚焦**一起开**（用户 2026-09-19：「非线性和聚焦做一下适配，现在两个同时开有bug」）——
+      非线性那一支的 x 是序列序、与时间无关：① 遮罩/色带按时间画 ⇒ 必须清掉（否则盖错地方）；
+      ② 聚焦的语义仍要生效 ⇒ 只排线内节点、等距。 ── */
+  await setLine('sl-1');
+  await sleep(500);
+  await ev(`document.getElementById('lk-nonlinear')?.click(); true`);
+  await sleep(600);
+  const nlFocus = await view();
+  const nlTitles = nlFocus.nodes.map((n) => n.title);
+  check('★6 非线性 + 聚焦一起开：只排**线内** 4 个节点、等距排列，且时间遮罩/色带都被清掉',
+    nlFocus.nonlinear === true && nlFocus.nodes.length === 4
+    && !nlTitles.includes('空隙里的事件') && !nlTitles.includes('末段之后')
+    && nlFocus.gaps.length >= 3 && Math.max(...nlFocus.gaps) - Math.min(...nlFocus.gaps) <= 2
+    && nlFocus.masks === 0 && nlFocus.bands === 0,
+    { n: nlFocus.nodes.length, titles: nlTitles, gaps: nlFocus.gaps, masks: nlFocus.masks, bands: nlFocus.bands });
+
+  /* 关掉非线性（仍聚焦）⇒ 回到线性聚焦：节点/断口/色带都该回来 */
+  await ev(`document.getElementById('lk-nonlinear')?.click(); true`);
+  await sleep(700);
+  const backFocus = await stableView();
+  check('★7 关掉非线性后仍停在聚焦态：4 个线内节点 + 断口 + 色带都回来',
+    backFocus.nonlinear === false && backFocus.nodes.length === 4 && backFocus.cuts >= 1 && backFocus.bands >= 1,
+    { n: backFocus.nodes.length, cuts: backFocus.cuts, bands: backFocus.bands });
 
   const errs = await ev(`window.__errs`);
   check('★6 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
