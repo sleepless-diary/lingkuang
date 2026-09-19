@@ -15,24 +15,6 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
-## 第四十一轮（2026-09-19）· 新建节点的面板和节点信息面板不一致（**用户实测**）
-
-> 用户原话：「**创建节点的面板为什么和节点的信息面板不一致**」；另：「大量切换非线性模式后出现了很多按钮，切换一次出现一个按钮」。
-
-### ① 切非线性堆积按钮（已修，提交 `0e1bd57`）
-- 病根：`renderStoryUI()` 重建状态区时用 `stateEl.innerHTML = ''`，把 `renderExtraTools()` 搬进来的「非线性」**一起抹掉**；
-  它随后再搬一次新副本 ⇒ 两次之间没有 `renderStoryUI()` 时就变成 2 个、3 个……
-- 修法：状态区只摘自己那块（`stateEl.querySelectorAll('#lk-story-ui').forEach(el => el.remove())`）；
-  搬运前再去一次重（`TL_HEAD.querySelectorAll('#lk-state #lk-nonlinear').forEach(el => el.remove())`）。
-- 回归：`timeline-scale.cjs` **★6**（连点 6 次 → 断言全局只有 1 个 `#lk-nonlinear` 且在 `#lk-state` 里）。
-
-### ② 新建节点面板 ≠ 节点信息面板（已修，本轮）
-- 病根：两条路走的是**两套 UI** —— 点节点走 `src/ui/detail.ts` 的 `renderNodeDetail(store, host, node, tlId, onChanged)`；
-  而「＋节点」（`src/ui/shell.ts:182`）和沙盘右键菜单「新建节点」（`src/ui/timeline.ts:1254`）走 `src/ui/node-form.ts` 的 `renderNodeForm(store, host, tlId, tlName)`（另写的一套表单）。
-- 修法：**不再另开新建表单** —— 两个入口都改成「先 `addNode()` 建一个节点（标题「新节点」、年份 = 现有最大年），再开同一个 `renderNodeDetail()`」。
-  节点侧编辑从两套 UI 收敛成一套。
-- 回归：`timeline-scale.cjs` **★7**（点 `#lk-node-new` → 节点数 +1，且 `#lk-tool-host` 里出现「新节点」）→ PASS。
-- ⚠️ 遗留：`src/ui/node-form.ts` 的 `renderNodeForm()` 现在**没有调用点了**（死代码），但 `parseTimeText()` 仍被 `detail.ts`/`props-panel.ts` 用 ⇒ 文件保留，函数待清理。
 ## 第四十轮（2026-09-18）· 沙盘工具栏重构 + 剧情线创建面板（第 4.0 片 A/B1）
 
 > 用户原话（分几次给的）：「全览和聚焦能直接做成同一个下拉窗口的，**非线性怎么还在右边**，把世界沙盒，时间线等文字的常显删掉吧
