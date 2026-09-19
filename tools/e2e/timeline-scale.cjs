@@ -45,14 +45,18 @@ async function main() {
   /** 等刻度稳定下来（两次读数一致）——平滑视图的断言不能在固定 sleep 上做 */
   const stableTicks = async (ms = 4000) => {
     let prev = null;
+    let same = 0;
     const t0 = Date.now();
     for (;;) {
       const cur = await ev(ticksExpr);
       const sig = JSON.stringify(cur.map((k) => k.label + '@' + k.x));
-      if (prev === sig) return cur;
+      same = prev === sig ? same + 1 : 0;
       prev = sig;
+      /* 要**连续 3 次**一致（间隔 250ms，合计 ≥750ms）才算稳定：
+         视图的兜底定时器是 600ms，rAF 被节流时只等两次会在半路误判成稳定（实测「平移 180px 只读到 78px」）。 */
+      if (same >= 3) return cur;
       if (Date.now() - t0 > ms) return cur;
-      await sleep(150);
+      await sleep(250);
     }
   };
 
