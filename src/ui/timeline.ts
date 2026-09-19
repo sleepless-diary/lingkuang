@@ -44,6 +44,52 @@ export function mountTimeline(
   const cursorEl = host.querySelector('.tl-cursor') as HTMLElement;
   const cursorTimeEl = cursorEl.querySelector('.tl-cursor-time') as HTMLElement;
   const view: View = { panX: 0, panY: 0, spacing: 2 };
+  /* ── 平滑视图（第 3.9 片）─────────────────────────────────────────────
+     用户 2026-09-18：「**除了拖动以外都做成平滑切换**：时间线的滚动、标尺的缩放、标尺的移动」，
+     拖动除外（拖动时鼠标变抓手）。滚轮不再直接改 view，而是改 targetView，再由每帧循环把 view 逼近它：
+       view += (target - view) × (1 − exp(−k·dt))
+     比「差值 × 固定比例」好在**帧率无关**（60Hz 与 120Hz 手感一致，且每次吃掉剩余距离的固定比例，永不越界）。
+     缩放插的是 **log(spacing)** —— spacing 是 px/年（乘性的量），直接线性插会在细档「嗖」地跳过去。
+     ⚠️ 隐藏窗口里 rAF 不跑（测试实例 visibilityState === "hidden"）⇒ **直接落值**，
+     否则自动化永远读不到确定几何；prefers-reduced-motion 同理（这里内联判，免得为一个判据加 import）。 */
+  const targetView = { panX: 0, spacing: 2 };
+  const EASE_K = 14;                       /* 每秒吃掉多少剩余比例：14 ≈ 250ms 基本到位 */
+  let easeRaf = 0;
+  let easeTimer = 0;
+  /* ⚠️ 三种情况**不做动画、直接落值**：
+     ① 系统开了「减少动态效果」；② 页面不可见；③ **窗口没聚焦**。
+     ③ 是实测逼出来的：后台/未聚焦窗口里 rAF 被降频甚至暂停，平滑循环会**停在半路**，
+     视图既不跟手也不到位（自动化里表现为「平移 180px 只走了 49px 就停了」）。
+     顺带也是好事：没在看的时候不做无用动画。 */
+  const noSmooth = (): boolean =>
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches || document.visibilityState === 'hidden' || !document.hasFocus();
+  function snapView(): void { view.panX = targetView.panX; view.spacing = targetView.spacing; }
+  function kickEase(): void {
+    if (noSmooth()) { snapView(); render(); return; }
+    if (easeRaf) return;
+    let last = performance.now();
+    const step = (now: number): void => {
+      const dt = Math.min(0.1, (now - last) / 1000);   /* 卡帧时别一次吃掉太多 */
+      last = now;
+      const a = 1 - Math.exp(-EASE_K * dt);
+      view.panX += (targetView.panX - view.panX) * a;
+      const ls = Math.log(view.spacing), lt = Math.log(targetView.spacing);
+      view.spacing = Math.exp(ls + (lt - ls) * a);
+      render();
+      const done = Math.abs(targetView.panX - view.panX) < 0.05
+        && Math.abs(Math.log(targetView.spacing / view.spacing)) < 0.0005;
+      if (done) { window.clearTimeout(easeTimer); snapView(); render(); easeRaf = 0; return; }
+      easeRaf = requestAnimationFrame(step);
+    };
+    easeRaf = requestAnimationFrame(step);
+    /* 兜底：rAF 被降频/暂停时（后台窗口、未聚焦、节流）平滑循环会停在半路 ——
+       600ms 后无条件落到目标值。实测过「平移 180px 只走了 27px 就停住」。 */
+    window.clearTimeout(easeTimer);
+    easeTimer = window.setTimeout(() => {
+      if (easeRaf) { cancelAnimationFrame(easeRaf); easeRaf = 0; }
+      snapView(); render();
+    }, 600);
+  }
 
   /* ── 坐标换算：出入公历 epoch 秒；spacing 为 px/年，内部用平均年宽(SEC_PER_YEAR)换算 ──
      ⚠️ 位置定位用近似年宽，日期显示用 fromEpoch 精确(公历闰年) */
@@ -360,7 +406,7 @@ export function mountTimeline(
   /* ── fit 视图（缩放适配全部节点）── */
   function fitAll() {
     const tl = timeline();
-    if (!tl || !tl.nodes.length) { view.panX = 0; view.spacing = 2; return; }
+    if (!tl || !tl.nodes.length) { view.panX = 0; view.spacing = 2; targetView.panX = 0; targetView.spacing = 2; return; }
     /* 先按节点原始年份范围建历法年表，让 nodeEpoch/fromEpoch 走 O(1)，避免 O(年数) 累加卡顿 */
     const ys = tl.nodes.map((n) => n.year ?? 0);
     const yLo = Math.min(...ys), yHi = Math.max(...ys);
@@ -369,8 +415,9 @@ export function mountTimeline(
     const loE = Math.min(...epochs), hiE = Math.max(...epochs);
     const lo = loE / SEC_PER_YEAR, hi = hiE / SEC_PER_YEAR;  /* 转成年(近似)，spacing 为 px/年 */
     const span = Math.max(1, hi - lo);
-    view.spacing = Math.min(40, Math.max(0.05, (wrap.clientWidth - 120) / span));
-    view.panX = 40 - lo * view.spacing;
+    targetView.spacing = Math.min(40, Math.max(0.05, (wrap.clientWidth - 120) / span));
+    targetView.panX = 40 - lo * targetView.spacing;
+    kickEase();
     render();
   }
 
@@ -392,6 +439,7 @@ export function mountTimeline(
        空白处右键也会顺带把时间指针挪到点击位置。 */
     if (e.button !== 0) return;
     if (typeof brushing !== 'undefined' && brushing) return;   /* 笔刷模式：交给笔刷分支 */
+    wrap.style.cursor = 'grabbing';           /* 任何拖动都变抓手（endDrag 复原） */
     const nodeEl = (e.target as HTMLElement).closest('.tl__n') as HTMLElement | null;
     if (nodeEl) {
       /* 节点：点击选中 / 拖动改时间 */
@@ -451,6 +499,7 @@ export function mountTimeline(
     }
     if (dragging) {
       view.panX += e.clientX - lastX;
+      targetView.panX = view.panX;      /* 拖动 = 1:1，不给缓动插队 */
       lastX = e.clientX;
       render();
       return;
@@ -468,6 +517,7 @@ export function mountTimeline(
     cursorDrag = false;
     /* 吸管模式下光标是 copy，不要一律打回 default */
     wrap.style.cursor = wrap.classList.contains('lk-eyedrop') ? 'copy' : 'default';
+    wrap.style.cursor = 'grab';           /* 拖动结束复原（eyedrop 会再覆盖成 copy） */
   }
   window.addEventListener('pointerup', () => {
     const wasNodeClick = nodeDragId && !nodeDragMoved;
@@ -499,16 +549,19 @@ export function mountTimeline(
         const mx = e.clientX - rect.left;
         const tAt = xToTime(mx) / SEC_PER_YEAR;   /* 鼠标位置 epoch 秒 → 年(近似)，spacing 为 px/年 */
         const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-        view.spacing = Math.min(1e8, Math.max(0.05, view.spacing * factor));
-        view.panX = mx - 40 - tAt * view.spacing;
+        /* 缩放：改 targetView，并用「鼠标下的时间点不动」反推 target.panX */
+        const next = Math.min(1e8, Math.max(0.05, targetView.spacing * factor));
+        targetView.panX = mx - 40 - tAt * next;
+        targetView.spacing = next;
       } else {
-        view.panX -= e.deltaY;   /* 滚轮上下 → 时间线左右平移 */
-        if (e.deltaX) view.panX -= e.deltaX;
+        targetView.panX -= e.deltaY;   /* 滚轮上下 → 时间线左右平移 */
+        if (e.deltaX) targetView.panX -= e.deltaX;
       }
-      render();
+      kickEase();
     },
     { passive: false }
   );
+  wrap.style.cursor = 'grab';               /* 画布默认抓手（拖动时变 grabbing） */
   wrap.addEventListener('dblclick', (e) => {
     if ((e.target as HTMLElement).closest('.tl__n')) return;
     fitAll();
@@ -517,7 +570,7 @@ export function mountTimeline(
   window.addEventListener('lk-eyedrop-active', ((e: Event) => {
     const on = !!(e as CustomEvent<boolean>).detail;
     wrap.classList.toggle('lk-eyedrop', on);
-    wrap.style.cursor = on ? 'copy' : 'crosshair';
+    wrap.style.cursor = on ? 'copy' : 'grab';
   }) as EventListener);
 
   /* 指针手柄拖动 */

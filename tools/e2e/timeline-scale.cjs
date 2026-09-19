@@ -42,9 +42,37 @@ async function main() {
   await ev(`document.querySelector('[data-tool="sandbox"]').click(); true`);
   for (let i = 0; i < 20; i++) { if (await ev(`document.querySelectorAll('#lk-pane-timeline .tl__axis-tick--major').length > 0`)) break; await sleep(300); }
 
-  const before = await ev(ticksExpr);
+  /** 等刻度稳定下来（两次读数一致）——平滑视图的断言不能在固定 sleep 上做 */
+  const stableTicks = async (ms = 4000) => {
+    let prev = null;
+    const t0 = Date.now();
+    for (;;) {
+      const cur = await ev(ticksExpr);
+      const sig = JSON.stringify(cur.map((k) => k.label + '@' + k.x));
+      if (prev === sig) return cur;
+      prev = sig;
+      if (Date.now() - t0 > ms) return cur;
+      await sleep(150);
+    }
+  };
+
+  const before = await stableTicks();
   check('★0 前置：世界沙盘的标尺上有主刻度（带文字）', Array.isArray(before) && before.length >= 2, { n: before?.length, first3: before?.slice(0, 3) });
 
+  /* ── ①a ⭐ 标尺与节点必须对得上（用户 2026-09-18：「现在标尺应该和节点能对上了吧」）——
+     节点和刻度都走同一个 timeToX()，所以「节点所在年份那根刻度」应当与节点 x 重合。
+     ⚠️ 节点 DOM 里没有年份，所以这里用夹具约定：tools/e2e/seed-node.cjs 播种的事件在 312 年。 ── */
+  const SEED_NODE_YEAR = 312;
+  const align = await ev(`(() => {
+    const n = document.querySelector('#lk-pane-timeline .tl__n[data-id]');
+    if (!n) return { has: false };
+    const nx = Math.round(parseFloat(n.style.left) || 0);
+    const ticks = [...document.querySelectorAll('#lk-pane-timeline .tl__axis-tick--major')];
+    const hit = ticks.find((el) => (el.querySelector('.tl__axis-label')?.textContent ?? '') === '${SEED_NODE_YEAR}年');
+    return { has: true, node: nx, tick: hit ? Math.round(parseFloat(hit.style.left) || 0) : null, d: hit ? Math.abs(Math.round(parseFloat(hit.style.left) || 0) - nx) : null };
+  })()`);
+  check('★0b 标尺刻度与节点对得上（' + SEED_NODE_YEAR + ' 年那根刻度的 x ≈ 节点 x，±1px）',
+    align.has === true && align.d !== null && align.d <= 1, align);
   /* ── ① 年档：标签里的年份必须**等差**（旧代码每格漂 0.25 天，累起来就跳年） ── */
   const years = before.map((t) => { const m = /^(-?\d+)年$/.exec(t.label); return m ? Number(m[1]) : null; });
   const allYear = years.every((y) => y !== null);
@@ -68,14 +96,17 @@ async function main() {
   /* ── ②b ⭐ 用户 2026-09-18：「**缩放到时和分时会突然变得密集**」——
      时/分档必须按算出来的 stepSec 铺网格（旧代码写死 1 小时/1 分钟，等于无视步长）。 ── */
   await ev(`(() => {
-    const el = document.querySelector('#lk-pane-timeline .tl__axis-tick--major') || document.querySelector('#lk-pane-timeline');
-    const r = el.getBoundingClientRect();
-    /* Alt+滚轮 = 缩放（factor 1.2/格，见 timeline.ts:497-503）：从 ~80px/年 到「时」档要 >2.6 万 px/年 ⇒ 约 32 格 */
-    for (let i = 0; i < 60; i++) el.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, altKey: true, clientX: r.left + 40, bubbles: true, cancelable: true }));
+    /* ⚠️ 每格**重新取元素**：视图一变就重画 DOM，循环外只取一次的话，第一格之后那个引用已脱离文档，
+       事件不再冒泡到 wrap 的 wheel 监听 ⇒ 60 格只有 1 格生效（这一片踩了两次）。 */
+    for (let i = 0; i < 60; i++) {
+      const el = document.querySelector('#lk-pane-timeline .tl__axis-tick--major') || document.querySelector('#lk-pane-timeline');
+      const r = el.getBoundingClientRect();
+      /* Alt+滚轮 = 缩放（factor 1.2/格，见 timeline.ts:497-503） */
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, altKey: true, clientX: r.left + 40, bubbles: true, cancelable: true }));
+    }
     return true;
   })()`);
-  await sleep(600);
-  const zoomed = await ev(ticksExpr);
+  const zoomed = await stableTicks();
   const zLabels = zoomed.map((t) => t.label);
   const isHM = zLabels.some((l) => /时$/.test(l) || /分$/.test(l));
   const zGaps = [];
@@ -96,8 +127,7 @@ async function main() {
     return true;
   })()`);
   const PAN_PX = 180;
-  await sleep(500);
-  const after = await ev(ticksExpr);
+  const after = await stableTicks();
   const mapA = new Map(before.map((t) => [t.label, t.x]));
   const common = after.filter((t) => mapA.has(t.label)).map((t) => ({ label: t.label, dx: t.x - mapA.get(t.label) }));
   const deltas = [...new Set(common.map((c) => c.dx))];
