@@ -710,6 +710,9 @@ export function mountTimeline(
       render();
       renderStoryUI();
       renderSegPanel();
+      /* 切聚焦后自动 fit（用户 2026-09-18：「进入时默认缩放至刚好能看到所有节点…切换聚焦时」）：
+         等这一帧画完再量宽度，否则都是旧几何。C 步做完后这里改成 fit 到该线的区段。 */
+      requestAnimationFrame(() => fitAll());
     });
     document.getElementById('lk-line-new')?.addEventListener('click', () => {
       if (pendingSegs.length === 0) {
