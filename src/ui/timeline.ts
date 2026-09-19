@@ -807,7 +807,16 @@ export function mountTimeline(
         pendingSegs = eraseRange(pendingSegs, e0, e1);
       }
     } else {
-      pendingSegs.push({ start: Math.round(lo * 10) / 10, end: Math.round(hi * 10) / 10 });
+      /* 吸附到**节点时间**（用户：「也有吸附可以吸附到节点时间」）：边界距某节点 ≤8px 就贴过去。 */
+      const tolY = 8 / Math.max(0.0001, view.spacing);
+      const nodeYears = (timeline()?.nodes ?? []).map((nd) => nd.year ?? 0);
+      const snapYear = (vv: number): number => {
+        let best = vv, bestD = tolY;
+        for (const yy of nodeYears) { const dd = Math.abs(yy - vv); if (dd < bestD) { bestD = dd; best = yy; } }
+        return best;
+      };
+      const yA = snapYear(lo), yB = snapYear(hi);
+      pendingSegs.push({ start: Math.round(Math.min(yA, yB) * 10) / 10, end: Math.round(Math.max(yA, yB) * 10) / 10 });
     }
     renderStoryUI();
     render();
@@ -887,17 +896,59 @@ export function mountTimeline(
     const tl = timeline();
     const ln = activeLineId && tl ? tl.storylines.find((l) => l.id === activeLineId) : undefined;
     if (!ln) { toolHost.innerHTML = ''; return; }
-    toolHost.innerHTML = `
-      <div style="padding:12px 14px;display:flex;flex-direction:column;gap:8px;">
-        <div style="font-size:15px;font-weight:600;color:var(--fg);">${escapeHtml(ln.name)}</div>
-        <div style="font-size:var(--text-xs);color:var(--fg-2);">${ln.segments.length} 段 · 笔刷框选加段，Alt+框选擦除</div>
-        <div style="display:flex;flex-direction:column;gap:4px;">
-          ${ln.segments.map((s, i) => `<div style="display:flex;align-items:center;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 8px;font-size:var(--text-xs);color:var(--fg);">
-            <span style="font-family:var(--font-mono);color:var(--accent);">${s.start} → ${s.end === null ? '∞' : s.end}</span>
-            <button data-si="${i}" style="margin-left:auto;background:none;border:none;color:#c0392b;cursor:pointer;font-size:12px;">✕</button>
-          </div>`).join('') || '<div style="font-size:var(--text-xs);color:var(--fg-2);">（无线段）</div>'}
-        </div>
-      </div>`;
+    /* 剧情线创建面板（第 4.0 片 B 步）：段可**手动输入**时间，也可用「＋ 添加一段」在时间线上拖出来；
+       拾取是**这个面板里的编辑手段**（笔刷），不是工具栏上的模式 —— 用户 2026-09-18 纠正过这一点）。 */
+    toolHost.innerHTML = [
+      '<div style="padding:12px 14px;display:flex;flex-direction:column;gap:8px;">',
+      `<div style="font-size:15px;font-weight:600;color:var(--fg);">${escapeHtml(ln.name)}</div>`,
+      '<div style="display:flex;align-items:center;gap:6px;font-size:var(--text-xs);color:var(--fg-2);">',
+      `<span>${ln.segments.length} 段</span>`,
+      brushing ? '<span style="color:var(--accent);">正在拾取…</span><button id="seg-cancel" class="lk-tl-tab">取消</button>' : '',
+      '<button id="seg-add" class="lk-tl-tab is-new" title="在时间线上拖动框出一段（Alt 拖 = 擦除；靠近节点会吸附）" style="margin-left:auto;">＋ 添加一段</button>',
+      '</div>',
+      `<div style="display:flex;flex-direction:column;gap:4px;">${(ln.segments.length ? ln.segments.map((s, i) => [
+        '<div style="display:flex;align-items:center;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 8px;">',
+        `<input data-sv="${i}" data-k="start" value="${s.start}" title="开始（年）" style="width:66px;background:none;border:none;color:var(--accent);font-family:var(--font-mono);font-size:var(--text-xs);" />`,
+        '<span style="color:var(--fg-2);font-size:var(--text-xs);">→</span>',
+        `<input data-sv="${i}" data-k="end" value="${s.end === null ? '' : s.end}" placeholder="∞" title="结束（年；留空＝一直延续）" style="width:66px;background:none;border:none;color:var(--accent);font-family:var(--font-mono);font-size:var(--text-xs);" />`,
+        `<button data-si="${i}" title="删除这一段" style="margin-left:auto;background:none;border:none;color:var(--danger);cursor:pointer;font-size:12px;">✕</button>`,
+        '</div>',
+      ].join('')).join('') : '<div style="font-size:var(--text-xs);color:var(--fg-2);">（还没有段）</div>')}</div>`,
+      '</div>',
+    ].join('');
+    /* 手动输入时间：改成合法数字就写回该段（留空 = ∞） */
+    toolHost.querySelectorAll('[data-sv]').forEach((el) => {
+      el.addEventListener('change', () => {
+        const si = parseInt((el as HTMLElement).dataset.sv!, 10);
+        const key = (el as HTMLElement).dataset.k!;
+        const raw = (el as HTMLInputElement).value.trim();
+        const num = raw === '' ? null : Number(raw);
+        if (num !== null && !Number.isFinite(num)) return;
+        const tlId = activeTimelineId();
+        if (!tlId) return;
+        store.update((d) => {
+          const t2 = d.worldsets[store.activeWorld]?.timelines[tlId];
+          const ln2 = t2?.storylines?.find((l) => l.id === activeLineId);
+          const sg = ln2?.segments?.[si];
+          if (!sg) return;
+          if (key === 'start') sg.start = num === null ? sg.start : num;
+          else sg.end = num;
+        });
+        renderSegPanel();
+        render();
+      });
+    });
+    toolHost.querySelector('#seg-add')?.addEventListener('click', () => {
+      brushing = true;
+      renderSegPanel();
+      renderStoryUI();
+    });
+    toolHost.querySelector('#seg-cancel')?.addEventListener('click', () => {
+      brushing = false;
+      clearBrushSel();
+      renderSegPanel();
+      renderStoryUI();
+    });
     toolHost.querySelectorAll('[data-si]').forEach((el) => {
       el.addEventListener('click', () => {
         const si = parseInt((el as HTMLElement).dataset.si!, 10);
