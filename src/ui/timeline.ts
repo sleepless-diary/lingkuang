@@ -662,7 +662,9 @@ export function mountTimeline(
      没有它就没法把「用户选了世界历史」和「还没选过」区分开 —— 详见 renderStoryUI 里的注释。 */
   let linePinned = false;
   let brushing = false;                              // 笔刷模式
-  let pendingSegs: { start: number; end: number | null }[] = [];  // 累积段
+  let pendingSegs: { start: number; end: number | null }[] = [];  // 累积段（**年**，与 segments/inLine 同一语义）
+  let newLinePanelOpen = false;   // 右侧面板此刻是不是「新建剧情线」（它是待创建状态，不是 store 里的线）
+  let newLineName = '';           // 那条待创建线的名字
   const brushSel = document.createElement('div');
   brushSel.style.cssText =
     'position:absolute;top:34px;bottom:0;z-index:4;pointer-events:none;background:rgba(158,194,98,.10);border:1px solid rgba(158,194,98,.55);display:none;';
@@ -789,7 +791,8 @@ export function mountTimeline(
        所以只留**一个下拉**：第一项「全览」= 不聚焦（看整条时间线），其余项 = 聚焦某条剧情线（线外内容截断）。 */
     ui.innerHTML = `
       <select class="lk-tl-tab" id="lk-line-sel" title="全览 = 看整条时间线；选一条剧情线 = 聚焦只看它" style="font-size:11px;background:none;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--fg);padding:2px 4px;" ${lines.length ? '' : 'disabled'}>
-        <option value="">— 全览 —</option>${lineOpts}</select>`;
+        <option value="">— 全览 —</option>${lineOpts}<option value="__new__">＋ 新建剧情线…</option></select>`;
+    /* 下拉底部那一项是**动作**（开右侧创建面板），不是状态：见 change 处理器里的 __new__ 分支。 */
     /* 状态区固定在面板头**最左**（标题左边）：「左＝看什么，右＝做什么」。工具在 #lk-tools 里，两边不混。 */
     let stateEl = TL_HEAD.querySelector('#lk-state') as HTMLElement | null;
     if (!stateEl) {
@@ -822,6 +825,14 @@ export function mountTimeline(
     });
     ui.querySelector('#lk-line-sel')?.addEventListener('change', (e) => {
       const v = (e.target as HTMLSelectElement).value;
+      /* 「＋ 新建剧情线…」是**动作**不是状态：开右侧创建面板，然后把下拉拨回原样
+         （否则它会一直显示成"当前聚焦的是新建剧情线"）。用户 2026-09-19：
+         「在聚焦的下拉框底部增加一个新建剧情线的功能，点击在右侧面板展开新建剧情线的面板」。 */
+      if (v === '__new__') {
+        (e.target as HTMLSelectElement).value = activeLineId ?? '';
+        openNewLinePanel();
+        return;
+      }
       /* 空串 = 「— 世界历史 —」，是一个**选择**（不聚焦任何剧情线），不是"没选"。
          下面的 renderStoryUI() 认得这个区别（见那里的 linePinned）。 */
       activeLineId = v || null;
@@ -833,32 +844,12 @@ export function mountTimeline(
          等这一帧画完再量宽度，否则都是旧几何。C 步做完后这里改成 fit 到该线的区段。 */
       requestAnimationFrame(() => fitAll());
     });
-    document.getElementById('lk-line-new')?.addEventListener('click', () => {
-      if (pendingSegs.length === 0) {
-        /* B 步（右侧创建面板）之前：先用整条时间线的跨度做默认区段，保证「＋剧情线」立刻可见、可聚焦 */
-        const ys = (timeline()?.nodes ?? []).map((nd) => nd.year ?? 0);
-        if (ys.length) pendingSegs = [{ start: yearEpoch(Math.min(...ys)), end: yearEpoch(Math.max(...ys)) }];
-        if (pendingSegs.length === 0) return;
-      }
-      const id = uid('sl');
-      const tlId = activeTimelineId();
-      if (!tlId) return;
-      const segs = pendingSegs.slice();
-      /* 走 store.update：直接 push 进 tl.storylines（那是 store.data 里的活引用）
-         既不通知订阅者（tab 计数等视图停在旧值），也不进撤销栈，更不会触发落盘 */
-      store.update((d) => {
-        const tl2 = d.worldsets[store.activeWorld]?.timelines[tlId];
-        if (!tl2) return;
-        if (!tl2.storylines) tl2.storylines = [];
-        tl2.storylines.push({ id, name: `剧情线 ${tl2.storylines.length + 1}`, segments: segs });
-      });
-      pendingSegs = [];
-      activeLineId = id;
-      brushing = false;
-      clearBrushSel();
-      renderStoryUI();
-      render();
-    });
+    /* 「＋剧情线」（面板头右上角那个按钮）与聚焦下拉底部的「＋ 新建剧情线…」是**同一个动作**：
+       开右侧创建面板，而不是立刻建一条。⚠️ 旧写法在这里直接 push 了一条线，而且把
+       `yearEpoch(年)`（**epoch 秒**）写进了 `segments` —— 而段的语义是「年」（见 `inLine()` /
+       渲染遮罩的 `yearEpoch(s.start)`），那种线段大到 `inLine(任何年份)` 都为 false ⇒ 聚焦它
+       等于什么都看不见。现在统一走面板，段一律写「年」（`openNewLinePanel()` 里种的默认段也是年）。 */
+    document.getElementById('lk-line-new')?.addEventListener('click', () => openNewLinePanel());
   }
 
   /* 刷选结果统一为「年」——与 segments 的既有语义、yearEpoch()、inLine() 一致。
@@ -941,6 +932,8 @@ export function mountTimeline(
       pendingSegs.push({ start: Math.round(Math.min(yA, yB) * 10) / 10, end: Math.round(Math.max(yA, yB) * 10) / 10 });
     }
     renderStoryUI();
+    /* 创建面板开着时，新拖出来的段落要立刻出现在它里面（那条 pointerup 只重画画布与状态区） */
+    if (newLinePanelOpen) renderNewLinePanel();
     render();
   });
 
@@ -1032,6 +1025,8 @@ export function mountTimeline(
   function renderSegPanel() {
     const toolHost = document.getElementById('lk-tool-host');
     if (!toolHost) return;
+    /* 「新建剧情线」面板占着同一个宿主：它会自己画、自己收，这里别把它冲掉 */
+    if (newLinePanelOpen) return;
     const tl = timeline();
     const ln = activeLineId && tl ? tl.storylines.find((l) => l.id === activeLineId) : undefined;
     if (!ln) { toolHost.innerHTML = ''; return; }
@@ -1106,6 +1101,116 @@ export function mountTimeline(
         renderSegPanel();
         render();
       });
+    });
+  }
+
+  /* ── 新建剧情线面板（右侧宿主 `#lk-tool-host`）──
+     两个入口：面板头右上角的「＋剧情线」按钮、**聚焦下拉底部的「＋ 新建剧情线…」**
+     （用户 2026-09-19：「在聚焦的下拉框底部增加一个新建剧情线的功能，点击在右侧面板展开
+     新建剧情线的面板」）。
+     段一律用**年**（与 `segments` 的既有语义、`inLine()`、遮罩里的 `yearEpoch(s.start)` 一致）；
+     「＋ 添加一段」进拾取态、在时间线上拖出段（pointerup 收尾时会重画本面板）。
+     ⚠️ 本面板存在期间 `renderSegPanel()` 会早退 —— 同一个宿主，否则会被「这条线的段」冲掉。 */
+  function openNewLinePanel(): void {
+    const ys = (timeline()?.nodes ?? []).map((nd) => nd.year ?? 0);
+    /* 默认给一段 = 整条时间线的跨度（**年**）：省得先拖一段才能建；不想要就按 ✕ 删掉 */
+    pendingSegs = ys.length ? [{ start: Math.min(...ys), end: Math.max(...ys) }] : [];
+    newLineName = `剧情线 ${linesOf().length + 1}`;
+    newLinePanelOpen = true;
+    brushing = false;
+    clearBrushSel();
+    renderNewLinePanel();
+    renderStoryUI();     /* 拾取态与下拉的高亮跟着复位 */
+  }
+
+  function closeNewLinePanel(): void {
+    newLinePanelOpen = false;
+    pendingSegs = [];
+    brushing = false;
+    clearBrushSel();
+    const toolHost = document.getElementById('lk-tool-host');
+    if (toolHost) toolHost.innerHTML = '';
+    renderStoryUI();
+    render();
+  }
+
+  function renderNewLinePanel(): void {
+    const toolHost = document.getElementById('lk-tool-host');
+    if (!toolHost || !newLinePanelOpen) return;
+    const segRow = (s: { start: number; end: number | null }, i: number): string => [
+      '<div style="display:flex;align-items:center;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 8px;">',
+      `<input data-nv="${i}" data-k="start" value="${s.start}" title="开始（年）" style="width:66px;background:none;border:none;color:var(--accent);font-family:var(--font-mono);font-size:var(--text-xs);" />`,
+      '<span style="color:var(--fg-2);font-size:var(--text-xs);">→</span>',
+      `<input data-nv="${i}" data-k="end" value="${s.end === null ? '' : s.end}" placeholder="∞" title="结束（年；留空＝一直延续）" style="width:66px;background:none;border:none;color:var(--accent);font-family:var(--font-mono);font-size:var(--text-xs);" />`,
+      `<button data-ni="${i}" title="删除这一段" style="margin-left:auto;background:none;border:none;color:var(--danger);cursor:pointer;font-size:12px;">✕</button>`,
+      '</div>',
+    ].join('');
+    toolHost.innerHTML = [
+      '<div style="padding:12px 14px;display:flex;flex-direction:column;gap:10px;">',
+      '<div style="font-size:15px;font-weight:600;color:var(--fg);">新建剧情线</div>',
+      '<div style="display:flex;flex-direction:column;gap:4px;">',
+      '<label style="font-size:var(--text-xs);color:var(--fg-2);" for="nl-name">名字</label>',
+      `<input id="nl-name" type="text" value="${escapeHtml(newLineName)}" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;" />`,
+      '</div>',
+      '<div style="display:flex;align-items:center;gap:6px;font-size:var(--text-xs);color:var(--fg-2);">',
+      `<span>${pendingSegs.length} 段（单位：年）</span>`,
+      brushing ? '<span style="color:var(--accent);">在时间线上拖出一段…</span>' : '',
+      '<button id="nl-add" class="lk-tl-tab is-new" title="在时间线上拖动框出一段（Alt 拖 = 擦除；靠近节点会吸附）" style="margin-left:auto;">＋ 添加一段</button>',
+      '</div>',
+      `<div style="display:flex;flex-direction:column;gap:4px;">${pendingSegs.length ? pendingSegs.map(segRow).join('') : '<div style="font-size:var(--text-xs);color:var(--fg-2);">（还没有段：点「＋ 添加一段」在时间线上拖）</div>'}</div>`,
+      '<div style="display:flex;gap:8px;">',
+      '<button id="nl-ok" style="flex:1;background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:7px;font-size:var(--text-sm);cursor:pointer;">创建</button>',
+      '<button id="nl-cancel" style="flex:1;background:var(--surface-2);color:var(--fg-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px;font-size:var(--text-sm);cursor:pointer;">取消</button>',
+      '</div>',
+      '</div>',
+    ].join('');
+    const nameEl = toolHost.querySelector('#nl-name') as HTMLInputElement | null;
+    nameEl?.addEventListener('change', () => { newLineName = nameEl.value; });
+    toolHost.querySelectorAll('[data-nv]').forEach((el) => {
+      const h = el as HTMLInputElement;
+      h.addEventListener('change', () => {
+        const i = parseInt(h.dataset.nv!, 10);
+        const raw = h.value.trim();
+        const num = raw === '' ? null : Number(raw);
+        if (num !== null && !Number.isFinite(num)) return;
+        const seg = pendingSegs[i];
+        if (!seg) return;
+        if (h.dataset.k === 'start') { if (num !== null) seg.start = num; } else seg.end = num;
+        renderNewLinePanel();
+      });
+    });
+    toolHost.querySelectorAll('[data-ni]').forEach((el) => el.addEventListener('click', () => {
+      pendingSegs.splice(parseInt((el as HTMLElement).dataset.ni!, 10), 1);
+      renderNewLinePanel();
+    }));
+    toolHost.querySelector('#nl-add')?.addEventListener('click', () => {
+      brushing = true;
+      renderNewLinePanel();
+      renderStoryUI();
+    });
+    toolHost.querySelector('#nl-cancel')?.addEventListener('click', () => closeNewLinePanel());
+    toolHost.querySelector('#nl-ok')?.addEventListener('click', () => {
+      const tlId = activeTimelineId();
+      if (!tlId) return;
+      const id = uid('sl');
+      const segs = pendingSegs.slice();
+      const name = (newLineName || '').trim() || `剧情线 ${linesOf().length + 1}`;
+      /* 走 store.update：直接 push 进 `tl.storylines`（store.data 里的活引用）既不通知订阅者
+         （段面板/自动落盘都不动）、也不进撤销栈 —— 重启后那条线会「复活」（见 renderSegPanel 里的说明） */
+      store.update((d) => {
+        const tl2 = d.worldsets[store.activeWorld]?.timelines[tlId];
+        if (!tl2) return;
+        if (!tl2.storylines) tl2.storylines = [];
+        tl2.storylines.push({ id, name, segments: segs });
+      });
+      newLinePanelOpen = false;
+      pendingSegs = [];
+      brushing = false;
+      clearBrushSel();
+      activeLineId = id;   /* 建完就聚焦它（与旧按钮一致：立刻能看到效果） */
+      renderStoryUI();
+      render();
+      renderSegPanel();    /* 右侧换成「这条线的段」编辑面板 */
     });
   }
 

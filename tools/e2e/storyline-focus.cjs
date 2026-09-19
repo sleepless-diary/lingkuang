@@ -63,8 +63,11 @@ async function main() {
       years: ticks.map((t) => { const m = /^(-?\\d+)年$/.exec(t.label); return m ? Number(m[1]) : null; }).filter((y) => y !== null),
     };
   })()`);
-  /** 视图是缓动的（kickEase 600ms）⇒ 连续两次读数一致才算稳定 */
-  const stableView = async (ms = 6000) => {
+  /** 视图是缓动的（kickEase 600ms）⇒ 读数必须稳定再断言。
+   *  ⚠️ 只用「连续 2 次一致」不够：窗口不在前台时 rAF 被节流，缓动**中间态**的 DOM 会连续两次
+   *     一模一样（实测踩到：抽样落在「可见范围整段落在被压掉的空隙里」那一帧 ⇒ 标尺 0 条刻度）。
+   *     所以：连续 3 次一致（间隔 260ms）+ **标尺真的画出来了**（≥4 条主刻度）才算稳定。 */
+  const stableView = async (ms = 8000) => {
     let prev = null, same = 0, cur = null;
     const t0 = Date.now();
     for (;;) {
@@ -72,7 +75,7 @@ async function main() {
       const sig = JSON.stringify(cur.nodes.map((n) => n.title + '@' + n.x)) + '|' + JSON.stringify(cur.ticks.map((t) => t.label + '@' + t.x));
       same = prev === sig ? same + 1 : 0;
       prev = sig;
-      if (same >= 1) return cur;
+      if (same >= 2 && cur.majors >= 4) return cur;
       if (Date.now() - t0 > ms) return cur;
       await sleep(260);
     }
@@ -170,6 +173,53 @@ async function main() {
   check('★7 关掉非线性后仍停在聚焦态：4 个线内节点 + 断口 + 色带都回来',
     backFocus.nonlinear === false && backFocus.nodes.length === 4 && backFocus.cuts >= 1 && backFocus.bands >= 1,
     { n: backFocus.nodes.length, cuts: backFocus.cuts, bands: backFocus.bands });
+
+  /* ── ⑦ 聚焦下拉底部的「＋ 新建剧情线…」→ 右侧展开创建面板（用户 2026-09-19：
+      「在聚焦的下拉框底部增加一个新建剧情线的功能，点击在右侧面板展开新建剧情线的面板」） ── */
+  const opened = await ev(`(() => {
+    const s = document.getElementById('lk-line-sel');
+    if (!s) return { has: false };
+    const last = s.options[s.options.length - 1];
+    s.value = last.value;
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+    const host = document.getElementById('lk-tool-host');
+    return {
+      has: true,
+      lastLabel: last.textContent,
+      backTo: s.value,
+      panel: !!host.querySelector('#nl-ok'),
+      name: host.querySelector('#nl-name')?.value ?? null,
+      segRows: host.querySelectorAll('[data-nv][data-k="start"]').length,
+    };
+  })()`);
+  await sleep(400);
+  check('★8 下拉底部有「＋ 新建剧情线…」：选它 ⇒ 右侧展开创建面板（名字+段+创建/取消），且下拉**弹回**当前聚焦值（不把动作当状态）',
+    opened.has === true && String(opened.lastLabel).includes('新建剧情线') && opened.backTo === 'sl-1'
+    && opened.panel === true && String(opened.name).includes('剧情线') && opened.segRows >= 1,
+    opened);
+
+  /* ── ⑧ 点「创建」⇒ 真的多一条线、右侧换成它的段面板，且段的单位是**年**
+      （旧 `#lk-line-new` 把 `yearEpoch(年)`＝epoch 秒写进 segments，那种线 `inLine()` 永远为 false） ── */
+  const created = await ev(`(() => {
+    document.getElementById('nl-ok').click();
+    return { gone: !document.getElementById('nl-ok') };
+  })()`);
+  await sleep(700);
+  const afterNew = await ev(`(() => {
+    const s = document.getElementById('lk-line-sel');
+    return {
+      sel: s.value,
+      opts: [...s.options].map((o) => o.textContent),
+      segPanel: !!document.getElementById('seg-add'),
+      segStarts: [...document.querySelectorAll('#lk-tool-host [data-sv][data-k="start"]')].map((el) => Number(el.value)),
+    };
+  })()`);
+  check('★9 点「创建」⇒ 多一条剧情线并聚焦它、右侧换成段编辑面板；段的单位是**年**（不是 epoch 秒的十亿级）',
+    created.gone === true && afterNew.sel !== '' && afterNew.sel !== 'sl-1' && afterNew.sel !== '__new__'
+    && afterNew.opts.some((t) => String(t).includes('剧情线'))
+    && afterNew.segPanel === true
+    && afterNew.segStarts.length >= 1 && afterNew.segStarts.every((v) => Number.isFinite(v) && Math.abs(v) < 1e6),
+    { created, sel: afterNew.sel, opts: afterNew.opts, segPanel: afterNew.segPanel, segStarts: afterNew.segStarts });
 
   const errs = await ev(`window.__errs`);
   check('★6 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

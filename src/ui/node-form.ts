@@ -160,13 +160,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
       <div id="nf-props" style="display:flex;flex-direction:column;gap:6px;border-top:1px dashed var(--border-soft);padding-top:8px;"></div>
       <div id="nf-causes" style="display:flex;flex-direction:column;gap:6px;border-top:1px dashed var(--border-soft);padding-top:8px;"></div>
       <div id="nf-err" style="font-size:var(--text-xs);color:#c0392b;display:none;"></div>
-      <div style="display:flex;gap:8px;">
-        <button id="nf-ok" style="flex:1;background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:7px;font-size:var(--text-sm);cursor:pointer;">创建</button>
-        <button id="nf-cancel" style="flex:1;background:var(--surface-2);color:var(--fg-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px;font-size:var(--text-sm);cursor:pointer;">取消</button>
-      </div>
-      <details style="border-top:1px dashed var(--border-soft);padding-top:8px;">
-        <summary style="${LBL}cursor:pointer;">其他（可留空 · 建完也能在信息面板里改）</summary>
-        <div style="display:flex;flex-direction:column;gap:10px;padding-top:10px;">
+      <div style="display:flex;flex-direction:column;gap:10px;border-top:1px dashed var(--border-soft);padding-top:8px;">
           <div style="display:flex;flex-direction:column;gap:4px;">
             <label style="${LBL}" for="nf-type">类型</label>
             <select id="nf-type" style="${INP}cursor:pointer;">
@@ -183,7 +177,11 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
             <textarea id="nf-doc" placeholder="#事件：&#10;节点正文…" style="${INP}width:100%;height:110px;resize:vertical;font-family:var(--font-mono);line-height:1.6;"></textarea>
           </div>
         </div>
-      </details>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button id="nf-ok" style="flex:1;background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:7px;font-size:var(--text-sm);cursor:pointer;">创建</button>
+        <button id="nf-cancel" style="flex:1;background:var(--surface-2);color:var(--fg-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px;font-size:var(--text-sm);cursor:pointer;">取消</button>
+      </div>
     </div>`;
 
   const title = host.querySelector('#nf-title') as HTMLInputElement;
