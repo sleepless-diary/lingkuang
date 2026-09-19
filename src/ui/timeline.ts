@@ -567,8 +567,10 @@ export function mountTimeline(
         zoomHold = { x: mx, t: tAtSec };
       } else {
         zoomHold = null;                       /* 一旦开始平移，锚点就不管了 */
-        targetView.panX -= e.deltaY;   /* 滚轮上下 → 时间线左右平移 */
-        if (e.deltaX) targetView.panX -= e.deltaX;
+        /* 平移只认**一个轴**：Shift+滚轮时 Chromium 把量塞进 deltaX（deltaY 可能同时非 0），
+           两个都减 = 一次滚动走两倍 ⇒ 用户实测「shift 滚轮横移时有时候会突然跳一下」。 */
+        const d = e.deltaX !== 0 ? e.deltaX : e.deltaY;
+        targetView.panX -= d;
       }
       kickEase();
     },
