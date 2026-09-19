@@ -65,22 +65,37 @@ async function main() {
   const gapSpread = gaps.length ? Math.max(...gaps) - Math.min(...gaps) : 0;
   check('★2 主刻度在像素上等距（间距浮动 ≤ 2px）', gaps.length >= 1 && gapSpread <= 2, { gaps, gapSpread });
 
+  /* ── ②b ⭐ 用户 2026-09-18：「**缩放到时和分时会突然变得密集**」——
+     时/分档必须按算出来的 stepSec 铺网格（旧代码写死 1 小时/1 分钟，等于无视步长）。 ── */
+  await ev(`(() => {
+    const el = document.querySelector('#lk-pane-timeline .tl__axis-tick--major') || document.querySelector('#lk-pane-timeline');
+    const r = el.getBoundingClientRect();
+    /* Alt+滚轮 = 缩放（factor 1.2/格，见 timeline.ts:497-503）：从 ~80px/年 到「时」档要 >2.6 万 px/年 ⇒ 约 32 格 */
+    for (let i = 0; i < 60; i++) el.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, altKey: true, clientX: r.left + 40, bubbles: true, cancelable: true }));
+    return true;
+  })()`);
+  await sleep(600);
+  const zoomed = await ev(ticksExpr);
+  const zLabels = zoomed.map((t) => t.label);
+  const isHM = zLabels.some((l) => /时$/.test(l) || /分$/.test(l));
+  const zGaps = [];
+  for (let i = 1; i < zoomed.length; i++) zGaps.push(zoomed[i].x - zoomed[i - 1].x);
+  const zMin = zGaps.length ? Math.min(...zGaps) : 0;
+  check('★2b 缩到「时/分」档时不会突然变密（真进到该档 + 主刻度 ≤ 60 条 + 最小间距 ≥ 12px）',
+    isHM === true && zoomed.length <= 60 && zMin >= 12,
+    { sample: zLabels.slice(0, 4), n: zoomed.length, minGap: zMin });
   /* ── ③ 同一屏里不许出现重复标签 ── */
   const labels = before.map((t) => t.label);
   check('★3 一屏内没有重复的刻度标签', new Set(labels).size === labels.length, { n: labels.length, uniq: new Set(labels).size });
 
   /* ── ④ 平移之后：同一标签必须跟着整体位移（这就是用户报的「数字会变」） ── */
+  /* 平移 = 普通滚轮（timeline.ts:505 `view.panX -= e.deltaY`）⇒ deltaY -180 让整条标尺右移 180px */
   const panned = await ev(`(() => {
     const el = document.querySelector('#lk-pane-timeline .tl__axis-tick--major') || document.querySelector('#lk-pane-timeline');
-    const r = el.getBoundingClientRect();
-    const base = { bubbles: true, cancelable: true, clientX: r.left + 60, clientY: r.top + 6, pointerId: 7, pointerType: 'mouse', isPrimary: true, button: 0 };
-    el.dispatchEvent(new PointerEvent('pointerdown', Object.assign({}, base, { buttons: 1 })));
-    for (const dx of [-60, -120, -180]) {
-      window.dispatchEvent(new PointerEvent('pointermove', Object.assign({}, base, { clientX: base.clientX + dx, buttons: 1 })));
-    }
-    window.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, base, { clientX: base.clientX - 180, buttons: 0 })));
+    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -180, bubbles: true, cancelable: true }));
     return true;
   })()`);
+  const PAN_PX = 180;
   await sleep(500);
   const after = await ev(ticksExpr);
   const mapA = new Map(before.map((t) => [t.label, t.x]));
@@ -88,8 +103,8 @@ async function main() {
   const deltas = [...new Set(common.map((c) => c.dx))];
   const panDelta = (after[0]?.x ?? 0) - (before[0]?.x ?? 0);
   check('★4 平移后同一标签整体位移一致（标签绑的是时间，不是屏幕位置）',
-    panned === true && common.length >= 2 && deltas.length === 1,
-    { panDelta, common: common.slice(0, 5), deltas });
+    panned === true && panDelta === PAN_PX && common.length >= 2 && deltas.length === 1 && deltas[0] === PAN_PX,
+    { panDelta, expect: PAN_PX, common: common.slice(0, 5), deltas });
 
   const errs = await ev(`window.__errs`);
   check('★5 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

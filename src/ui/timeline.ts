@@ -125,9 +125,13 @@ export function mountTimeline(
       const n = Math.max(1, niceStep(days));
       return { stepSec: Math.round(n * 86400), unit: '日' };
     }
+    /* 时/分档也走 niceStep（旧代码 hours 直接用、分档写死 60 秒 ⇒ 缩到这两档时
+       刻度按「1 小时 / 1 分钟」硬网格铺，屏幕上会**突然变密**）。 */
     const hours = days * 24;
-    if (hours >= 1) return { stepSec: Math.round(hours * 3600), unit: '时' };
-    return { stepSec: 60, unit: '分' };
+    if (hours >= 1) { const n = Math.max(1, niceStep(hours)); return { stepSec: Math.round(n * 3600), unit: '时' }; }
+    const mins = hours * 60;
+    const nm = Math.max(1, niceStep(mins));
+    return { stepSec: Math.max(60, Math.round(nm * 60)), unit: '分' };
   }
   /* 标尺刻度文字：走历法(fromEpoch)，返回两级 {prev(上一级,更粗), cur(当前,细)}。
      例 unit='日' → {prev:'7月', cur:'15号'}；unit='月' → {prev:'285年', cur:'7月'} */
@@ -209,7 +213,9 @@ export function mountTimeline(
       let s = Math.floor(s0 / daySpan) * daySpan;
       for (let i = 0; s <= s1 && i <= MAX_TICKS; i++) { mainSec.push(s); s += daySpan; }
     } else {
-      const grid = unit === '时' ? 3600 : 60;
+      /* 时/分档的网格就是 stepSec（用户 2026-09-18：「缩放到时和分时会突然变得密集」——
+         旧代码这里写死 3600/60，等于无视 stepSec，一小时一根线地铺满屏幕）。 */
+      const grid = Math.max(60, stepSec);
       let s = Math.floor(s0 / grid) * grid;
       for (let i = 0; s <= s1 && i <= MAX_TICKS; i++) { mainSec.push(s); s += grid; }
     }
