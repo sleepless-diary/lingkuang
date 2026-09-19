@@ -56,6 +56,11 @@ export function mountTimeline(
   const EASE_K = 14;                       /* 每秒吃掉多少剩余比例：14 ≈ 250ms 基本到位 */
   let easeRaf = 0;
   let easeTimer = 0;
+  /* 缩放锚点（第 3.9 片补）：用户实测「缩放时标尺会左右横移」——
+     病根两条：① 锚点时间 `tAt` 用**还在动画中的当前视图**算，连滚两格就漂；
+     ② 每帧把 spacing 和 panX **各自**插值，锚点自然按不住（spacing 变了 panX 没跟上）。
+     现在：锚点时间一律用**目标视图**算，并且缩放期间 panX 由「锚点不动」反推。 */
+  let zoomHold: { x: number; t: number } | null = null;
   /* ⚠️ 三种情况**不做动画、直接落值**：
      ① 系统开了「减少动态效果」；② 页面不可见；③ **窗口没聚焦**。
      ③ 是实测逼出来的：后台/未聚焦窗口里 rAF 被降频甚至暂停，平滑循环会**停在半路**，
@@ -72,9 +77,14 @@ export function mountTimeline(
       const dt = Math.min(0.1, (now - last) / 1000);   /* 卡帧时别一次吃掉太多 */
       last = now;
       const a = 1 - Math.exp(-EASE_K * dt);
-      view.panX += (targetView.panX - view.panX) * a;
       const ls = Math.log(view.spacing), lt = Math.log(targetView.spacing);
       view.spacing = Math.exp(ls + (lt - ls) * a);
+      if (zoomHold) {
+        /* 缩放：把锚点那一格**钉在屏幕同一位置**（panX 由 spacing 反推），就不会左右横移 */
+        view.panX = zoomHold.x - 40 - (zoomHold.t / SEC_PER_YEAR) * view.spacing;
+      } else {
+        view.panX += (targetView.panX - view.panX) * a;
+      }
       render();
       const done = Math.abs(targetView.panX - view.panX) < 0.05
         && Math.abs(Math.log(targetView.spacing / view.spacing)) < 0.0005;
@@ -498,6 +508,7 @@ export function mountTimeline(
       return;
     }
     if (dragging) {
+      zoomHold = null;                     /* 手动拖动平移：解除缩放锚点 */
       view.panX += e.clientX - lastX;
       targetView.panX = view.panX;      /* 拖动 = 1:1，不给缓动插队 */
       lastX = e.clientX;
@@ -547,13 +558,15 @@ export function mountTimeline(
       if (e.altKey) {
         const rect = wrap.getBoundingClientRect();
         const mx = e.clientX - rect.left;
-        const tAt = xToTime(mx) / SEC_PER_YEAR;   /* 鼠标位置 epoch 秒 → 年(近似)，spacing 为 px/年 */
         const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-        /* 缩放：改 targetView，并用「鼠标下的时间点不动」反推 target.panX */
         const next = Math.min(1e8, Math.max(0.05, targetView.spacing * factor));
-        targetView.panX = mx - 40 - tAt * next;
+        /* 锚点时间要用**目标视图**算（用当前视图算的话，连滚几格会拿还在动画中的位置当锚点 ⇒ 横移） */
+        const tAtSec = (mx - 40 - targetView.panX) / targetView.spacing * SEC_PER_YEAR;
         targetView.spacing = next;
+        targetView.panX = mx - 40 - (tAtSec / SEC_PER_YEAR) * next;
+        zoomHold = { x: mx, t: tAtSec };
       } else {
+        zoomHold = null;                       /* 一旦开始平移，锚点就不管了 */
         targetView.panX -= e.deltaY;   /* 滚轮上下 → 时间线左右平移 */
         if (e.deltaX) targetView.panX -= e.deltaX;
       }

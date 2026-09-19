@@ -93,6 +93,36 @@ async function main() {
   const gapSpread = gaps.length ? Math.max(...gaps) - Math.min(...gaps) : 0;
   check('★2 主刻度在像素上等距（间距浮动 ≤ 2px）', gaps.length >= 1 && gapSpread <= 2, { gaps, gapSpread });
 
+  /* ── ①c ⭐ 用户 2026-09-18：「**缩放时标尺会左右横移**，应该是标尺缩放的中点和缓动中点不一致」——
+     缩放必须**钉住鼠标下那一刻的时间**：小步缩放（3 格，仍在年档）前后，anchorX 处插值出的年份不许变。 ── */
+  const anchorYear = (ticks, x) => {
+    const pts = ticks
+      .map((k) => ({ y: Number((k.label.match(/^(-?\d+)年$/) || [])[1]), x: k.x }))
+      .filter((q) => Number.isFinite(q.y))
+      .sort((a2, b2) => a2.x - b2.x);
+    for (let i = 1; i < pts.length; i++) {
+      if (x >= pts[i - 1].x && x <= pts[i].x) {
+        const r = (x - pts[i - 1].x) / ((pts[i].x - pts[i - 1].x) || 1);
+        return pts[i - 1].y + (pts[i].y - pts[i - 1].y) * r;
+      }
+    }
+    return null;
+  };
+  const ANCHOR_X = 300;                    /* 锚点：wrap 左边向右 300px 处 */
+  const y0 = anchorYear(before, ANCHOR_X);
+  await ev(`(() => {
+    for (let i = 0; i < 3; i++) {
+      const el = document.querySelector('#lk-pane-timeline .tl-wrap') || document.querySelector('#lk-pane-timeline');
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, altKey: true, clientX: r.left + ${ANCHOR_X}, bubbles: true, cancelable: true }));
+    }
+    return true;
+  })()`);
+  const afterSmallZoom = await stableTicks();
+  const y1 = anchorYear(afterSmallZoom, ANCHOR_X);
+  check('★1c 缩放钉住鼠标下的时间（锚点处插值出的年份前后不变，±0.15 年）',
+    y0 !== null && y1 !== null && Math.abs(y1 - y0) < 0.15,
+    { anchorX: ANCHOR_X, before: y0, after: y1, d: y0 !== null && y1 !== null ? +(y1 - y0).toFixed(3) : null, ticks: afterSmallZoom.slice(0, 4) });
   /* ── ②b ⭐ 用户 2026-09-18：「**缩放到时和分时会突然变得密集**」——
      时/分档必须按算出来的 stepSec 铺网格（旧代码写死 1 小时/1 分钟，等于无视步长）。 ── */
   await ev(`(() => {
