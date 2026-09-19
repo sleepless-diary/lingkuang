@@ -669,20 +669,43 @@ export function mountTimeline(
     const ui = document.createElement('span');
     ui.id = 'lk-story-ui';
     ui.style.cssText = 'display:flex;gap:4px;align-items:center;flex-shrink:0;';
+    /* 状态区（第 4.0 片 A 步）：**你正在看什么** —— 与右上角「工具（做什么）」分开。
+       「全览」= 不聚焦任何剧情线（default）；「聚焦」= 只看选中的那条线。 */
+    const focused = activeLineId !== null;
     ui.innerHTML = `
+      <span class="lk-state-seg" id="lk-story-mode">
+        <button class="lk-tl-tab${focused ? '' : ' is-active'}" data-mode="all" title="全览：看整条时间线">全览</button>
+        <button class="lk-tl-tab${focused ? ' is-active' : ''}" data-mode="focus" title="聚焦：只看选中的剧情线">聚焦</button>
+      </span>
       <select class="lk-tl-tab" id="lk-line-sel" style="font-size:11px;background:none;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--fg);padding:2px 4px;" ${lines.length ? '' : 'disabled'}>
-        <option value="">— 世界历史 —</option>${lineOpts}</select>
-      <button class="lk-tl-tab is-new" id="lk-line-new" title="新建剧情线">＋线</button>
-      <button class="lk-tl-tab" id="lk-brush" title="笔刷：在时间线上框选时间段（按住 Alt 拖 = 擦除）" style="font-size:11px;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--fg);padding:2px 6px;cursor:pointer;background:${brushing ? 'rgba(158,194,98,.2)' : 'none'};">笔刷</button>
-      ${pendingSegs.length ? `<span class="cnt" style="font-size:10px;color:var(--accent);">已选 ${pendingSegs.length} 段</span>` : ''}`;
-    /* 固定槽位：story-ui 恒在最前（笔刷/线），extras 恒在最后（循环/非线性），不因重建互换 */
-    const tools = TL_HEAD.querySelector('#lk-tools');
-    if (tools) tools.insertBefore(ui, tools.firstChild); else TL_HEAD.appendChild(ui);
+        <option value="">— 剧情线 —</option>${lineOpts}</select>`;
+    /* 状态区固定在面板头**最左**（标题左边）：「左＝看什么，右＝做什么」。工具在 #lk-tools 里，两边不混。 */
+    let stateEl = TL_HEAD.querySelector('#lk-state') as HTMLElement | null;
+    if (!stateEl) {
+      stateEl = document.createElement('span');
+      stateEl.id = 'lk-state';
+      stateEl.style.cssText = 'display:flex;gap:6px;align-items:center;flex-shrink:0;margin-right:10px;padding-right:10px;border-right:1px solid var(--border-soft);';
+      TL_HEAD.insertBefore(stateEl, TL_HEAD.firstChild);
+    }
+    stateEl.innerHTML = '';
+    stateEl.appendChild(ui);
 
     ui.querySelector('#lk-brush')?.addEventListener('click', () => {
       brushing = !brushing;
       renderStoryUI();
       if (!brushing) clearBrushSel();
+    });
+    ui.querySelectorAll('#lk-story-mode [data-mode]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const wantFocus = (b as HTMLElement).dataset.mode === 'focus';
+        /* 聚焦 = 选中第一条线（没有线就保持全览）；全览 = activeLineId 置 null（显式选择） */
+        const first = linesOf()[0]?.id ?? null;
+        activeLineId = wantFocus ? first : null;
+        linePinned = true;
+        render();
+        renderStoryUI();
+        renderSegPanel();
+      });
     });
     ui.querySelector('#lk-line-sel')?.addEventListener('change', (e) => {
       const v = (e.target as HTMLSelectElement).value;
@@ -695,7 +718,12 @@ export function mountTimeline(
       renderSegPanel();
     });
     ui.querySelector('#lk-line-new')?.addEventListener('click', () => {
-      if (pendingSegs.length === 0) { brushing = true; renderStoryUI(); return; }
+      if (pendingSegs.length === 0) {
+        /* B 步（右侧创建面板）之前：先用整条时间线的跨度做默认区段，保证「＋剧情线」立刻可见、可聚焦 */
+        const ys = (timeline()?.nodes ?? []).map((nd) => nd.year ?? 0);
+        if (ys.length) pendingSegs = [{ start: yearEpoch(Math.min(...ys)), end: yearEpoch(Math.max(...ys)) }];
+        if (pendingSegs.length === 0) return;
+      }
       const id = uid('sl');
       const tlId = activeTimelineId();
       if (!tlId) return;
