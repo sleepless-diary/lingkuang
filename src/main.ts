@@ -6,6 +6,7 @@ import { undoWithVault, redoWithVault } from './store/actions';
 import { ensureEntityTypes, ensureEntityFields } from './store/entities';
 import { showShellAlert, removeShellAlert } from './ui/alert';
 import { watchActivity } from './ui/agent-activity';
+import { restoreSession, watchSession } from './ui/session';
 import './style.css';
 
 /** JSON 缓存判损信息（主进程 `data:load` 回传）。null = 正常。
@@ -455,6 +456,11 @@ async function main() {
   watchActivity(store);
   const host = document.getElementById('app')!;
   renderShell(store, host);
+  /* 回到上次关闭时的样子（上次的世界 / 时间线 / 工具，见 `src/ui/session.ts`）。
+     位置很讲究：**必须在 `renderShell()` 之后**（工具栏按钮那时才存在，恢复"上次打开的工具"
+     要靠点它）、**必须在 `watchSession()` 之前**（否则启动时的默认世界/时间线会先把存档盖掉）。 */
+  restoreSession(store);
+  watchSession(store);
   /* 判损横幅必须挂在壳渲染之后（宿主 #lk-alerts 在那之前不存在）。
      放在这里而不是 loadData 里：横幅要说的话取决于「vault 有没有兜住」，
      而那要等 vault 扫描完才知道。 */

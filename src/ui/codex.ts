@@ -32,6 +32,7 @@ import { createEvolutionRail, type Rail } from './evolution-rail';
 import { createVaultNotices, type VaultNotices } from './vault-notice';
 import { loadSettings } from './settings';
 import { setAgentFocus, setAgentFocusLive } from './agent-context';
+import { lastTarget, rememberTarget } from './session';
 import {
   epochOfNodes, frameDiff, nearestVersion, normalizeFrames, patchSummary, statesOf, versionAtNode, type EntityState,
 } from '../store/evolution';
@@ -75,6 +76,19 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
      树**默认全展开**（见下面三个 collapsed* Set），所以打开左栏就看得到全部条目。 */
   let activeId = '';            /* 当前实体 */
   let nodeTarget: NodeTarget | null = null;   /* 当前节点 */
+  /* 上次在编哪一条（`src/ui/session.ts`）：**挂载时就落位**，好让下面第一次 render 直接画它 ——
+     这就是用户要的「进入灵框＝接着上次干活」。找不到那条（被删了 / 换了世界 / 换了数据目录）
+     就当没有存档，走原来的默认（实体第一条）；绝不新建出来。 */
+  {
+    const want = lastTarget();
+    const ws0 = store.data.worldsets[store.activeWorld];
+    if (want?.kind === 'entity' && ws0?.entities?.[want.id]) {
+      activeId = want.id;
+    } else if (want?.kind === 'node' && ws0?.timelines?.[want.tlId]?.nodes.some((n) => n.id === want.nodeId)) {
+      mode = 'node';
+      nodeTarget = { world: store.activeWorld, tlId: want.tlId, nodeId: want.nodeId };
+    }
+  }
   let msgTimer: number | undefined;
   /* 正文编辑器（tiptap）。**整块重建时**必须先 flush 再 dispose —— 否则正在编辑的正文会丢，
      而 tiptap 实例不销毁会积 window 监听与订阅。同模式内换条目则**留着它**（见 swapBody）。 */
@@ -730,6 +744,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (docEditor) docEditor.flush();   /* 只结算，不 dispose（dispose 交给整块 render 那条路） */
     mutate();
     reportAgentFocus();
+    /* 记下「正在编哪一条」（`src/ui/session.ts`）：下次进灵框直接停在这里。
+       挂在这里是因为**所有**换目标的路都走 switchTarget（左树点行 / 新建后选中 / 删除后回退），
+       而 `reportAgentFocus()` 那边的身份只有 { kind, id }、没带 tlId —— 节点态靠它恢复不了。 */
+    rememberTarget(mode === 'entity'
+      ? (activeId ? { kind: 'entity', id: activeId } : null)
+      : (nodeTarget ? { kind: 'node', tlId: nodeTarget.tlId, nodeId: nodeTarget.nodeId } : null));
     if (swapBody()) return;
     pendingEnter = true;   /* 这是用户主动切换：整块重建时播一次入场 */
     render();

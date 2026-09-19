@@ -12,6 +12,7 @@ import { currentWorld } from '../store/store';
 import { renderNodeForm } from './node-form';
 import { staggerIn } from './motion';
 import { setAgentFocus, setAgentView } from './agent-context';
+import { rememberTool } from './session';
 
 export function renderShell(store: Store, host: HTMLElement): void {
   registerAllTools();
@@ -283,6 +284,9 @@ function renderToolbar(store: Store): void {
       }
       bar.querySelectorAll('.lk-tool-btn').forEach((b) => b.classList.remove('is-active'));
       el.classList.add('is-active');
+      /* 记「上次打开的工具」——下次进灵框直接回到这个视图（见 `src/ui/session.ts`）。
+         面板型工具在上面就 return 了：它不接管主区，不该覆盖"上次在看哪个主视图"。 */
+      rememberTool(id);
       const moduleView = document.getElementById('lk-module-view');
       const toolHost = document.getElementById('lk-tool-host');
       const right = document.querySelector('.lk-right') as HTMLElement | null;

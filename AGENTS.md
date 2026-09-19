@@ -21,6 +21,7 @@
 - `src/store/`：数据层（`store.ts` 单一数据源 + 订阅、`actions.ts` 修改入口、`types.ts` 领域类型、`ids.ts` **id 生成** —— 一切 id 走 `uid(prefix)`，**不许手写 `'x' + Date.now()`**：同一毫秒里连建多个会撞 id、后建的把先建的覆盖掉）
 - `src/tools/`：工具栏工具注册（`registry.ts` + `register.ts`）
 - `src/ui/shell.ts`：壳 UI（世界栏 + 工具栏 + 沙盘 + 工具宿主）
+- `src/ui/session.ts`：**会话状态**（进入灵框时回到上次关闭时的样子：世界/时间线 + 上次打开的工具 + 设定库正在编的那一条；存 localStorage `lingkuang-session`，**不写数据文件**，见 ARCHITECTURE）
 - `src/ui/timeline.ts`：**世界沙盘时间线**（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针）
 - `src/ui/inspire.ts` / `assoc.ts` / `codex.ts` / `map.ts` / `ai-workbench.ts` / `roleplay.ts` / `tavern.ts` / `settings.ts` / `settings-panel.ts` / `detail.ts` / `node-form.ts`
   —— 其中 **`codex.ts` = 设定库工作台**（左栏**一棵文件夹树**：世界 → 时间线 → 种类 → 节点 ／ 世界 → `_设定` → 类型 → 实体，**默认全展开**；点中哪一行就编哪一类，中栏字段、右栏正文、右边缘**常驻**的演变帧条（节点模式加 `.is-off` 演着收起），换条目时 `#cx-body` 演一次**行级转场**；顶栏那组控件按类别换：实体态「类型 ▾ + 数量 + ＋新建实体」／节点态「时间线 ▾ + 数量 + ＋新建节点」（**按钮只有一个** `#cx-new`，文案用 `rollText()` 上下滚着换）——**不用切去世界沙盘也能建节点**，下拉**跟着你正在编的那条走**（`syncNewType()`/`nodeNewTlId()`），数量框可一次建多个（名字 `uniqueName()` 保证唯一，没改名的标「待填」`.ed-ttag`），新建的节点落在**时间指针那一年**（`cursorYear()`）而树按 `epochOfNodes()` 的时间排。两组都在骨架里只切显隐，否则换类别时下面整体跳 7px）；节点中栏另有一块 **「这件事改变了谁」**（`#cx-changed`）—— 站在事件上看它改过哪些设定（名字 / 类型 / 第几版 / 改动摘要），点一行跳到"这条设定在这个事件之后的样子"（数据本来就在 `Entity.frames[].nodeId`，不新增存储）。
