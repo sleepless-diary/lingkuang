@@ -26,6 +26,8 @@ export interface AiSession {
   links?: string[];
   history: ChatMsg[];
   at: number;
+  /** 已经被「自动起名」改过一次名（免得每轮都去问模型） */
+  autoNamed?: boolean;
 }
 
 export const ROLE_LABEL: Record<SessionRole, string> = {
@@ -80,6 +82,7 @@ export function adoptSessions(raw: unknown): void {
       links: Array.isArray(x.links) ? x.links.filter((y: unknown) => typeof y === 'string') : [],
       history: Array.isArray(x.history) ? (x.history.map(normMsg).filter(Boolean) as ChatMsg[]) : [],
       at: typeof x.at === 'number' ? x.at : Date.now(),
+      autoNamed: x.autoNamed === true,
     }));
   if (!list.some((s) => s.role === 'main')) {
     list.unshift({ id: uid('s'), name: '主会话', role: 'main', personaId: '', links: [], history: [], at: Date.now() });
@@ -124,12 +127,25 @@ export function createSession(name: string, role: SessionRole = 'character', per
   return s;
 }
 
-/** 给会话选人设（人设本体在设定库里，这里只记 id） */
-export function setSessionPersona(id: string, personaId: string): void {
+/** 给会话选人设（人设本体在设定库里，这里只记 id）。
+ *  用户 2026-09-18：「**启用人设的会话名就是该人名**」⇒ 选上人设就把会话名改成那条角色的名字；
+ *  取消人设（personaId 空）时名字不回滚（已经是人话了，别把人家名字抹了）。 */
+export function setSessionPersona(id: string, personaId: string, personaName = ''): void {
   const s = list.find((x) => x.id === id);
-  if (!s || (s.personaId ?? '') === personaId) return;
+  if (!s) return;
+  const changed = (s.personaId ?? '') !== personaId || (!!personaName && s.name !== personaName);
+  if (!changed) return;
   s.personaId = personaId;
+  if (personaId && personaName) { s.name = personaName; s.autoNamed = false; }
   s.at = Date.now();
+  persist();
+}
+
+/** 自动起名用：把这条会话标成「已自动起过名」（不再重复问模型） */
+export function markAutoNamed(id: string): void {
+  const s = list.find((x) => x.id === id);
+  if (!s || s.autoNamed) return;
+  s.autoNamed = true;
   persist();
 }
 
@@ -222,6 +238,16 @@ export function sessionPrompt(s: AiSession | null = activeSession(), personaText
   return parts.join('\n\n');
 }
 
+/** 会话的基础设定（用户 2026-09-18：「在专门的对话窗口 ai 说它没有可以调用的工具，也不知道灵框」）——
+ *  以前 AI 工具的会话只拿到人设，连自己在哪个应用里都不知道。这段补上身份与工作区事实；
+ *  真正的**动作协议**仍只在 Ctrl+K 的灵框助手里（那边才有 handler），这里不吹能力。 */
+export const AI_SESSION_FRAME = [
+  '你在「灵框 LingKuang」里：一个世界观创作工作台（Electron 桌面应用）。',
+  '它的数据是一层层套的：世界 → 时间线（时间线上是事件节点）＋ 设定库（角色 / 地点 / 物品 / 组织 …）。',
+  '设定与事件都会同步写进 vault 目录下的 Markdown 文件（_设定/<类型>/<名字>.md）。',
+  '你能看到创作者当前的工作区现状（世界、时间线、设定清单、他正在编的那一条）。',
+  '你没有联网能力。要改数据（新建/改字段/写正文）时，把改法说清楚让他确认 —— 真正能落盘的写动作目前只在 Ctrl+K 的「灵框助手」里开放。',
+].join('');
 /** 给界面用的一句话：「连了谁」 */
 export function linkSummary(s: AiSession | null = activeSession()): string {
   const linked = s ? linkedSessions(s) : [];

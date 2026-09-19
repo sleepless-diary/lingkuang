@@ -15,6 +15,32 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第三十四轮（2026-09-18）· 会话名跟着人设走 + AI 会话也得知道自己在灵框里
+
+> 用户原话两条：「**启用人设的会话名就是该人名，无人设的就可以自动提炼添加名字（设置内默认关闭，可开启）**」、
+> 「**在专门的对话窗口 ai 说它没有可以调用的工具，也不知道灵框**」。
+
+### ① 会话名 = 人设名 / 无人设可自动起名
+- `src/ui/ai-sessions.ts`：`AiSession` 加 `autoNamed?: boolean`；`setSessionPersona(id, personaId, personaName = '')` ——
+  **选了人设就把会话名改成那条角色的名字**（同时清 autoNamed），取消人设时名字**不回滚**（已经是人话了，别抹掉）；
+  新增 `markAutoNamed(id)`（自动起名只做一次，免得每轮都去问模型）。
+- `src/ui/ai-workbench.ts`：人设下拉的 change 里把实体名一起传进去；`renderAll()` 开头跑 `syncPersonaNames(store)` ——
+  设定库里那条角色**改了名**，会话名下次渲染就跟上（`entityNameOf(store, id)` 现取）。
+- 自动起名：设置里开了才做（`aiAutoName`），且只对「**没选人设** + `autoNamed` 还没置位 + 非 system 消息 ≥ 4 条」的会话做**一次**：
+  把最近 8 条（各截 160 字）丢给模型要一个 2~6 字标题（`temperature: 0.3, numPredict: 24`），结果去掉空白/标点/引号、截 12 字，`renameSession()` 落盘；失败静默（不影响聊天）。
+  实现在 `renderAiWorkbench` **内部**（`setNote`/`renderAll` 是那里的闭包 —— 一开始写在模块作用域，`tsc` 直接报 `TS2304`）。
+- `src/ui/settings.ts`：`Settings.aiAutoName`（**DEFAULTS 里 false = 默认关**）+ 设置面板上一个勾选框 `#set-ai-autoname`「AI 会话自动起名（没选人设时，聊几轮后按内容提炼一个短名字）」。
+
+### ② 会话也得知道「灵框是什么」
+- 病根：AI 工具的会话**只拿到人设**，连自己在哪个应用里都不知道（用户实测：「它说没有可以调用的工具，也不知道灵框」）。
+- `src/ui/ai-sessions.ts` 新增 `AI_SESSION_FRAME`：说清「你在灵框 LingKuang（世界观创作工作台）里」+ 数据层次（世界 → 时间线/事件 ＋ 设定库角色/地点/物品/组织）+「设定与事件都同步写进 vault 的 `_设定/<类型>/<名字>.md`」+ 它没有联网能力。
+- `src/ui/ai-workbench.ts` 的 `send()` 里系统提示改成三段拼：`AI_SESSION_FRAME` + `sessionPrompt(人设/连接块)` + `【工作区现状】\n buildContext(store)`。
+  ⚠️ **动作协议（toolsPrompt）故意没给**：AI 工具里没有 handler，给了它就会吐一堆没人执行的 JSON，比不知道更糟 —— **能落盘的写动作仍在 Ctrl+K 的灵框助手里**。想把这套也搬进会话，得先搬 `src/ui/agent-tools.ts` 的解析与卡片确认。
+
+### 测试
+- `tools/e2e/ai-sessions.cjs`：人设那条断言**从 ★4b 挪到 ★18**（末尾）—— 因为「选人设 = 改会话名」会让主会话从「主会话」变成「银发少女」，
+  而 ★6/★7 断言的是名字（`rows[0].name === '主会话'`、`reload.first === '主会话'`）；顺手把 ★18 扩成「只记人设 id + 旧自填字段没了 + **会话名变成那条角色的名字**」。**10/10 PASS**。
+- 自动起名**没进 e2e**：它要连本地 Ollama 才有标题（测试机上没模型）。它走的是设置默认关的分支，e2e 只覆盖到「设置项存在」。
 ## 第三十三轮（2026-09-18）· 上下文分割（用户要求：可分开之前的上下文，但保留系统提示词和记忆）
 
 > 用户原话：「**加一个分割上下文的功能，可分开之前的上下文但是保留系统提示词和记忆**」。

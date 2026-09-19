@@ -23,6 +23,7 @@ interface Settings {
   /* 换条目转场（用户 2026-09-13 在演示页 `docs/motion-demo/doc-slide.html` 里定稿的旋钮，
      落地后原样搬进设置面板）。默认值 = 演示页里那套：速度 1×、错峰 10ms、入场距离 32px。 */
   motionSwap: boolean;      // 开启转场（关掉 = 立刻换，不做任何动画）
+  aiAutoName: boolean;      // 没选人设的 AI 会话自动提炼名字（默认关：要额外发一次模型请求）
   motionSpeed: number;      // 速度倍率（改的是时长：300ms ÷ 倍率）
   motionStagger: number;    // 行错峰 ms（一行比上一行晚多少）
   motionEnterDx: number;    // 入场距离 px（同时是出场距离，往左走同样的量）
@@ -40,6 +41,7 @@ const DEFAULTS: Settings = {
   evolveMode: 'manual',
   evolveLock: null,
   motionSwap: true,
+  aiAutoName: false,
   motionSpeed: 1,
   motionStagger: 10,
   motionEnterDx: 32,
@@ -123,6 +125,7 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
         <div style="font-size:var(--text-sm);font-weight:600;color:var(--fg);">换条目转场</div>
         <div style="font-size:var(--text-xs);color:var(--fg-2);">在设定库里点另一条条目时，旧内容先往左退场，新内容再从右淡入；<b>一行比一行晚一点</b>。改完立刻生效（点一下条目就能看出区别）。</div>
         <label style="font-size:var(--text-xs);color:var(--fg-2);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="set-motion-on"${s.motionSwap ? ' checked' : ''}/>开启转场（关掉＝立刻换，不做任何动画）</label>
+        <label style="font-size:var(--text-xs);color:var(--fg-2);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="set-ai-autoname"${s.aiAutoName ? ' checked' : ''}/>AI 会话自动起名（没选人设时，聊几轮后按内容提炼一个短名字）</label>
         <div style="display:flex;align-items:center;gap:10px;">
           <span style="font-size:var(--text-xs);color:var(--fg-2);width:90px;">速度</span>
           <input id="set-motion-speed" type="range" min="0.3" max="1.6" step="0.1" value="${s.motionSpeed}" style="flex:1;"/>
@@ -200,6 +203,9 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
   /* 换条目转场：四个旋钮都**立刻存盘并广播**，用户在设定库里接着点条目就能看出区别 */
   const onEl = host.querySelector('#set-motion-on') as HTMLInputElement | null;
   onEl?.addEventListener('change', () => { s.motionSwap = onEl.checked; saveNow('已保存 ✓'); });
+  /* AI 会话自动起名（默认关） */
+  const aiNameEl = document.getElementById('set-ai-autoname') as HTMLInputElement | null;
+  aiNameEl?.addEventListener('change', () => { s.aiAutoName = aiNameEl.checked; saveNow('已保存 ✓'); });
   bind('#set-motion-speed', (v) => {
     s.motionSpeed = parseFloat(v);
     (host.querySelector('#set-motion-speed-v') as HTMLElement).textContent = v + '×';

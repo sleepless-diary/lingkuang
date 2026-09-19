@@ -12,11 +12,13 @@ import { entityTypeOf } from '../store/entities';
 import type { Entity } from '../store/types';
 import { aiChat, type ChatMsg } from './ai';
 import { isImeEnter } from './keys';
+import { loadSettings } from './settings';
+import { buildContext } from './agent-context';
 import { renderRoleplay } from './roleplay';
 import { renderTavern } from './tavern';
 import {
-  adoptSessions, clearHistory, createSession, ensureSessionsLoaded, listSessions, linkSummary,
-  pushMsg, removeSession, renameSession, sessionPrompt, setActiveSession, setSessionPersona,
+  AI_SESSION_FRAME, adoptSessions, clearHistory, createSession, ensureSessionsLoaded, listSessions, linkSummary,
+  markAutoNamed, pushMsg, removeSession, renameSession, sessionPrompt, setActiveSession, setSessionPersona,
   setSessionSink, toggleLink, activeSession, isLinked,
   type AiSession, type SessionRole,
 } from './ai-sessions';
@@ -96,9 +98,11 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       setNote('已清空');
     });
     (headEl.querySelector('#ai-persona') as HTMLSelectElement | null)?.addEventListener('change', (e) => {
-      setSessionPersona(s.id, (e.target as HTMLSelectElement).value);
-      renderHead();
-      setNote('人设已选：内容每次发消息时从设定库现取，改了那边立刻生效');
+      const pid = (e.target as HTMLSelectElement).value;
+      /* 用户 2026-09-18：「启用人设的会话名就是该人名」⇒ 把实体名一起传进去，选了就改名 */
+      setSessionPersona(s.id, pid, entityNameOf(store, pid));
+      renderAll();
+      setNote(pid ? '人设已选：会话名跟着改成那条角色的名字，人设正文每次发消息时现取' : '已取消人设（名字留着）');
     });
   };
 
@@ -133,7 +137,27 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     }).join('');
   };
 
-  const renderAll = (): void => { renderList(); renderHead(); renderLog(); };
+  const renderAll = (): void => { syncPersonaNames(store); renderList(); renderHead(); renderLog(); };
+
+  /** 自动起名（设置里默认关）：只对「没选人设、还没起过、聊够 4 条」的会话做一次 —— 要发一次模型请求 */
+  const autoName = async (s: AiSession): Promise<void> => {
+    if (!loadSettings().aiAutoName || s.personaId || s.autoNamed) return;
+    const real = s.history.filter((m) => m.role !== 'system');
+    if (real.length < 4) return;
+    markAutoNamed(s.id);
+    try {
+      const transcript = real.slice(-8).map((m) => (m.role === 'user' ? '创作者：' : 'AI：') + m.content.slice(0, 160)).join('\n');
+      const r = await aiChat([
+        { role: 'system', content: '给下面这段对话起一个 2~6 个字的短标题，直接输出标题本身：不要标点、不要引号、不要解释。' },
+        { role: 'user', content: transcript },
+      ], { model: MODEL, temperature: 0.3, numPredict: 24 });
+      const title = String(r.text || '').replace(/[\s\r\n"'「」『』《》【】。，、！？：；]/g, '').slice(0, 12);
+      if (title) { renameSession(s.id, title); setNote('按内容起了个名字：' + title); }
+    } catch {
+      /* 起名失败不影响聊天（设置里可以关掉） */
+    }
+    renderAll();
+  };
 
   listEl.addEventListener('click', (e) => {
     const row = (e.target as HTMLElement).closest('[data-s]') as HTMLElement | null;
@@ -193,7 +217,9 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     pushMsg(id, { role: 'user', content: text });
     renderLog(); renderHead();
     setNote('在想…');
-    const sys = sessionPrompt(s, personaTextOf(store, s));
+    /* 系统提示 = 灵框是什么 + 这次会话的人设（或「没选人设」的反向约束）+ 当前工作区现状。
+       工作区现状每次现拼，所以助手/会话看到的都是他此刻在编的东西。 */
+    const sys = [AI_SESSION_FRAME, sessionPrompt(s, personaTextOf(store, s)), '【工作区现状】\n' + buildContext(store)].filter(Boolean).join('\n\n');
     const msgs: ChatMsg[] = sys ? [{ role: 'system', content: sys }] : [];
     msgs.push(...s.history);
     try {
@@ -205,6 +231,8 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     }
     busy = false;
     if (activeSession()?.id === id) { renderLog(); renderHead(); }
+    /* 聊完这一轮看看要不要按内容起个名（设置里默认关；要发一次模型请求，所以只做一次） */
+    void autoName(s);
   };
 
   host.querySelector('#ai-send')?.addEventListener('click', () => { void send(); });
@@ -255,6 +283,23 @@ function personaTextOf(store: Store, s: AiSession): string {
   const doc = String((e as any).doc ?? '').trim();
   if (doc) lines.push('  正文：' + doc.slice(0, 600));
   return lines.join('\n');
+}
+
+/** 会话名跟着人设走：选人设时已改名，这里再兜一次「设定库里那条角色改了名」的情况。 */
+function syncPersonaNames(store: Store): void {
+  for (const s of listSessions()) {
+    if (!s.personaId) continue;
+    const name = entityNameOf(store, s.personaId);
+    if (name && name !== s.name) renameSession(s.id, name);
+  }
+}
+
+/** 从设定库现取实体名（人设名 = 会话名） */
+function entityNameOf(store: Store, id: string): string {
+  if (!id) return '';
+  const ws = currentWorld(store);
+  const e = ((ws?.entities ?? {}) as Record<string, Entity>)[id];
+  return e ? e.name : '';
 }
 
 function esc(s: string): string {
