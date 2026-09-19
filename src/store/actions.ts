@@ -20,16 +20,31 @@ export function addNode(store: Store, tlId: string, node: Partial<TimelineNode>)
   store.update((d) => {
     const tl = d.worldsets[store.activeWorld]?.timelines[tlId];
     if (!tl) return;
+    /* 种类（模板）决定这个节点该有哪些字段 ⇒ **建出来的一刻就补齐**（与下面 addEntity 同一套道理）。
+       以前只 `...node` 透传：调用方没填的字段就不存在，新节点要等到「下一次 vault 回扫
+       → `src/main.ts` 的 `ensureAllFormatFields()`」才长回字段 —— 中间这段时间它在工作台 /
+       节点信息面板 / Obsidian 里都是没有模板字段的（用户 2026-09-19：「新建节点没有（得到）字段」）。
+       `kind` 也一并落定：缺省与 `ensureAllFormatFields` 的兜底一致（'事件'），
+       vault 落盘按它选文件夹，早写晚写都是同一个目录。 */
+    const kind = node.kind ?? '事件';
+    const properties: Record<string, PropValue> = { ...(node.properties ?? {}) };
+    for (const f of d.formats?.[kind]?.fields ?? []) {
+      if (properties[f.name] === undefined) {
+        properties[f.name] = f.type === 'number' ? 0 : f.type === 'boolean' ? false : f.type === 'list' ? [] : '';
+      }
+    }
     /* 先展开调用方字段、再补默认值。以前是逐字段白名单，未列出的字段被静默吃掉
        （`desc` 就在其中——node-form 一直传 `desc`，落库时消失，面板永远空着）。 */
     tl.nodes.push({
       ...node,
       id,
+      kind,
       title: node.title ?? '新节点',
       year: node.year ?? 0,
       precision: node.precision ?? 'year',
       type: node.type ?? 'world_event',
       doc: node.doc ?? '',
+      properties,
     });
   });
   return id;

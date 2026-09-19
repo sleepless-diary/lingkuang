@@ -28,6 +28,9 @@ const TL = '主线';
 const KIND = '事件';
 const NEW_TITLE = '霜落之战';
 const NEW_YEAR = 320;
+const BARE_TITLE = '空字段节点';
+const CAUSE_TITLE = '导致测试';
+const SEED_NODE = 'n-e2e-1';   /* seed-node 播的「王国的建立」 */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 function check(n, ok, extra) { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${extra !== undefined ? '   ' + JSON.stringify(extra) : ''}`); }
@@ -48,6 +51,18 @@ async function main() {
     const r = await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
     if (r.result?.exceptionDetails) throw new Error('eval: ' + (r.result.exceptionDetails.exception?.description || ''));
     return r.result?.result?.value;
+  };
+
+  /** 读 .md：写盘是「先截断再写」（`writeFileSync`）⇒ 单次读会撞上中间态、读到空/半截。
+   *  e2e README 铁律 ⑨：**读 .md 要轮询**。实测踩到过：★6 报 `head: [""]`（文件在、内容还是空的）。 */
+  const readMd = async (p, need) => {
+    let last = '';
+    for (let i = 0; i < 40; i++) {
+      last = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+      if (need.test(last)) return last;
+      await sleep(200);
+    }
+    return last;
   };
 
   await sleep(1500);
@@ -183,10 +198,63 @@ async function main() {
 
   /* ── ⑥ 落盘：模板字段进 frontmatter（`main.js` nodeToMd 把 properties 写成裸键值） ── */
   const mdPath = path.join(VAULT, WS, TL, KIND, `${NEW_TITLE}.md`);
-  const md = fs.existsSync(mdPath) ? fs.readFileSync(mdPath, 'utf8') : '';
+  const md = await readMd(mdPath, /地点:.*北境/);
   check('★6 节点的 .md 落在「' + KIND + '」文件夹里，年份与**模板字段值**都写进了 frontmatter',
     md.length > 0 && md.includes(`year: ${NEW_YEAR}`) && md.includes('地点: 北境') && md.includes('规模: 大战'),
     { mdPath, head: md.split('\n').slice(0, 12) });
+
+  /* ── ⑥b 模板字段必须在**建出来那一刻**就补齐（哪怕用户一个都没填）──
+     用户 2026-09-19：「新建节点（面板）没有（生成）字段」。
+     病根：面板只提交"填过"的字段，而 `addNode` 不做模板补全 ⇒ 新节点的 properties 是空的、
+     要等下次启动 `ensureAllFormatFields` 才补上 —— 中间这段时间它在工作台/详情面板里一片空。
+     判据：只填名字 + 年份就点创建，那个节点的 .md 里也要有该种类的**全部**键（空值也写）。 */
+  const bare = await ev(`(() => {
+    document.getElementById('lk-node-new').click();
+    document.getElementById('nf-title').value = ${JSON.stringify(BARE_TITLE)};
+    document.getElementById('nf-time').value = '330';
+    document.getElementById('nf-ok').click();
+    return { gone: !document.getElementById('nf-ok') };
+  })()`);
+  await sleep(900);
+  const barePath = path.join(VAULT, WS, TL, KIND, `${BARE_TITLE}.md`);
+  const bareMd = await readMd(barePath, /^规模:/m);
+  check('★6b 一个模板字段都没填，建出来时也要按模板补齐（.md 里 地点/规模 两个键都在）',
+    bare.gone === true && bareMd.length > 0 && /^地点:/m.test(bareMd) && /^规模:/m.test(bareMd),
+    { exists: bareMd.length > 0, head: bareMd.split('\n').slice(0, 12) });
+
+  /* ── ⑥c 「导致」字段（用户 2026-09-19：「新建节点面板没有『导致』字段，该字段会创建一个箭头
+     从该节点指向被该节点影响的节点」）：面板里点「＋ 添加导致」→ 在画布上点一个**已有**节点
+     → 创建 ⇒ 新节点带上 `causes`（落进 .md 的 `causes: [...]`）且画布上真的画出箭头。
+     ⚠️ 拾取走 `requestEyedrop()`：吸管态下的点击**不会**选中节点（timeline.ts 的 pointerup
+     是 if/else），所以创建面板不会被节点信息面板顶掉 —— 这里顺带断言面板还开着。 ── */
+  const picked = await ev(`(() => {
+    document.getElementById('lk-node-new').click();
+    document.getElementById('nf-title').value = ${JSON.stringify(CAUSE_TITLE)};
+    document.getElementById('nf-time').value = '340';
+    const add = document.getElementById('nf-causes-add');
+    if (!add) return { hasPanel: false };
+    add.click();                                   /* 进吸管态 */
+    const target = document.querySelector('#lk-pane-timeline .tl__n[data-id="${SEED_NODE}"]');
+    if (!target) return { hasPanel: true, hasTarget: false };
+    const r = target.getBoundingClientRect();
+    const opt = { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, pointerId: 1, pointerType: 'mouse' };
+    target.dispatchEvent(new PointerEvent('pointerdown', opt));
+    window.dispatchEvent(new PointerEvent('pointerup', { ...opt, buttons: 0 }));
+    return { hasPanel: true, hasTarget: true };
+  })()`);
+  await sleep(400);
+  const stillOpen = await ev(`!!document.getElementById('nf-ok')`);
+  const panelTxt = await ev(`document.getElementById('nf-causes')?.textContent ?? ''`);
+  await ev(`document.getElementById('nf-ok')?.click(); true`);
+  await sleep(1200);
+  const causePath = path.join(VAULT, WS, TL, KIND, `${CAUSE_TITLE}.md`);
+  const causeMd = await readMd(causePath, /^causes:/m);
+  const arrows = await ev(`document.querySelectorAll('#lk-pane-timeline .tl-causes path[marker-end]').length`);
+  check('★6c 「导致」字段：拾取一个已有节点后创建 ⇒ 新节点带 causes，且画布上真的画出箭头',
+    picked.hasPanel === true && picked.hasTarget === true && stillOpen === true
+    && String(panelTxt).includes('王国的建立')
+    && /^causes:\s*\[[^\]]*n-e2e-1/m.test(causeMd) && arrows >= 1,
+    { picked, stillOpen, panel: String(panelTxt).slice(0, 50), causeLine: (causeMd.match(/^causes:.*$/m) || [null])[0], arrows });
 
   /* ── ⑦ 回归：**换页签仍然播错峰**（这是设计要的入场；motion-switch.cjs ★15 盯着它） ── */
   const added = await ev(`(() => {

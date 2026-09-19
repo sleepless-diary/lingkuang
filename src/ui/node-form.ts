@@ -26,6 +26,7 @@ import { isImeEnter } from './keys';
 import { escapeHtml } from './html';
 import { enter } from './motion';
 import { fieldRow } from './fields';
+import { requestEyedrop } from './eyedrop';
 
 /** 公历平均年宽（365.25 天）。与 `src/ui/timeline.ts:100` 的坐标轴口径一致：
  *  坐标轴是公历 epoch 秒，只有「epoch 秒 → 年」的粗估才用它。 */
@@ -157,6 +158,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
         <select id="nf-kind" style="${INP}cursor:pointer;">${kindOpts}</select>
       </div>
       <div id="nf-props" style="display:flex;flex-direction:column;gap:6px;border-top:1px dashed var(--border-soft);padding-top:8px;"></div>
+      <div id="nf-causes" style="display:flex;flex-direction:column;gap:6px;border-top:1px dashed var(--border-soft);padding-top:8px;"></div>
       <div id="nf-err" style="font-size:var(--text-xs);color:#c0392b;display:none;"></div>
       <div style="display:flex;gap:8px;">
         <button id="nf-ok" style="flex:1;background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:7px;font-size:var(--text-sm);cursor:pointer;">创建</button>
@@ -216,6 +218,59 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
     }
   }
 
+  /* ── 导致（因果箭头）──
+     用户 2026-09-19：「新建节点面板没有『导致』字段 —— 该字段会创建一个箭头从该节点指向
+     被该节点影响的节点」。写的就是 `node.causes`（与节点信息面板的「因果」区、沙盘的
+     `drawCauses()` 同一份数据），落盘进 `.md` 的 frontmatter `causes: [id, …]`。
+     拾取沿用信息面板那套：`requestEyedrop()` 进吸管态 → 在画布上点一个**已有**节点。
+     ⚠️ 吸管态下的点击**不会**选中节点（`src/ui/timeline.ts` 的 pointerup 里是 if/else），
+     所以这个创建面板不会被节点信息面板顶掉、已经填好的内容也不会丢。 */
+  const causes: string[] = [];
+  function renderCauses(): void {
+    const box = host.querySelector('#nf-causes');
+    if (!box) return;
+    box.textContent = '';
+    const head = document.createElement('div');
+    head.style.cssText = LBL;
+    head.textContent = '导致（箭头从新节点指向这些节点 · 可留空）';
+    box.appendChild(head);
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;align-items:center;';
+    const nodes = store.data.worldsets[store.activeWorld]?.timelines[tlId]?.nodes ?? [];
+    for (const cid of causes) {
+      const chip = document.createElement('span');
+      chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:2px 8px;font-size:var(--text-xs);color:var(--fg);';
+      chip.innerHTML = `<span style="color:var(--accent);">◈</span>${escapeHtml(nodes.find((n) => n.id === cid)?.title ?? cid)}`;
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.textContent = '×';
+      del.title = '去掉这条因果';
+      del.style.cssText = 'border:none;background:none;color:var(--fg-2);cursor:pointer;font-size:12px;line-height:1;';
+      del.addEventListener('click', () => {
+        const i = causes.indexOf(cid);
+        if (i >= 0) causes.splice(i, 1);
+        renderCauses();
+      });
+      chip.appendChild(del);
+      row.appendChild(chip);
+    }
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.id = 'nf-causes-add';
+    add.textContent = '+ 添加导致';
+    add.title = '点一下，然后在画布上点「被这件事影响」的那个节点（Esc 取消）';
+    add.style.cssText = 'border:1px dashed var(--border-strong);background:none;color:var(--fg-2);border-radius:var(--radius-sm);padding:2px 8px;font-size:var(--text-xs);cursor:pointer;';
+    add.addEventListener('click', () => {
+      add.textContent = '点取时间线节点… Esc 取消';
+      requestEyedrop((picked) => {
+        if (!causes.includes(picked)) causes.push(picked);
+        renderCauses();
+      });
+    });
+    row.appendChild(add);
+    box.appendChild(row);
+  }
+
   function showErr(msg: string): void {
     err.textContent = msg;
     err.style.display = '';
@@ -250,6 +305,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
       second: parsed?.second,
       desc: desc.value.trim() || undefined,
       doc: docBox.value,   /* 正文（Markdown） */
+      causes: causes.slice(),   /* 因果箭头：新节点 → 被它影响的那些节点（落进 .md 的 causes: []） */
       properties,
     });
     close();
@@ -270,6 +326,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
 
   title.focus();
   renderTemplateFields();
+  renderCauses();
   kindSel.addEventListener('change', renderTemplateFields);
   time.addEventListener('input', updateTimeHint);
   updateTimeHint();
