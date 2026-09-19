@@ -1040,6 +1040,11 @@ export function mountTimeline(
     ext.style.cssText = 'display:flex;gap:4px;align-items:center;flex-shrink:0;';    ext.innerHTML = `
       <button class="lk-tl-tab is-new" id="lk-loop-new" title="新建循环（选起终节点）">＋循环</button>
       <button class="lk-tl-tab${nonlinearMode ? ' is-active' : ''}" id="lk-nonlinear" title="非线性：按序列顺序均匀排列">非线性</button>`;
+
+    /* 把它搬进面板头最左的状态区（顺序：非线性 | 全览下拉）。 */
+    const stateBox = TL_HEAD.querySelector('#lk-state');
+    const nlBtn = ext.querySelector('#lk-nonlinear');
+    if (stateBox && nlBtn) stateBox.insertBefore(nlBtn, stateBox.firstChild);
     /* 放进固定容器 #lk-tools（与 story-ui 同容器，extras 居后，位置固定不乱跑） */
     const tools = TL_HEAD.querySelector('#lk-tools');
     if (tools) tools.appendChild(ext); else TL_HEAD.insertBefore(ext, TL_HEAD.querySelector('#lk-node-new') ?? TL_HEAD.lastChild);
@@ -1084,7 +1089,7 @@ export function mountTimeline(
       });
       toolHost.querySelector('#lp-cancel')?.addEventListener('click', () => (toolHost.innerHTML = ''));
     });
-    ext.querySelector('#lk-nonlinear')?.addEventListener('click', () => {
+    document.getElementById('lk-nonlinear')?.addEventListener('click', () => {
       nonlinearMode = !nonlinearMode;
       renderExtraTools();
       render();
