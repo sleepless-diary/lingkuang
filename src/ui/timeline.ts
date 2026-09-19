@@ -669,16 +669,11 @@ export function mountTimeline(
     const ui = document.createElement('span');
     ui.id = 'lk-story-ui';
     ui.style.cssText = 'display:flex;gap:4px;align-items:center;flex-shrink:0;';
-    /* 状态区（第 4.0 片 A 步）：**你正在看什么** —— 与右上角「工具（做什么）」分开。
-       「全览」= 不聚焦任何剧情线（default）；「聚焦」= 只看选中的那条线。 */
-    const focused = activeLineId !== null;
+    /* 状态区（第 4.0 片 A 步）：**你正在看什么**。用户 2026-09-18：「全览和聚焦能直接做成同一个下拉窗口」——
+       所以只留**一个下拉**：第一项「全览」= 不聚焦（看整条时间线），其余项 = 聚焦某条剧情线（线外内容截断）。 */
     ui.innerHTML = `
-      <span class="lk-state-seg" id="lk-story-mode">
-        <button class="lk-tl-tab${focused ? '' : ' is-active'}" data-mode="all" title="全览：看整条时间线">全览</button>
-        <button class="lk-tl-tab${focused ? ' is-active' : ''}" data-mode="focus" title="聚焦：只看选中的剧情线">聚焦</button>
-      </span>
-      <select class="lk-tl-tab" id="lk-line-sel" style="font-size:11px;background:none;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--fg);padding:2px 4px;" ${lines.length ? '' : 'disabled'}>
-        <option value="">— 剧情线 —</option>${lineOpts}</select>`;
+      <select class="lk-tl-tab" id="lk-line-sel" title="全览 = 看整条时间线；选一条剧情线 = 聚焦只看它" style="font-size:11px;background:none;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--fg);padding:2px 4px;" ${lines.length ? '' : 'disabled'}>
+        <option value="">— 全览 —</option>${lineOpts}</select>`;
     /* 状态区固定在面板头**最左**（标题左边）：「左＝看什么，右＝做什么」。工具在 #lk-tools 里，两边不混。 */
     let stateEl = TL_HEAD.querySelector('#lk-state') as HTMLElement | null;
     if (!stateEl) {
@@ -694,18 +689,6 @@ export function mountTimeline(
       brushing = !brushing;
       renderStoryUI();
       if (!brushing) clearBrushSel();
-    });
-    ui.querySelectorAll('#lk-story-mode [data-mode]').forEach((b) => {
-      b.addEventListener('click', () => {
-        const wantFocus = (b as HTMLElement).dataset.mode === 'focus';
-        /* 聚焦 = 选中第一条线（没有线就保持全览）；全览 = activeLineId 置 null（显式选择） */
-        const first = linesOf()[0]?.id ?? null;
-        activeLineId = wantFocus ? first : null;
-        linePinned = true;
-        render();
-        renderStoryUI();
-        renderSegPanel();
-      });
     });
     ui.querySelector('#lk-line-sel')?.addEventListener('change', (e) => {
       const v = (e.target as HTMLSelectElement).value;
