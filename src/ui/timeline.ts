@@ -152,7 +152,6 @@ export function mountTimeline(
     const s1 = Math.round(xToTime(wrap.clientWidth));   /* 右边缘 epoch 秒 */
     /* 主刻度间距 stepSec；细分出小刻度（每主刻度间 subDiv 个小竖线，如尺子副刻度） */
     const subDiv = 10;                      /* 每个主刻度间细分 10 个小刻度 */
-    const subStep = stepSec / subDiv;       /* 小刻度间距（单位秒） */
     /* 起点对齐：各档位向上对齐到「整单位」边界（年→1月1日0点、月→1日0点、日→0点、时→整时、分→整分），
        确保刻度落在整齐的整单位上，不跳过、不落中间 */
     let start: number;
@@ -168,29 +167,48 @@ export function mountTimeline(
       }
       start = toEpoch(cal(), timePointOf(y, { month: mo, day: d, hour: h, minute: mi }), getYearTable());
     }
-    const n = Math.floor((s1 - start) / stepSec);
-    const nSub = Math.floor((s1 - start) / subStep);
-    let html = '';
-    /* 先画主刻度：大竖线 + 两级文字。日档/月档按公历真实日期推进（尊重大小月），不用固定步长累加（否则跨月漂移） */
-    for (let i = 0; i <= n; i++) {
-      let s: number;
-      if (unit === '日') {
-        const stepDays = Math.max(1, Math.round(stepSec / 86400));
-        const tp0 = fromEpoch(cal(), start, getYearTable());
-        s = toEpoch(cal(), timePointOf(tp0.anchor.year, { month: tp0.values.month, day: tp0.values.day + i * stepDays }), getYearTable());
-      } else if (unit === '月') {
-        const stepMonths = Math.max(1, Math.round(stepSec / (SEC_PER_YEAR / 12)));
-        const tp0 = fromEpoch(cal(), start, getYearTable());
-        /* 月序号会跨年（7 月 + i 个月会超过 12）。必须拆成「进位到年 + 取模到月」：
-           直接把 month=13/14/… 交给 timePointOf，daysInMonth 对 >12 的月返回 0，
-           这些刻度的 epoch 全部等于年初 → 几十个「1月」标签叠在同一个 x 上。 */
-        const mAbs = tp0.values.month + i * stepMonths;      /* 1-based 连续月序号 */
+    /* 主刻度的 epoch **逐个按历法算**（不是 `start + i*stepSec`）。
+       ⭐ 2026-09-18 用户实测：「标尺会随着左右移动改变显示的数字」—— 旧代码年档用
+       `start + i * stepSec`（stepSec = n×365.25 天），加着加着就漂出 1月1日：
+       同一个视觉位置在不同平移量下会算出不同的年份，于是数字跟着平移变。
+       年档按整年进位、月档按月进位、日档按天进位（都走 timePointOf，尊重大小月/闰年），
+       时/分档走均匀的秒网格（整小时/整分钟，天然和平移无关）。 */
+    const stepYears = Math.max(1, Math.round(stepSec / SEC_PER_YEAR));
+    const stepDays = Math.max(1, Math.round(stepSec / 86400));
+    const stepMonths = Math.max(1, Math.round(stepSec / (SEC_PER_YEAR / 12)));
+    const tp0 = fromEpoch(cal(), start, getYearTable());
+    const mainSec: number[] = [];
+    const MAX_TICKS = 4000;                  /* 保险：极端缩放下别把 DOM 画爆 */
+    if (unit === '年') {
+      for (let i = 0; mainSec.length <= MAX_TICKS; i++) {
+        const s = toEpoch(cal(), timePointOf(tp0.anchor.year + i * stepYears, { month: 1, day: 1 }), getYearTable());
+        if (s > s1) break;
+        mainSec.push(s);
+      }
+    } else if (unit === '月') {
+      for (let i = 0; mainSec.length <= MAX_TICKS; i++) {
+        /* 月序号跨年要拆成「进位到年 + 取模到月」（见下面那条老注释的坑） */
+        const mAbs = tp0.values.month + i * stepMonths;
         const addYears = Math.floor((mAbs - 1) / 12);
         const month = ((mAbs - 1) % 12) + 1;
-        s = toEpoch(cal(), timePointOf(tp0.anchor.year + addYears, { month, day: 1 }), getYearTable());
-      } else {
-        s = start + i * stepSec;
+        const s = toEpoch(cal(), timePointOf(tp0.anchor.year + addYears, { month, day: 1 }), getYearTable());
+        if (s > s1) break;
+        mainSec.push(s);
       }
+    } else if (unit === '日') {
+      for (let i = 0; mainSec.length <= MAX_TICKS; i++) {
+        const s = toEpoch(cal(), timePointOf(tp0.anchor.year, { month: tp0.values.month, day: tp0.values.day + i * stepDays }), getYearTable());
+        if (s > s1) break;
+        mainSec.push(s);
+      }
+    } else {
+      const grid = unit === '时' ? 3600 : 60;
+      let s = Math.floor(s0 / grid) * grid;
+      for (let i = 0; s <= s1 && i <= MAX_TICKS; i++) { mainSec.push(s); s += grid; }
+    }
+    let html = '';
+    for (let i = 0; i < mainSec.length; i++) {
+      const s = mainSec[i];
       const x = timeToX(s);
       const t = fmtScale(s, unit);
       /* 用历法数值判断是否「整单位边界」：日档=1号、月档=1月，才显示上一级；其他档看上一级变化 */
@@ -199,19 +217,20 @@ export function mountTimeline(
       let showPrev = false;
       if (unit === '日') showPrev = tpNow.values.day === 1;
       else if (unit === '月') showPrev = tpNow.values.month === 1;
-      else if (unit === '时') showPrev = tpNow.values.day !== tpPrev.values.day;   /* 跨天(日变化)才显示上一级(日) */
-      else if (unit === '分') showPrev = tpNow.values.hour !== tpPrev.values.hour;   /* 跨小时才显示上一级(时) */
+      else if (unit === '时') showPrev = tpNow.values.day !== tpPrev.values.day;   /* 跨天才显示「日」 */
+      else if (unit === '分') showPrev = tpNow.values.hour !== tpPrev.values.hour; /* 跨小时才显示「时」 */
       else showPrev = !!(t.prev && tpNow.values.month !== tpPrev.values.month);
       const prev = showPrev ? `<span class="tl__axis-prev">${t.prev}</span>` : '';
       html += `<div class="tl__axis-tick tl__axis-tick--major" style="left:${x}px;">${prev}<span class="tl__axis-label">${t.cur}</span></div>`;
     }
-    /* 再画小刻度：小竖线（矮、不带文字；只在主刻度之间画，避开主刻度位置） */
+    /* 小刻度：在**相邻主刻度之间**等分插（旧代码用 start + k*subStep，年档会累计漂移） */
     let subHtml = '';
-    for (let k = 0; k <= nSub; k++) {
-      if (k % subDiv === 0) continue;           /* k 是 subDiv 的倍数 → 落在主刻度位置，跳过 */
-      const s = start + k * subStep;
-      const x = timeToX(s);
-      subHtml += `<div class="tl__axis-tick tl__axis-tick--minor" style="left:${x}px;"></div>`;
+    for (let i = 0; i + 1 < mainSec.length; i++) {
+      const a = mainSec[i], b = mainSec[i + 1];
+      for (let k = 1; k < subDiv; k++) {
+        const s = a + (b - a) * (k / subDiv);
+        subHtml += `<div class="tl__axis-tick tl__axis-tick--minor" style="left:${timeToX(s)}px;"></div>`;
+      }
     }
     scaleEl.innerHTML = html + subHtml;
   }
