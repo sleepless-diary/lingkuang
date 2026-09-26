@@ -156,6 +156,50 @@ async function main() {
   check('★4 稳定后没有残留动画（fill:both 的动画都收干净了）',
     report.lingering === 0, { lingering: report.lingering, after: report.after });
 
+  /* ★6 换档不许出现"两把尺子"（用户 2026-09-26 实测报的）：
+     「有入场，但是会暂时出现两个重叠的标尺」—— 整批换刻度时如果出入场**并行**，
+     旧刻度淡出的那 220ms 里新刻度已经在淡入，屏上同时两套刻度 = 两把尺子。
+     判据落在"时间区间"上（与帧率无关）：把此刻挂着动画的刻度按「落定后还在不在 DOM 里」
+     分成入场/退场两批，读各自的 [delay, delay+duration]，断言两批区间**不相交**（≤20ms 容差）。 */
+  const sw = await ev(`(async () => {
+    const scale = document.querySelector('#lk-pane-timeline .tl-scale');
+    if (!scale) return { fatal: 'no .tl-scale' };
+    const majors = () => [...scale.querySelectorAll('.tl__axis-tick--major')];
+    const labelsOf = (els) => els.map((el) => { const s = el.querySelector('.tl__axis-label'); return s ? s.textContent : ''; });
+    const spanOf = (el) => { const a = el.getAnimations ? el.getAnimations()[0] : null; if (!a || !a.effect || !a.effect.getTiming) return null; const t = a.effect.getTiming(); return [t.delay, t.delay + t.duration]; };
+    let prev = majors(), prevLabels = labelsOf(prev);
+    for (let k = 1; k <= 12; k++) {
+      const wrap = scale.parentElement;
+      const r = wrap.getBoundingClientRect();
+      wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, altKey: true, clientX: r.left + Math.round(r.width / 2), clientY: r.top + 40, bubbles: true, cancelable: true }));
+      /* ⚠️ 先抓动画，再等落定：这一帧 DOM 里同时有"正在退场的旧刻度"和"刚入场的新刻度"，
+         直接比标签会把新旧混在一起读（实测 common 一直偏高 ⇒ 整批判不出来）。 */
+      const anim = [];
+      for (const el of [...scale.children]) { const s = spanOf(el); if (s) anim.push({ el: el, span: s }); }
+      await new Promise((res) => setTimeout(res, 700));
+      const now = majors(), nowLabels = labelsOf(now);
+      const common = nowLabels.filter((l) => prevLabels.indexOf(l) >= 0).length;
+      const wholesale = prevLabels.length >= 3 && nowLabels.length >= 3 && common <= Math.floor(nowLabels.length / 2);
+      if (wholesale) {
+        const alive = new Set([...scale.children]);   /* 落定后还在 = 入场批；不在 = 退场批（已演完摘掉） */
+        const enter = [], leave = [];
+        for (const x of anim) (alive.has(x.el) ? enter : leave).push(x.span);
+        return { hitAt: k, prevCount: prev.length, nowCount: now.length, common: common, animCount: anim.length, enterCount: enter.length, leaveCount: leave.length, enter: enter, leave: leave };
+      }
+      prev = now; prevLabels = nowLabels;
+    }
+    return { hitAt: -1, prevCount: prev.length, nowCount: 0, common: null, animCount: 0, enterCount: 0, leaveCount: 0, enter: [], leave: [] };
+  })()`);
+  const spanStarts = (a) => (a.length ? Math.min(...a.map((s) => s[0])) : null);
+  const spanEnds = (a) => (a.length ? Math.max(...a.map((s) => s[1])) : null);
+  const gapMs = sw && sw.enterCount && sw.leaveCount
+    ? Math.max(spanStarts(sw.enter) - spanEnds(sw.leave), spanStarts(sw.leave) - spanEnds(sw.enter))
+    : null;
+  check('★6 换档（整批换刻度）时退场与入场**时间上不重叠**（两批 [delay, delay+duration] 不相交，容差 20ms）',
+    !!sw && !sw.fatal && sw.hitAt > 0 && sw.enterCount >= 3 && sw.leaveCount >= 3 && gapMs !== null && gapMs >= -20,
+    sw ? { hitAt: sw.hitAt, prev: sw.prevCount, now: sw.nowCount, common: sw.common, anim: sw.animCount, enter: sw.enterCount, leave: sw.leaveCount, gapMs,
+      enterSpans: sw.enter.slice(0, 3), leaveSpans: sw.leave.slice(0, 3) } : sw);
+
   const errs = await ev(`window.__errs`);
   check('★5 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 

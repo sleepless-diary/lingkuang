@@ -41,7 +41,8 @@
   · 退场清理顺序必须是**先 `remove()` 再 `cancel()`**：`fill:'both'` 的动画跑完仍在 `getAnimations()` 里，
     反过来的话"它到底是不是演完才被摘的"就无从验证（`scale-motion.cjs` ★3 的采样判据）。
 - 回归：新增 `tools/e2e/scale-motion.cjs` **6 项**（★1 元素身份不变 / ★2 入场关键帧是不透明度+缩放 /
-  ★3 退场窗口内采样到"身上有动画的刻度" 且摘除延迟 ≥ 80ms / ★4 稳定后不残留动画 / ★5 无异常）。
+  ★3 退场窗口内采样到"身上有动画的刻度" 且摘除延迟 ≥ 80ms / ★4 稳定后不残留动画 / ★5 无异常）；
+  后补 ★6（见下面 ④，现共 **7 项**）。
   **A/B：修复前 3/6**（挂 ★1/★2/★3，读数 `keep 0` / `midAnimatedMax 0` / `minRemovalDelayMs 2`）。
   既有套件：`timeline-scale` **12/12**、`motion-switch` **25/25**、`nonlinear-pan` **7/7**、`create-node-panel` **15/15**。
 
@@ -70,11 +71,35 @@
 - 📌 这也是 `tools/e2e/nonlinear-pan.cjs` **★0 偶发 FAIL（`majors: 1`）**的来源 —— 不是它的 bug，
   也不是第 ⑤ 片的回归（同一个几何状态，两种启动时序下随机出现）。修掉后按原批次顺序复跑稳定。
 
-### ④ 本轮顺手加的自查工具（都留在 `tools/e2e/`）
+### ④ 换档不许出现「两把尺子」（**用户实测**，已修）
+- 用户原话：「**有入场，但是会暂时出现两个重叠的标尺**」。
+- 病根：`paintScale()` 末尾**无条件并行**调 `scaleTicksEnter(entering)` 与 `scaleTicksLeaveAndRemove(leaving)`
+  ⇒ **换档**（年→月、步长 2→5；或切聚焦/全览那种整轴重排）时整批刻度新旧同时存在：
+  旧刻度淡出 `[delay, end] = [90,310]`（171 根带 8ms 错峰）与新刻度淡入 `[0,220]`
+  **完全重叠 220ms** ⇒ 屏上两把尺子叠着（A/B 实测 `gapMs: -310`）。
+  （平移 / 同档缩放的边缘刻度只有一两根、分居屏幕两端 —— 那种并行是对的，不该一起改掉。）
+- 修法（`src/ui/timeline.ts` 的 `paintScale()`）：按**换了多少**分流 ——
+  `changed = entering.length + leaving.length`、`union = items.length + leaving.length`，
+  `changed / union >= WHOLE_SWAP_RATIO(0.5)` 即**整批换**：
+  旧刻度 `{ dur: WHOLE_OUT_MS(100), step: 0, maxDelay: 0 }` 一起淡出，
+  入场批 `start: 100` 等它走完再淡入 ⇒ 两批的 `[delay, delay+duration]` **不相交**（实测 `gapMs: 0`）。
+  `src/ui/motion.ts` 的 `scaleTicksEnter()` 因此补了 `start`（默认 0；`autoRelease` 的 totalMs 也要算进 start）。
+  ⚠️ 别把 `WHOLE_OUT_MS` 调长过入场的 `start`，否则又叠上了。
+- 守卫：`tools/e2e/scale-motion.cjs` **★6** —— 逐格缩小直到标签整批换掉，把**那一帧**挂着动画的刻度
+  按「落定后还在不在 DOM 里」分成入场/退场两批，读各自 `effect.getTiming()` 的 `[delay, delay+duration]`，
+  断言两批区间**不相交**（≤20ms 容差）且两批各自 ≥ 3 根。
+  **A/B：修复前 `gapMs: -310`（退场 `[90,310]` / 入场 `[0,220]`）FAIL；修复后 `gapMs: 0` PASS。**
+- ⚠️ 写这类探针的顺序很要紧：必须在**派完滚轮的那一帧**抓动画、**等落定（配 700ms）之后**才比标签 ——
+  退场元素还要在 DOM 里待 100~420ms，同一帧读会把新旧标签混在一起（`common` 一直偏高、
+  永远判不出"整批换"，第一版探针就这么空跑了一轮 `hitAt: -1`）。
+
+### ⑤ 本轮顺手加的自查工具（都留在 `tools/e2e/`）
 - `probe-scale.cjs`：打印标尺与聚焦下拉的当下状态（刻度数/标签/left、wrap 宽度、非线性开关）。
 - `probe-scale-boot.cjs`：从"点开沙盘"那一刻起每 150ms 采样一次（看是"一直很少"还是"先少后多"）；
   带 `--set-session=<tool>` 模式，可把「上次打开的工具」写进会话存档用来构造初始状态
   （⚠️ 会话落盘有 400ms 防抖，写完要等一会儿再杀应用）。
+- `probe-scale-zoom.cjs`：逐格 alt+滚轮缩小，打印每一档的「主刻度数 / 子元素数 / 前 5 个标签 / 前 3 个 left」
+  —— 换档（步长变）那一刻一眼可见，也能看出"同一次重画的瞬间是 新+旧 两批同时在 DOM 里"。
 
 ## 第四十一轮（2026-09-19）· 新建节点面板与节点信息面板不一致 + 页签弹动（**用户实测**）
 

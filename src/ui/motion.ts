@@ -598,26 +598,33 @@ const TICK_MAX_STAGGER = 90;
 
 /** 一批刻度的**入场**：`opacity 0 / scale(.9)` → `1 / none`（快→慢），按序号轻微错峰。
  *  缩放锚点在 CSS 里定成 `.tl__axis-tick { transform-origin: 0 0 }` —— 刻度的**盒宽是 0**
- *  （只有一条 border-left），锚在左上角才能让"它自己那一格"钉在原地，不会缩放时横移。 */
+ *  （只有一条 border-left），锚在左上角才能让"它自己那一格"钉在原地，不会缩放时横移。
+ *  `start` 默认 0（只有入场）；**换档时要显式给** —— 那是"先出后进"的第二步，见
+ *  `paintScale()` 里的整批分支与下面 `scaleTicksLeaveAndRemove` 的说明。 */
 export function scaleTicksEnter(els: HTMLElement[], o: RowMotionOpts = {}): Animation[] {
   if (!els.length || motionReduced()) return [];
   const dur = o.dur ?? TICK_DUR;
   const step = o.step ?? 8;
+  const start = o.start ?? 0;
   const maxDelay = o.maxDelay ?? TICK_MAX_STAGGER;
   const batch = els.slice(0, TICK_ANIM_MAX);
   const anims = batch.map((el, i) =>
     el.animate(
       [{ opacity: 0, transform: 'scale(0.9)' }, { opacity: 1, transform: 'none' }],
-      { duration: dur, delay: Math.min(i * step, maxDelay), easing: EASE_DECEL, fill: 'both' }
+      { duration: dur, delay: start + Math.min(i * step, maxDelay), easing: EASE_DECEL, fill: 'both' }
     )
   );
-  autoRelease(anims, dur + Math.min(step * batch.length, maxDelay));
+  autoRelease(anims, start + dur + Math.min(step * batch.length, maxDelay));
   return anims;
 }
 
 /** 一批刻度的**退场**：`1 / none` → `opacity 0 / scale(.9)`（慢→快），**演完再摘掉元素**。
  *  ⚠️ 起点不写 `opacity`：平滑缩放的每一帧都会有刻度进出，一根刚入场到一半的刻度可能马上又要退场，
- *  起点写死 1 会让它先跳到全亮再淡出（`rowsLeave` 当年就是靠 `naturalOpacity()` 绕开这类跳变的）。 */
+ *  起点写死 1 会让它先跳到全亮再淡出（`rowsLeave` 当年就是靠 `naturalOpacity()` 绕开这类跳变的）。
+ *  ⚠️ **换档（年→月/步长变）时不许和入场并行**：用户 2026-09-26 实测「有入场，但是会暂时出现
+ *  **两个重叠的标尺**」—— 整批旧刻度淡出期间新刻度已经在淡入，屏上同时有两把尺子。
+ *  那一档走"先出后进"：本函数 `{ dur: 100, step: 0, maxDelay: 0 }`，`scaleTicksEnter` 给
+ *  `start: 100` ⇒ 两批的 `[delay, delay+duration]` 区间不相交。**别把这里的 `dur` 调长于入场 `start`。** */
 export function scaleTicksLeaveAndRemove(els: HTMLElement[], o: RowMotionOpts = {}): void {
   if (!els.length) return;
   if (motionReduced()) { for (const el of els) el.remove(); return; }

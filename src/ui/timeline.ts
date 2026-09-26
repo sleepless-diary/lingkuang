@@ -333,6 +333,10 @@ export function mountTimeline(
      **还在的只改 left、新来的缩放淡入（`scaleTicksEnter`）、走掉的淡出后再摘（`scaleTicksLeaveAndRemove`）**。
      key = `种类|unit|stepSec|时间` ⇒ 同一档位内只由时间决定，平移/缩放时绝大多数刻度都能认出来。 */
   const scaleTicks = new Map<string, HTMLElement>();
+  /** 换掉多少比例算「整批换」（换档）⇒ 走"先出后进"。0.5 = 一半以上的刻度都换了。 */
+  const WHOLE_SWAP_RATIO = 0.5;
+  /** 整批换时旧刻度的淡出时长；入场要等它走完（`start` 同一个值）—— 两批不许重叠。 */
+  const WHOLE_OUT_MS = 100;
   function paintScale(items: { key: string; cls: string; left: number; html: string }[]): void {
     const els: HTMLElement[] = [];
     const entering: HTMLElement[] = [];
@@ -363,8 +367,22 @@ export function mountTimeline(
     }
     const leaving: HTMLElement[] = [];
     for (const [key, el] of scaleTicks) if (!seen.has(key)) { scaleTicks.delete(key); leaving.push(el); }
-    if (entering.length) scaleTicksEnter(entering);
-    if (leaving.length) scaleTicksLeaveAndRemove(leaving);
+    /* 出入场分两种走法（用户 2026-09-26 反馈：「**有入场，但是会暂时出现两个重叠的标尺**」）：
+       · **整批换**（换档：年→月、步长 2→5；或切聚焦/全览那种时间轴重排）⇒ **先出后进**，
+         否则旧的淡出与新的淡入同时进行 = 屏上两把尺子叠在一起；
+       · **零星换**（平移/同档缩放时从两端进出的一两根）⇒ 保持并行交叉淡入 —— 它们分居屏幕
+         左右两端，读不出"两把尺子"，而且串行会让人看到标尺一截一截地闪。
+       判据用**相对比例**（不用绝对根数）：边缘变化实测约 6/111 ≈ 0.05，整批换 ≈ 1.0。
+       ⚠️ 别把整批那档的 `dur` 调长过入场的 `start`（见 `src/ui/motion.ts` 的 `scaleTicksLeaveAndRemove`）。 */
+    const changed = entering.length + leaving.length;
+    const union = items.length + leaving.length;
+    if (union > 0 && changed / union >= WHOLE_SWAP_RATIO) {
+      if (leaving.length) scaleTicksLeaveAndRemove(leaving, { dur: WHOLE_OUT_MS, step: 0, maxDelay: 0 });
+      if (entering.length) scaleTicksEnter(entering, { start: leaving.length ? WHOLE_OUT_MS : 0 });
+    } else {
+      if (entering.length) scaleTicksEnter(entering);
+      if (leaving.length) scaleTicksLeaveAndRemove(leaving);
+    }
   }
   /** 整块清空（无时间线 / 重挂载那种"这一版标尺作废"的路径）。
       ⚠️ 账本必须一起清：元素被 `innerHTML` 抹掉了、账本还记着的话，下一帧就会往
