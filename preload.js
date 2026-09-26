@@ -25,8 +25,8 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
   associate: (word) => ipcRenderer.invoke('ai:associate', word),
   /* write character lib (staged words export) */
   saveCharLib: (data) => ipcRenderer.invoke('lib:save', data),
-  /* batch classify words via Ollama */
-  classifyWords: (words) => ipcRenderer.invoke('ai:classify', words),
+  /* batch classify words via the AI engine (cfg = 渲染进程「当前在用」的供应商，可选) */
+  classifyWords: (words, cfg) => ipcRenderer.invoke('ai:classify', words, cfg),
   /* vault：每个节点 = 外部 .md 文件（Obsidian 可编辑，文件为源） */
   vaultScan: () => ipcRenderer.invoke('vault:scan'),
   vaultWrite: (wsName, tlName, node) => ipcRenderer.invoke('vault:write', { wsName, tlName, node }),

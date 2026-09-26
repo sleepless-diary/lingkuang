@@ -11,7 +11,7 @@ export function renderRoleplay(_store: Store, host: HTMLElement): void {
     <div style="display:flex;flex-direction:column;height:100%;">
       <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border-soft);background:var(--surface-2);flex-shrink:0;">
         <span style="font-size:15px;font-weight:600;color:var(--fg);">角色扮演</span>
-        <span id="rp-status" style="font-size:11px;color:var(--fg-2);">AI 代入角色对话 · 本地 Ollama</span>
+        <span id="rp-status" style="font-size:11px;color:var(--fg-2);">AI 代入角色对话 · ${providerSummary(activeProviderProfile())}</span>
         <span style="flex:1;"></span>
         <button id="rp-new" style="background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 10px;font-size:11px;cursor:pointer;">新会话</button>
       </div>
@@ -57,7 +57,7 @@ export function renderRoleplay(_store: Store, host: HTMLElement): void {
     } catch (e) {
       bubble('⚠️ AI 调用失败：' + (e instanceof Error ? e.message : String(e)), 'ai');
     } finally {
-      status.textContent = 'AI 代入角色对话 · 本地 Ollama';
+      status.textContent = 'AI 代入角色对话 · ' + providerSummary(activeProviderProfile());
     }
   }
 
@@ -79,6 +79,6 @@ export function renderRoleplay(_store: Store, host: HTMLElement): void {
   host.querySelector('#rp-new')?.addEventListener('click', () => {
     started = false; history = []; log.innerHTML = '';
     input.placeholder = '对角色说话…';
-    status.textContent = 'AI 代入角色对话 · 本地 Ollama';
+    status.textContent = 'AI 代入角色对话 · ' + providerSummary(activeProviderProfile());
   });
 }

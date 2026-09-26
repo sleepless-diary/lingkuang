@@ -1521,29 +1521,48 @@ function aiConfig() {
   return cfg;
 }
 
-/* 统一聊天调用：按 mode 分发到本地 Ollama 或 OpenAI 兼容端点 */
-async function aiChat(messages, temperature, numPredict) {
-  const cfg = aiConfig();
+/* 渲染进程可以随调用带上「当前在用」供应商的配置：供应商档案住在渲染进程的 settings 里
+   （settings.json.providers + activeProvider），主进程这边只剩老格式的 settings.json.ai。
+   只收白名单字段（不许渲染进程塞任意键改路由），缺项一律落回 aiConfig()。 */
+function aiCfgOverride(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  if (raw.mode === 'ollama' || raw.mode === 'api') out.mode = raw.mode;
+  ['baseUrl', 'model', 'apiKey'].forEach((k) => {
+    if (typeof raw[k] === 'string' && raw[k]) out[k] = raw[k];
+  });
+  return Object.keys(out).length ? out : null;
+}
+
+/* 统一聊天调用：按 mode 分发到本地 Ollama 或 OpenAI 兼容端点。override = 上面那份白名单配置。 */
+async function aiChat(messages, temperature, numPredict, override) {
+  const cfg = override ? Object.assign({}, AI_DEFAULTS, override) : aiConfig();
   if (cfg.mode === 'api') {
-    if (!cfg.apiKey) throw new Error('API 模式需要配置 API Key（设置 → 联想引擎）');
+    if (!cfg.apiKey) throw new Error('API 模式需要配置 API Key（设置 → 模型）');
     const url = cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.apiKey },
-      body: JSON.stringify({ model: cfg.model, messages, temperature, max_tokens: numPredict, stream: false })
-    });
-    if (!resp.ok) throw new Error('api http ' + resp.status);
+    let resp;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.apiKey },
+        body: JSON.stringify({ model: cfg.model, messages, temperature, max_tokens: numPredict, stream: false })
+      });
+    } catch (err) { throw new Error('连不上 ' + cfg.baseUrl + '：' + (err && err.message ? err.message : String(err))); }
+    if (!resp.ok) throw new Error('api http ' + resp.status + '（' + cfg.baseUrl + '）');
     const data = await resp.json();
     return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
   }
   /* 本地 Ollama */
   const url = cfg.baseUrl.replace(/\/+$/, '') + '/api/chat';
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: cfg.model, messages, stream: false, options: { temperature, num_predict: numPredict } })
-  });
-  if (!resp.ok) throw new Error('ollama http ' + resp.status);
+  let resp;
+  try {
+    resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: cfg.model, messages, stream: false, options: { temperature, num_predict: numPredict } })
+    });
+  } catch (err) { throw new Error('连不上 ' + cfg.baseUrl + '：' + (err && err.message ? err.message : String(err))); }
+  if (!resp.ok) throw new Error('ollama http ' + resp.status + '（' + cfg.baseUrl + '）');
   const data = await resp.json();
   return (data.message && data.message.content) || '';
 }
@@ -1606,11 +1625,11 @@ const CLASSIFY_PROMPT = `你是角色设定词库管理员。词库分类如下�
 词条：
 `;
 
-ipcMain.handle('ai:classify', async (e, words) => {
+ipcMain.handle('ai:classify', async (e, words, cfgOverride) => {
   if (!Array.isArray(words) || !words.length) return { ok: false, error: 'empty words' };
   const list = words.slice(0, 60);
   try {
-    const text = await aiChat([{ role: 'user', content: CLASSIFY_PROMPT + list.join('\n') }], 0.1, 2000);
+    const text = await aiChat([{ role: 'user', content: CLASSIFY_PROMPT + list.join('\n') }], 0.1, 2000, aiCfgOverride(cfgOverride));
     const validCats = (CLASSIFY_PROMPT.split('\n')[1].match(/[\u4e00-\u9fff]+(?=：)/g) || [])
       .filter((c) => c !== '分类名');
     const map = {};

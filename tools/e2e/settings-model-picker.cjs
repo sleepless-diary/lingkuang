@@ -20,7 +20,7 @@ const REST_TITLES = [
   '★1 分页是切显隐不是重建', '★2 出厂就有一家供应商', '★3 编辑卡字段回填', '★4 模型清单问这一家的端点',
   '★5 搜索 / 点选 / 手填', '★6 保存设置才落盘', '★7 端点报错不是死路', '★8 添加供应商菜单',
   '★9 点预设加一条', '★10 OpenAI 兼容问 /models 带 Bearer', '★11 当前在用落盘', '★12 自定义供应商',
-  '★13 删除一家', '★14 老格式原地迁移', '★14b 老键清掉',
+  '★13 删除一家', '★14 老格式原地迁移', '★14b 老键清掉', '★16 主进程那条 AI 路也认当前供应商',
 ];
 const results = [];
 function check(n, ok, extra) { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${extra !== undefined ? '   ' + JSON.stringify(extra) : ''}`); }
@@ -355,6 +355,15 @@ async function main() {
       && migratedSaved.providers[0].model === 'old-model' && migratedSaved.providers[0].baseUrl === 'https://old.example/v1'
       && migratedSaved.active === 'pv-custom' && migratedSaved.glide === 0.42,
     { legacyKeys: migratedSaved.legacyKeys, providers: migratedSaved.providers.map((p) => p.id), active: migratedSaved.active, glide: migratedSaved.glide });
+
+  /* ── ★16 供应商不只在渲染进程生效：主进程那条路（导出暂存词 → ai:classify）也得用同一家 ──
+     归类跑在 main.js 的 aiChat 里，那边只认老格式的 settings.json.ai；渲染进程必须把
+     「当前在用」的供应商随调用带过去。判据 = 故意给一个打不通的端点，报错必须点名那个端点
+     （旧构建忽略这份配置、仍去打 localhost:11434 ⇒ 报错里没有它）。 */
+  const ipcRes = await ev("window.lingkuangAPI.classifyWords(['测试词'], { mode: 'api', baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKey: 'k' }).then(function (r) { return r; }, function (e) { return { ok: false, error: 'threw:' + String(e) }; })");
+  check('★16 主进程那条 AI 路也认「当前在用」的供应商（导出暂存词不再固定打 localhost:11434）',
+    !!ipcRes && ipcRes.ok === false && String(ipcRes.error).indexOf('http://127.0.0.1:9/v1') >= 0,
+    { res: ipcRes });
 
   /* ── ★15 无异常 ── */
   const errs = await ev('window.__errs');

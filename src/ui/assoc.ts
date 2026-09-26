@@ -3,7 +3,7 @@
  * 放在灵感触发器生成卡片下方，独立画布区域
  */
 import { activeProviderProfile } from './settings';
-import { providerProblem } from './ai-providers';
+import { probeCfgOf, providerProblem } from './ai-providers';
 import { escapeHtml } from './html';
 
 interface AssocNode {
@@ -51,7 +51,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
         <input id="assoc-input" placeholder="输入词，回车联想…" style="width:110px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 8px;font-size:11px;outline:none;" />
         <span id="assoc-status" style="font-size:11px;color:var(--fg-2);font-family:var(--font-mono);">点词条展开联想</span>
         <span style="flex:1;"></span>
-        <button id="assoc-export" title="把暂存词经 Ollama 归类写入词库" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:3px 10px;font-size:11px;cursor:pointer;">导出暂存词（<span id="assoc-staged-cnt">0</span>）</button>
+        <button id="assoc-export" title="把暂存词按「当前在用」的 AI 供应商归类写入词库" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:3px 10px;font-size:11px;cursor:pointer;">导出暂存词（<span id="assoc-staged-cnt">0</span>）</button>
         <span style="font-size:10px;color:var(--fg-2);">左键拖节点/拖空白 · 中键轮盘移动 · Alt+滚轮缩放</span>
       </div>
       <div id="assoc-stage" style="flex:1;position:relative;overflow:hidden;cursor:default;background:var(--surface);">
@@ -767,7 +767,11 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
       try {
         const api = (window as any).lingkuangAPI;
         if (!api?.classifyWords || !api?.saveCharLib || !api?.loadCharLib) { assocStatus('导出不可用（需 Electron 环境）'); throw new Error('no api'); }
-        const res = await api.classifyWords(staged);
+        const p = activeProviderProfile();
+        if (!p) { assocStatus('还没配 AI 供应商（设置 → 模型）'); throw new Error('no provider'); }
+        /* 归类跑在主进程（`main.js` 的 aiChat）—— 那边只认老格式的 settings.json.ai，
+           所以必须把「当前在用」这家供应商随调用带过去，否则用户换了 DeepSeek 这里仍打 localhost:11434。 */
+        const res = await api.classifyWords(staged, { mode: probeCfgOf(p).aiMode, baseUrl: p.baseUrl, model: p.model, apiKey: p.apiKey });
         const libRes = await api.loadCharLib();
         if (!res?.ok || !libRes?.ok || !libRes.data) { assocStatus('分类/词库加载失败'); throw new Error('fail'); }
         const lib = libRes.data;

@@ -15,6 +15,53 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第五十二轮（2026-09-26）· 供应商真正生效：主进程那条 AI 路 + 写死的引擎名
+
+用户：「**输入框上怎么还是本地模型，话说我给你一个key吧，你先测试，稍后我删了重建一个**」。
+
+### ① 先回答「还是本地模型」（不是缺陷）
+标签跟的是**当前在用**那家供应商（`providerSummary(activeProviderProfile())`），不是写死的。用户那份配置是从老四键
+（`aiMode`/`baseUrl`/`apiKey`/`model`）迁过来的 ⇒ 只有**一条本地 Ollama**，`activeProvider` 就是它，所以显示「本地 Ollama · qwen2.5:7b」。
+拿用户临时给的 key 做完整端到端体检（key 只经测试实例的隔离 userdata，测完 `Remove-Item %TEMP%\lk-evault2\userdata` 抹掉，不入库、不进文档）：
+- 挨家试 `{base}/models`：硅基流动 401 `Token is invalid.`、**DeepSeek 200 `["deepseek-flash","deepseek-v4-pro"]`**、OpenAI 403 `unsupported_country_region_territory` ⇒ 这把是 DeepSeek 的。
+- 端到端 **5/5**：设置 → 模型 → 添加 DeepSeek → 填 key → 刷新 ⇒ 真清单两个；选 `deepseek-v4-pro` → 使用 → 保存 ⇒ 落盘
+  `providers:["ollama:ollama:qwen2.5:7b","deepseek:openai:deepseek-v4-pro"]`、`active:"deepseek"`；关设置开助手 ⇒ chip = **`DeepSeek · deepseek-v4-pro`**；
+  真发「用一句话回答：你是谁？」⇒ 真回复。⇒ **换供应商这件事本身是通的**，显示不对只是「还没添加并切过去（或切了但没保存）」。
+
+### ② 真缺陷：主进程那条 AI 路不认供应商档案（已修）
+`src/ui/assoc.ts` 的「导出暂存词」走 `window.lingkuangAPI.classifyWords(staged)` → `preload.js` → `main.js` 的
+`ipcMain.handle('ai:classify')` → main.js 自带的 `aiConfig()`（`AI_DEFAULTS = { mode:'ollama', baseUrl:'http://localhost:11434',
+model:'qwen2.5:7b', apiKey:'' }` + 老格式 `settings.json.ai` + `LINGKUANG_AI_*` 环境变量）。而供应商档案住在**渲染进程**的 settings 里，
+main 完全不知道 ⇒ **用户切到 DeepSeek 后这个按钮仍去打 localhost:11434**。
+
+A/B 实测（`tools/e2e/settings-model-picker.cjs` **★16**：给一个打不通的端点 `http://127.0.0.1:9/v1`，再断言报错点名它）：
+**旧构建 FAIL**、读数 `{"ok":true,"map":{"测试词":"其他身体特征"}}` —— 它**真的连上了本机 Ollama 并成功分类**（症状当场坐实）；
+新构建 PASS、读数 `连不上 http://127.0.0.1:9/v1：fetch failed`。
+
+修法（沿用「预设只产候选 / 失败点名是哪个字段」两条分寸）：
+- 渲染进程把**当前在用**那家随调用带过去：`assoc.ts` 传 `{ mode: probeCfgOf(p).aiMode, baseUrl: p.baseUrl, model: p.model, apiKey: p.apiKey }`；
+  `p` 为空先提示「还没配 AI 供应商（设置 → 模型）」。
+- `preload.js`：`classifyWords: (words, cfg) => ipcRenderer.invoke('ai:classify', words, cfg)`。
+- `main.js`：新增 **`aiCfgOverride(raw)`**（只收白名单 `mode`/`baseUrl`/`model`/`apiKey`，`mode` 必须是 `ollama|api`；缺项一律落回 `aiConfig()`）
+  + `aiChat(messages, temperature, numPredict, override)`；两处 `fetch` 套 try/catch，失败说人话 **`连不上 <端点>：<原因>`**，HTTP 错也带上端点
+  （`api http 401（https://…）`）。老路径 `ai:associate`（渲染进程已无调用方）行为不变。
+
+### ③ 顺手清掉写死的引擎名
+`src/ui/roleplay.ts` 三处 `'AI 代入角色对话 · 本地 Ollama'`（初始骨架 / 出错后 / 新会话）→ `providerSummary(activeProviderProfile())`；
+`src/ui/assoc.ts` 按钮 title「把暂存词经 **Ollama** 归类写入词库」→「按「当前在用」的 AI 供应商归类写入词库」。
+
+### ④ 守卫与回归
+- `tools/e2e/settings-model-picker.cjs` **18/18**（新增 ★16；`REST_TITLES` 同步加一条 ⇒ 旧构建仍能体面全红）。
+- 回归（每套件单独起干净实例）：`settings-panel` 12/12、`agent-panel` **21/21**、`agent-mode` 10/10；
+  `node --check main.js` / `node --check preload.js` / `npx tsc --noEmit` / `npx vite build` 全绿。
+
+### ⑤ ⚠️ 夹具坑（第一次跑 agent-panel 时 ★5/★6d 假 FAIL，别再误判成回归）
+`%TEMP%\lk-evault2\worldbuilding.json` 会**累积**历史套件留下的空时间线（`order = ["tl-side","tl-主线"]`，`tl-side` 0 节点），
+而 `reset-entity-vault.cjs` **只清实体、不重建时间线**；`src/store/store.ts` 的 `pickTimeline(ws) = (ws.order ?? []).find(id => tls[id])`
+⇒ 游标落到空时间线，助手上下文里没有「正在编那一条」（读数 `node:false`、chip 停在「最近在看」）。
+**根治配方**：杀实例 → `Remove-Item %TEMP%\lk-evault2 -Recurse -Force` → 起一次应用让它自建数据目录 → 播 `seed-agent-chat.cjs`（建 `formats.json`）
+→ `reset-entity-vault.cjs` + `seed-node.cjs` → 起应用 → 跑套件 ⇒ **21/21**。
+
 ## 第五十一轮（2026-09-26）· AI 供应商档案（可选 + 自定义）与设置面板分页
 
 用户原话：「**做成可选供应商和自定义供应商的版本吧，再把设置分页做一下，就像 dsh（我比较熟悉这种模式）**」。
