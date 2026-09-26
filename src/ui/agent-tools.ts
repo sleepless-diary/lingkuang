@@ -20,6 +20,9 @@ import { addEntity, addNode } from '../store/actions';
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import type { Entity, PropValue, TimelineNode, Worldset } from '../store/types';
+import { setAgentAsk, setAgentScope } from './agent-perm';
+import type { AgentMode } from './agent-mode';
+import type { AgentAsk, AgentScope } from './settings';
 
 export type ToolArgs = Record<string, unknown>;
 
@@ -38,6 +41,9 @@ export interface Proposal {
   detail: string;
   /** 应用时真正落盘的函数 */
   apply: () => { ok: boolean; note: string };
+  /** ⭐ 这一条**永远**只出卡片、不许自动执行（创作者把询问关成「直接执行」也一样）。
+   *  用在"自我提权"这类动作上：`set_mode` 切到 Agent、把权限范围放宽 —— 那一步必须他亲手点。 */
+  needsConfirm?: boolean;
 }
 
 interface ToolSpec {
@@ -65,6 +71,11 @@ const WRITE_TOOLS: ToolSpec[] = [
   { name: 'append_doc', title: '续写正文', desc: '在某条设定或某个事件的正文末尾追加一段', args: '{ target: "entity"|"node", name: 名字, text: 正文 }' },
   { name: 'create_node', title: '新建事件', desc: '在当前时间线上建一个事件节点', args: '{ title: 标题, year: 年份, kind?: 种类, desc?: 一句简述 }' },
   { name: 'rename_entity', title: '改名', desc: '给一条设定改名', args: '{ entity: 旧名字, name: 新名字 }' },
+  /* ⭐ 灵框自己的设置（用户 2026-09-26：「给 AI 留一条改灵框设置的通道（包括聊天/Agent）」）。
+     ⚠️ 只认白名单三个键 —— 不给模型碰"数据目录 / 界面布局 / 供应商密钥"这类东西的口子
+     （apiKey 一概不认：那是密钥，只该由创作者自己在设置面板里填）。 */
+  { name: 'set_setting', title: '改设置', desc: '改助手自己的设置：权限范围 / 是否每次询问 / 模式', args: '{ key: "agentScope"|"agentAsk"|"agentMode", value: 新值 }' },
+  { name: 'set_mode', title: '切模式', desc: '把助手切到「聊天」或「Agent」模式（切到 Agent 永远要创作者点一下）', args: '{ mode: "chat"|"agent" }' },
 ];
 
 export function findTool(name: string): ToolSpec | undefined {
@@ -75,8 +86,11 @@ export function isWriteTool(name: string): boolean {
   return WRITE_TOOLS.some((t) => t.name === name);
 }
 
-/** 给系统提示用：把能用的动作列出来 + 说清怎么调 */
-export function toolsPrompt(): string {
+/** 给系统提示用：把能用的动作列出来 + 说清怎么调。
+ *  ⭐ 2026-09-26 用户改口后**两个模式都注入**这份协议（「聊天模式也留一点灵框内部的工具」），
+ *  差别只在最后那句"一次能做几步"：聊天一次一个、Agent 可以连着走多步（见 `agent-mode.ts`）。
+ *  ⚠️ 灵框**外**的能力（文件 / 命令 / 联网）现在一条都没有 —— 将来加进来时在这里另起一段。 */
+export function toolsPrompt(mode: AgentMode = 'agent'): string {
   const rows = READ_TOOLS.map((t) => `- ${t.name} ${t.args} —— ${t.desc}`)
     .concat(WRITE_TOOLS.map((t) => `- ${t.name}（要创作者点头）${t.args} —— ${t.desc}`));
   return [
@@ -87,7 +101,10 @@ export function toolsPrompt(): string {
     '{"tool":"read_entity","args":{"name":"安德希亚城"}}',
     '{"tool":"set_field","args":{"entity":"霜精灵","field":"描述","value":"霜精灵是生活在北境冻原的种族。"}}',
     '⚠️ 不要写成 {"动作名":{…}}（例如 {"set_field":{…}}），也不要写成 {"name":…,"arguments":…} —— 那样我认不出来。',
-    '不需要用动作时就用平常的话回答。一次只提一个动作。',
+    '要放开权限（切到 Agent 模式、把权限改宽）时，那张卡片**永远**要创作者点「应用」才会生效 —— 别催他。',
+    mode === 'agent'
+      ? '不需要用动作时就用平常的话回答。**一次提问里可以连着提多个动作**（我最多放你走 8 步），批量活一次规划好。'
+      : '不需要用动作时就用平常的话回答。**一次提问只提一个动作**（这是「聊天」模式的规矩），做完把结果说给他、等他决定下一步。',
   ].join('\n');
 }
 
@@ -109,6 +126,8 @@ const PRIMARY: Record<string, string> = {
   append_doc: 'text',
   create_node: 'title',
   rename_entity: 'name',
+  set_setting: 'value',
+  set_mode: 'mode',
 };
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '');
@@ -425,6 +444,55 @@ export function planWrite(call: ToolCall, store: Store): { ok: true; proposal: P
               if (ent) ent.name = next;
             });
             return { ok: true, note: `已把「${e.name}」改名为「${next}」` };
+          },
+        },
+      };
+    }
+    /* ⭐ 灵框自己的设置（用户 2026-09-26：「给 AI 留一条改灵框设置的通道（包括聊天/Agent）」）。
+       ⚠️ 白名单三个键；**放宽**（切 Agent / 范围改可写 / 关掉询问）一律 `needsConfirm: true`：
+       即便创作者把询问关成「直接执行」，自我提权这一步也必须他亲手点一下。收窄随时生效。 */
+    case 'set_setting':
+    case 'set_mode': {
+      const key = call.tool === 'set_mode' ? 'agentMode' : str(a.key);
+      const value = call.tool === 'set_mode' ? str(a.mode) : str(a.value);
+      const ALLOWED: Record<string, string[]> = {
+        agentScope: ['readonly', 'workspace'],
+        agentAsk: ['always', 'never'],
+        agentMode: ['chat', 'agent'],
+      };
+      const KEY_CN: Record<string, string> = { agentScope: '权限范围', agentAsk: '写入要不要先问', agentMode: '助手模式' };
+      if (!ALLOWED[key]) {
+        return { ok: false, note: '能改的设置只有 agentScope（readonly|workspace）、agentAsk（always|never）、agentMode（chat|agent）。' };
+      }
+      if (ALLOWED[key].indexOf(value) < 0) {
+        return { ok: false, note: `「${key}」只能是 ${ALLOWED[key].join(' 或 ')}，我收到的是「${value}」。` };
+      }
+      const widen = value === 'agent' || value === 'workspace' || value === 'never';
+      const what = key === 'agentMode'
+        ? (value === 'agent' ? '它能连着走多步、批量改' : '回到平常：一次只做一个动作')
+        : key === 'agentScope'
+          ? (value === 'workspace' ? '允许它改你的数据（写入仍走提议卡片）' : '只读：写入一律不执行')
+          : (value === 'never' ? '写入不再问你，直接落盘' : '每次写入都先出卡片等你点「应用」');
+      return {
+        ok: true,
+        proposal: {
+          tool: call.tool,
+          title: `改设置：${KEY_CN[key]} → ${value}`,
+          detail: what + (widen ? '（这一步放开了更大的权限，必须你点「应用」）' : ''),
+          needsConfirm: widen,
+          apply: () => {
+            if (key === 'agentScope') {
+              setAgentScope(value as AgentScope);
+              return { ok: true, note: `权限范围已改成「${value}」` };
+            }
+            if (key === 'agentAsk') {
+              setAgentAsk(value as AgentAsk);
+              return { ok: true, note: `写入询问方式已改成「${value}」` };
+            }
+            /* 模式住在 `src/ui/agent.ts` 的模块变量里 —— 动作层直接改它会成 import 环，
+               所以广播一条事件，由那边收（与 `lingkuang-agent-perm` / `lingkuang-sessions` 同一套做法）。 */
+            window.dispatchEvent(new CustomEvent('lingkuang-agent-mode', { detail: { mode: value } }));
+            return { ok: true, note: value === 'agent' ? '已切到 Agent 模式（能连着走多步）' : '已切回聊天模式（一次只做一个动作）' };
           },
         },
       };

@@ -67,13 +67,15 @@ const SYS_HEAD = [
 ].join('\n');
 
 /** 助手这一次对话的**系统提示**（AI 页的「主会话」也用这一份 —— 两处入口是同一格会话，
- *  提示词不能有两副面孔）。⚠️ 动作协议与权限段**只在 agent 模式**注入：聊天模式只要看见协议，
- *  本地小模型就会时不时吐半截 JSON 给创作者看。两种模式都带长期记忆与工作区现状。 */
-export function agentSystemPrompt(st: Store, m: AgentMode = mode): string {
+ *  提示词不能有两副面孔）。⭐ 2026-09-26 用户改口后**两个模式都有灵框内部的动作**，所以
+ *  `tools = true` 时动作协议与权限段照注入；两个模式的差别在自主程度（见 `modePrompt()`）。
+ *  ⚠️ `tools = false` 现在只有一处用途：**AI 页的主会话**在"提议卡片搬过去"之前还没有
+ *  卡片 UI —— 喂了协议它就会吐动作 JSON 而没人执行。那份 UI 补上后这里应当一律传 true。 */
+export function agentSystemPrompt(st: Store, m: AgentMode = mode, tools = true): string {
   return [
     SYS_HEAD,
     modePrompt(m),
-    ...(m === 'agent' ? [permissionPrompt(), toolsPrompt()] : []),
+    ...(tools ? [permissionPrompt(), toolsPrompt(m)] : []),
     memoryPrompt(),
     '【工作区现状】\n' + buildContext(st),
   ].filter(Boolean).join('\n\n');
@@ -88,15 +90,32 @@ let disposeAll: (() => void) | null = null;
 let history: ChatMsg[] = [];
 let loaded = false;
 let busy = false;
-/** 当前模式（`chat` = 平常聊天，不注入动作协议；`agent` = 能动手）。
- *  ⚠️ **面板会话态、不落盘**：每次打开都从 `chat` 开始（见 `src/ui/agent-mode.ts` 顶部说明）。 */
+/** 当前模式（⭐ 两个模式**都有**灵框内部的动作 —— 差别在自主程度：`chat` 一次只做一个动作，
+ *  `agent` 可以连着走多步。见 `src/ui/agent-mode.ts` 顶部说明）。
+ *  ⚠️ **面板会话态、不落盘**：每次打开都从 `chat` 开始。 */
 let mode: AgentMode = 'chat';
+/* AI 的 `set_mode` 动作（`src/ui/agent-tools.ts` 的 planWrite）不能直接改这个模块变量
+   （会成 import 环），它广播事件、这里收 —— 与 `lingkuang-agent-perm` / `lingkuang-sessions`
+   同一套做法。面板开着就顺手重画那两段按钮与说明。 */
+window.addEventListener('lingkuang-agent-mode', (e) => {
+  const m = (e as CustomEvent).detail?.mode;
+  if (m !== 'chat' && m !== 'agent') return;
+  /* ⚠️ 顺序要紧：**先**交给 setMode()（它带 `if (mode === next) return;` 的守卫，
+     自己会写 mode、重画按钮/说明、并给一句 setNote）。先手写 `mode = m` 的话，
+     setMode 会当场早退 ⇒ 变量变了、界面还停在旧模式（实测就是这么假的失败）。 */
+  if (openEl) setMode(m);
+  else mode = m;
+});
 /** 「＋ 手动加一条」点了之后，列表里多出一行空输入框等着填 */
 let draft = false;
 
-/* 动作（片 3）：`MAX_ROUNDS` = 只读动作最多连着跑几轮（模型看结果 → 再决定），
-   防它在「列设定 → 再看一条 → 再列」里打转。`cards` = 这次会话里还没处理的提议卡片。 */
-const MAX_ROUNDS = 3;
+/* 动作（片 3）：一次提问里最多连着几轮模型调用（模型看结果 → 再决定），
+   防它在「列设定 → 再看一条 → 再列」里打转。
+   ⭐ 2026-09-26 用户拍板：两个模式的差别就在这儿 —— 聊天**一次只做一个动作**
+   （1 轮动作 + 1 轮答话），Agent 可以连着走多步。
+   `cards` = 这次会话里还没处理的提议卡片。 */
+const CHAT_ROUNDS = 1;
+const AGENT_ROUNDS = 8;
 /* 模型把动作格式写歪时，用它回头纠正一次（只一次） */
 const FIX_NOTE =
   '【格式提醒】你上一条不是合法的动作调用（我认不出来）。要动用动作，请整条回复只写一行：' +
@@ -214,11 +233,9 @@ function persist(): void {
 export const RESULT_RE = /^【动作结果：([^】]+)】/;
 
 function isCallMsg(m: ChatMsg): boolean {
-  /* ⚠️ 只有 agent 模式才把这种消息画成「用到动作」那一行（片 4）：
-     聊天模式**没有**动作这回事，模型偶尔吐的 JSON 就是一段普通文字 ——
-     若照旧画成「用到动作：create_entity」，创作者会以为它真动手了（其实什么也没发生）。
-     副作用（已知、可接受）：agent 模式下真调用留下的消息，切回聊天模式后显示成原始 JSON 文字。 */
-  if (mode !== 'agent') return false;
+  /* ⭐ 两个模式都把动作消息画成「用到动作」那一行（2026-09-26 用户改口：聊天模式也留内部工具）。
+     旧版按 mode 短路是片 4 的规矩（那时 chat 零工具）；现在 chat 也会真执行动作，
+     再短路就会把**已经执行过的**动作画成一段 JSON 文字 —— 创作者以为没发生，其实已经改完了。 */
   return m.role === 'assistant' && parseToolCall(m.content) !== null;
 }
 
@@ -361,18 +378,16 @@ function renderPerm(): void {
   const aSel = openEl.querySelector<HTMLSelectElement>('#lk-agent-ask');
   if (sSel && sSel.value !== scope) sSel.value = scope;
   if (aSel && aSel.value !== ask) aSel.value = ask;
-  /* 聊天模式没有"动手"这回事：控件留着（别让它跳），但禁掉并压暗 ——
-     免得看着像"权限已经生效"，也免得创作者以为改了权限就切过去了。 */
-  const off = mode !== 'agent';
-  if (sSel) sSel.disabled = off;
-  if (aSel) aSel.disabled = off;
+  /* ⭐ 2026-09-26 改口后**两个模式都能动手**（聊天模式也有内部动作）⇒ 两把旋钮在两个模式里
+     **都可用**：权限才是"允许做到哪一步"的长期设定，模式只决定"这次要多自主"。
+     （旧版在聊天模式把它们禁掉、还写着"用不上"，那是片 4 的零工具语义，已废。） */
+  if (sSel) sSel.disabled = false;
+  if (aSel) aSel.disabled = false;
   const hint = openEl.querySelector('#lk-agent-perm-hint');
   if (hint) {
-    hint.textContent = off
-      ? '聊天模式用不上（切到 Agent 才动手）'
-      : permName(scope, ask) + '：' + permHint(scope, ask);
+    hint.textContent = permName(scope, ask) + '：' + permHint(scope, ask);
   }
-  openEl.querySelector('.lk-agent__perm')?.classList.toggle('is-off', off);
+  openEl.querySelector('.lk-agent__perm')?.classList.remove('is-off');
   openEl.dataset.gate = gateWrite();
 }
 
@@ -397,8 +412,8 @@ function setMode(next: AgentMode): void {
   mode = next;
   renderMode();
   setNote(mode === 'agent'
-    ? '已切到 Agent：它能查、能改（写入按下面那档权限走）'
-    : '已切回聊天：它只出建议，不会动你的数据');
+    ? '已切到 Agent：能连着走多步（写入按下面那档权限走）'
+    : '已切回聊天：一次只做一个动作（写入照样要过下面那关）');
 }
 
 function setNote(text: string, isErr = false): void {
@@ -425,7 +440,9 @@ function handleWrite(call: ToolCall): void {
     setNote(plan.note, true);
     return;
   }
-  if (gate === 'allow') {
+  /* ⭐ `needsConfirm`（自我提权那类动作）**无视**"直接执行"档：那一档是创作者授权了平常的写入，
+     不等于授权助手自己把权限往宽里调 —— 这一步必须他亲手点「应用」。 */
+  if (gate === 'allow' && !plan.proposal.needsConfirm) {
     agentActing();
     const r = plan.proposal.apply();
     pushHistory({ role: 'user', content: `【动作结果：${call.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
@@ -433,7 +450,9 @@ function handleWrite(call: ToolCall): void {
     return;
   }
   cards.push({ p: plan.proposal });
-  setNote('写了一张提议卡片，点「应用」才落盘');
+  setNote(plan.proposal.needsConfirm && gate === 'allow'
+    ? '这一步会放开更大的权限 —— 只有你点「应用」才会生效'
+    : '写了一张提议卡片，点「应用」才落盘');
 }
 
 /* 卡片上的「应用」/「忽略」（事件委托：卡片随消息区一起重画） */
@@ -475,21 +494,22 @@ async function send(): Promise<void> {
   renderMsgs();
   renderCtx();
   /* 系统提示按模式拼 —— 见 `agentSystemPrompt()`：**AI 页的「主会话」用的是同一个函数** */
-  const sys = agentSystemPrompt(store);
+  const sys = agentSystemPrompt(store, mode);
   /* 输出上限不再由这里设 900（用户 2026-09-26：「ai 的输出被截断了」）：不传 = 引擎不设上限，
      只有「就要短答案」的地方（联想 / 起名 / 总结）才显式给 numPredict。 */
   const cfg = { temperature: 0.7 };
   const box = openEl.querySelector<HTMLElement>('#lk-agent-msgs');
   let live: LiveBubble | null = null;
   try {
-    /* 一次提问 = 最多 MAX_ROUNDS 轮：模型要么说话（结束），要么要求一个只读动作
+    /* 一次提问 = 最多 `roundMax` 轮：模型要么说话（结束），要么要求一个只读动作
        （执行完把结果喂回去，让它接着说）。写入动作一轮就结束 —— 要么落盘要么等点击。 */
     let fixed = false; /* ⭐ 格式纠错只做一次，免得跟模型来回拉锯 */
-    for (let round = 0; round <= MAX_ROUNDS; round++) {
+    const roundMax = mode === 'agent' ? AGENT_ROUNDS : CHAT_ROUNDS;
+    for (let round = 0; round <= roundMax; round++) {
       /* 分割线之上的对话**不发给模型**（系统提示词、记忆、工作区现状都在 sys 里，照旧每次现拼） */
       const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...sentHistory(history)];
       /* 流式（用户 2026-09-26：「我想要流式输出」）：先挂一个空气泡，增量到了就往里写。
-         ⚠️ agent 模式下这一段可能在吐动作 JSON —— 那种东西不给创作者看：从第一个 `{` 起就改说
+         ⚠️ 两个模式下这一段都可能在吐动作 JSON —— 那种东西不给创作者看：从第一个 `{` 起就改说
          「正在整理成动作…」，这一轮走完再由 renderMsgs() 画成「用到动作」那一行。 */
       live?.remove();
       live = box
@@ -505,20 +525,20 @@ async function send(): Promise<void> {
           /* 自动化要看的「中间态」：测试先建好 window.__lkStreamLog，这里只往里记，正式运行零成本 */
           const log = (window as any).__lkStreamLog;
           if (Array.isArray(log)) log.push({ len: acc.length, t: Date.now() });
-          if (mode === 'agent' && acc.trimStart().startsWith('{')) { suppressed = true; live?.placeholder('正在整理成动作…'); return; }
+          if (acc.trimStart().startsWith('{')) { suppressed = true; live?.placeholder('正在整理成动作…'); return; }
           live?.push(d);
         },
       });
       /* 气泡收尾：正常说完就落定；在吐动作 JSON 就保持"正在整理成动作…"（不给 JSON 闪一下的机会） */
-      if (!suppressed && !(mode === 'agent' && looksLikeToolJson(r.text))) live?.finish(r.text);
-      /* ⚠️ 聊天模式**不解析动作**：模型偶尔还是会对着"帮我改一下"吐一坨 JSON，
-         那样的回复当普通文字画出来就行（创作者至少看得见它说了什么），
-         不走纠错轮 —— 那是 agent 模式才有的来回。 */
-      const call = mode === 'agent' ? parseToolCall(r.text) : null;
-      if (mode === 'agent' && !call && looksLikeToolJson(r.text)) {
+      if (!suppressed && !looksLikeToolJson(r.text)) live?.finish(r.text);
+      /* ⭐ 两个模式**都解析动作**（2026-09-26 用户改口：聊天模式也有灵框内部的动作）；
+         差别只在能连着走几步 —— `roundMax` 已经按模式定好了。别再说"聊天模式不解析"，
+         那会让模型吐的动作 JSON 被当聊天画到脸上、什么也不发生。 */
+      const call = parseToolCall(r.text);
+      if (!call && looksLikeToolJson(r.text)) {
         /* 想调动作、格式却写歪了（用户 2026-09-15 实测：`{"set_field":{…}}`）。
            纠正一次（进历史、不进气泡），还不行就不再把这坨 JSON 糊到创作者脸上。 */
-        if (!fixed && round < MAX_ROUNDS) {
+        if (!fixed && round < roundMax) {
           fixed = true;
           pushHistory({ role: 'user', content: FIX_NOTE });
           setNote('它发来的动作格式不对，我让它按格式重发了一次…');
@@ -542,7 +562,9 @@ async function send(): Promise<void> {
       const out = runReadTool(call, store);
       pushHistory({ role: 'user', content: `【动作结果：${call.tool}】\n${out}` });
       renderMsgs();
-      if (round === MAX_ROUNDS) setNote('动作调了几轮了，先停一下', true);
+      if (round === roundMax) {
+        setNote(mode === 'agent' ? '动作调了几轮了，先停一下' : '聊天模式一次只做一个动作 —— 要我接着做就再说一声', true);
+      }
     }
   } catch (e) {
     /* 报错**不进历史**（否则会被反复喂回模型），只在面板底部提示 */

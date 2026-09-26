@@ -15,6 +15,63 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第五十六轮（2026-09-26）· 助手模式语义翻转：聊天模式也留灵框内部的动作 + AI 能改「设置」了（阶段 2A）
+
+**用户原话**：「**聊天模式也留一点灵框内部的工具吧，agent 模式是在灵框外工作用的**」——
+这**推翻了本会话片 4 的判据**（当时定的是「聊天模式不注入动作协议」）。当天用 ask_user_question 敲定两件事：
+① 聊天模式拿到**全部内部工具**（读 4 + 写 5 + 设置/模式）；② agent 模式的「在灵框外」= **多步自主 + 批量改**
+（不是外部文件/命令那一层）。
+
+**一个必须先说清的事实**（用户据此定的划法）：现有 9 个工具**全是灵框内部**的，一个"灵框外"的都没有
+（无文件系统 / shell / 联网）；而"内部工具"本身**已经会顺带改磁盘上的 vault .md**
+（`src/store/actions.ts:369` 单条 `vaultWrite`、`src/main.ts:388-406` 全量同步）⇒ 内/外的分界
+**不能**按"碰不碰磁盘"划，只能按"改的是灵框的数据模型，还是别的东西"划。
+
+**新的划法**（`src/ui/agent-mode.ts` 顶部就是这段说明）：两个模式**都有**内部动作，差别在**自主程度** ——
+`chat` 一次提问只做一个动作（看得住），`agent` 可以连着走多步（`AGENT_ROUNDS = 8`）+ 批量规划；
+**授权仍归 `src/ui/agent-perm.ts` 的两把旋钮**（范围 × 询问），模式只决定"这一次要多自主"。
+
+**落地坐标**：
+- `src/ui/agent-mode.ts`：`MODE_HINT` 换成两句话（聊天：能查也能改、一次一个动作／Agent：连着走多步、批量改）；
+  `modePrompt('chat')` **重写**（不再说"你只能聊天、改不了灵框里的任何数据"，改成"你有内部动作、一次只做一个、
+  写入会先出卡片"）；`modePrompt('agent')` 新增「可以连着做多步（我最多放你走 8 步）、批量活一次规划好」。
+- `src/ui/agent-tools.ts`：`toolsPrompt(mode: AgentMode = 'agent')` —— **两个模式都注入**，末句按模式分
+  （「一次提问只提一个动作」/「可以连着提多个动作」）；新增两个写工具 `set_setting{key,value}` 与
+  `set_mode{mode}`（白名单只认 `agentScope`/`agentAsk`/`agentMode`，`PRIMARY` 各补一条）；`Proposal` 加
+  `needsConfirm?: boolean`。
+- `src/ui/agent.ts`：`isCallMsg()` 与 `send()` **两个模式都解析动作**（`const call = parseToolCall(r.text)`、
+  纠错轮不再按 mode 短路、流式里"从第一个 `{` 起改说正在整理成动作"也不再按 mode 短路）；
+  `MAX_ROUNDS = 3` 拆成 `CHAT_ROUNDS = 1` / `AGENT_ROUNDS = 8`（`send()` 里
+  `const roundMax = mode === 'agent' ? AGENT_ROUNDS : CHAT_ROUNDS`）；`agentSystemPrompt(st, m = mode, tools = true)`
+  （第三个参数目前只有 AI 页主会话在用）；`handleWrite()` 尊重 `needsConfirm`；`setMode()` 的两句 setNote 改成新语义；
+  模块级监听 `lingkuang-agent-mode` 事件（动作层不能直接改 `mode` 这个模块变量，会成 import 环）。
+- `src/ui/ai-workbench.ts`：主会话暂传 `agentSystemPrompt(store, 'chat', false)` —— AI 页**还没有提议卡片 UI**
+  （阶段 2C 搬过去），喂了协议它会吐动作 JSON 而没人执行。
+
+**自我提权永远要创作者点头**：`set_mode` → `agent`、`agentScope` → `workspace`、`agentAsk` → `never` 这三种"放宽"
+一律 `needsConfirm: true` ⇒ `handleWrite()` 里只有 `if (gate === 'allow' && !plan.proposal.needsConfirm)` 才自动执行。
+理由：「直接执行」档授权的是**平常的写入**，不等于授权助手自己把权限往宽里调。收窄（→ chat / readonly / always）随时生效。
+
+**踩坑（两条都记着）**：
+1. **`setMode()` 带 `if (mode === next) return;` 守卫** —— 我的事件监听第一版先写 `mode = m` 再调 `setMode(m)`，
+   于是 setMode 当场早退：**变量变了、界面还停在旧模式**（e2e ★6c 读数 `mode:"chat"`，看着像"点了应用没生效"）。
+   改成 `if (openEl) setMode(m); else mode = m;` 即对。教训：带守卫的 setter，**不要先手写状态再调它**。
+2. **e2e 连跑会互相污染**：把几套塞进同一个 pwsh 循环里跑，上一实例的收尾写回会盖掉下一次清目录之后播种的
+   `agent/*.json` ⇒ 症状是"seeds 明明播了、面板里却是空的"（`agent-memory` ★5 `n:0`、`agent-panel` ★7 `n:0`、
+   `agent-main-session` ★0 `seedChat:null`；单跑全部全绿）。**每个套件单独起一次 runner，跑前留几秒空档。**
+
+**守卫与验证**：`tools/e2e/agent-mode.cjs` 12 项 —— 新增 ★2（聊天模式 sys **有**协议与权限段，且写着"一次提问只提一个动作"）、
+★3（聊天模式**真解析**动作：读动作当场执行出「用到动作」+ 回执，写动作只出卡片不落盘）、★6b（"直接执行"档下
+`set_mode agent` **仍然**只出卡片、模式没变）、★6c（点了「应用」模式才切过去）；★5 补了"可以连着提多个动作"、
+★6 的断言从"只有一张卡片"改成"最后一张是它"（★3 现在会合法地留下一张卡片）。⚠️ 本轮**没有**再单独 stash 跑一遍
+旧构建 A/B：旧构建上 ★2 的判据（`hasTools === false`）与新语义正好相反、★6b/★6c 是全新的判据，语义上不可能同时成立。
+回归（每个套件**单独**起干净实例 + 清 userdata）：`agent-mode` 12/12、`agent-tools` 19/19、`agent-memory` 15/15、
+`agent-panel` 21/21、`agent-main-session` 10/10、`agent-stream` 6/6、`agent-focus` 全过；三道检查
+`node --check main.js`(0) / `npx tsc --noEmit`(0) / `npx vite build`(0) 全绿。
+
+**还没做（同一天继续）**：**2B** 批量（`set_field{entities}` / `create_node{nodes}`）；**2C** 把工具循环与提议卡片
+抽成共享模块 ⇒ AI 页主会话也能动手 + 模式开关进 AI 页（那时 `ai-workbench.ts` 的 `tools = false` 要去掉）。
+
 ## 第五十五轮（2026-09-26）· AI 页的「主会话」与 Ctrl+K 助手合并成同一格会话（阶段 1）
 
 > 用户原话：「**话说主会话为什么没有工具啊**」。我先答清事实 —— AI 页（`src/ui/ai-workbench.ts`）**从未接线**：

@@ -246,11 +246,12 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
        工作区现状每次现拼，所以助手/会话看到的都是他此刻在编的东西。 */
     /* ⭐ 主会话（`role:'main'`）**就是 Ctrl+K 的灵框助手**：系统提示与「发多少条」都用助手那一套
        （`agentSystemPrompt` / `sentHistory`），否则同一格会话在两个入口会像两副面孔。
-       ⚠️ 这里按 **chat** 拼（不注入动作协议）：AI 页还没有提议卡片那套界面，要动手请去助手面板切
-       Agent。分割线（`div:true`）之上的对话不发给模型 —— 与助手同一条规矩。 */
+       ⚠️ 这里按 **chat** 且**第三个参数 false = 暂不注入动作协议**：AI 页还没有提议卡片那套界面
+       （阶段 2C 会把它搬过来），喂了协议它就会吐动作 JSON 而没人执行。分割线（`div:true`）
+       之上的对话不发给模型 —— 与助手同一条规矩。 */
     const isMain = s.role === 'main';
     const sys = isMain
-      ? agentSystemPrompt(store, 'chat')
+      ? agentSystemPrompt(store, 'chat', false)
       : [AI_SESSION_FRAME, sessionPrompt(s, personaTextOf(store, s)), '【工作区现状】\n' + buildContext(store)].filter(Boolean).join('\n\n');
     const msgs: ChatMsg[] = sys ? [{ role: 'system', content: sys }] : [];
     msgs.push(...(isMain ? sentHistory(s.history) : s.history));
