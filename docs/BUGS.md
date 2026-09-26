@@ -15,6 +15,64 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第四十四轮（2026-09-26）· 标尺文字「随缩放比例」的透明度出入场（**用户三轮改口的最终态**）
+
+> 用户原话（这一轮）：「**标尺上的文字能不能随缩放比例稍微做一点不透明度的出入场**」。
+
+### 三轮改口的时间线（别再翻回去）
+1. **09-19 提**：「年月日等刻度的出入场用不透明度和缩放尺度计算」→ **09-26 上午做**（`scaleTicksEnter` /
+   `scaleTicksLeaveAndRemove`：`opacity` + `scale(0.9)` 作用在**刻度元素**上，整批换档还做过"先出后进"）。
+2. **09-26 下午否**：「要不标尺动画去了吧，感觉有点，emm不符合我的预期」→ 整套撤掉（commit `2b88813`），
+   只留 DOM diff。**撤掉的两条理由都还成立**：① 线与网格一起缩放＝"尺子自己在动"；
+   ② `scale()` 让 9px 等宽字重新栅格化 ⇒ 用户另报的「入场时标尺的文字会闪一下」。
+3. **09-26 再提**（本轮）：只要**文字**、只要**不透明度**、"**稍微**一点"、
+   而且要「**随缩放比例**」⇒ 折中方案，见下。
+
+### 落地：只淡文字 + 只由缩放驱动 + 绝不碰线（`src/ui/timeline.ts` / `src/ui/motion.ts`）
+- **动的是文字 span 自己的 opacity**：刻度里的 `.tl__axis-label` / `.tl__axis-prev` 两个 span
+  （`motion.ts` 新增 `labelFadeIn` / `labelFadeOut` / `cancelLabelFade`，**只写 `opacity`**，
+  与那对被删掉的 `scaleTicksEnter/LeaveAndRemove` 不是一回事 —— 后者动的是刻度元素、还带 `scale`）。
+  刻度元素的 `border-left`（那根线）**一个字节都不碰** ⇒ 缩放/平移时线与网格位置纹丝不动。
+- **"随缩放比例"**：`renderScale()` 里比"这一帧"与"上一次画标尺"的视图 ——
+  `dSpacing = |log(view.spacing / lastPaint.spacing)|`、`dPan = |view.panX - lastPaint.panX|`，
+  `moving = lastPaint.spacing > 0 && (dSpacing > 0.0005 || dPan > 0.5)`。
+  **只在 `moving` 的帧播** ⇒ 静止时的重画（改字段 / 切世界后重建）一律瞬间到位，
+  动画不挂在 store 订阅上（`motion.ts:15-17` 的纪律）。**首帧不播**（`lastPaint.spacing === 0`：
+  开局那一 fit 是"摆好尺子"，不是缩放）。
+  时长也随缩放幅度走：`dur = clamp(LABEL_MAX / (1 + dSpacing*40), 90, 170)` —— 慢慢缩放 ≈ 170ms
+  （看得清是"浮现"出来的）、滚得猛压到 90ms（一堆动画堆着反而糊）。
+- **只淡"新出现的那一截"**：复用元素重写 `html` 时先记旧 span 的指纹（`sigOf` = 类名 + 文本），
+  重写后**只挑没出现过的**淡入 —— 否则整块再淡一遍就又变成第四十二轮那条「换档时数字闪一下」。
+- **退场不许出现两套线**：走掉的刻度元素留一拍让文字淡出，但**当帧加 `.is-out` 让线透明**
+  （`src/style.css`：`.tl__axis-tick.is-out { border-left-color: transparent; }`）。
+  ⚠️ 这条是硬要求 —— 第四十二轮用户报的「两个重叠的标尺」正是**线一起留着淡出**造成的。
+  没有可淡文字的刻度（小刻度、`⋯` 断口）一律**当场摘**。
+- **同一个 key 不许有两个元素**：退场中的元素记账在 `scaleFading: Map<string, HTMLElement>`，
+  缩放来回抖把它"捞回来"时**复用那个元素并 `cancelLabelFade`**（否则它会顶着 `fill:'both'` 的终点值 0
+  停在屏上：数字看不见、线却在）。`clearScale()` 把两份账本一起清、并复位 `lastPaint.spacing = 0`。
+- `prefers-reduced-motion` ⇒ 整段跳过（沿用文件里既有的"就地判、不为一个判据加 import"）。
+
+### A/B 与读数（`tools/e2e/scale-motion.cjs`，8 项）
+- 改造：★2 从"标尺全程零动画"收窄成"**刻度元素本身**零动画"（线不许动），
+  ★4 从"走掉的当帧就摘"改成"**退场元素的线任何时刻都不可见**"，★4b 新增"淡完即摘、无残留"，
+  **★6 新增**"文字入场 + 退场两半都在跑、且只动 opacity"。
+- **A/B：修复前 7/8（★6 FAIL：`maxLabelAnim 0 / outFading 0`）、修复后 8/8**，
+  连跑两次读数完全一致：`maxAnim 0`（线零动画）、`maxLabelAnim 29`、`outSeen 13`、`outFading 16`、
+  **`maxLabelMove 0`**（没有任何一刻用 `scale()`）、`outVisible 0`（退场线全程不可见）、
+  `residualOut 0`、`idleLabelAnim 0`、`maxDupPair 0`、`frames 2349`。
+- 回归（均在新构建上、每套件单独起干净实例）：`timeline-scale` **12/12**、`scale-hidden-mount` **5/5**、
+  `causes-line` **7/7**、`storyline-focus` **13/13**、`nonlinear-pan` **7/7**。
+
+### ⚠️ 本轮的坑（写进这里，别再踩）
+- **★4 第一版判据是"500ms 前后的 DOM 集合差分"⇒ 假 FAIL**：差分量到的大多是**没有文字的小刻度**
+  （小刻度没有可淡的东西、一律当场摘，根本不进退场路径）。实测 `exitSeen 80 / exitHidden 0 /
+  lingerUnhidden 13`（看着像"线没隐身"，其实是量错了对象）。改成**每滚一格连续 400ms 每帧直接盯
+  `is-out` 元素**（`outSeen` / `outFading` / `outVisible`），一眼就读对。
+- **探针代码住在模板字符串里 ⇒ 注释里也不许出现反引号**（本轮又栽一次：注释里写了 `.is-out`
+  反引号，模板串提前结束 ⇒ Node 侧报 `ReferenceError: out is not defined`，位置指向注释那一行）。
+- 断言分工要干净：**"没有两套线"（★4，安全不变量）与"文字在淡"（★6，新功能）分开**，
+  否则在旧构建上 ★4 会因"压根没退场"而假 FAIL，A/B 的读数就读不清。
+
 ## 第四十三轮（2026-09-26）· 缩放时「标尺轻微卡顿 + 因果线跳位置」（**用户实测**）
 
 > 用户原话：「**缩放时标尺有轻微卡顿，而且渲染出的因果线会跳位置**」。

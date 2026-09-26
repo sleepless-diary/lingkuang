@@ -12,6 +12,7 @@ import { escapeHtml } from './html';
 import { confirmDialog } from './confirm';
 import { toEpoch, fromEpoch, calendarOf, timePointOf, buildYearTable } from '../calendar';
 import type { Calendar, YearTable } from '../calendar';
+import { labelFadeIn, labelFadeOut, cancelLabelFade } from './motion';
 
 interface View {
   panX: number;
@@ -325,44 +326,96 @@ export function mountTimeline(
         items.push({ key: `m|${unit}|${Math.round(s)}`, cls: 'tl__axis-tick tl__axis-tick--minor', left: timeToX(s), html: '' });
       }
     }
-    paintScale(items);
+    /* 「随缩放比例」的那一半：这一次画标尺，视图到底有没有在动？
+       · 判据 = 与上一次画标尺时比，`panX` 或 `spacing` 变了（缓动每帧都在变 ⇒ 连续缩放/平移期间恒真）；
+         静止时的重画（改字段、切世界后重建）一律不播 —— 动画只由缩放驱动，不挂 store 订阅。
+       · 首帧（`lastPaint.spacing === 0`）不播：开局那一 fit 是"摆好尺子"，不是缩放。
+       · 时长随**这一帧缩放的比例变化量**走（`|log(spacing/prev)|`）：慢慢缩放 ⇒ 接近 `LABEL_MAX`
+         （够看清是"浮现"出来的）；滚得猛 ⇒ 压到 `LABEL_MIN`（一堆动画堆着反而糊）。
+       · `prefers-reduced-motion` 就地判（同 `noSmooth()` 的理由：不为一个判据加 import）⇒ 整段跳过。 */
+    const dSpacing = lastPaint.spacing > 0 ? Math.abs(Math.log(view.spacing / lastPaint.spacing)) : 0;
+    const moving = lastPaint.spacing > 0
+      && (dSpacing > 0.0005 || Math.abs(view.panX - lastPaint.panX) > 0.5);
+    const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const dur = Math.max(LABEL_MIN, Math.min(LABEL_MAX, Math.round(LABEL_MAX / (1 + dSpacing * 40))));
+    paintScale(items, { on: moving && !calm, dur });
+    lastPaint.spacing = view.spacing;
+    lastPaint.panX = view.panX;
   }
 
-  /* ── 标尺刻度的 DOM diff（第 ⑤ 片；出入场动画已按用户要求撤掉）───────────────────────────
+  /* ── 标尺刻度的 DOM diff + **文字的**透明度出入场（第 ⑤ 片三轮）───────────────────────
      用户 2026-09-19：「年月日等刻度的**出入场用不透明度和缩放尺度**计算」→ 09-26 上午做了；
-     同日下午用户看完说：「**要不标尺动画去了吧，感觉有点，emm不符合我的预期**」⇒ **整套出入场撤掉**。
-     道理：标尺是**量具** —— 缩放/平移时该「纹丝不动地换值」。淡入淡出、先出后进这类表演在连续缩放里
-     读起来像"尺子自己在动"，反而干扰读数，也正是「两个重叠的标尺」「文字闪一下」两次体感问题的温床。
-     ⚠️ 但 **DOM diff / 元素复用必须留着** —— 它跟"播不播动画"是两件事，而且是「整条标尺重画」那个闪的
-     解药（旧写法一句 `scaleEl.innerHTML = html + subHtml` 每帧重建 180 来个元素、对象全换）。
-     现在：还在的只改 `left`（同一元素原地不动）、走掉的**当场摘掉**、新来的**当场出现**。 */
+     同日下午用户看完说：「**要不标尺动画去了吧，感觉有点，emm不符合我的预期**」⇒ 整套撤掉（连 DOM diff 之前那版）；
+     **同日再一轮**用户又说：「**标尺上的文字能不能随缩放比例稍微做一点不透明度的出入场**」⇒ 折中落地：
+     **只淡文字、且只由缩放驱动**。
+     · 动的是刻度里的 `.tl__axis-label` / `.tl__axis-prev` 两个 span 自己的 `opacity`；
+       刻度元素本身（那根线 + 网格位置）**永不参与动画** ⇒ 缩放/平移时"尺子"纹丝不动。
+     · **不做 `scale()`**：缩放会让 9px 等宽字重新栅格化（实测 label 宽 22.3→24.1），
+       那正是上一轮用户报的「文字会闪一下」。
+     · 「随缩放比例」= 只在**这一帧视图真的在变**（`zoom.on`）时播；静止重画（改字段 / 切世界后重画）
+       一律瞬间到位 —— 动画由缩放驱动，不挂在 store 订阅上（`motion.ts:15-17` 的纪律）。
+       时长随这一帧缩放的比例变化量走：缩得越猛越短（`LABEL_MIN`~`LABEL_MAX`），免得一堆动画堆着。
+     · 退场：元素留一拍让文字淡出，但它的**线当帧变透明**（`.is-out`）⇒ 屏上"看得见的线"任何时刻
+       只有一套（守住第四十二轮「两个重叠的标尺」那条教训 —— 那一版正是线一起留着淡出）。
+     ⚠️ DOM diff / 元素复用必须留着 —— 它跟"播不播动画"是两件事，而且是「整条标尺重画」那个闪的解药
+     （旧写法一句 `scaleEl.innerHTML = html + subHtml` 每帧重建 180 来个元素、对象全换）。 */
   const scaleTicks = new Map<string, HTMLElement>();
+  /** 正在退场的刻度：key 还占着 —— 同一个刻度被缩放"捞回来"时复用这个元素、取消退场，**绝不出现两个同 key 元素**。 */
+  const scaleFading = new Map<string, HTMLElement>();
+  /** 标尺文字淡入淡出的时长区间（ms）。上限贴着 `--motion-fast:180ms`，不抢戏。 */
+  const LABEL_MIN = 90;
+  const LABEL_MAX = 170;
+  /** 上一次画标尺时的视图：用来判断"这一帧在缩放/平移吗"（= 用户说的"随缩放比例"）。 */
+  const lastPaint = { spacing: 0, panX: 0 };
   /** 每根刻度**上一次写进去的 html**：复用的元素在换档后「上一级」那截文字可能不再是同一个
       （时/分档的 `showPrev` 是拿 `s - stepSec` 比的）⇒ 内容真的变了才重写，
       逐帧 `innerHTML =` 就又变回"整条标尺重画"了。 */
   const scaleHtml = new WeakMap<HTMLElement, string>();
-  function paintScale(items: { key: string; cls: string; left: number; html: string }[]): void {
+  type ZoomHint = { on: boolean; dur: number };
+  const labelsOf = (el: HTMLElement): HTMLElement[] =>
+    Array.from(el.querySelectorAll<HTMLElement>('.tl__axis-label, .tl__axis-prev'));
+  /** 一截文字的指纹（类名 + 文本）：重写 html 前后比它，只挑**新出现的那一截**淡入。 */
+  const sigOf = (el: HTMLElement): string => (el.className || '') + '|' + (el.textContent ?? '');
+  function paintScale(items: { key: string; cls: string; left: number; html: string }[], zoom: ZoomHint): void {
     const els: HTMLElement[] = [];
     const seen = new Set<string>();
+    const entering: HTMLElement[] = [];
     for (const it of items) {
       seen.add(it.key);
       let el = scaleTicks.get(it.key);
       if (!el) {
-        el = document.createElement('div');
-        el.className = it.cls;
-        if (it.html) el.innerHTML = it.html;
-        scaleHtml.set(el, it.html);
+        /* 退场中又被捞回来（缩放来回抖）：复用那个元素、把淡出掐掉，别让同一个 key 有两个元素 */
+        const back = scaleFading.get(it.key);
+        if (back) {
+          scaleFading.delete(it.key);
+          cancelLabelFade(labelsOf(back));
+          el = back;
+        } else {
+          el = document.createElement('div');
+          el.className = it.cls;
+          el.innerHTML = it.html;
+          scaleHtml.set(el, it.html);
+          entering.push(el);
+        }
         scaleTicks.set(it.key, el);
       } else {
         const last = scaleHtml.get(el);
-        if (last !== it.html) { el.innerHTML = it.html; scaleHtml.set(el, it.html); }
+        if (last !== it.html) {
+          /* ⚠️ 只淡**新出现的那一截文字**：整段重写后若把整块标签再淡一遍，就又变成
+             「换档时数字闪一下」（第四十二轮修过）。所以重写前记下已有 span 的指纹，重写后只挑没出现过的淡入。 */
+          const before = new Set(labelsOf(el).map(sigOf));
+          el.innerHTML = it.html;
+          scaleHtml.set(el, it.html);
+          const fresh = labelsOf(el).filter((s) => !before.has(sigOf(s)));
+          if (zoom.on && fresh.length) labelFadeIn(fresh, { dur: zoom.dur, step: 8, maxDelay: 60 });
+        }
       }
+      el.classList.remove('is-out');
       el.style.left = `${it.left}px`;
       els.push(el);
     }
     /* 顺序：刻度必须从左到右排（测试读 `querySelectorAll` 的顺序、以及 z 序都依赖它）。
-       ⚠️ 只比**活元素之间的相对顺序**（撤动画之后 DOM 里本来就只有活元素，这层保险留着兜住
-       任何"账本里还留着已摘元素"的意外；旧实现每帧白搬一大批节点，见 BUGS 第四十二轮）。 */
+       ⚠️ 只比**活元素之间的相对顺序**；退场中的元素已从账本摘掉、不参与排序，靠 `!live.has` 跳过。 */
     const live = new Set<Element>(els);
     let prevLive: Element | null = null;
     for (const el of els) {
@@ -371,16 +424,37 @@ export function mountTimeline(
       if (n !== el) scaleEl.insertBefore(el, n);
       prevLive = el;
     }
-    /* 走掉的**当场摘掉** —— 撤掉动画之后没有"退场中"的中间态：DOM 与账本任何时刻一一对应，
-       屏上永远只有一把尺子（这正是用户两次体感反馈要的东西）。 */
-    for (const [key, el] of scaleTicks) if (!seen.has(key)) { scaleTicks.delete(key); el.remove(); }
+    /* 走掉的：静止重画 ⇒ **当场摘掉**（DOM 与账本一一对应）；缩放/平移中 ⇒ 线当帧隐身、文字淡出后再摘。
+       `⋯` 断口没有文字 span，也就没有可淡的东西 ⇒ 一律当场摘。 */
+    for (const [key, el] of Array.from(scaleTicks)) {
+      if (seen.has(key)) continue;
+      scaleTicks.delete(key);
+      const labels = labelsOf(el);
+      if (!zoom.on || !labels.length) { el.remove(); continue; }
+      el.classList.add('is-out');
+      scaleFading.set(key, el);
+      labelFadeOut(labels, { dur: zoom.dur, step: 8, maxDelay: 40 });
+      window.setTimeout(() => {
+        if (scaleFading.get(key) === el) { scaleFading.delete(key); el.remove(); }
+      }, zoom.dur + 40 + 90);
+    }
+    /* 新来的刻度：**线当帧就位**，只有文字淡入 */
+    if (zoom.on && entering.length) {
+      const fresh: HTMLElement[] = [];
+      for (const el of entering) fresh.push(...labelsOf(el));
+      if (fresh.length) labelFadeIn(fresh, { dur: zoom.dur, step: 8, maxDelay: 60 });
+    }
   }
   /** 整块清空（无时间线 / 重挂载那种"这一版标尺作废"的路径）。
       ⚠️ 账本必须一起清：元素被 `innerHTML` 抹掉了、账本还记着的话，下一帧就会往
-      一个**脱离文档**的元素上写 left，屏幕上的标尺会缺一截。 */
+      一个**脱离文档**的元素上写 left，屏幕上的标尺会缺一截。退场账本同理（它攒的是脱离文档的元素）。 */
   function clearScale(): void {
+    for (const el of scaleFading.values()) cancelLabelFade(labelsOf(el));
+    scaleFading.clear();
     scaleTicks.clear();
     scaleEl.innerHTML = '';
+    /* 视图基线一起复位：清了标尺再重画（换时间线 / 切世界）属于"摆好尺子"，不该被当成一次缩放而淡入。 */
+    lastPaint.spacing = 0;
   }
 
   /* ── 渲染节点 ── */

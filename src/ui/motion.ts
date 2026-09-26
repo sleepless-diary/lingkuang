@@ -575,3 +575,55 @@ export function smoothHeights(container: HTMLElement | null, before: number[]): 
     window.setTimeout(done, 900);
   });
 }
+
+/* ── 标尺**文字**的淡入淡出（第 ⑤ 片三轮；用户 2026-09-26）─────────────────────────────
+   用户原话：「**标尺上的文字能不能随缩放比例稍微做一点不透明度的出入场**」。
+   ⚠️ 与 09-26 上午那对被删掉的 `scaleTicksEnter` / `scaleTicksLeaveAndRemove` **不是一回事**：
+   那两个把 `opacity` + `scale(0.9)` 作用在**刻度元素**上（于是线和网格一起缩放、整批换档时两套
+   尺子同时在场、文字还被重新栅格化"闪一下"）—— 用户看完否掉了。
+   这两个**只动文字自己的 `opacity`**：作用的元素是刻度里的 `.tl__axis-label` / `.tl__axis-prev`
+   两个 span，刻度元素的 `border-left`（那根线）**一个字节都不碰** ⇒ 缩放/平移时线的位置与浓淡
+   纹丝不动，只有数字在柔和地进出。`scale` 一律不做（正是它让文字糊一下）。
+   时长由调用方按"这一帧缩放了多少比例"给（见 `src/ui/timeline.ts` 的 `paintScale`）。 */
+export interface LabelFadeOpts { dur?: number; step?: number; maxDelay?: number; }
+
+/** 标尺文字**淡入**：`opacity 0 → 1`。默认 150ms、按屏幕顺序 8ms 错峰（封顶 60ms）。 */
+export function labelFadeIn(els: HTMLElement[], o: LabelFadeOpts = {}): Animation[] {
+  if (motionReduced() || !els.length) return [];
+  const dur = o.dur ?? 150;
+  const step = o.step ?? 8;
+  const maxDelay = o.maxDelay ?? 60;
+  const anims = els.map((el, i) =>
+    el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur, delay: Math.min(i * step, maxDelay), easing: EASE_DECEL, fill: 'both' })
+  );
+  for (const el of els) el.dataset.fade = '1';
+  autoRelease(anims, dur + Math.min(step * els.length, maxDelay));
+  return anims;
+}
+
+/** 标尺文字**淡出**：`opacity → 0`（起点不写死，用当下的值，免得与正在跑的淡入打架）。
+ *  ⚠️ 只负责"演"，**不负责摘元素** —— 调用方演完自己 `remove()`（它还要把刻度那根线当帧隐掉）。 */
+export function labelFadeOut(els: HTMLElement[], o: LabelFadeOpts = {}): Animation[] {
+  if (motionReduced() || !els.length) return [];
+  const dur = o.dur ?? 120;
+  const step = o.step ?? 8;
+  const maxDelay = o.maxDelay ?? 40;
+  const anims = els.map((el, i) =>
+    el.animate([{ opacity: getComputedStyle(el).opacity }, { opacity: 0 }], { duration: dur, delay: Math.min(i * step, maxDelay), easing: EASE_ACCEL, fill: 'both' })
+  );
+  for (const el of els) el.dataset.fade = '1';
+  autoRelease(anims, dur + Math.min(step * els.length, maxDelay));
+  return anims;
+}
+
+/** 取消某元素上所有 `labelFade*` 动画并还原 opacity —— 退场中的刻度被缩放"捞回来"时用
+ *  （否则它会顶着 `fill:'both'` 的终点值 0 停在屏上：数字看不见、线却在）。
+ *  ⚠️ 只认我们自己起过的那些（`data-fade` 标记），别把别处正在跑的动画一并掐掉。 */
+export function cancelLabelFade(els: HTMLElement[]): void {
+  for (const el of els) {
+    if (el.dataset.fade !== '1') continue;
+    for (const a of el.getAnimations()) { try { a.cancel(); } catch { /* 已取消 */ } }
+    delete el.dataset.fade;
+    el.style.opacity = '';
+  }
+}
