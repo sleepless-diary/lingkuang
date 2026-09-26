@@ -168,7 +168,11 @@ async function main() {
       && Array.isArray(removedDisk) && removedDisk.length === 1 && removedDisk[0].text === '章节标题偏短句',
     { 面板: removed.rows.map((r) => r.text), disk: removedDisk ? removedDisk.map((x) => x.text) : null });
 
-  /* ── ⑥ 权限：切到只读 → 闸门 deny + 系统提示里写明"你改不了" ── */
+  /* ── ⑥ 权限：切到只读 → 闸门 deny + 系统提示里写明"你改不了" ──
+     ⭐ 先切到 **Agent 模式**（片 4，2026-09-26）：权限是"能动手"时的长期设定，
+     聊天模式下那行是禁用的、提示文案也不一样（聊天模式本身就不动手，见 `agent-mode.cjs`）。 */
+  await ev(`document.getElementById('lk-agent-mode-agent').click(); true`);
+  await sleep(300);
   await ev(`(() => { const s = document.querySelector('#lk-agent-perm'); s.value = 'readonly'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
   await sleep(300);
   const ro = await ev(`(() => {

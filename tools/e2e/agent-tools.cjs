@@ -107,6 +107,12 @@ async function main() {
 
   check('★1 面板开出来了（Ctrl+K）', (await ev(`!!document.getElementById('lk-agent-panel')`)) === true);
 
+  /* ⭐ 模式（片 4，2026-09-26）：本套件测的是 **Agent 模式** 的行为（动作协议 / 提议卡片 / 闸门）。
+     面板**默认是聊天模式**（平常聊天不注入协议、也不解析动作，见 `agent-mode.cjs`），
+     所以这里必须先显式切过去 —— 否则下面每条都会因为"没有协议"而挂。 */
+  await ev(`document.getElementById('lk-agent-mode-agent').click(); true`);
+  await sleep(300);
+
   /* 权限档也自己摆正（同样防串跑：上一份套件可能停在 YOLO 档）。
      「默认档就是逐项确认」那条不变量由 agent-memory.cjs ★1 在干净实例上守。 */
   await setPerm('confirm');

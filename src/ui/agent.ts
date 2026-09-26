@@ -8,8 +8,11 @@
  *  注意 `registry.ts` 只有**一格** `disposePanel`：设置与助手同一时刻只能开一个。
  *
  *  片 1：对话框 + 上下文注入 + 对话历史落盘 + Ctrl+K。
- *  片 2（本片）：长期记忆（可见可改可总结）+ 三档权限骨架（`src/ui/agent-perm.ts`）。
+ *  片 2：长期记忆（可见可改可总结）+ 三档权限骨架（`src/ui/agent-perm.ts`）。
  *  片 3：工具协议（文本 JSON 指令）+ 提议卡片 —— 那时才真正会改稿子。
+ *  片 4（本片）：**两种模式**（`src/ui/agent-mode.ts`）—— 用户 2026-09-26：
+ *    「平常是正常的聊天及工作，但是少数情况下有 agent 工作能力」⇒ 面板默认 `chat`
+ *    （系统提示里没有动作协议、回复也不解析动作），显式切到 `agent` 才拿到工具与权限闸门。
  */
 import { type ChatMsg } from './ai';
 import { agentAsk } from './agent-model';
@@ -19,6 +22,7 @@ import {
   addMemory, adoptFromDisk, getMemory, memoryPrompt, removeMemory,
   setMemorySink, summarizePrefs, updateMemory,
 } from './agent-memory';
+import { MODE_HINT, MODE_LABEL, MODES, modePrompt, type AgentMode } from './agent-mode';
 import { PERM_HINT, PERM_LABEL, gateWrite, getAgentPerm, permissionPrompt, setAgentPerm } from './agent-perm';
 import { isWriteTool, looksLikeToolJson, parseToolCall, planWrite, runReadTool, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
 import { motionReduced } from './motion';
@@ -64,6 +68,9 @@ let disposeAll: (() => void) | null = null;
 let history: ChatMsg[] = [];
 let loaded = false;
 let busy = false;
+/** 当前模式（`chat` = 平常聊天，不注入动作协议；`agent` = 能动手）。
+ *  ⚠️ **面板会话态、不落盘**：每次打开都从 `chat` 开始（见 `src/ui/agent-mode.ts` 顶部说明）。 */
+let mode: AgentMode = 'chat';
 /** 「＋ 手动加一条」点了之后，列表里多出一行空输入框等着填 */
 let draft = false;
 
@@ -163,6 +170,11 @@ function persist(): void {
 const RESULT_RE = /^【动作结果：([^】]+)】/;
 
 function isCallMsg(m: ChatMsg): boolean {
+  /* ⚠️ 只有 agent 模式才把这种消息画成「用到动作」那一行（片 4）：
+     聊天模式**没有**动作这回事，模型偶尔吐的 JSON 就是一段普通文字 ——
+     若照旧画成「用到动作：create_entity」，创作者会以为它真动手了（其实什么也没发生）。
+     副作用（已知、可接受）：agent 模式下真调用留下的消息，切回聊天模式后显示成原始 JSON 文字。 */
+  if (mode !== 'agent') return false;
   return m.role === 'assistant' && parseToolCall(m.content) !== null;
 }
 
@@ -298,10 +310,41 @@ function renderPerm(): void {
   if (!openEl) return;
   const p = getAgentPerm();
   const sel = openEl.querySelector<HTMLSelectElement>('#lk-agent-perm');
-  if (sel && sel.value !== p) sel.value = p;
+  if (sel) {
+    if (sel.value !== p) sel.value = p;
+    /* 聊天模式没有"动手"这回事：控件留着（别让它跳），但禁掉并压暗 ——
+       免得看着像"权限已经生效"，也免得创作者以为改了权限就切过去了。 */
+    sel.disabled = mode !== 'agent';
+  }
   const hint = openEl.querySelector('#lk-agent-perm-hint');
-  if (hint) hint.textContent = PERM_HINT[p];
+  if (hint) hint.textContent = mode === 'agent' ? PERM_HINT[p] : '聊天模式用不上（切到 Agent 才动手）';
+  openEl.querySelector('.lk-agent__perm')?.classList.toggle('is-off', mode !== 'agent');
   openEl.dataset.gate = gateWrite();
+}
+
+/* 模式：`chat`（默认）⇄ `agent`。切进 agent 是**显式授权**，所以状态必须看得见
+   （分段控件 `.is-on` + 面板根 `.is-agent`）—— 不然"我现在是不是在 agent 里"没人知道。
+   模式不进设置、不落盘：关掉面板再打开 = 回到聊天（用户 2026-09-26：「平常是正常的聊天」）。 */
+function renderMode(): void {
+  if (!openEl) return;
+  openEl.dataset.mode = mode;
+  openEl.classList.toggle('is-agent', mode === 'agent');
+  for (const m of MODES) {
+    const b = openEl.querySelector<HTMLElement>('#lk-agent-mode-' + m);
+    if (b) b.classList.toggle('is-on', m === mode);
+  }
+  const hint = openEl.querySelector('#lk-agent-mode-hint');
+  if (hint) hint.textContent = MODE_HINT[mode];
+  renderPerm();   /* 权限那行的可用性跟着模式走：两处必须同时更新 */
+}
+
+function setMode(next: AgentMode): void {
+  if (mode === next) return;
+  mode = next;
+  renderMode();
+  setNote(mode === 'agent'
+    ? '已切到 Agent：它能查、能改（写入按下面那档权限走）'
+    : '已切回聊天：它只出建议，不会动你的数据');
 }
 
 function setNote(text: string, isErr = false): void {
@@ -377,10 +420,13 @@ async function send(): Promise<void> {
   history.push({ role: 'user', content: text });
   renderMsgs();
   renderCtx();
+  /* 系统提示按模式拼：聊天模式**不许出现**动作协议与权限段 —— 那是"能动手"才该看到的
+     说明书（本地小模型只要看见协议，就会时不时吐半截 JSON 给创作者看）。
+     两种模式都带长期记忆与工作区现状。 */
   const sys = [
     SYS_HEAD,
-    permissionPrompt(),
-    toolsPrompt(),
+    modePrompt(mode),
+    ...(mode === 'agent' ? [permissionPrompt(), toolsPrompt()] : []),
     memoryPrompt(),
     '【工作区现状】\n' + buildContext(store),
   ].filter(Boolean).join('\n\n');
@@ -393,8 +439,11 @@ async function send(): Promise<void> {
       /* 分割线之上的对话**不发给模型**（系统提示词、记忆、工作区现状都在 sys 里，照旧每次现拼） */
       const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...sentHistory(history)];
       const r = await agentAsk(msgs, cfg);
-      const call = parseToolCall(r.text);
-      if (!call && looksLikeToolJson(r.text)) {
+      /* ⚠️ 聊天模式**不解析动作**：模型偶尔还是会对着"帮我改一下"吐一坨 JSON，
+         那样的回复当普通文字画出来就行（创作者至少看得见它说了什么），
+         不走纠错轮 —— 那是 agent 模式才有的来回。 */
+      const call = mode === 'agent' ? parseToolCall(r.text) : null;
+      if (mode === 'agent' && !call && looksLikeToolJson(r.text)) {
         /* 想调动作、格式却写歪了（用户 2026-09-15 实测：`{"set_field":{…}}`）。
            纠正一次（进历史、不进气泡），还不行就不再把这坨 JSON 糊到创作者脸上。 */
         if (!fixed && round < MAX_ROUNDS) {
@@ -472,6 +521,8 @@ export function closeAgentPanel(): void {
   store = null;
   draft = false;
   cards = [];
+  /* 模式回落：关掉面板 = 收回"动手"的授权，下次打开还是聊天（用户 2026-09-26：「平常是聊天」） */
+  mode = 'chat';
   setMemorySink(null);
   disposeAll?.();
   disposeAll = null;
@@ -497,6 +548,13 @@ export function openAgentPanel(s: Store): () => void {
       '</div>' +
       '<button class="lk-agent__split" id="lk-agent-split" title="把上面的对话切出上下文（系统提示词与长期记忆照常）">分割上下文</button>' +
       '<button class="lk-agent__x" id="lk-agent-close" title="关闭（Esc）">×</button>' +
+    '</div>' +
+    '<div class="lk-agent__mode">' +
+      '<span class="lk-agent__mode-lbl">模式</span>' +
+      '<div class="lk-agent__seg" id="lk-agent-mode">' +
+        MODES.map((m) => `<button class="lk-agent__seg-btn${m === mode ? ' is-on' : ''}" id="lk-agent-mode-${m}" data-mode="${m}">${MODE_LABEL[m]}</button>`).join('') +
+      '</div>' +
+      '<span class="lk-agent__mode-hint" id="lk-agent-mode-hint"></span>' +
     '</div>' +
     '<div class="lk-agent__perm">' +
       '<span class="lk-agent__perm-lbl">权限</span>' +
@@ -591,6 +649,11 @@ export function openAgentPanel(s: Store): () => void {
   });
   el.querySelector('#lk-agent-mem-sum')?.addEventListener('click', () => { void summarize(); });
 
+  /* 模式：聊天 ⇄ Agent（显式切换；面板每次打开都从聊天开始） */
+  for (const m of MODES) {
+    el.querySelector('#lk-agent-mode-' + m)?.addEventListener('click', () => setMode(m));
+  }
+
   /* 权限三档 */
   const permSel = el.querySelector<HTMLSelectElement>('#lk-agent-perm');
   permSel?.addEventListener('change', () => {
@@ -602,7 +665,7 @@ export function openAgentPanel(s: Store): () => void {
   renderMeta();
   renderCtx();
   renderMemory();
-  renderPerm();
+  renderMode();   /* 内部会一并刷新权限那行（聊天模式下它不可用） */
   setNote('');
   void ensureLoaded().then(() => { renderMsgs(); renderMemory(); });
   if (ta) ta.focus();
