@@ -15,6 +15,48 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第六十一轮（2026-09-26）· 「两个高亮度的荧光绿分不清」＝ 同屏三颗 accent 小绿点，其中两颗还同节奏
+
+用户原话：「**话说怎么又用到了荧光绿的颜色，两个都是高亮度我有点难分辨**」。
+
+### ① 病根（量出来的，不是猜的）
+新探针 `tools/e2e/probe-greens-shot.cjs`（把助手面板"生成中"那一屏截下来 + 逐个读 accent 元素的 computed 值）实测：一屏里 `--accent`（`#9ec262`）同时在说 **6 件事**，其中三处是"小绿点/绿条"：
+
+| 位置 | 形态 | 含义 |
+| --- | --- | --- |
+| `.lk-agent__title::before` | 6px 静态圆点 | Agent 模式（**与后面两处重复**） |
+| `.lk-agent__seg-btn[data-mode="agent"].is-on` 文字 | 文字 | Agent 模式 |
+| `.lk-agent.is-agent` 左边缘 | 1px 线 | Agent 模式 |
+| `.lk-think.is-live > .lk-think__sum::after` | 5px **闪** | 还在想 |
+| `.lk-md__caret` | 2px **闪** | 正在写 |
+| 用户气泡 / 发送按钮 / `.lk-agent__chip.is-focus` | 块 | （既有，合理，不动） |
+
+要命的是后两颗：**同一个绿 + 同一支 `lk-md-blink`**；而 `src/ui/chat-live.ts` 的 `placeholder()` 写的是 `'<div class="lk-md__wait">…</div>' + CARET` ⇒ 光标在"正在思考…"那一帧就已经在场，**整个思考阶段两颗一起同步闪**，一个说"正在写"、一个说"还在想" ⇒ 用户分不清。
+
+### ② 修法（全在 `src/style.css`）
+1. "还在想"那颗点：`--accent` → `--muted`，闪烁 → **慢呼吸**（新 keyframes `lk-think-breathe`：1.6s 渐隐渐显）⇒ 与光标（accent + 1s 硬闪）**颜色与节奏都不同**；
+2. 删掉标题前那颗模式圆点（"我在 Agent 模式"本来就有两处在说，第三遍还跟状态点撞脸）——模式指示保留「Agent」绿字 + 左边缘 accent 线；
+3. 顺带修复真缺陷：**`--muted` 在 `src/style.css` 的令牌块里压根没定义**（设计系统 `design-system/tokens.css` 里有 `#9b998c`），而全文有 6 处 `var(--muted)` ⇒ 用在 `color` 的 5 处因为**颜色是继承属性**、悄悄退回父级颜色（看着"没事"）；用在 `background` 的 2 处直接 `transparent`（初值）：`.lk-think.is-live > .lk-think__sum::after` 那颗点**整颗消失**、`::-webkit-scrollbar-thumb:hover` 悬停时缩略条隐形。已补齐令牌。
+
+### ③ 守卫（`tools/e2e/agent-stream.cjs` ★11，两道判据）+ A/B
+- 判据一：拿**光标自己的**颜色当基准（不写死色值），除它以外不许有同色的活指示器；
+- 判据二：那颗点自己**必须非透明**（在场）。
+
+| 构建 | 读数 | 结果 |
+| --- | --- | --- |
+| 修复前（两颗都是 accent） | `others:["think-dot"], ref:"rgb(158, 194, 98)"` | FAIL |
+| 只改了颜色但令牌漏定义 | `others:[], thinkBg:"rgba(0, 0, 0, 0)"` | **仍 FAIL** |
+| 补齐令牌后 | `others:[], thinkBg:"rgb(155, 153, 140)"` | 14/14 PASS |
+
+⭐ **教训**：视觉类判据必须**同时**验"不同"和"在场" —— 只验"不是 accent"时，一个指向未定义令牌的 `background` 会以 `transparent` 完美满足它（那一版 14/14 全绿，可截图里那颗点已经没影了）。`var()` 取不到值时，`color` 因继承而隐形、只有 `background`/`border` 这类非继承属性才暴露。
+
+### ④ 回归与探针
+`agent-stream` 14/14、`agent-mode` 12/12、`agent-panel` 21/21、`agent-tools` 19/19、`agent-main-session` 13/13、`settings-panel` 12/12；`node --check main.js` / `npx tsc --noEmit` / `npx vite build` 全绿。
+
+新探针 `tools/e2e/probe-greens-shot.cjs`（截助手面板"生成中"一屏 2x + 打印每个 accent 元素的 bg/color/rect）保留在库里 —— 以后凡是"颜色/亮度看着不对"的反馈，先跑它再看图，别读代码猜。
+
+⚠️ 本轮又踩一次夹具：`agent-main-session` 必须配 `seed-agent-main-session`（只给 `seed-node` ⇒ 读数 `seedMain:null, disk:null, chat:null`、6/13 假 FAIL，看着像回归其实是没播种）。
+
 ## 第六十轮（2026-09-26）· 「用 deepseek 只能显示思考中」＝ 生成中的思考块被 flex 压成 2px
 
 用户原话：「**没有，我这边用deepseek还是只能显示思考中而不能显示思考过程**」。

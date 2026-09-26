@@ -316,6 +316,45 @@ async function main() {
     !!g10 && g10.live === true && g10.overflow === true && g10.bodyLen > 120
       && g10.thinkH >= g10.sumH + Math.min(g10.bodyH, 60) - 6
       && g10.spillPx <= 2 && g10.sumSpillPx <= 2, g10);
+  /* ★11 ⭐屏幕上的「活的荧光绿」只许一处（用户 2026-09-26：「怎么又用到了荧光绿的颜色，
+     两个都是高亮度我有点难分辨」）。生成中同屏本来有两个：流式光标（正文末尾，accent）与
+     「思考 · N 字」后面那颗闪点 —— 同色（#9ec262）+ 同一支 `lk-md-blink` 同时起步 ⇒ 完全同步地闪，
+     却在说两件事（一个"正在写"、一个"还在想"）⇒ 分不清。
+     判据：拿**光标自己的**颜色当基准（不写死色值），要求除它以外没有任何同色的活指示器。
+     旧构建读数 others:["think-dot"] ⇒ FAIL；修后 others:[] ⇒ PASS。 */
+  const greens = await ev(`(function () {
+    const panel = document.getElementById('lk-agent-panel');
+    if (!panel) return { has: false };
+    const caret = panel.querySelector('.lk-md__caret');
+    if (!caret) return { has: true, caret: false };
+    const ref = getComputedStyle(caret).backgroundColor;
+    const others = [];
+    const title = panel.querySelector('.lk-agent__title');
+    if (title) {
+      const cs = getComputedStyle(title, '::before');
+      if (cs.content !== 'none' && cs.backgroundColor === ref) others.push('title-dot');
+    }
+    const think = panel.querySelector('.lk-think.is-live');
+    let thinkBg = null;
+    if (think) {
+      const sum = think.querySelector('.lk-think__sum');
+      const cs = sum ? getComputedStyle(sum, '::after') : null;
+      if (cs) {
+        thinkBg = cs.backgroundColor;
+        if (cs.content !== 'none' && cs.backgroundColor === ref) others.push('think-dot');
+      }
+    }
+    return { has: true, caret: true, ref: ref, others: others, n: others.length, live: !!think, thinkBg: thinkBg };
+  })()`);
+  /* 两道判据缺一不可：① 不能和光标同色（分不清）；② 它自己**必须在场**（非透明）——
+     第二道是防"假绿"：`var(--muted)` 当时在 `src/style.css` 里**没定义**，
+     `background` 拿到非法值就是 `transparent` ⇒ 点直接消失，而"不是 accent"这条照样满足。
+     实测踩到：只查颜色时 14/14 全绿，截图里那颗点已经没影了。 */
+  const thinkSolid = !!greens && typeof greens.thinkBg === 'string'
+    && greens.thinkBg !== 'rgba(0, 0, 0, 0)' && greens.thinkBg !== 'transparent';
+  check('★11 ⭐同屏只有一处「活的荧光绿」：生成中光标在、思考那块的闪点与它**不同色且真的看得见**（旧构建两个同色同节奏 ⇒ 分不清；只查颜色会漏掉"令牌没定义 ⇒ 点变透明"）',
+    !!greens && greens.caret === true && greens.live === true && greens.n === 0 && thinkSolid, greens);
+
   await sleep(2600);   /* 让它跑完再去看异常列表 */
 
   const errs = await ev(`window.__errs`);

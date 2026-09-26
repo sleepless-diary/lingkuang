@@ -445,6 +445,20 @@
   ⚠️ `src/style.css` **不 import tokens.css**，所以它自己那份令牌必须与设计系统同值 ——
   本轮之前是 fast `100ms` / base `160ms`（比设计系统快一倍，正落在 DESIGN.md:182 禁止的
   "snappy developer tool" 档），已对齐；降级块也在 style.css 里复写了一份。
+  ⚠️ **漏抄的令牌不报错、只静默失效**（2026-09-26 实测）：`--muted` 在设计系统里有
+  （`design-system/tokens.css` 的 `#9b998c`），`src/style.css` 的令牌块里**没有**，而文件里有
+  6 处 `var(--muted)` ⇒ 用在 `color` 的 5 处因为**颜色是继承属性**悄悄退回父级颜色（看着"没事"），
+  用在 `background` 的 2 处直接成 `transparent`（初值）：`.lk-think.is-live > .lk-think__sum::after`
+  （"还在想"那颗点）**整颗消失**、`::-webkit-scrollbar-thumb:hover` 悬停时缩略条隐形。已补齐。
+  **加/改令牌前先 grep `var(--x)` 看有没有别处已经在用它。**
+- **同屏只许一处"活的荧光绿"**：`--accent` 的语义是"唯一该看的东西"（tokens.css：the living
+  fluorescent thing）。2026-09-26 用户：「怎么又用到了荧光绿的颜色，两个都是高亮度我有点难分辨」——
+  当时助手面板生成中同时有三颗小绿点：标题前的模式圆点（6px 静态）、「思考 · N 字」后的闪点（5px）、
+  正文末尾的流式光标（2px），后两颗还是**同色 + 同一支 `lk-md-blink`**（`src/ui/chat-live.ts` 的
+  `placeholder()` 从第一帧就写 `… + CARET` ⇒ 整个思考阶段两者同时闪）。现在的分工：
+  accent 只留给**流式光标**（"正在写"）；"还在想"用 `--muted` + 慢呼吸（`lk-think-breathe` 1.6s）；
+  模式指示用「Agent」绿字 + 面板左边缘一条 accent 线（标题前那颗圆点已删 —— 同一件事说两遍就够）。
+  守卫：`tools/e2e/agent-stream.cjs` 的 ★11（判据必须**同时**验"不与光标同色"和"自己非透明"）。
 - **三个 API**：
   · `enter(el, cls = 'lk-enter')` 重放一次入场（摘类 → 强制重排 → 加类；只加类不重播）；
   · `staggerIn(container)` = **常驻**错峰（类留在容器上）—— 延迟不在 JS 里算，而是 CSS 按子项序号给
