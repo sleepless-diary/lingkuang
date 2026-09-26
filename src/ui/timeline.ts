@@ -185,8 +185,7 @@ export function mountTimeline(
   /* 取最接近的 1/2/5/10 倍（使每格落在「整数个较友好单位」上，有中间过渡档） */
   /* 标尺步长（d3 式参考版）：每格目标 72px → 算出每格应跨多少年 → 按单位(年/月/日/时/分)分档，niceStep 取整。
      这是之前验证过「年→月→日→时→分」单调正确的版本，作为参考基准。 */
-  function quantStep(): { stepSec: number; unit: string } {
-    const sp = view.spacing;
+  function quantStepAt(sp: number): { stepSec: number; unit: string } {
     const years = 72 / sp;   /* 每格应跨多少年 */
     function niceStep(raw: number): number {
       const p = Math.pow(10, Math.floor(Math.log10(raw)));
@@ -231,9 +230,13 @@ export function mountTimeline(
       default:  return { prev: `${mi}分`, cur: `${s % 60}秒` };
     }
   }
-  function renderScale() {
-    const { stepSec, unit } = quantStep();
-    currentScaleUnit = unit;                 /* 记录当前标尺档位，供指针文字裁剪 */
+  /** 一套网格（`unit` + `stepSec`）在**当前视图**下该有的刻度：主刻度（带数字）+ 小刻度 + 断口。
+      抽成函数是给「换档交叉淡化」用的（2026-09-26 第 ⑥ 轮）：交接点附近要把**相邻那套网格的数字**
+      也画出来，而两套网格的生成规则完全一样（历法进位 / 全局原点相位 / 聚焦剔空隙），
+      差别只有 `unit` / `stepSec`。
+      `majorOnly` = 邻居网格只画主刻度：它的**线**一律隐身（只有数字在淡），小刻度画了也看不见，
+      纯粹白占 DOM 和每帧写样式的开销。 */
+  function gridItems(unit: string, stepSec: number, majorOnly: boolean): { key: string; cls: string; left: number; html: string }[] {
     const s0 = Math.round(xToTime(0));                 /* 左边缘 epoch 秒（xToTime 已返回 epoch 秒） */
     const s1 = Math.round(xToTime(wrap.clientWidth));   /* 右边缘 epoch 秒 */
     /* 主刻度间距 stepSec；细分出小刻度（每主刻度间 subDiv 个小竖线，如尺子副刻度） */
@@ -329,6 +332,7 @@ export function mountTimeline(
       const prev = showPrev ? `<span class="tl__axis-prev">${t.prev}</span>` : '';
       items.push({ key: `M|${unit}|${s}`, cls: 'tl__axis-tick tl__axis-tick--major', left: x, html: `${prev}<span class="tl__axis-label">${t.cur}</span>` });
     }
+    if (majorOnly) return items;             /* 邻居网格只要数字（它的线一律隐身） */
     /* 小刻度：在**相邻主刻度之间**等分插（旧代码用 start + k*subStep，年档会累计漂移） */
     for (let i = 0; i + 1 < ticks.length; i++) {
       const a = ticks[i], b = ticks[i + 1];
@@ -343,18 +347,123 @@ export function mountTimeline(
         items.push({ key: `m|${unit}|${Math.round(s)}`, cls: 'tl__axis-tick tl__axis-tick--minor', left: timeToX(s), html: '' });
       }
     }
-    paintScale(items);
+    return items;
   }
 
-  /* ── 标尺刻度的 DOM diff + **文字按位置**定不透明度（第 ⑤ 片四轮）──────────────────────
-     同一处第 4 次改口，前几版别再抄回来：
+  /* ── 换档的交叉淡化（2026-09-26 第 ⑥ 轮 · 用户「整体文字的出入场」）────────────────────────
+     用户规格（原话）：「**把整个缩放尺度当成一个 x 轴，在轴上时，文字的不透明度图像类似于一个正态分布的
+     图像（100% 不透明度的占比要长一点），每个文字依照对应的 x 计算当前的不透明度**」；
+     并当场拍板选 **A = 交叉淡化**（「新旧两套同时在，各约 50%」）。
+     为什么必须是**缩放值的纯函数**、不能再按时间播动画：前面三版都是按时间播（见下面 ④ 那几轮），
+     必然长出"同一块地方忽明忽暗"——边缘反复进出、被取消时 opacity 硬跳回 1、淡完删掉又从 0 淡起。
+     纯函数没有"开始 / 结束 / 被取消 / 从头再淡一遍"这些状态，缩放连续 ⇒ 不透明度连续。
+     · 每套网格（unit + stepSec）在 spacing 轴上有一段"会被 `quantStepAt()` 选中"的区间；
+       权重 = 区间中部（`GRID_PLATEAU`）恒 1、两侧按高斯尾巴降到 **0.5** —— 正好落在交接点上。
+       交接点上两套各 0.5 ⇒ 加起来 ≈1 ⇒ **不会出现"两边都看不见"的空白**。
+     · 只有**数字**在淡：线只留当前档那一套（邻居网格的主刻度线隐身）⇒ 不重演第四十二轮
+       「两个重叠的标尺」。
+     · 同一 unit 内的相邻网格常常是**嵌套**的（1年 ⊂ 2年）⇒ 同一个 key 会被两套都产出；
+       合并时取 **max 权重**、`line` 取**或**（它在当前档里就照旧画线）⇒ 不会重复画。 */
+  const GRID_PLATEAU = 0.6;                /* 平台占区间半宽的比例（= 用户要的"100% 的占比长一点"） */
+  const GRID_LN2 = Math.LN2;
+  const GRID_MIN_W = 0.03;                 /* 权重低于它就不画（尾巴到此已 ≈ 看不见） */
+  /* 找邻居网格的采样倍率：网格区间在 spacing 轴上只有 ~1.3~1.5 倍宽，×1.15 一步就跨出去了；
+     多取几档是为了"当前档正处在区间中间"时也能摸到两侧邻居（那时邻居权重≈0，会被 GRID_MIN_W 滤掉）。 */
+  const GRID_NEIGHBOR_F = [1.15, 1.45, 1.9, 2.6];
+  const gridRangeCache = new Map<string, { lo: number; hi: number }>();
+  function gridAt(sp: number): { stepSec: number; unit: string } { return quantStepAt(sp); }
+  /** 这套网格在 spacing 轴上的有效区间（`quantStepAt` 一直选中它的那一段）。只依赖网格本身，
+      所以按 `unit|stepSec` 缓存一辈子。
+      ⚠️ `spInside` 必须是**确实落在该网格内**的 spacing（邻居网格是拿 `view.spacing × 倍率` 采到的，
+      它当然不在当前 spacing 里）—— 第一版错把「当前 spacing」传进来，于是邻居网格 `same()` 为假 ⇒
+      返回 null ⇒ 权重退化成 1（两套都满不透明度 = 第四十二轮那两把尺子又回来了）。
+      端点用二分找：先 ×1.1 扩到第一个"不是它"的点，再二分开 30 次（区间宽度只有 1.3~1.5 倍）。 */
+  function gridRange(unit: string, stepSec: number, spInside: number): { lo: number; hi: number } | null {
+    const key = unit + '|' + stepSec;
+    const hit = gridRangeCache.get(key);
+    if (hit) return hit;
+    const same = (s: number): boolean => { const g = gridAt(s); return g.unit === unit && g.stepSec === stepSec; };
+    if (!same(spInside)) return null;        /* 调用方拿错了点（正常不该发生） */
+    let inLo = spInside, outLo = spInside, inHi = spInside, outHi = spInside;
+    for (let i = 0; i < 80; i++) { const n = inLo / 1.1; if (n < 1e-5) { outLo = 1e-5; break; } if (!same(n)) { outLo = n; break; } inLo = n; }
+    for (let i = 0; i < 80; i++) { const n = inHi * 1.1; if (n > 1e10) { outHi = 1e10; break; } if (!same(n)) { outHi = n; break; } inHi = n; }
+    if (outLo === spInside) outLo = 1e-5;    /* 一路扩到极限都没换人（顶到缩放上限/下限那一档） */
+    if (outHi === spInside) outHi = 1e10;
+    for (let i = 0; i < 30; i++) { const m = Math.sqrt(inLo * outLo); if (same(m)) inLo = m; else outLo = m; }
+    for (let i = 0; i < 30; i++) { const m = Math.sqrt(inHi * outHi); if (same(m)) inHi = m; else outHi = m; }
+    const r = { lo: inLo, hi: inHi };
+    gridRangeCache.set(key, r);
+    return r;
+  }
+  /** 这套网格**此刻**该有多不透明（用户要的"正态分布 + 长平台"）：`u` = 当前 spacing 到区间中点的
+      距离 ÷ 半宽（在 `log(spacing)` 上量）⇒ 区间内 `u ∈ [0,1]`、交接点上正好 `u = 1`。
+      `u ≤ GRID_PLATEAU` 恒 1；之后 `exp(−ln2·((u−p)/(1−p))²)` ⇒ **u=1 处正好 0.5**（与邻档各半）。 */
+  function gridWeight(unit: string, stepSec: number, spInside: number, spNow: number): number {
+    const r = gridRange(unit, stepSec, spInside);
+    if (!r || !(r.hi > r.lo) || !(spNow > 0)) return 1;
+    const c = Math.log(Math.sqrt(r.lo * r.hi));
+    const h = Math.log(r.hi / r.lo) / 2;
+    if (!(h > 0)) return 1;
+    const u = Math.abs(Math.log(spNow) - c) / h;
+    if (u <= GRID_PLATEAU) return 1;
+    const t = (u - GRID_PLATEAU) / (1 - GRID_PLATEAU);
+    return Math.exp(-GRID_LN2 * t * t);
+  }
+  function renderScale() {
+    const active = quantStepAt(view.spacing);
+    currentScaleUnit = active.unit;          /* 记录当前标尺档位，供指针文字裁剪 */
+    /* 候选网格 = 当前这套（永远要有）+ 两侧邻居（按倍率采样，远处权重≈0、会被滤掉）。
+       每项都带上"确实落在这套网格里"的那个 spacing（`gridRange` 要用）。 */
+    const cand: { unit: string; stepSec: number; inside: number }[] =
+      [{ unit: active.unit, stepSec: active.stepSec, inside: view.spacing }];
+    const seenGrid = new Set<string>([active.unit + '|' + active.stepSec]);
+    for (const f of GRID_NEIGHBOR_F) {
+      for (const sp of [view.spacing * f, view.spacing / f]) {
+        const g = gridAt(sp);
+        const k = g.unit + '|' + g.stepSec;
+        if (seenGrid.has(k)) continue;
+        seenGrid.add(k);
+        cand.push({ unit: g.unit, stepSec: g.stepSec, inside: sp });
+      }
+    }
+    const merged = new Map<string, { key: string; cls: string; left: number; html: string; w: number; line: boolean }>();
+    for (const g of cand) {
+      const isActive = g.unit === active.unit && g.stepSec === active.stepSec;
+      const gw = gridWeight(g.unit, g.stepSec, g.inside, view.spacing);
+      if (gw < GRID_MIN_W) continue;
+      for (const it of gridItems(g.unit, g.stepSec, !isActive)) {
+        const prev = merged.get(it.key);
+        if (!prev) { merged.set(it.key, { key: it.key, cls: it.cls, left: it.left, html: it.html, w: gw, line: isActive }); continue; }
+        /* 同一个 key 被两套网格都产出（同 unit 内的嵌套网格，如 1年 ⊂ 2年）⇒ 取**并集**
+           `1−(1−w₁)(1−w₂)`，不是 max：1980 年在两套里都成立，交接点上两套各 0.5 时它该是 0.75
+           而不是 0.5（那个数字并没有"要走了"，不需要变暗）。跨 unit 的交接没有共享 key ⇒ 不受影响。 */
+        prev.w = 1 - (1 - prev.w) * (1 - gw);
+        if (isActive) prev.line = true;
+      }
+    }
+    /* ⚠️ 必须**按屏幕位置排序**再排 DOM：换档交接点上有两套网格的数字交错，而 map 的插入顺序
+       = 候选网格顺序（"每套内部有序、两套前后相接"）⇒ 排出来的 DOM 顺序**不是从左到右**：
+       谁按 `querySelectorAll('.tl__axis-tick--major')` 的顺序读，相邻间距就会出现负数、整片错位
+       （A/B 实测：`timeline-scale` ★1/★1b/★2 一起 FAIL，`gaps` 里冒出 `-370`）。 */
+    paintScale(Array.from(merged.values()).sort((a, b) => a.left - b.left));
+  }
+
+  /* ── 标尺刻度的 DOM diff + 文字不透明度（第 ⑤ 片 · **六轮改口**）────────────────────────
+     同一处第 6 次改口，前几版别再抄回来：
      ① 09-19 用户：「年月日等刻度的出入场用不透明度和缩放尺度计算」⇒ 09-26 上午做（opacity + scale 挂刻度元素）；
      ② 同日下午用户否掉：「要不标尺动画去了吧，感觉有点，emm不符合我的预期」⇒ 整套撤（commit `2b88813`）；
      ③ 同日用户再要：「标尺上的文字能不能随缩放比例稍微做一点不透明度的出入场」⇒ 只淡文字、按**时间**淡（commit `aff3f45`）；
      ④ 用户看完报：「**有了，但是文字会闪烁**」，并给了新规格：「**把整个缩放尺度当成一个 x 轴，在轴上时，
         文字的不透明度图像类似于一个正态分布的图像（100% 不透明度的占比要长一点），每个文字依照对应的 x
         计算当前的不透明度**」⇒ **动画与"什么时候播"这个判断一并消失**：不透明度成了**位置的纯函数**。
-     为什么这样就从根上不闪了：位置是连续变的（缓动每帧变一点），纯函数 ⇒ 不透明度也连续变；
+     ⑤ 同日用户接着纠正：「**我的出入场意思其实是整体文字的出入场**，我们现在缩放时文字不是会隐藏其他尺度的
+        文字吗，但是文字隐藏和出现是硬切的」⇒ ④ 把"位置"读成了**屏幕位置**（两端变暗），用户要的是
+        **缩放轴**上的整体文字：换档（年↔月↔日↔时↔分，以及同一档里 niceStep 的 1/2/5/10 阶梯）时
+        一整批数字按**缩放值**交叉淡化（用户当场选 A：新旧两套同时在、各约 50%）——见下面
+        `gridWeight()` / `renderScale()` / `GRID_PLATEAU` 那一段。
+     ⑥ 屏幕两端那套**留着但减淡**（用户：「留着，但是左右的淡出和淡入强度降一点（100% 不透明度范围加长）」）
+        ⇒ `LABEL_PLATEAU` 0.34 → 0.44、尾巴 `exp(−2t²)`（贴边 0.135，不再是 0.018）。两个因子相乘。
+     为什么纯函数一上就不闪了：位置/缩放都是连续变的（缓动每帧变一点），纯函数 ⇒ 不透明度也连续变；
      没有「开始播 / 结束 / 被取消 / 再从头淡一遍」这些状态，就没有"同一块地方忽明忽暗"。
      旧版那三种闪（边缘反复进出、被"捞回来"时 opacity 硬跳回 1、淡完删掉再从 0 淡起）全部不存在。
      · 曲线 = **平台 + 高斯尾巴**（用户要的"正态分布、100% 的占比长一点"）：中间 `LABEL_PLATEAU`×2 恒 1，
@@ -365,17 +474,21 @@ export function mountTimeline(
      ⚠️ DOM diff / 元素复用必须留着 —— 它跟"播不播动画"是两件事，而且是「整条标尺重画」那个闪的解药
      （旧写法一句 `scaleEl.innerHTML = html + subHtml` 每帧重建 180 来个元素、对象全换）。 */
   const scaleTicks = new Map<string, HTMLElement>();
-  /** 平台半宽（占标尺宽度的比例）：中间 2×0.34 = **68% 恒 100% 不透明**（用户要的"100% 占比长一点"）。 */
-  const LABEL_PLATEAU = 0.34;
-  /** 文字按位置算出的不透明度：`x` = 刻度在标尺上的 px，`w` = 标尺宽度。纯函数、无状态、无动画。 */
+  /** 平台半宽（占标尺宽度的比例）：中间 2×0.44 = **88% 恒 100% 不透明**。
+      2026-09-26 用户看过第一版（平台 0.34 / 尾巴 `exp(−4t²)`，贴边只剩 0.018）之后的要求：
+      「**留着，但是左右的淡出和淡入强度降一点（100% 不透明度范围加长）**」⇒ 平台 0.44、尾巴 `exp(−2t²)`。 */
+  const LABEL_PLATEAU = 0.44;
+  const LABEL_EDGE_MIN = Math.exp(-2);   /* ≈ 0.135：贴到标尺两端那一档的透明度 */
+  /** 文字按**屏幕位置**算出的不透明度：`x` = 刻度在标尺上的 px，`w` = 标尺宽度。
+      纯函数、无状态、无动画；在 `paintScale` 里与「换档权重」**相乘**。 */
   function labelWindow(x: number, w: number): number {
     if (!(w > 0)) return 1;
     const half = w / 2;
     const plateau = half * LABEL_PLATEAU;
     const t = (Math.abs(x - half) - plateau) / Math.max(1, half - plateau);
     if (t <= 0) return 1;
-    if (t >= 1) return 0.018;    /* 贴到边缘：留一丝（0.018 ≈ 看不见），免得边界上忽明忽暗 */
-    return Math.exp(-4 * t * t);
+    if (t >= 1) return LABEL_EDGE_MIN;   /* 贴到边缘：钉住下限，免得边界上忽明忽暗 */
+    return Math.exp(-2 * t * t);
   }
   /** 每根刻度自己的文字 span（创建 / 重写 html 时记账）——每帧只写 opacity，**不做 DOM 查询**
       （仓库对每帧查询量敏感，见 `tools/e2e/causes-line.cjs` ★3 那条上限）。 */
@@ -387,7 +500,7 @@ export function mountTimeline(
       （时/分档的 `showPrev` 是拿 `s - stepSec` 比的）⇒ 内容真的变了才重写，
       逐帧 `innerHTML =` 就又变回"整条标尺重画"了。 */
   const scaleHtml = new WeakMap<HTMLElement, string>();
-  function paintScale(items: { key: string; cls: string; left: number; html: string }[]): void {
+  function paintScale(items: { key: string; cls: string; left: number; html: string; w: number; line: boolean }[]): void {
     const els: HTMLElement[] = [];
     const seen = new Set<string>();
     /* 标尺宽度（平台与锥形都按它算）：一个元素一次 layout 读，别放进循环。 */
@@ -409,11 +522,14 @@ export function mountTimeline(
       }
       scaleHtml.set(el, it.html);
       el.style.left = `${it.left}px`;
-      /* 文字不透明度 = 位置的纯函数（平台 + 高斯尾巴）。这里**没有动画、没有过渡**：
-         位置连续变 ⇒ 不透明度连续变 ⇒ 不会闪。小刻度 / 断口没有文字，一次 DOM 查询都不做。 */
+      /* 邻居网格的主刻度：线隐身（只有数字在淡）⇒ 屏上永远只有一把尺子的线。 */
+      el.classList.toggle('tl__axis-tick--ghost', !it.line);
+      /* 文字不透明度 = **换档权重（缩放值的纯函数）** × **位置的锥形**（屏幕两端渐隐，用户要的"弱一点"）。
+         这里**没有动画、没有过渡**：两个因子都是连续量的纯函数 ⇒ 不会闪。
+         小刻度 / 断口没有文字，一次 DOM 查询都不做。 */
       const labels = scaleLabels.get(el);
       if (labels && labels.length) {
-        const op = labelWindow(it.left, w);
+        const op = labelWindow(it.left, w) * it.w;
         for (const s of labels) s.style.opacity = op >= 0.999 ? '' : op.toFixed(3);
       }
       els.push(el);

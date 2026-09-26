@@ -34,8 +34,11 @@ async function main() {
     if (r.result?.exceptionDetails) throw new Error('eval: ' + (r.result.exceptionDetails.exception?.description || ''));
     return r.result?.result?.value;
   };
-  /** 主刻度：[{label, x}]（x 用 left 像素，和 DOM 里写的一致） */
-  const ticksExpr = `[...document.querySelectorAll('#lk-pane-timeline .tl__axis-tick--major')].map((el) => ({ label: el.querySelector('.tl__axis-label')?.textContent ?? '', x: Math.round(parseFloat(el.style.left) || 0) })).filter((t) => t.label)`;
+  /** 主刻度：[{label, x}]（x 用 left 像素，和 DOM 里写的一致）。
+      ⚠️ **排除邻居档**（`.tl__axis-tick--ghost`，2026-09-26 第 ⑥ 轮换档交叉淡化引入）：
+      换档交接点上屏幕上会同时有**两套档位**的数字，它们的步长不同 ⇒ 混在一起读，"等距 / 等差 /
+      落在全局网格上"这些不变量全都不成立（实测 `gaps` 里冒出 `-370`）。本套件量的是**当前档**的几何。 */
+  const ticksExpr = `[...document.querySelectorAll('#lk-pane-timeline .tl__axis-tick--major:not(.tl__axis-tick--ghost)')].map((el) => ({ label: el.querySelector('.tl__axis-label')?.textContent ?? '', x: Math.round(parseFloat(el.style.left) || 0) })).filter((t) => t.label)`;
 
   await sleep(1500);
   await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); true`);
@@ -71,7 +74,7 @@ async function main() {
     const n = document.querySelector('#lk-pane-timeline .tl__n[data-id]');
     if (!n) return { has: false };
     const nx = Math.round(parseFloat(n.style.left) || 0);
-    const ticks = [...document.querySelectorAll('#lk-pane-timeline .tl__axis-tick--major')];
+    const ticks = [...document.querySelectorAll('#lk-pane-timeline .tl__axis-tick--major:not(.tl__axis-tick--ghost)')];
     const hit = ticks.find((el) => (el.querySelector('.tl__axis-label')?.textContent ?? '') === '${SEED_NODE_YEAR}年');
     return { has: true, node: nx, tick: hit ? Math.round(parseFloat(hit.style.left) || 0) : null, d: hit ? Math.abs(Math.round(parseFloat(hit.style.left) || 0) - nx) : null };
   })()`);

@@ -75,7 +75,7 @@ async function main() {
        ⇒ 一次换档都不发生 ⇒ 假 FAIL。切一次「— 全览 —」拿回干净 fit（处理器里带 rAF fitAll）。 */
     const sel0 = document.getElementById('lk-line-sel');
     if (sel0) { sel0.value = ''; sel0.dispatchEvent(new Event('change', { bubbles: true })); await new Promise((r) => setTimeout(r, 900)); }
-    const majors = () => [...scale.querySelectorAll('.tl__axis-tick--major')];
+    const majors = () => [...scale.querySelectorAll('.tl__axis-tick--major:not(.tl__axis-tick--ghost)')];
     const kids = () => [...scale.children];
     /* ⚠️ 这段住在模板字符串里：注释与代码里都不许出现反引号或美元花括号。 */
     const labelsIn = (el) => [...el.querySelectorAll('.tl__axis-label, .tl__axis-prev')];
@@ -213,7 +213,7 @@ async function main() {
     if (!scale) return { fatal: 'no .tl-scale' };
     const sel0 = document.getElementById('lk-line-sel');
     if (sel0) { sel0.value = ''; sel0.dispatchEvent(new Event('change', { bubbles: true })); await new Promise((r) => setTimeout(r, 900)); }
-    const majors = () => [...scale.querySelectorAll('.tl__axis-tick--major')];
+    const majors = () => [...scale.querySelectorAll('.tl__axis-tick--major:not(.tl__axis-tick--ghost)')];
     const mapOf = (els) => { const m = new Map(); for (const el of els) { const s = el.querySelector('.tl__axis-label'); if (s) m.set(s.textContent, el); } return m; };
     const yearsOf = (m) => { const out = []; for (const lab of m.keys()) { const mm = /^([0-9]+)年$/.exec(lab); if (!mm) return null; out.push(Number(mm[1])); } out.sort((a, b) => a - b); return out; };
     const gapOf = (ys) => { if (!ys || ys.length < 4) return null; const d = []; for (let i = 1; i < ys.length; i++) d.push(ys[i] - ys[i - 1]); d.sort((a, b) => a - b); return d[Math.floor(d.length / 2)]; };
@@ -239,10 +239,12 @@ async function main() {
     !!idrep && !idrep.fatal && idrep.hitAt > 0 && idrep.common >= 2 && idrep.keep === idrep.common,
     idrep);
 
-  /* ★4 文字的不透明度 = **位置的纯函数**（用户 2026-09-26 的新规格）：
-     中间平台（标尺半宽的 34%）恒 1，两头按 `exp(-4t^2)` 尾巴降下去，且**越靠边越暗（单调）**。
-     A/B 陷阱：上一版（按时间淡入淡出）在静止视图里每个数字都是 1 —— 屏上没有"按位置变暗"这回事。 */
-  check('★4 文字透明度 = 位置的纯函数（中间平台恒 1、两端变暗、整体单调）',
+  /* ★4 文字的不透明度里**屏幕位置**那一半（`labelWindow()`，用户 2026-09-26 要求"留着手感弱一点、
+      100% 的范围加长"）：中间平台（标尺半宽的 44%）恒 1，两头按 `exp(-2t^2)` 降下去（贴边 ≈0.135），
+      且**越靠边越暗（单调）**。⚠️ 这只是两个因子之一 —— 另一半是**换档权重**（缩放值的函数，见 ★7）；
+      本条跑在"平移不缩放"的干净 fit 上，那时换档权重恰好是 1（区间中部的平台）。
+      A/B 陷阱：按时间淡入淡出那一版在静止视图里每个数字都是 1 —— 屏上没有"按位置变暗"这回事。 */
+  check('★4 屏幕两端渐隐 = 位置的纯函数（中间平台恒 1、两端变暗、整体单调）',
     report.midN >= 1 && report.midMin === 1 && report.edgeN >= 1 && report.edgeMin <= 0.6 && report.monotone === true,
     { wpx: report.wpx, rowN: report.rowN, midN: report.midN, midMin: report.midMin, edgeN: report.edgeN, edgeMin: report.edgeMin, edgeMax: report.edgeMax, monotone: report.monotone, monoAt: report.monoAt, sampleRows: report.sampleRows });
 
@@ -252,62 +254,161 @@ async function main() {
     report.lingerSteps > 0 && report.linger === 0 && report.idleAnim === 0,
     { lingerSteps: report.lingerSteps, linger: report.linger, lingerAt: report.lingerAt, idleAnim: report.idleAnim, maxDupPair: report.maxDupPair, dupPairs: report.dupPairs });
 
-  /* ── 第二段（开焦点仿真 ⇒ 走 rAF 缓动，才有"连续运动"）：★4b 不透明度不许跳 ────────────────
-     ⚠️ 必须先 `Emulation.setFocusEmulationEnabled`：实例带 NOFOCUS 时 `noSmooth()` 为真、滚轮当帧落值，
-     根本没有"连续缩放"可言（上一轮就是靠这条才量到硬切那 5.4px 的跳）。 */
-  await send('Emulation.setFocusEmulationEnabled', { enabled: true });
-  await sleep(200);
+  /* ── 第二段：★4b「不透明度只由视图状态决定」（纯函数 ⇒ **可逆**）──────────────────────────
+     用户规格是「**每个文字依照对应的 x（缩放尺度）计算当前的不透明度**」——纯函数的意思就是
+     **跟历史无关**：缩到某个位置看到的透明度，缩回去再到同一位置必须一模一样。
+     判据：从干净 fit 出发，**逐格放大 N 格**、每格记一份 `文字 → 不透明度`；再**逐格缩回 N 格**、
+     同样记一份；两份按"同一格"逐一比对（反序对齐）。
+     ⚠️ 走 NOFOCUS 的"当帧落值"路径（不模拟焦点）：每格都是确定的 1.2× 状态、没有缓动残差，
+     "同一格"才可复现。按时间淡入淡出那一版在这里必然 FAIL —— 它的值取决于"谁刚进来/谁刚被取消"，
+     同一格第二次经过时对不上（这正是"闪"的来源）。
+     ⚠️ 只比**当前档**的刻度（排除 `.tl__axis-tick--ghost` 邻居档）：两套档位的数字混在一张表里，
+     同一个文字可能来自不同的网格、权重也不同。 */
   const cont = await ev(`(async () => {
     const scale = document.querySelector('#lk-pane-timeline .tl-scale');
     if (!scale) return { fatal: 'no .tl-scale' };
     const sel0 = document.getElementById('lk-line-sel');
     if (sel0) { sel0.value = ''; sel0.dispatchEvent(new Event('change', { bubbles: true })); await new Promise((r) => setTimeout(r, 900)); }
-    const majors = () => [...scale.querySelectorAll('.tl__axis-tick--major')];
-    const track = new Map();
-    const LIM = 0.3;            /* dX 的下限（px）：元素几乎没动却变了 opacity 时，比值必须爆表 */
-    let maxRatio = 0, ratioAt = null, maxDx = 0, movedFrames = 0, samples = 0;
-    let raf = true;
-    const step = () => {
-      if (!raf) return;
-      samples++;
-      for (const el of majors()) {
+    /* ⚠️ key 必须带**屏幕位置**：月/日/时/分档的 .tl__axis-label 只有「11月」这种文本（年份在
+       .tl__axis-prev 里），同屏会有好几个「11月」⇒ 只按文本存 map 会互相覆盖，比的是**不同的刻度**
+       （第一版就这么假 FAIL 的：worst 0.927、text=11月、fwd 0.073 vs back 1）。同一视图状态下
+       位置是同一个整数 ⇒ 文字+left 既唯一又跨两趟可比。
+       sig = 当前档所有刻度位置的签名：两趟"同一格"必须签名一致（这才是"真的是同一格"的证据）。
+       ⚠️ 本段住在模板字符串里：注释里也不许出现反引号或美元花括号。 */
+    const snap = () => {
+      const m = {};
+      const xs = [];
+      for (const el of scale.querySelectorAll('.tl__axis-tick--major:not(.tl__axis-tick--ghost)')) {
         const s = el.querySelector('.tl__axis-label');
         if (!s) continue;
-        const x = parseFloat(el.style.left) || 0;
-        const op = Number(getComputedStyle(s).opacity);
-        const prev = track.get(el);
-        if (prev) {
-          const dx = Math.abs(x - prev.x), dop = Math.abs(op - prev.op);
-          if (dx > 0.02) movedFrames++;
-          if (dx > maxDx) maxDx = dx;
-          const ratio = dop / Math.max(dx, LIM);
-          if (ratio > maxRatio) { maxRatio = ratio; ratioAt = { dx: Math.round(dx * 100) / 100, dop: Math.round(dop * 1000) / 1000, x: Math.round(x), op: op, prevOp: prev.op }; }
-        }
-        track.set(el, { x: x, op: op });
+        const x = Math.round(parseFloat(el.style.left) || 0);
+        xs.push(x);
+        m[s.textContent + '|' + x] = Math.round(Number(getComputedStyle(s).opacity) * 1000) / 1000;
       }
-      requestAnimationFrame(step);
+      xs.sort((a, b) => a - b);
+      return { m: m, sig: xs.join(',') };
     };
-    requestAnimationFrame(step);
-    const wheel = (dy) => {
-      const wrap = scale.parentElement;
-      const r = wrap.getBoundingClientRect();
-      wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: dy, altKey: true, clientX: r.left + Math.round(r.width / 2), clientY: r.top + 40, bubbles: true, cancelable: true }));
+    const wrap = scale.parentElement;
+    const rr = wrap.getBoundingClientRect();
+    const opts = { altKey: true, clientX: rr.left + Math.round(rr.width / 2), clientY: rr.top + 40, bubbles: true, cancelable: true };
+    const go = (dy) => wrap.dispatchEvent(new WheelEvent('wheel', Object.assign({ deltaY: dy }, opts)));
+    const N = 12;
+    const fwd = [snap()];                     /* fwd[i] = 放大 i 格后的状态（fwd[0] = 干净 fit） */
+    for (let i = 0; i < N; i++) { go(-100); await new Promise((r) => setTimeout(r, 150)); fwd.push(snap()); }
+    const back = [snap()];                    /* back[0] = 刚放大完的状态（= fwd[N]） */
+    for (let i = 0; i < N; i++) { go(100); await new Promise((r) => setTimeout(r, 150)); back.push(snap()); }
+    /* ⚠️ 两边**必须同构**：back 数组里不能再多推一次快照 —— 第一版多推了一格，于是 back[N-i]
+       整体错开一整格（20% 缩放），比出来一片"透明度差 0.487"的假 FAIL。
+       ⚠️ 本段住在模板字符串里：注释里不许出现反引号或美元花括号。 */
+    /* 两趟对齐：**同文字 + 位置 ±3px 内取最近**。不要求"整屏签名完全一致"——屏幕两端多一根/
+       少一根刻度就会让签名不同（实测 sigBad 12/12，可实际上对得上的那些刻度透明度**一模一样**，
+       worst 0）。±3px 容得下浮点漂移与边缘刻度的进出，又不会把"整屏错位"当成对得上。 */
+    const byText = (s) => {
+      const m = new Map();
+      for (const k of Object.keys(s.m)) {
+        const p = k.split('|');
+        if (!m.has(p[0])) m.set(p[0], []);
+        m.get(p[0]).push({ x: Number(p[1]), op: s.m[k] });
+      }
+      return m;
     };
-    /* 8 格 × 120ms：每格缓动约 250ms，互相重叠 ⇒ 全程连续运动（不是一格一格地跳）。 */
-    for (let i = 0; i < 8; i++) { wheel(-60); await new Promise((r) => setTimeout(r, 120)); }
-    await new Promise((r) => setTimeout(r, 400));
-    /* 反向再来一轮：进出两个方向都要覆盖（上一轮的教训：对称 ± 会正好回到起点、一次都不跨）。 */
-    for (let i = 0; i < 8; i++) { wheel(60); await new Promise((r) => setTimeout(r, 120)); }
-    await new Promise((r) => setTimeout(r, 500));
-    raf = false;
-    return { maxRatio: Math.round(maxRatio * 10000) / 10000, ratioAt, maxDx: Math.round(maxDx * 100) / 100, movedFrames, samples, focused: document.hasFocus() };
+    let pairs = 0, worst = 0, worstAt = null, differ = 0, changed = 0;
+    for (let i = 0; i <= N; i++) {
+      const a = fwd[i], b = back[N - i];
+      const mb = byText(b);
+      for (const k of Object.keys(a.m)) {
+        const p = k.split('|');
+        const x = Number(p[1]);
+        const cand = (mb.get(p[0]) || []).filter((c) => Math.abs(c.x - x) <= 3);
+        if (!cand.length) continue;
+        cand.sort((u, v) => Math.abs(u.x - x) - Math.abs(v.x - x));
+        pairs++;
+        const d = Math.abs(a.m[k] - cand[0].op);
+        if (d > worst) { worst = d; worstAt = { step: i, text: k, fwd: a.m[k], back: cand[0].op, bx: cand[0].x }; }
+        if (d > 0.02) differ++;
+      }
+      if (i > 0 && fwd[i].sig !== fwd[i - 1].sig) changed++;
+    }
+    return { pairs: pairs, worst: Math.round(worst * 1000) / 1000, worstAt: worstAt, differ: differ, changed: changed, N: N, firstN: Object.keys(fwd[0].m).length, lastN: Object.keys(fwd[N].m).length, focused: document.hasFocus() };
   })()`);
   console.log('cont =', JSON.stringify(cont));
-  await send('Emulation.setFocusEmulationEnabled', { enabled: false });
 
-  check('★4b 连续缩放时文字不透明度连续（逐帧 |dOp|/max(|dX|,0.3) ≤ 0.08，且真的在连续动）',
-    !!cont && !cont.fatal && cont.focused === true && cont.movedFrames >= 5 && cont.maxRatio <= 0.08,
-    { maxRatio: cont.maxRatio, ratioAt: cont.ratioAt, maxDx: cont.maxDx, movedFrames: cont.movedFrames, samples: cont.samples, focused: cont.focused });
+  check('★4b 不透明度只由视图状态决定（缩进 12 格再缩回，同一格透明度完全一致 ⇒ 纯函数）',
+    !!cont && !cont.fatal && cont.pairs >= 20 && cont.differ === 0 && cont.changed >= 3,
+    { pairs: cont.pairs, worst: cont.worst, worstAt: cont.worstAt, differ: cont.differ, changed: cont.changed, N: cont.N, firstN: cont.firstN, lastN: cont.lastN, focused: cont.focused });
+
+  /* ── ★7（第 ⑥ 轮新功能）换档时**两套数字同时在、各约 50%**（用户 2026-09-26 拍板选的 A 交叉淡化）──
+     只看中间段（x ∈ [0.2w, 0.8w]）的刻度：把"两端渐隐"那个因子排除掉，读到就是**换档权重**本身。
+     三条判据：
+       · `mixed ≥ 1` —— 某一帧上有两套档位、且**两套都在淡的中途**（top ∈ (0.15, 0.9)）；
+       · `minTop ≥ 0.45` —— 任何一帧中间段都至少有一套 ≥0.45（**不许出现"两边都看不见"的空白**，
+         这正是"先出后进"那版会踩的，也是用户要的"两边加起来 ≈1"）；
+       · `twoFull === 0` —— 从不出现两套都 ≥0.9（= 第四十二轮那个"两个重叠的标尺"）；
+       · `animFrames === 0` —— 全程没有任何刻度在播动画（不透明度是算出来的）。
+     ⚠️ A/B：旧构建换档是**硬切**（旧档当帧消失、新档满不透明度出现）⇒ 任何一帧都只有一套档位 ⇒
+     `mixed = 0` ⇒ 本条必然 FAIL。 */
+  const hand = await ev(`(async () => {
+    const scale = document.querySelector('#lk-pane-timeline .tl-scale');
+    if (!scale) return { fatal: 'no .tl-scale' };
+    const sel0 = document.getElementById('lk-line-sel');
+    if (sel0) { sel0.value = ''; sel0.dispatchEvent(new Event('change', { bubbles: true })); await new Promise((r) => setTimeout(r, 900)); }
+    const unitOf = (t) => {
+      if (/年$/.test(t)) return '年';
+      if (/月$/.test(t)) return '月';
+      if (/号$/.test(t)) return '日';
+      if (/时$/.test(t)) return '时';
+      if (/分$/.test(t)) return '分';
+      return '?';
+    };
+    const sample = () => {
+      const w = scale.clientWidth;
+      const byUnit = {};
+      let anim = 0;
+      for (const el of scale.querySelectorAll('.tl__axis-tick--major')) {
+        if (el.getAnimations && el.getAnimations().length) anim++;
+        const sp = el.querySelector('.tl__axis-label');
+        if (!sp) continue;
+        const x = parseFloat(el.style.left) || 0;
+        if (x < w * 0.2 || x > w * 0.8) continue;
+        const u = unitOf(sp.textContent);
+        const op = Number(getComputedStyle(sp).opacity);
+        const cur = byUnit[u] || (byUnit[u] = { n: 0, max: 0 });
+        cur.n++;
+        if (op > cur.max) cur.max = op;
+      }
+      return { units: byUnit, nUnits: Object.keys(byUnit).length, anim: anim };
+    };
+    const wrap = scale.parentElement;
+    const r = wrap.getBoundingClientRect();
+    const opts = { deltaY: -100, altKey: true, clientX: r.left + Math.round(r.width * 0.45), clientY: r.top + 40, bubbles: true, cancelable: true };
+    let mixed = 0, mixedAt = null, twoFull = 0, worstSum = 9, minTop = 9, animFrames = 0, frames = 0, noMid = 0;
+    const take = () => {
+      const s = sample();
+      frames++;
+      if (s.anim) animFrames++;
+      const keys = Object.keys(s.units);
+      if (!keys.length) { noMid++; return; }
+      const tops = keys.map((k) => s.units[k].max).sort((a, b) => b - a);
+      if (tops[0] < minTop) minTop = tops[0];
+      if (s.nUnits >= 2) {
+        const sum = tops[0] + tops[1];
+        if (sum < worstSum) worstSum = sum;
+        if (tops[0] >= 0.9 && tops[1] >= 0.9) twoFull++;
+        if (tops[0] < 0.9 && tops[1] > 0.15) { mixed++; if (!mixedAt) mixedAt = { i: frames, units: keys, tops: tops.map((v) => Math.round(v * 1000) / 1000) }; }
+      }
+    };
+    take();
+    for (let i = 1; i <= 40; i++) {
+      wrap.dispatchEvent(new WheelEvent('wheel', opts));
+      await new Promise((res) => setTimeout(res, 60));
+      take();
+    }
+    return { mixed: mixed, mixedAt: mixedAt, twoFull: twoFull, worstSum: Math.round(worstSum * 100) / 100, minTop: Math.round(minTop * 1000) / 1000, animFrames: animFrames, frames: frames, noMid: noMid };
+  })()`);
+  console.log('hand =', JSON.stringify(hand));
+  check('★7 换档时两套数字同时在、各约 50%（交叉淡化；且永不出现"两套都满"的空白/两把尺子）',
+    !!hand && !hand.fatal && hand.mixed >= 1 && hand.twoFull === 0 && hand.animFrames === 0 && hand.minTop >= 0.45,
+    { mixed: hand.mixed, mixedAt: hand.mixedAt, twoFull: hand.twoFull, worstSum: hand.worstSum, minTop: hand.minTop, animFrames: hand.animFrames, frames: hand.frames, noMid: hand.noMid });
 
   const errs = await ev(`window.__errs`);
   check('★6 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

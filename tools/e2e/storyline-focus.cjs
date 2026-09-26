@@ -46,7 +46,10 @@ async function main() {
       title: el.querySelector('.tl__name')?.textContent ?? '',
       x: Math.round(parseFloat(el.style.left) || 0),
     }));
-    const ticks = [...document.querySelectorAll('#lk-pane-timeline .tl__axis-tick--major')].map((el) => ({
+    /* ⚠️ 排除邻居档（.tl__axis-tick--ghost，2026-09-26 第 ⑥ 轮换档交叉淡化）：交接点上屏上会
+       同时有两套档位的数字，两套步长不同 ⇒ 混着读，"段内等距 / 落在全局网格上"当场崩。
+       ⚠️ 本段住在模板字符串里：注释里也不许出现反引号或美元花括号。 */
+    const ticks = [...document.querySelectorAll('#lk-pane-timeline .tl__axis-tick--major:not(.tl__axis-tick--ghost)')].map((el) => ({
       label: el.querySelector('.tl__axis-label')?.textContent ?? '',
       x: Math.round(parseFloat(el.style.left) || 0),
     })).filter((t) => t.label);
