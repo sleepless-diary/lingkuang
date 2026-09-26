@@ -344,6 +344,33 @@ async function main() {
     m1.indexOf('Agent：能连着走多步') >= 0 && !!m2 && m2.mode === 'agent' && m2.on === true && m3.indexOf('聊天：能查也能改') >= 0,
     { dom: dom12, aiAgent: m1.indexOf('Agent：能连着走多步') >= 0, panel: m2, aiBackToChat: m3.indexOf('聊天：能查也能改') >= 0 });
 
+  /* ★13 ⭐AI 页那一头只许一处荧光绿（用户 2026-09-26：「这里面有三处荧光绿」）。
+     基准色从页面上取（`#ai-send` 发送按钮的颜色 = accent），数 `#ai-head` 里文字/边框/底色
+     撞上它的元素：旧构建三处（角色 chip「主」+「＝ Ctrl+K 的灵框助手（同一份对话）」+ 当前模式按钮）
+     ⇒ FAIL；修后只剩当前模式那个按钮 ⇒ PASS。
+     ⚠️ 边框只在 `borderTopWidth > 0` 时才算 —— 无边框元素的 computed `borderColor` 会等于
+     `currentColor`，拿 `color` 一比就全"命中"，探针第一版就踩过这个假读数。 */
+  const head13 = await ev(`(function () {
+    const head = document.getElementById('ai-head');
+    if (!head) return { has: false };
+    const send = document.getElementById('ai-send');
+    const ref = send ? getComputedStyle(send).color : 'rgb(158, 194, 98)';
+    const hits = [];
+    const all = head.querySelectorAll('*');
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i];
+      const cs = getComputedStyle(el);
+      const bw = parseFloat(cs.borderTopWidth) || 0;
+      const col = cs.color === ref;
+      const bd = bw > 0 && (cs.borderTopColor === ref || cs.borderLeftColor === ref);
+      const bg = cs.backgroundColor === ref;
+      if (col || bd || bg) hits.push({ id: el.id || null, txt: (el.textContent || '').replace(/\\s+/g, ' ').slice(0, 16) });
+    }
+    return { has: true, ref: ref, n: hits.length, hits: hits };
+  })()`);
+  check('★13 ⭐AI 页那一头只有一处荧光绿（= 当前模式那个按钮）：「主」chip 与「＝ Ctrl+K…」都该是次级灰',
+    !!head13 && head13.has === true && head13.n === 1 && head13.hits[0].id === 'lk-ai-mode-chat', head13);
+
   const errs = await ev(`window.__errs || []`);
   check('★9 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, { errs });
 

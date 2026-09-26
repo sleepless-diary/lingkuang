@@ -459,6 +459,12 @@
   accent 只留给**流式光标**（"正在写"）；"还在想"用 `--muted` + 慢呼吸（`lk-think-breathe` 1.6s）；
   模式指示用「Agent」绿字 + 面板左边缘一条 accent 线（标题前那颗圆点已删 —— 同一件事说两遍就够）。
   守卫：`tools/e2e/agent-stream.cjs` 的 ★11（判据必须**同时**验"不与光标同色"和"自己非透明"）。
+  同一纪律也管 **AI 页那一头**（`src/ui/ai-workbench.ts` 的 `renderHead()`）：那儿原来三处荧光绿
+  （角色 chip「主」+ 「＝ Ctrl+K 的灵框助手（同一份对话）」+ 当前模式按钮 —— 用户 2026-09-26：
+  「这里面有三处荧光绿」），现在只留**当前模式**那一个（另两处降到 `--fg-2`，chip 改成与助手浮层的
+  `.lk-agent__chip` 同款 `--fg-2` + `--border-strong`）。守卫 = `tools/e2e/agent-main-session.cjs` ★13
+  （数 `#ai-head` 里的 accent 元素，恰好 1 个且必须是模式按钮；⚠️ 边框判据必须带 `borderTopWidth > 0`
+  —— 无边框元素的 computed `borderColor` 就是 `currentColor`，不加这条会把所有 accent 文字都算"命中边框"）。
 - **三个 API**：
   · `enter(el, cls = 'lk-enter')` 重放一次入场（摘类 → 强制重排 → 加类；只加类不重播）；
   · `staggerIn(container)` = **常驻**错峰（类留在容器上）—— 延迟不在 JS 里算，而是 CSS 按子项序号给

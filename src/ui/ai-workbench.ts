@@ -94,10 +94,15 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     if (!s) { headEl.innerHTML = ''; return; }
     headEl.innerHTML =
       `<span style="font-size:14px;font-weight:600;color:var(--fg);">${esc(s.name)}</span>` +
-      `<span style="font-size:11px;color:var(--accent);border:1px solid var(--accent);border-radius:var(--radius-pill);padding:1px 7px;margin-left:7px;">${roleOfLabel(s)}</span>` +
+      /* ⚠️ 角色 chip 与下面那句「＝ Ctrl+K…」都**不再是荧光绿**（用户 2026-09-26：「这里面有三处荧光绿」）：
+         这两处只是**说明**（这一格是什么角色 / 它与助手共用同一份对话），而这一头唯一该被
+         看见的是**当前模式那个按钮**（`--accent` 的语义 = 唯一该看的东西）。chip 现在与助手
+         浮层的 `.lk-agent__chip` 同款（`--fg-2` 文字 + `--border-strong` 边）。
+         守卫：`tools/e2e/agent-main-session.cjs` ★13（数 `#ai-head` 里的 accent 元素，只许一个）。 */
+      `<span style="font-size:11px;color:var(--fg-2);border:1px solid var(--border-strong);border-radius:var(--radius-pill);padding:1px 7px;margin-left:7px;">${roleOfLabel(s)}</span>` +
       `<span style="font-size:11px;color:var(--fg-2);margin-left:8px;">${esc(linkSummary(s))}</span>` +
       `<span style="font-size:11px;color:var(--fg-2);margin-left:8px;">${s.history.length} 条</span>` +
-      (s.role === 'main' ? '<span style="font-size:11px;color:var(--accent);margin-left:8px;">＝ Ctrl+K 的灵框助手（同一份对话）</span>' : '') +
+      (s.role === 'main' ? '<span style="font-size:11px;color:var(--fg-2);margin-left:8px;">＝ Ctrl+K 的灵框助手（同一份对话）</span>' : '') +
       /* ⭐ 2C：模式开关在 AI 页也要有 —— 两个入口**共享一份状态**，在哪儿切都算数
          （`setAgentMode` 广播 `lingkuang-agent-mode`，助手那层浮层当场跟上）。 */
       (s.role === 'main'

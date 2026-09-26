@@ -15,6 +15,41 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第六十二轮（2026-09-26）· AI 页那一头的三处荧光绿 → 只留「当前模式」
+
+用户原话（贴的就是那一头的文字）：「主会话 主没连别的会话25 条＝ Ctrl+K 的灵框助手（同一份对话）/ 模式 聊天 Agent / 聊天：能查也能改，一次只做一个动作，**这里面有三处荧光绿**」。
+
+### ① 病根（探针数的，不是眼睛数的）
+`node tools/e2e/probe-greens-shot.cjs ai`（把 AI 页那一头截 2x 图 + 逐个读 `#ai-head` 里文字/边框/底色撞上 accent 的元素；基准色**从页面上取** = `#ai-send` 发送按钮的颜色）实测 **3 处**，全在 `src/ui/ai-workbench.ts` 的 `renderHead()` 里：
+
+| 行 | 元素 | 原样式 | 它是什么 |
+| --- | --- | --- | --- |
+| `:97` | 角色 chip（「主」/「角色」/「视角」/「主控」） | `color:var(--accent)` + `border:1px solid var(--accent)` | 只是**说明**这一格是什么角色 |
+| `:100` | 「＝ Ctrl+K 的灵框助手（同一份对话）」 | `color:var(--accent)` | 只是**说明**它和助手共用一份对话 |
+| `:106`/`:107` | 当前模式按钮（聊天 / Agent） | 选中档 = accent 文字 + accent 边 | **状态**（此刻是哪一档授权） |
+
+问题不在数量本身，而在**同一个绿在说三种轻重不同的事**：前两处与旁边「25 条」「人设」「聊天：能查也能改…」这些次级灰是同一层级的信息，却比它们亮一档。
+
+### ② 修法（只动 `renderHead()` 两行）
+1. 角色 chip → `color:var(--fg-2)` + `border:1px solid var(--border-strong)`（**与助手浮层的 `.lk-agent__chip` 同款** —— 同一个东西在两个入口该长得一样）；
+2. 「＝ Ctrl+K…」→ `--fg-2`；
+3. 模式按钮**保留** accent ⇒ 这一头只剩一处荧光绿，语义干净：**亮着的那一颗就是"你现在在哪一档"**。
+
+### ③ 守卫（`tools/e2e/agent-main-session.cjs` ★13）+ A/B
+数 `#ai-head` 里颜色/边框/底色 = accent 的元素，要求恰好 1 个且必须是当前模式那个按钮。
+
+| 构建 | 读数 | 结果 |
+| --- | --- | --- |
+| 修复前 | `n:3`，hits = `["主","＝ Ctrl+K 的灵框助手（同","lk-ai-mode-chat"]` | FAIL |
+| 修复后 | `n:1`，hits = `["lk-ai-mode-chat"]` | 14/14 PASS |
+
+⚠️ 判据本身踩了一次：**无边框元素的 computed `borderColor` 等于 `currentColor`**，拿它跟 accent 一比，凡是 accent 文字的元素都会"命中边框" ⇒ 边框必须加 `borderTopWidth > 0` 才算。探针第一版打印的 `hit:"文字+边框"` 就是这个假读数。
+
+### ④ 回归
+`agent-main-session` 14/14、`agent-stream` 14/14、`agent-panel` 21/21、`agent-tools` 19/19、`agent-mode` 12/12；`node --check main.js` / `npx tsc --noEmit` / `npx vite build` 全绿。
+
+探针 `tools/e2e/probe-greens-shot.cjs` 现在两个目标通用：`node tools/e2e/probe-greens-shot.cjs [ai]`（不带参数 = 助手面板"生成中"那一屏）。
+
 ## 第六十一轮（2026-09-26）· 「两个高亮度的荧光绿分不清」＝ 同屏三颗 accent 小绿点，其中两颗还同节奏
 
 用户原话：「**话说怎么又用到了荧光绿的颜色，两个都是高亮度我有点难分辨**」。
