@@ -149,6 +149,19 @@ async function main() {
     sample();
     /* ③ 回到全览 fit 之后再读一次**位置 ↔ 不透明度**（形状判据：平台恒 1、越靠边越暗且单调） */
     if (sel0) { sel0.value = ''; sel0.dispatchEvent(new Event('change', { bubbles: true })); await new Promise((r) => setTimeout(r, 900)); }
+    /* ⚠️ 必须落在**没有邻居档**的档位上再量（2026-09-26 补）：交叉淡化会让同屏出现第二套网格，
+       而"同一个 key 被两套产出就取并集"那条规则会把当前档的一部分数字抬到高于自己的权重
+       （实测：干净 fit 正好落在档位区间边缘时，mid 里同时有 0.775 与 0.631）⇒ midMin === 1 不成立。
+       本条量的是 labelWindow（**屏幕位置**那一半），它的前提就是"换档权重 = 1"。
+       邻居档权重是缩放值的连续函数、且档位区间中部有一段平台 ⇒ 往外滚几格就能落到 ghost == 0 的档位。 */
+    const ghostN = () => scale.querySelectorAll('.tl__axis-tick--major.tl__axis-tick--ghost').length;
+    const wrapZ = scale.parentElement;
+    const wrZ = wrapZ.getBoundingClientRect();
+    const zoomAt = (dy) => wrapZ.dispatchEvent(new WheelEvent('wheel', { deltaY: dy, altKey: true, clientX: wrZ.left + Math.round(wrZ.width * 0.45), clientY: wrZ.top + 40, bubbles: true, cancelable: true }));
+    for (const dir of [100, -100]) {
+      for (let k = 0; k < 7 && ghostN() > 0; k++) { zoomAt(dir); await new Promise((r) => setTimeout(r, 130)); }
+      if (ghostN() === 0) break;
+    }
     const wpx = scale.clientWidth;
     const rows = [];
     for (const el of majors()) {
@@ -337,78 +350,107 @@ async function main() {
     !!cont && !cont.fatal && cont.pairs >= 20 && cont.differ === 0 && cont.changed >= 3,
     { pairs: cont.pairs, worst: cont.worst, worstAt: cont.worstAt, differ: cont.differ, changed: cont.changed, N: cont.N, firstN: cont.firstN, lastN: cont.lastN, focused: cont.focused });
 
-  /* ── ★7（第 ⑥ 轮新功能）换档时**两套数字同时在、各约 50%**（用户 2026-09-26 拍板选的 A 交叉淡化）──
-     只看中间段（x ∈ [0.2w, 0.8w]）的刻度：把"两端渐隐"那个因子排除掉，读到就是**换档权重**本身。
+  /* ── ★7（第 ⑥ 轮新功能）换档**不是硬切**：邻居档会按缩放值淡入淡出（用户 2026-09-26 拍板选的 A）──
+     "两套"用产品自己的记号判：邻居档 = `.tl__axis-tick--ghost`（当前档 = 没这个类的）。
+     ⚠️ 第一版按**单位文字**判两套（年/月/日/时/分），实测 61 格里只有 3 格能撞到 ——
+     因为绝大多数换档是**同一个单位的嵌套网格**（年↔年 的 1/2/5/10 阶梯），按文字判根本看不见；
+     而且撞不撞得上取决于干净 fit 落在档位区间的哪儿（换了夹具/多播一个 seed 就换一条轨迹）⇒ 假 FAIL。
+     现在按 ghost 类判：任何一格都能读到"当前档最亮多少 / 邻居档最亮多少"。
      三条判据：
-       · `mixed ≥ 1` —— 某一帧上有两套档位、且**两套都在淡的中途**（top ∈ (0.15, 0.9)）；
-       · `minTop ≥ 0.45` —— 任何一帧中间段都至少有一套 ≥0.45（**不许出现"两边都看不见"的空白**，
-         这正是"先出后进"那版会踩的，也是用户要的"两边加起来 ≈1"）；
+       · `mixed ≥ 1` —— 某一帧上邻居档确实在"半亮"（`gMax ∈ [0.15, 0.9)`）而当前档也可见；
+       · `minTop ≥ 0.45` —— 任何一帧中间段至少有一套 ≥0.45（**不许出现"两边都看不见"的空白**）；
        · `twoFull === 0` —— 从不出现两套都 ≥0.9（= 第四十二轮那个"两个重叠的标尺"）；
-       · `animFrames === 0` —— 全程没有任何刻度在播动画（不透明度是算出来的）。
-     ⚠️ A/B：旧构建换档是**硬切**（旧档当帧消失、新档满不透明度出现）⇒ 任何一帧都只有一套档位 ⇒
+       · `animFrames === 0` —— 全程没有任何刻度在播动画（不透明度是算出来的，不是演出来的）。
+     ⚠️ A/B：旧构建换档是**硬切**（旧档当帧消失、新档满不透明度出现）⇒ 屏上压根没有 ghost 档 ⇒
      `mixed = 0` ⇒ 本条必然 FAIL。 */
   const hand = await ev(`(async () => {
     const scale = document.querySelector('#lk-pane-timeline .tl-scale');
     if (!scale) return { fatal: 'no .tl-scale' };
     const sel0 = document.getElementById('lk-line-sel');
     if (sel0) { sel0.value = ''; sel0.dispatchEvent(new Event('change', { bubbles: true })); await new Promise((r) => setTimeout(r, 900)); }
-    const unitOf = (t) => {
-      if (/年$/.test(t)) return '年';
-      if (/月$/.test(t)) return '月';
-      if (/号$/.test(t)) return '日';
-      if (/时$/.test(t)) return '时';
-      if (/分$/.test(t)) return '分';
-      return '?';
-    };
     const sample = () => {
       const w = scale.clientWidth;
-      const byUnit = {};
-      let anim = 0;
+      let anim = 0, aMax = 0, gMax = 0;
+      const rows = {};
       for (const el of scale.querySelectorAll('.tl__axis-tick--major')) {
         if (el.getAnimations && el.getAnimations().length) anim++;
+        const ghost = el.classList.contains('tl__axis-tick--ghost');
         const sp = el.querySelector('.tl__axis-label');
-        if (!sp) continue;
-        const x = parseFloat(el.style.left) || 0;
-        if (x < w * 0.2 || x > w * 0.8) continue;
-        const u = unitOf(sp.textContent);
-        const op = Number(getComputedStyle(sp).opacity);
-        const cur = byUnit[u] || (byUnit[u] = { n: 0, max: 0 });
-        cur.n++;
-        if (op > cur.max) cur.max = op;
+        if (sp) {
+          const x = parseFloat(el.style.left) || 0;
+          if (x >= w * 0.2 && x <= w * 0.8) {
+            /* 只看中间段（两端那个位置因子恒 1），读到就是**换档权重**本身。
+               "两套"用产品自己的记号判：邻居档 = .tl__axis-tick--ghost（同档位的嵌套网格也算一套
+               —— 按单位文字判（年/月/日）会漏掉"年↔年"这种换档，实测 61 格里只有 3 格能撞到）。 */
+            const op = Number(getComputedStyle(sp).opacity);
+            if (ghost) { if (op > gMax) gMax = op; } else if (op > aMax) aMax = op;
+          }
+        }
+        /* 粗刻度的文字按**行**量重叠：.tl__axis-label 在 top:4px（线右侧）、.tl__axis-prev 在
+           top:14px（线正下方居中）—— 两行上下错开，本来就不打架，所以只按同一行比。
+           看不见的（被挤掉 / 淡到底）不算重叠。 */
+        for (const s2 of el.querySelectorAll('.tl__axis-label, .tl__axis-prev')) {
+          const op2 = Number(getComputedStyle(s2).opacity);
+          if (op2 <= 0.05) continue;
+          const rr = s2.getBoundingClientRect();
+          const row = Math.round(rr.top);
+          (rows[row] || (rows[row] = [])).push({ lo: rr.left, hi: rr.right, t: s2.textContent });
+        }
       }
-      return { units: byUnit, nUnits: Object.keys(byUnit).length, anim: anim };
+      let over = 0, overAt = null;
+      for (const k of Object.keys(rows)) {
+        const list = rows[k].sort((a, b) => a.lo - b.lo);
+        for (let i = 1; i < list.length; i++) {
+          const d = list[i - 1].hi - list[i].lo;      /* > 0 = 两段文字横向叠在一起 */
+          if (d > over) { over = d; overAt = { row: Number(k), a: list[i - 1].t, b: list[i].t, by: Math.round(d * 10) / 10 }; }
+        }
+      }
+      return { aMax: aMax, gMax: gMax, anim: anim, over: over, overAt: overAt };
     };
     const wrap = scale.parentElement;
     const r = wrap.getBoundingClientRect();
     const opts = { deltaY: -100, altKey: true, clientX: r.left + Math.round(r.width * 0.45), clientY: r.top + 40, bubbles: true, cancelable: true };
     let mixed = 0, mixedAt = null, twoFull = 0, worstSum = 9, minTop = 9, animFrames = 0, frames = 0, noMid = 0;
+    let maxOver = 0, overAt = null;
     const take = () => {
       const s = sample();
       frames++;
       if (s.anim) animFrames++;
-      const keys = Object.keys(s.units);
-      if (!keys.length) { noMid++; return; }
-      const tops = keys.map((k) => s.units[k].max).sort((a, b) => b - a);
-      if (tops[0] < minTop) minTop = tops[0];
-      if (s.nUnits >= 2) {
-        const sum = tops[0] + tops[1];
-        if (sum < worstSum) worstSum = sum;
-        if (tops[0] >= 0.9 && tops[1] >= 0.9) twoFull++;
-        if (tops[0] < 0.9 && tops[1] > 0.15) { mixed++; if (!mixedAt) mixedAt = { i: frames, units: keys, tops: tops.map((v) => Math.round(v * 1000) / 1000) }; }
+      if (s.over > maxOver) { maxOver = s.over; overAt = s.overAt; }
+      const top = Math.max(s.aMax, s.gMax);
+      if (top < 0.02) { noMid++; return; }            /* 中间段一根可见的都没有（不该发生） */
+      if (top < minTop) minTop = top;
+      const sum = s.aMax + s.gMax;
+      if (sum < worstSum) worstSum = sum;
+      if (s.aMax >= 0.9 && s.gMax >= 0.9) twoFull++;  /* 两套都满 = 第四十二轮那个"两个重叠的标尺" */
+      if (s.gMax >= 0.15 && s.gMax < 0.9 && s.aMax >= 0.15) {
+        mixed++;
+        if (!mixedAt) mixedAt = { i: frames, a: Math.round(s.aMax * 1000) / 1000, g: Math.round(s.gMax * 1000) / 1000 };
       }
     };
     take();
     for (let i = 1; i <= 40; i++) {
       wrap.dispatchEvent(new WheelEvent('wheel', opts));
-      await new Promise((res) => setTimeout(res, 60));
-      take();
+      /* 一格滚完的缓动约 250ms：每格采 3 次（每 20ms 一次），别让"两套同时在"的那几帧被跳过
+         （第一版每格只采 1 次，★7 的 mixed 只能撞到 2 帧 —— 撞不到的判据就是假绿）。 */
+      for (let j = 0; j < 3; j++) { await new Promise((res) => setTimeout(res, 20)); take(); }
     }
-    return { mixed: mixed, mixedAt: mixedAt, twoFull: twoFull, worstSum: Math.round(worstSum * 100) / 100, minTop: Math.round(minTop * 1000) / 1000, animFrames: animFrames, frames: frames, noMid: noMid };
+    return { mixed: mixed, mixedAt: mixedAt, twoFull: twoFull, worstSum: Math.round(worstSum * 100) / 100, minTop: Math.round(minTop * 1000) / 1000, animFrames: animFrames, frames: frames, noMid: noMid, maxOver: Math.round(maxOver * 10) / 10, overAt: overAt };
   })()`);
   console.log('hand =', JSON.stringify(hand));
-  check('★7 换档时两套数字同时在、各约 50%（交叉淡化；且永不出现"两套都满"的空白/两把尺子）',
+  check('★7 换档不是硬切：邻居档按缩放值淡入淡出（且永不出现"两套都满"的两把尺子/两边都看不见的空白）',
     !!hand && !hand.fatal && hand.mixed >= 1 && hand.twoFull === 0 && hand.animFrames === 0 && hand.minTop >= 0.45,
     { mixed: hand.mixed, mixedAt: hand.mixedAt, twoFull: hand.twoFull, worstSum: hand.worstSum, minTop: hand.minTop, animFrames: hand.animFrames, frames: hand.frames, noMid: hand.noMid });
+
+  /* ── ★8（第 ⑥ 轮补）**粗刻度不许重叠**（用户 2026-09-26：「标尺上面的粗刻度改成不可重叠的
+     （就是有时候显得很密集）」）──
+     密集的真来源是交叉淡化：交接点附近屏上同时有两套粗刻度，两套数字交错时最小间距能到 ~20px，
+     比一个「312年」还窄 ⇒ 糊成一片。判据 = 逐帧按**行**（同一 rect.top 才算一行）扫所有
+     **看得见**（opacity > 0.05）的文字盒子，任意两个横向重叠 > 1px 就算 FAIL。
+     ⚠️ A/B：改动前两套交错必然叠上 ⇒ FAIL；改动后邻居档被挤掉的整根隐掉 ⇒ maxOver 0。 */
+  check('★8 粗刻度（数字）从不重叠 —— 换档两套同时在时也不许挤在一起',
+    !!hand && !hand.fatal && hand.maxOver <= 1,
+    { maxOver: hand.maxOver, overAt: hand.overAt, frames: hand.frames });
 
   const errs = await ev(`window.__errs`);
   check('★6 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

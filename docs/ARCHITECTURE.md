@@ -177,6 +177,13 @@
   当前 spacing 当起点 ⇒ 返回 null ⇒ 权重退化成 1 ⇒ 两套都满 = 第四十二轮那两把尺子又回来了）。
   ⚠️ 交给 `paintScale()` 的 items **必须按 `left` 排序**（两套交错时 map 插入序不是位置序，
   谁按 `querySelectorAll` 顺序读都会看到负间距）。
+- **粗刻度不可重叠（2026-09-26 第 ⑧ 轮，`docs/BUGS.md` 第四十八轮）**：`paintScale()` 的**尾段**
+  （建/复用元素 → 写 `left` + ghost 类 → 顺序修正 → 尾段）按**屏幕盒子贪心去重** ——
+  `.tl__axis-label`（`top:4px`，线右侧 `left:3px`）与 `.tl__axis-prev`（`top:14px`，线正下方居中）
+  **两行分开判**；**当前档先占位**（`it.line`），邻居档（ghost）撞上就**整根隐掉**（文字 `opacity: 0`，
+  它的线本来就隐身）。间距阈值 `TICK_MIN_GAP = 3`px；元素**一律留着**（不增删 DOM）⇒ 仍是纯函数、不闪。
+  文字宽度走 `textW: Map<string, number>`（**按文字缓存实测宽度**，一段只量一次）；两根 span 由
+  `scaleSpans: WeakMap<HTMLElement, {cur, prev}>` 在 `rememberLabels()` 里记账（顺带免掉每帧 DOM 查询）。
 - **视图缓动（`kickEase()`）的兜底是"看门狗"、不是定时落值**（2026-09-26 修「缩放时标尺轻微卡顿 +
   在缩放尺度边缘缓动没生效」，同一个病根）：`easeWatchdog` / `lastFrameAt` / `EASE_STALL_MS = 250` ——
   `step()` 每帧刷新 `lastFrameAt`，看门狗**只在 250ms 内一帧都没出**时才

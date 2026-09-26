@@ -493,9 +493,22 @@ export function mountTimeline(
   /** 每根刻度自己的文字 span（创建 / 重写 html 时记账）——每帧只写 opacity，**不做 DOM 查询**
       （仓库对每帧查询量敏感，见 `tools/e2e/causes-line.cjs` ★3 那条上限）。 */
   const scaleLabels = new WeakMap<HTMLElement, HTMLElement[]>();
+  /** 两根文字 span 各是谁：`.tl__axis-label` 在线右侧（`top:4px`）、`.tl__axis-prev` 在线正下方居中
+      （`top:14px`）。**「粗刻度不可重叠」必须按行判**（两行上下错开、本来就不打架），所以分开记。 */
+  const scaleSpans = new WeakMap<HTMLElement, { cur: HTMLElement | null; prev: HTMLElement | null }>();
   const rememberLabels = (el: HTMLElement): void => {
-    scaleLabels.set(el, Array.from(el.querySelectorAll<HTMLElement>('.tl__axis-label, .tl__axis-prev')));
+    const all = Array.from(el.querySelectorAll<HTMLElement>('.tl__axis-label, .tl__axis-prev'));
+    scaleLabels.set(el, all);
+    scaleSpans.set(el, {
+      cur: all.find((s) => s.classList.contains('tl__axis-label')) ?? null,
+      prev: all.find((s) => s.classList.contains('tl__axis-prev')) ?? null,
+    });
   };
+  /** 文字宽度的**实测缓存**（key = 文字本身）：一段文字只量一次，之后纯查表 ——
+      「不可重叠」那条判据不能每帧去量 DOM（仓库对每帧的布局/查询量敏感）。 */
+  const textW = new Map<string, number>();
+  /** 两根粗刻度文字之间至少要留的缝（px）：小于它就算"挤在一起"。 */
+  const TICK_MIN_GAP = 3;
   /** 每根刻度**上一次写进去的 html**：复用的元素在换档后「上一级」那截文字可能不再是同一个
       （时/分档的 `showPrev` 是拿 `s - stepSec` 比的）⇒ 内容真的变了才重写，
       逐帧 `innerHTML =` 就又变回"整条标尺重画"了。 */
@@ -524,14 +537,6 @@ export function mountTimeline(
       el.style.left = `${it.left}px`;
       /* 邻居网格的主刻度：线隐身（只有数字在淡）⇒ 屏上永远只有一把尺子的线。 */
       el.classList.toggle('tl__axis-tick--ghost', !it.line);
-      /* 文字不透明度 = **换档权重（缩放值的纯函数）** × **位置的锥形**（屏幕两端渐隐，用户要的"弱一点"）。
-         这里**没有动画、没有过渡**：两个因子都是连续量的纯函数 ⇒ 不会闪。
-         小刻度 / 断口没有文字，一次 DOM 查询都不做。 */
-      const labels = scaleLabels.get(el);
-      if (labels && labels.length) {
-        const op = labelWindow(it.left, w) * it.w;
-        for (const s of labels) s.style.opacity = op >= 0.999 ? '' : op.toFixed(3);
-      }
       els.push(el);
     }
     /* 顺序：刻度必须从左到右排（测试读 `querySelectorAll` 的顺序、以及 z 序都依赖它）。
@@ -543,6 +548,52 @@ export function mountTimeline(
       while (n && !live.has(n as Element)) n = n.nextSibling;
       if (n !== el) scaleEl.insertBefore(el, n);
       prevLive = el;
+    }
+    /* ── 尾段：量文字宽度 → 按行去掉挤在一起的 → 写不透明度 ──────────────────────────────────
+       用户 2026-09-26：「**标尺上面的粗刻度改成不可重叠的（就是有时候显得很密集）**」。
+       密集的真来源是上面那套**换档交叉淡化**：交接点附近屏上同时有两套粗刻度（探针实测一屏
+       28~41 根、其中邻居档 18~32 根，同一档位的嵌套网格也算一套），两套数字交错时最小间距能到
+       ~20px，比一个「312年」还窄 ⇒ 糊成一片（旧构建上直接量到「164年」与「1月」横向叠 19.7px）。
+       做法 = **屏幕盒子贪心去重**：
+         · 两行**分开**判 —— `.tl__axis-label` 在 `top:4px`（线右侧）、`.tl__axis-prev` 在 `top:14px`
+           （线正下方居中），上下错开本来就不打架（并成一个盒子会过量地砍）；
+         · **当前档先占位**（`it.line`），邻居档撞上就**整根隐掉**（文字 opacity = 0；它的线本来就是
+           隐身的）⇒ 剩下的第二套数字变成"隔一段留一个"，既还看得出在换档、又不糊；
+         · 元素一律**留着**（不增删 DOM）⇒ 仍是纯函数：同一视图状态同一个结果，不播动画、不闪。
+       ⚠️ 宽度**只在某段文字第一次出现时量一次**（`textW` 缓存）——每帧都量会逼着浏览器反复重排。 */
+    for (const el of els) {
+      const sp = scaleSpans.get(el);
+      if (!sp) continue;
+      if (sp.cur) { const t = sp.cur.textContent ?? ''; if (t && !textW.has(t)) textW.set(t, Math.max(1, sp.cur.getBoundingClientRect().width)); }
+      if (sp.prev) { const t = sp.prev.textContent ?? ''; if (t && !textW.has(t)) textW.set(t, Math.max(1, sp.prev.getBoundingClientRect().width)); }
+    }
+    const keepCur: { lo: number; hi: number }[] = [];
+    const keepPrev: { lo: number; hi: number }[] = [];
+    const crowded = new Set<HTMLElement>();
+    const hits = (b: { lo: number; hi: number }, kept: { lo: number; hi: number }[]): boolean =>
+      kept.some((k) => b.lo < k.hi + TICK_MIN_GAP && k.lo < b.hi + TICK_MIN_GAP);
+    for (const activeFirst of [true, false]) {          /* 先当前档占位，再邻居档让位 */
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].line !== activeFirst) continue;
+        const sp = scaleSpans.get(els[i]);
+        if (!sp) continue;
+        const cw = sp.cur ? (textW.get(sp.cur.textContent ?? '') ?? 0) : 0;
+        const pw = sp.prev ? (textW.get(sp.prev.textContent ?? '') ?? 0) : 0;
+        const curBox = cw > 0 ? { lo: items[i].left + 3, hi: items[i].left + 3 + cw } : null;
+        const prevBox = pw > 0 ? { lo: items[i].left - pw / 2, hi: items[i].left + pw / 2 } : null;
+        const hide = (!!curBox && hits(curBox, keepCur)) || (!!prevBox && hits(prevBox, keepPrev));
+        if (hide) crowded.add(els[i]);
+        else { if (curBox) keepCur.push(curBox); if (prevBox) keepPrev.push(prevBox); }
+      }
+    }
+    /* 不透明度 = **换档权重（缩放值的纯函数）** × **位置的锥形**（屏幕两端渐隐）× 被挤掉就没。
+       没有动画、没有过渡：两个因子都是连续量的纯函数 ⇒ 不会闪。小刻度/断口没文字，一次都不做。 */
+    for (let i = 0; i < items.length; i++) {
+      const el = els[i];
+      const labels = scaleLabels.get(el);
+      if (!labels || !labels.length) continue;
+      const op = crowded.has(el) ? 0 : labelWindow(items[i].left, w) * items[i].w;
+      for (const s of labels) s.style.opacity = op >= 0.999 ? '' : op.toFixed(3);
     }
     /* 走掉的：**当场摘**（DOM 与账本一一对应 ⇒ 屏上任何时刻只有一把尺子）。
        它的 x 已经落在两端的锥形里、文字本来就只有 0.018 ⇒ 摘掉看不出来，也没有淡出可等。 */
