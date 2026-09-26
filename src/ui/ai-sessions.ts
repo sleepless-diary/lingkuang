@@ -47,6 +47,10 @@ export const ROLE_LABEL: Record<SessionRole, string> = {
 const ROLES: SessionRole[] = ['main', 'character', 'perspective', 'director'];
 /** 单个会话最多留多少条（历史是给「接着聊」用的，不是归档） */
 export const HIST_MAX = 120;
+/** 一条消息里**思考过程**的存储上限（用户 2026-09-26「看不到他的思考」）。
+ *  推理模型的一次思考动辄几千字 ⇒ 不截一刀的话 `sessions.json` 会被思考撑爆。
+ *  截的是**落盘的那一份**；界面上流式的始终是完整的那份（`liveThink`）。 */
+export const REASON_MAX = 4000;
 /** 「连接」只带被连会话最近这么多条 —— 全带会把上下文撑爆，也会让主控盖过当前会话 */
 export const LINK_TAIL = 8;
 
@@ -86,7 +90,10 @@ function normMsg(m: any): ChatMsg | null {
   /* ⚠️ 分割线（`div:true`）必须一起读回来：它现在是**助手与 AI 页共用**的那条会话里的界碑，
      丢了就等于助手的「分割上下文」白做（助手那边老代码也单独守过这一点）。 */
   if (m.div === true) return { role: 'system', content: '', div: true } as ChatMsg;
-  return { role, content: m.content } as ChatMsg;
+  /* 思考过程跟着读回来（用户 2026-09-26「看不到他的思考诶」）—— 同样截一刀 */
+  const msg: ChatMsg = { role, content: m.content } as ChatMsg;
+  if (typeof m.reasoning === 'string' && m.reasoning) msg.reasoning = m.reasoning.slice(0, REASON_MAX);
+  return msg;
 }
 
 /** 磁盘 → 内存。空（第一次用 / 文件被删）就建一个「主会话」：用户第一眼得看到能打字的地方 */
@@ -227,7 +234,11 @@ export function linkedSessions(s: AiSession = activeSession() as AiSession): AiS
 export function pushMsg(id: string, m: ChatMsg): void {
   const s = list.find((x) => x.id === id);
   if (!s) return;
-  s.history.push(m);
+  /* 思考太长就在**入历史那一刻**截一刀（界面上流式看到的是完整那份，见 chat-live 的 liveThink） */
+  const msg: ChatMsg = m.reasoning && m.reasoning.length > REASON_MAX
+    ? { ...m, reasoning: m.reasoning.slice(0, REASON_MAX) }
+    : m;
+  s.history.push(msg);
   if (s.history.length > HIST_MAX) s.history.splice(0, s.history.length - HIST_MAX);
   s.at = Date.now();
   persist();

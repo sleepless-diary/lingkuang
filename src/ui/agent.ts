@@ -16,7 +16,7 @@
  */
 import { type ChatMsg } from './ai';
 import { agentAsk } from './agent-model';
-import { liveBubble, type LiveBubble } from './chat-live';
+import { liveBubble, liveThink, thinkBlockHtml, type LiveBubble, type LiveThink } from './chat-live';
 import { mdToHtml } from './md';
 import { buildContext, getAgentFocus, isAgentFocusLive } from './agent-context';
 import { agentActing, loadActivity, recentActivity } from './agent-activity';
@@ -267,7 +267,10 @@ function msgHtml(m: ChatMsg): string {
   /* AI 那边过一遍极简 markdown（用户 2026-09-26：「ai 的回答没被渲染，如 **文字** 这种」）；
      创作者自己打的字照旧当纯文本 —— 他写 `**` 就是想看见两个星号。 */
   const body = m.role === 'user' ? escapeHtml(m.content) : mdToHtml(m.content);
-  return `<div class="lk-agent__msg ${who}"><div class="lk-agent__bubble${m.role === 'user' ? '' : ' lk-md'}">${body}</div></div>`;
+  /* 这一条当时想过来的过程（用户 2026-09-26「看不到他的思考诶」）：折叠一块，排在正文**上面** ——
+     读的顺序上思考先于回答。`.lk-agent__cutwrap` 是普通块容器，两块天然上下排。 */
+  const think = m.role === 'assistant' && m.reasoning ? thinkBlockHtml(m.reasoning) : '';
+  return think + `<div class="lk-agent__msg ${who}"><div class="lk-agent__bubble${m.role === 'user' ? '' : ' lk-md'}">${body}</div></div>`;
 }
 
 /* 提议卡片：写入动作不直接落盘，先在这里等创作者点头（`应用` / `忽略`） */
@@ -601,6 +604,8 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
   const cfg = { temperature: 0.7 };
   const box = host.box;
   let live: LiveBubble | null = null;
+  /* 思考块（用户 2026-09-26「看不到他的思考诶」）：与气泡同生共死，但排在它上面 */
+  let think: LiveThink | null = null;
   try {
     /* 一次提问 = 最多 `roundMax` 轮：模型要么说话（结束），要么要求一个只读动作
        （执行完把结果喂回去，让它接着说）。写入动作一轮就结束 —— 要么落盘要么等点击。 */
@@ -613,6 +618,11 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
          ⚠️ 两个模式下这一段都可能在吐动作 JSON —— 那种东西不给创作者看：从第一个 `{` 起就改说
          「正在整理成动作…」，这一轮走完再由 renderMsgs() 画成「用到动作」那一行。 */
       live?.remove();
+      think?.remove();
+      /* ⚠️ **先挂思考块、再挂气泡**：DOM 的追加顺序就是屏幕上的上下顺序 —— 反过来写，
+         流式那一段思考会显示在正文下面，落定重画（`msgHtml`）之后又跳回上面（★6 实测抓到的跳动）。
+         模型不吐思考时它自己会消失（`finish()` 里空思考整块摘掉）。 */
+      think = box ? liveThink(box, { scroll: box }) : null;
       live = box
         ? liveBubble(box, { wrapClass: host.wrapClass, innerClass: host.innerClass, bodyClass: host.bodyClass, bodyStyle: host.bodyStyle, scroll: box })
         : null;
@@ -621,6 +631,7 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
       let suppressed = false;
       const r = await agentAsk(msgs, {
         ...cfg,
+        onReasoning: (d: string) => think?.push(d),
         onDelta: (d: string) => {
           acc += d;
           /* 自动化要看的「中间态」：测试先建好 window.__lkStreamLog，这里只往里记，正式运行零成本 */
@@ -632,6 +643,9 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
       });
       /* 气泡收尾：正常说完就落定；在吐动作 JSON 就保持"正在整理成动作…"（不给 JSON 闪一下的机会） */
       if (!suppressed && !looksLikeToolJson(r.text)) live?.finish(r.text);
+      /* 思考落定即折叠（正文才是主角；想回看点开它，历史里那份也还在）。
+         真值以 `r.reasoning` 为准 —— 与下面落进历史的那一份对齐；空的话整块摘掉。 */
+      think?.finish(r.reasoning);
       /* ⭐ 两个模式**都解析动作**（2026-09-26 用户改口：聊天模式也有灵框内部的动作）；
          差别只在能连着走几步 —— `roundMax` 已经按模式定好了。别再说"聊天模式不解析"，
          那会让模型吐的动作 JSON 被当聊天画到脸上、什么也不发生。 */
@@ -649,13 +663,13 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
         break;
       }
       if (!call) {
-        push({ role: 'assistant', content: r.text || '（模型返回了空内容）' });
+        push({ role: 'assistant', content: r.text || '（模型返回了空内容）', reasoning: r.reasoning });
         /* 被截断要如实说 —— 用户 2026-09-26 报「输出被截断了」时界面上什么都没有 */
         if (r.truncated) host.note('回复被模型的输出上限截断了（' + (r.model || '模型') + '）：说「接着说」可以续', true);
         else host.note(r.model === 'mock' ? '' : r.model ? '模型：' + r.model : '');
         break;
       }
-      push({ role: 'assistant', content: r.text });
+      push({ role: 'assistant', content: r.text, reasoning: r.reasoning });
       if (isWriteTool(call.tool)) {
         handleWrite(call, host);
         break;
@@ -670,6 +684,7 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
   } catch (e) {
     /* 报错**不进历史**（否则会被反复喂回模型），只在宿主底部提示 */
     live?.remove();
+    think?.remove();
     host.note('出错：' + (e instanceof Error ? e.message : String(e)) + '（检查设置里的 AI 模式与模型）', true);
   }
   busy = false;

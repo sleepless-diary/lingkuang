@@ -2,7 +2,7 @@
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { aiChatStream } from './ai';
-import { liveBubble } from './chat-live';
+import { liveBubble, liveThink } from './chat-live';
 import { mdToHtml } from './md';
 import { escapeHtml } from './html';
 import { activeProviderProfile } from './settings';
@@ -76,16 +76,21 @@ export function renderTavern(store: Store, host: HTMLElement): void {
     const context = contextFromTl(tlId);
     status.textContent = mode === 'sim' ? '正在推演下一步剧情…' : '正在生成分支选项…';
     /* 流式：边生成边写（用户 2026-09-26「我想要流式输出」）；输出不再设 500 上限 */
+    /* 模型自己的思考过程（用户 2026-09-26「看不到他的思考诶」）—— 先挂它 ⇒ 思考在正文**上面**；
+       模型不吐思考就自动消失 */
+    const think = liveThink(log, { scroll: log });
     const live = liveBubble(log, { bodyClass: 'lk-md', bodyStyle: bubbleCss('ai'), scroll: log });
     live.placeholder('推演中…');
     try {
       const instruction = mode === 'sim'
         ? `你是剧情推演引擎。基于下面的剧情线/时间线，推演"下一步最可能发生的事件"，用 2-4 句话描述，续写剧情。\n\n${context}`
         : `你是剧情推演引擎。基于下面的剧情线/时间线，给出 2-3 个不同的分支走向（每个分支一句话，用「分支N：」开头）。\n\n${context}`;
-      const reply = await aiChatStream([{ role: 'user', content: instruction }], { temperature: mode === 'branch' ? 1.0 : 0.8, onDelta: (d) => live.push(d) });
+      const reply = await aiChatStream([{ role: 'user', content: instruction }], { temperature: mode === 'branch' ? 1.0 : 0.8, onDelta: (d) => live.push(d), onReasoning: (d) => think.push(d) });
       live.finish(reply.text || '(空回复)');
+      think.finish(reply.reasoning);
     } catch (e) {
       live.remove();
+      think.remove();
       bubble('⚠️ 推演失败：' + (e instanceof Error ? e.message : String(e)), 'ai');
     } finally {
       status.textContent = '酒馆剧情推演 · ' + providerSummary(activeProviderProfile());

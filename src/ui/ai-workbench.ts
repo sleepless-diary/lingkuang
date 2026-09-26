@@ -11,7 +11,7 @@ import { currentWorld } from '../store/store';
 import { entityTypeOf } from '../store/entities';
 import type { Entity } from '../store/types';
 import { aiChat, aiChatStream, type ChatMsg } from './ai';
-import { liveBubble } from './chat-live';
+import { liveBubble, liveThink, thinkBlockHtml } from './chat-live';
 import { mdToHtml } from './md';
 import { isImeEnter } from './keys';
 import { activeProviderProfile, loadSettings } from './settings';
@@ -166,7 +166,10 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       const fg = mine ? 'var(--accent-on)' : 'var(--fg)';
       /* AI 那边过极简 markdown（2026-09-26 用户：「如 **文字** 这种」）；自己打的字当纯文本 */
       const inner = mine ? esc(m.content) : mdToHtml(m.content);
-      return `<div style="display:flex;${mine ? 'justify-content:flex-end;' : ''}">` +
+      /* 这一条当时的思考过程（用户 2026-09-26「看不到他的思考诶」）：折叠一块，排在气泡上面 ——
+         与助手浮层同一种 DOM（`thinkBlockHtml()`），两个入口看起来才是同一位助手。 */
+      const think = (!mine && m.reasoning) ? thinkBlockHtml(m.reasoning) : '';
+      return think + `<div style="display:flex;${mine ? 'justify-content:flex-end;' : ''}">` +
         `<div class="${mine ? '' : 'lk-md '}"style="max-width:78%;white-space:${mine ? 'pre-wrap' : 'normal'};word-break:break-word;background:${bg};color:${fg};border-radius:var(--radius-sm);padding:7px 10px;font-size:13px;line-height:1.7;">${inner}</div></div>`;
     }).join('');
     /* ⭐ 2C：主会话的提议卡片画在这一格末尾 —— 与助手浮层是**同一份** `cards`
@@ -297,6 +300,9 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
         const msgs: ChatMsg[] = sys ? [{ role: 'system', content: sys }] : [];
         msgs.push(...s.history);
         /* 流式：边生成边写进气泡（用户 2026-09-26「我想要流式输出」）；输出不再设 500 上限 */
+        /* 思考块：非主会话（角色/视角/主控）也一样 —— 会思考的模型在这一栏也该看得见它在想什么。
+           先挂它 ⇒ 思考排在正文**上面**（与助手浮层、主会话同序） */
+        const think = liveThink(logEl, { scroll: logEl });
         const live = liveBubble(logEl, {
           bodyClass: 'lk-md',
           bodyStyle: BUBBLE,
@@ -304,14 +310,16 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
         });
         live.placeholder('在想…');
         try {
-          const r = await aiChatStream(msgs, { temperature: 0.85, onDelta: (d) => live.push(d) });
+          const r = await aiChatStream(msgs, { temperature: 0.85, onDelta: (d) => live.push(d), onReasoning: (d) => think.push(d) });
           live.finish(r.text);
-          pushMsg(id, { role: 'assistant', content: r.text });
+          think.finish(r.reasoning);
+          pushMsg(id, { role: 'assistant', content: r.text, reasoning: r.reasoning });
           /* 被截断如实说（用户 2026-09-26 报「输出被截断了」） */
           if (r.truncated) setNote('回复被模型的输出上限截断了（' + r.model + '）：说「接着说」可以续', true);
           else setNote(r.model + ' · ' + (r.text.length) + ' 字');
         } catch (e) {
           live.remove();
+          think.remove();
           setNote('出错了：' + (e instanceof Error ? e.message : String(e)), true);
         }
       }

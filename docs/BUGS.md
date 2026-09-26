@@ -15,6 +15,56 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第五十八轮（2026-09-26）· AI 的「思考」以前收了却不显示（用户：「看不到他的思考诶，怎么办」）
+
+### 病根（代码事实，不是猜）
+`src/ui/ai.ts` 的流式解析器**一直在收**思考增量 —— OpenAI 兼容线读 `choices[0].delta.reasoning_content`、
+Ollama 线读 `message.thinking` —— 但收进 `thinking` 变量之后只当"正文为空时的兜底"（末尾
+`return { text: text || thinking, ... }`），**界面上一个字都没有**：`AiReply` 没这个字段、`ChatMsg` 没这个字段，
+四个聊天面（助手浮层 / AI 页 / 角色扮演 / 酒馆）谁也没画它。
+
+### 修法
+- `src/ui/ai.ts`：新增 `AiOpts.onReasoning?: (delta: string) => void`、`AiReply.reasoning?: string`、
+  `ChatMsg.reasoning?: string`。思考的**字段名各家不一** ⇒ 新增 `firstStr()` 一次认
+  `delta.reasoning_content` / `delta.reasoning` / 顶层 `reasoning_content|reasoning`（Ollama 线同理：
+  `message.thinking|reasoning_content|reasoning` + 顶层 `thinking`）。`reasoning` **只在真有正文时回传**
+  （content 为空时 thinking 就是答案本身，别再当"思考"重复画一遍 —— 老兜底行为不变）。
+  ⚠️ **顺带堵一个真风险**：消息上行要净化 —— 新增 `wire(messages)` 只留 `{ role, content }`，否则历史里
+  新挂的 `reasoning` 会跟着 `messages` 塞进请求体，严格一点的端点会直接 400。
+- `src/ui/chat-live.ts`：新增 `liveThink(parent, { label?, scroll?, open? }): LiveThink`（`details.lk-think`
+  生成中摊开 + `.is-live`、边想边长；`finish()` 折叠；**一句思考都没有就整块摘掉**，不留空标题）与
+  `thinkBlockHtml(text)`（历史里那一份，同一种 DOM 形状、默认折叠）。
+- `src/ui/agent.ts`：`runTurn()` 每轮**先挂思考块、再挂气泡**（⚠️ DOM 的追加顺序就是屏幕上的上下顺序 ——
+  反过来写，流式那一段思考显示在正文**下面**、落定重画（`msgHtml`）之后又跳回上面，★6 实测抓到）；
+  `onReasoning → think?.push`；落定 `think?.finish(r.reasoning)`；两条 assistant 入历史都带 `reasoning`；
+  `msgHtml()` 给历史里的思考画 `thinkBlockHtml()`（排在气泡上面）。
+- `src/ui/ai-sessions.ts`：`normMsg()` / `pushMsg()` 保留 `reasoning`，并按 **`REASON_MAX = 4000`** 截一刀
+  （推理模型一次思考几千字，不截会把 `sessions.json` 撑爆；截的是**落盘那份**，界面流式那份完整）。
+- `src/ui/agent-model.ts`：假引擎新增 `{ chunks, reasoning, gap }` 写法（**思考分片先喂完、再喂正文**，
+  与真端点同序）。
+- 其余三个面同样接 `onReasoning`：`ai-workbench.ts`（非主会话）、`roleplay.ts`、`tavern.ts` —— 思考块都挂
+  在气泡**上面**、消息气泡之前创建。
+- `src/style.css`：`.lk-think`（等宽小字压暗、长思考限高 240px 自己滚、生成中一颗眨的点、`prefers-reduced-motion` 下不闪）。
+
+### 守卫（`tools/e2e/agent-stream.cjs` 6 → 10 项）与 A/B
+- ★6 生成中挂着一块**摊开**的「思考」（`.is-live` + `open`、`compareDocumentPosition` 证明排在气泡**上面**）
+  且文字还在长；★7 落定折叠成一行「思考 · N 字」、正文照常，且**不思考的那些回合不留空块（`n === 1`）**；
+  ★8 思考跟着消息落进 `sessions.json` 主会话；★9 重开面板能从历史里重画出来。
+- **A/B：旧构建 6/10**（★6 `{"has":false,"n":0}`、★7 同、★8 `reason:""`、★9 同）→ **新构建 10/10**
+  （连跑两次读数一致）。
+
+### 真端点验证（不靠假引擎）
+新增 `tools/e2e/probe-think-real.cjs`：把测试实例的供应商指到本地 Ollama `qwen3:14b`（真会思考的模型）
+真发一句 ⇒ chip `本地 Ollama · qwen3:14b`、t+2s 思考块 `{ open: true, live: true, len: 151 }`、
+t+4s `{ open: false, len: 295 }` ⇒ **真端点的 `message.thinking` 确实被认出来并上屏**（假引擎只能证明
+"我们这一侧接得住"，字段认不认得出得靠真端点）。
+
+### 回归（每套件单独起干净实例 + 清 userdata）
+`agent-stream` 10/10（×2）、`agent-panel` 21/21、`agent-mode` 12/12、`agent-tools` 19/19、
+`agent-memory` 15/15、`agent-main-session` 13/13、`agent-batch` 6/6、`ai-sessions` 10/10、
+`settings-model-picker` 通过、`agent-focus` 通过；三道检查 `node --check main.js` / `npx tsc --noEmit` /
+`npx vite build` 全绿。
+
 ## 第五十七轮（2026-09-26）· 助手第 4 片 2C：AI 页主会话也能动手 + 模式开关两处共享
 
 用户原话（本轮起点）：「**可以，我先去干其他的事**」—— 上一轮把 2C 定成「工具循环 + 提议卡片抽共享模块 ⇒ AI 页主会话也能动手 + 模式开关进 AI 页」，随后放手让我做完。

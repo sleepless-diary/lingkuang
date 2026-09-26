@@ -12,10 +12,14 @@
  *      (b) 气泡文本随分片**单调增长**（测试埋点 window.__lkStreamLog），(c) 落定后光标不残留；
  *   ★4 截断表态：模型真的被输出上限切了（finish_reason/done_reason = length）时，
  *      底部要如实说「被截断了」，而不是闷声给半句话。
+ *   ★6~★9 思考（2026-09-26 用户：「看不到他的思考诶，怎么办」）：推理模型的
+ *      `reasoning_content` / `thinking` 得**看得见** —— 生成中摊开且在长、排在正文上面（★6），
+ *      落定折叠成一行「思考 · N 字」且不思考的回合不留空块（★7），跟着消息落进
+ *      `sessions.json` 的主会话（★8），重开面板能从历史里重画出来（★9）。
  *
  * 假引擎四种写法见 src/ui/agent-model.ts；本套件用其中两种：
  *   字符串        （旧构建也认，保证 ★1 能在旧构建上跑到"渲染"这一步再 FAIL）
- *   { chunks, gap, truncated }  （只有新构建认 ⇒ 旧构建会落到假端点，从而 ★3/★4 FAIL）
+ *   { chunks, gap, truncated, reasoning }  （只有新构建认 ⇒ 旧构建会落到假端点，从而 ★3/★4/★6~★9 FAIL）
  *
  * 前置（同一 pwsh 调用里做，再起实例）：
  *   $env:LINGKUANG_TEST_DATA=<lk-evault2>\worldbuilding.json; $env:LINGKUANG_VAULT=<lk-evault2>\vault
@@ -191,6 +195,67 @@ async function main() {
   const note = await ev(`(function () { const n = document.getElementById('lk-agent-note'); return { text: n ? n.textContent : '', err: n ? n.classList.contains('is-err') : false }; })()`);
   check('★4 ⭐模型真的被输出上限切了时，底部如实说「被截断了」（旧构建闷声给半句话，界面上什么都没有）',
     note.text.indexOf('截断') >= 0 && note.err === true, note);
+
+  /* ---------- ⑥ 思考流式可见（用户 2026-09-26：「看不到他的思考诶，怎么办」） ----------
+     旧构建：`reasoning_content`（DeepSeek 兼容）/ `thinking`（Ollama）**收了却只当"正文为空时的兜底"**
+     （`ai.ts` 的 `text || thinking`）⇒ 屏幕上一个字都没有。这一段用 mock 的 `reasoning` 分片喂
+     `onReasoning`，量的仍是**屏幕上真的长什么样**：块在不在、摊没摊开、在不在长、是不是排在正文上面。 */
+  const RSN = ['第一段思考：', '先看用户问的是不是三件事。', '答案是三件事。', '先给结论，', '再补理由，', '最后收尾。'];
+  const CH2 = ['结论一。', '结论二。', '结论三。'];
+  const RSN_ALL = RSN.join('');
+  const thinkWalk = () => ev(`(function () {
+    const ts = [...document.querySelectorAll('#lk-agent-msgs .lk-think')];
+    const t = ts.length ? ts[ts.length - 1] : null;
+    if (!t) return { has: false, n: ts.length };
+    const body = t.querySelector('.lk-think__body');
+    const sum = t.querySelector('.lk-think__sum');
+    const bs = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__msg.is-ai .lk-agent__bubble')];
+    const b = bs.length ? bs[bs.length - 1] : null;
+    return {
+      has: true, n: ts.length, live: t.classList.contains('is-live'), open: t.open,
+      len: body ? (body.textContent || '').length : -1,
+      text: body ? (body.textContent || '') : '',
+      sum: sum ? (sum.textContent || '') : '',
+      above: !!(b && (t.compareDocumentPosition(b) & 4)),
+    };
+  })()`);
+  await ev('window.__lkAgentMock = { chunks: ' + JSON.stringify(CH2) + ', reasoning: ' + JSON.stringify(RSN) + ', gap: 260 }; true');
+  await ask('带上你的思考再说一次。');
+  let tLive = null;
+  for (let i = 0; i < 10 && !(tLive && tLive.has); i++) { await sleep(80); tLive = await thinkWalk(); }
+  await sleep(400);
+  const tMid = await thinkWalk();
+  await sleep(2600);
+  const tEnd = await thinkWalk();
+  check('★6 ⭐思考看得见：生成中挂着一块摊开的「思考」（.is-live + open、排在气泡**上面**）且文字还在长',
+    !!(tLive && tLive.has === true && tLive.live === true && tLive.open === true && tLive.above === true
+      && tLive.len > 0 && tLive.len < RSN_ALL.length) && tMid.len >= tLive.len,
+    { tLive, tMid });
+  check('★7 ⭐落定后思考折叠成一行「思考 · N 字」、正文照常；不思考的那些回合不留空块（n === 1）',
+    tEnd.has === true && tEnd.live === false && tEnd.open === false && tEnd.text === RSN_ALL
+      && tEnd.sum.indexOf('思考') === 0 && tEnd.n === 1,
+    tEnd);
+
+  /* ---------- ⑦ 思考跟着消息落盘 + 重开面板还能翻出来 ---------- */
+  await sleep(900);   /* agentSave 有 400ms 防抖 */
+  const disk = await ev(`(async function () {
+    const d = await window.lingkuangAPI.agentLoad();
+    const ss = (d && d.sessions) || [];
+    const m = ss.find((s) => s.role === 'main');
+    const h = (m && m.history) || [];
+    const last = h.slice().reverse().find((x) => x.role === 'assistant') || null;
+    return { n: ss.length, hasMain: !!m, cnt: h.length, reason: last ? String(last.reasoning || '') : '' };
+  })()`);
+  check('★8 ⭐思考过程跟着消息落进 sessions.json 的主会话（旧构建根本没这个字段）',
+    !!disk && disk.hasMain === true && disk.reason === RSN_ALL, disk);
+
+  await ev(`(function () { const b = document.getElementById('lk-agent-close'); if (b) b.click(); return true; })()`);
+  await sleep(700);
+  await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })); true`);
+  await sleep(1100);
+  const tRe = await thinkWalk();
+  check('★9 ⭐重开面板：思考是从历史里重画出来的（折叠着、文字仍是原来那段）',
+    tRe.has === true && tRe.live === false && tRe.open === false && tRe.text === RSN_ALL && tRe.n === 1, tRe);
 
   const errs = await ev(`window.__errs`);
   check('★5 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

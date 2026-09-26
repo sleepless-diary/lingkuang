@@ -23,12 +23,18 @@ export interface ChatMsg {
    *  「从这里往上不再发给模型」的界碑。⚠️ 2026-09-26 起 AI 页的「主会话」与 Ctrl+K 助手是**同一格
    *  会话**（同一份历史），所以这个标记必须住在共用类型上，两边都认得。 */
   div?: boolean;
+  /** 模型的**思考过程**（DeepSeek `reasoning_content` / Ollama `thinking`）。用户 2026-09-26
+   *  「看不到他的思考诶」—— 这些增量一直在收，却只当"content 空时的兜底"，界面上从不显示；
+   *  现在跟着消息一起落盘，由 `thinkBlockHtml()` 画成可折叠的一块（历史里也翻得回来）。 */
+  reasoning?: string;
 }
 export interface AiReply {
   text: string;
   model: string;
   /** 模型因为输出上限被截断（`finish_reason`/`done_reason === 'length'`） */
   truncated?: boolean;
+  /** 模型的思考过程（不思考的模型 = 空串；content 为空时 thinking 已经是正文，就不再重复回传） */
+  reasoning?: string;
 }
 export interface AiOpts {
   /** 覆盖当前供应商选中的模型（留空 = 用这一家选中的那个） */
@@ -38,6 +44,21 @@ export interface AiOpts {
   numPredict?: number;
   /** 流式回调：拿到一块就调一次（`aiChat()` 不传它 ⇒ 行为与从前一致） */
   onDelta?: (delta: string) => void;
+  /** 思考增量回调：模型吐 `reasoning_content` / `thinking` 时一块一次（不思考的模型不会被调） */
+  onReasoning?: (delta: string) => void;
+}
+
+/** 取第一个非空字符串（思考的字段名各家不一，见 `eat()`） */
+function firstStr(...vals: unknown[]): string {
+  for (const v of vals) if (typeof v === 'string' && v) return v;
+  return '';
+}
+
+/** 消息**上行**的净化：只留 `role`/`content`。
+ *  ⚠️ 历史里的消息现在挂着 `reasoning`（思考过程，见 `ChatMsg`）—— 那是给界面看的，
+ *  原样塞进请求体会让严格一点的端点直接 400（未知字段），所以这里一律剥掉。 */
+function wire(messages: ChatMsg[]): { role: string; content: string }[] {
+  return messages.map((m) => ({ role: m.role, content: m.content }));
 }
 
 /** 单轮对话：messages → 回复文本 + 模型名。流式与一次性走同一条路（一个解析器）。 */
@@ -50,11 +71,12 @@ export async function aiChatStream(messages: ChatMsg[], opts: AiOpts = {}): Prom
   const temperature = opts.temperature ?? 0.8;
   const numPredict = opts.numPredict;
   const onDelta = opts.onDelta;
+  const onReasoning = opts.onReasoning;
   const openai = p.kind === 'openai';
 
   const payload: Record<string, unknown> = openai
-    ? { model, messages, temperature, stream: true }
-    : { model, messages, stream: true, options: { temperature, num_predict: numPredict ?? -1 } };
+    ? { model, messages: wire(messages), temperature, stream: true }
+    : { model, messages: wire(messages), stream: true, options: { temperature, num_predict: numPredict ?? -1 } };
   if (openai && numPredict) payload.max_tokens = numPredict;
 
   const url = base + (openai ? '/chat/completions' : '/api/chat');
@@ -79,13 +101,16 @@ export async function aiChatStream(messages: ChatMsg[], opts: AiOpts = {}): Prom
       const piece = ch?.delta?.content;
       if (typeof piece === 'string' && piece) { text += piece; onDelta?.(piece); }
       else if (typeof ch?.message?.content === 'string' && !text) { text = ch.message.content; }   /* 整包兜底 */
-      const th = ch?.delta?.reasoning_content;
-      if (typeof th === 'string') thinking += th;
+      /* 思考的字段名各家不一（DeepSeek/OpenAI 兼容 = `reasoning_content`，也有只叫 `reasoning` 的；
+         有些中转还把它抬到 choices 外面）—— 都收，不挑。 */
+      const th = firstStr(ch?.delta?.reasoning_content, ch?.delta?.reasoning, o.reasoning_content, o.reasoning);
+      if (th) { thinking += th; onReasoning?.(th); }
       if (ch?.finish_reason === 'length') truncated = true;
     } else {
       const m = o.message ?? {};
       if (typeof m.content === 'string' && m.content) { text += m.content; onDelta?.(m.content); }
-      if (typeof m.thinking === 'string') thinking += m.thinking;
+      const th = firstStr(m.thinking, m.reasoning_content, m.reasoning, o.thinking);
+      if (th) { thinking += th; onReasoning?.(th); }
       if (o.done_reason === 'length') truncated = true;
     }
   };
@@ -116,8 +141,9 @@ export async function aiChatStream(messages: ChatMsg[], opts: AiOpts = {}): Prom
     eat(await r.json());
   }
 
-  /* qwen3 内容可能放 thinking（content 空）——兜底 */
-  return { text: text || thinking, model, truncated };
+  /* qwen3 内容可能放 thinking（content 空）——兜底成正文；那种情况下 thinking **就是答案本身**，
+     不再当"思考"重复画一遍 ⇒ `reasoning` 只在真有正文时回传（用户 2026-09-26：「看不到他的思考」）。 */
+  return { text: text || thinking, model, truncated, reasoning: text ? thinking : '' };
 }
 
 /** 一次性调用（不关心增量时用它；内部就是 `aiChatStream` 不传 `onDelta`） */

@@ -1,7 +1,7 @@
 /** 角色扮演模块——AI 代入设定角色对话（用「设置 → 模型」里**当前在用**那家供应商与它选中的模型） */
 import type { Store } from '../store/store';
 import { aiChatStream, type ChatMsg } from './ai';
-import { liveBubble } from './chat-live';
+import { liveBubble, liveThink } from './chat-live';
 import { mdToHtml } from './md';
 import { isImeEnter } from './keys';
 import { activeProviderProfile } from './settings';
@@ -58,12 +58,16 @@ export function renderRoleplay(_store: Store, host: HTMLElement): void {
     bubble(msg, 'user');
     history.push({ role: 'user', content: msg });
     /* 流式：边生成边写进气泡（用户 2026-09-26「我想要流式输出」）；输出不再设 400 上限 */
+    /* 模型自己的思考过程（用户 2026-09-26「看不到他的思考诶」）—— 先挂它，气泡随后 ⇒ 思考在正文**上面**；
+       只有模型真吐 reasoning 时才留下（`finish()` 里空思考会自己摘掉） */
+    const think = liveThink(log, { scroll: log });
     const live = liveBubble(log, { bodyClass: 'lk-md', bodyStyle: bubbleCss('ai'), scroll: log });
     live.placeholder('思考中…');
     try {
       status.textContent = 'AI 思考中…';
-      const reply = await aiChatStream(history, { temperature: 0.9, onDelta: (d) => live.push(d) });
+      const reply = await aiChatStream(history, { temperature: 0.9, onDelta: (d) => live.push(d), onReasoning: (d) => think.push(d) });
       live.finish(reply.text || '(空回复)');
+      think.finish(reply.reasoning);
       history.push({ role: 'assistant', content: reply.text });
     } catch (e) {
       live.remove();
