@@ -19,7 +19,10 @@ import { providerSummary } from './ai-providers';
 import { buildContext } from './agent-context';
 import { renderRoleplay } from './roleplay';
 import { renderTavern } from './tavern';
-import { RESULT_RE, agentSystemPrompt, sentHistory } from './agent';
+/* ⭐ 2C：主会话与 Ctrl+K 的助手是**同一格会话、同一套能力** ⇒ 这一页直接用助手那一套：
+   `runTurn()`（一次提问的共用实现）+ `cardsHtml()` / `agentCardClick`（提议卡片）
+   + `getAgentMode()` / `setAgentMode()`（模式开关，两个入口共享一份状态）。 */
+import { RESULT_RE, agentCallRow, agentCardClick, cardsHtml, getAgentMode, isAgentRunning, runTurn, setAgentMode } from './agent';
 import {
   AI_SESSION_FRAME, adoptSessions, clearHistory, createSession, ensureSessionsLoaded, listSessions, linkSummary,
   markAutoNamed, pushMsg, removeSession, renameSession, sessionPrompt, setActiveSession, setSessionPersona,
@@ -31,6 +34,8 @@ const api = (): any => (window as any).lingkuangAPI ?? {};
 
 /* 跨入口同步用的监听（见 renderAiWorkbench 尾部）：换工具重挂时必须先摘掉旧的，别越积越多 */
 let sessionWatch: (() => void) | null = null;
+/* 2C：卡片状态（`lingkuang-agent-cards`）与模式（`lingkuang-agent-mode`）的监听 —— 同一条纪律 */
+let agentWatch: { off: () => void } | null = null;
 
 const BTN = 'background:var(--surface-2);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--fg-2);font-size:12px;padding:3px 8px;cursor:pointer;';
 const INPUT = 'background:var(--surface-2);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--fg);font-size:12px;padding:4px 7px;font-family:inherit;';
@@ -93,6 +98,20 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       `<span style="font-size:11px;color:var(--fg-2);margin-left:8px;">${esc(linkSummary(s))}</span>` +
       `<span style="font-size:11px;color:var(--fg-2);margin-left:8px;">${s.history.length} 条</span>` +
       (s.role === 'main' ? '<span style="font-size:11px;color:var(--accent);margin-left:8px;">＝ Ctrl+K 的灵框助手（同一份对话）</span>' : '') +
+      /* ⭐ 2C：模式开关在 AI 页也要有 —— 两个入口**共享一份状态**，在哪儿切都算数
+         （`setAgentMode` 广播 `lingkuang-agent-mode`，助手那层浮层当场跟上）。 */
+      (s.role === 'main'
+        ? '<div style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
+            '<span style="font-size:11px;color:var(--fg-2);">模式</span>' +
+            `<button id="lk-ai-mode-chat" style="${BTN}${getAgentMode() === 'chat' ? 'color:var(--accent);border-color:var(--accent);' : ''}">聊天</button>` +
+            `<button id="lk-ai-mode-agent" style="${BTN}${getAgentMode() === 'agent' ? 'color:var(--accent);border-color:var(--accent);' : ''}">Agent</button>` +
+            '<span style="font-size:11px;color:var(--fg-2);">' +
+              (getAgentMode() === 'agent'
+                ? 'Agent：能连着走多步、可批量改（写入按两把权限旋钮走）'
+                : '聊天：能查也能改，一次只做一个动作') +
+            '</span>' +
+          '</div>'
+        : '') +
       `<span style="font-size:11px;color:var(--fg-2);margin-left:10px;">人设</span>` +
       `<select id="ai-persona" style="${INPUT}margin-left:5px;max-width:190px;">` + personaOptions(store, s.personaId ?? '') + '</select>' +
       `<button id="ai-clear" style="margin-left:6px;${BTN}">清空对话</button>` +
@@ -110,6 +129,9 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       renderAll();
       setNote(pid ? '人设已选：会话名跟着改成那条角色的名字，人设正文每次发消息时现取' : '已取消人设（名字留着）');
     });
+    /* 2C：模式开关（只有主会话有这两个按钮；点了就广播，助手浮层跟着变） */
+    headEl.querySelector('#lk-ai-mode-chat')?.addEventListener('click', () => { setAgentMode('chat'); renderHead(); });
+    headEl.querySelector('#lk-ai-mode-agent')?.addEventListener('click', () => { setAgentMode('agent'); renderHead(); });
   };
 
   const renderLog = (): void => {
@@ -127,6 +149,9 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
           '<span style="flex:1;height:1px;background:var(--border-strong);"></span>上下文分割点' +
           '<span style="flex:1;height:1px;background:var(--border-strong);"></span></div>';
       }
+      /* ⭐ 2C：主会话会真调动作 ⇒ 调用画成一行（与助手浮层同一个写法），别把 JSON 当聊天文字 */
+      const callRow = agentCallRow(m);
+      if (callRow) return callRow;
       if (m.role === 'user') {
         const receipt = RESULT_RE.exec(m.content);
         if (receipt) {
@@ -144,6 +169,9 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       return `<div style="display:flex;${mine ? 'justify-content:flex-end;' : ''}">` +
         `<div class="${mine ? '' : 'lk-md '}"style="max-width:78%;white-space:${mine ? 'pre-wrap' : 'normal'};word-break:break-word;background:${bg};color:${fg};border-radius:var(--radius-sm);padding:7px 10px;font-size:13px;line-height:1.7;">${inner}</div></div>`;
     }).join('');
+    /* ⭐ 2C：主会话的提议卡片画在这一格末尾 —— 与助手浮层是**同一份** `cards`
+       （下标相同 ⇒ 在哪边点「应用」都算数，`agentCardClick` 也只有一个实现）。 */
+    if (s.role === 'main') logEl.innerHTML += cardsHtml();
     logEl.scrollTop = logEl.scrollHeight;
   };
 
@@ -231,46 +259,64 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     setNote('新会话已建，左边选它、右边直接聊');
   });
 
+  /* ⭐ 2C：主会话的发送**不再自己拼系统提示、自己调模型**，而是把这一轮交给助手那套共用实现
+     （`runTurn`）—— 工具循环、动作协议、提议卡片、轮数分档（聊天 1 轮 / Agent 8 轮）、
+     流式气泡全在一处。非主会话（角色 / 视角 / 主控）照旧：它们只演，不动手。 */
   const send = async (): Promise<void> => {
     const s = activeSession();
-    if (!s || busy) return;
+    /* 两个入口共用"正在跑"的标志：同一格会话不能在浮层和这一页同时跑两轮 */
+    if (!s || busy || isAgentRunning()) return;
     const text = inputEl.value.trim();
     if (!text) return;
     inputEl.value = '';
     busy = true;
     const id = s.id;
-    pushMsg(id, { role: 'user', content: text });
-    renderLog(); renderHead();
-    setNote('在想…');
-    /* 系统提示 = 灵框是什么 + 这次会话的人设（或「没选人设」的反向约束）+ 当前工作区现状。
-       工作区现状每次现拼，所以助手/会话看到的都是他此刻在编的东西。 */
-    /* ⭐ 主会话（`role:'main'`）**就是 Ctrl+K 的灵框助手**：系统提示与「发多少条」都用助手那一套
-       （`agentSystemPrompt` / `sentHistory`），否则同一格会话在两个入口会像两副面孔。
-       ⚠️ 这里按 **chat** 且**第三个参数 false = 暂不注入动作协议**：AI 页还没有提议卡片那套界面
-       （阶段 2C 会把它搬过来），喂了协议它就会吐动作 JSON 而没人执行。分割线（`div:true`）
-       之上的对话不发给模型 —— 与助手同一条规矩。 */
     const isMain = s.role === 'main';
-    const sys = isMain
-      ? agentSystemPrompt(store, 'chat', false)
-      : [AI_SESSION_FRAME, sessionPrompt(s, personaTextOf(store, s)), '【工作区现状】\n' + buildContext(store)].filter(Boolean).join('\n\n');
-    const msgs: ChatMsg[] = sys ? [{ role: 'system', content: sys }] : [];
-    msgs.push(...(isMain ? sentHistory(s.history) : s.history));
-    /* 流式：边生成边写进气泡（用户 2026-09-26「我想要流式输出」）；输出不再设 500 上限 */
-    const live = liveBubble(logEl, {
-      bodyClass: 'lk-md',
-      bodyStyle: 'max-width:78%;word-break:break-word;background:var(--surface-2);color:var(--fg);border-radius:var(--radius-sm);padding:7px 10px;font-size:13px;line-height:1.7;',
-      scroll: logEl,
-    });
-    live.placeholder('在想…');
+    const BUBBLE = 'max-width:78%;word-break:break-word;background:var(--surface-2);color:var(--fg);border-radius:var(--radius-sm);padding:7px 10px;font-size:13px;line-height:1.7;';
     try {
-      const r = await aiChatStream(msgs, { temperature: 0.85, onDelta: (d) => live.push(d) });
-      live.finish(r.text);
-      pushMsg(id, { role: 'assistant', content: r.text });
-      /* 被截断如实说（用户 2026-09-26 报「输出被截断了」） */
-      if (r.truncated) setNote('回复被模型的输出上限截断了（' + r.model + '）：说「接着说」可以续', true);
-      else setNote(r.model + ' · ' + (r.text.length) + ' 字');
+      if (isMain) {
+        /* 宿主 = 这一页：气泡画进 `#ai-log`（用与下面同一条气泡样式），
+           历史落 `agent/sessions.json` 的那条主会话，提示写底部那行；
+           卡片由 `renderLog()` 末尾的 `cardsHtml()` 画出来。 */
+        await runTurn(text, {
+          box: logEl,
+          bodyClass: 'lk-md',
+          bodyStyle: BUBBLE,
+          note: setNote,
+          rerender: () => { if (activeSession()?.id === id) { renderLog(); renderHead(); } },
+          push: (m) => pushMsg(id, m),
+          store,
+        });
+      } else {
+        pushMsg(id, { role: 'user', content: text });
+        renderLog(); renderHead();
+        setNote('在想…');
+        /* 系统提示 = 灵框是什么 + 这次会话的人设（或「没选人设」的反向约束）+ 当前工作区现状。
+           工作区现状每次现拼，所以助手/会话看到的都是他此刻在编的东西。 */
+        const sys = [AI_SESSION_FRAME, sessionPrompt(s, personaTextOf(store, s)), '【工作区现状】\n' + buildContext(store)].filter(Boolean).join('\n\n');
+        const msgs: ChatMsg[] = sys ? [{ role: 'system', content: sys }] : [];
+        msgs.push(...s.history);
+        /* 流式：边生成边写进气泡（用户 2026-09-26「我想要流式输出」）；输出不再设 500 上限 */
+        const live = liveBubble(logEl, {
+          bodyClass: 'lk-md',
+          bodyStyle: BUBBLE,
+          scroll: logEl,
+        });
+        live.placeholder('在想…');
+        try {
+          const r = await aiChatStream(msgs, { temperature: 0.85, onDelta: (d) => live.push(d) });
+          live.finish(r.text);
+          pushMsg(id, { role: 'assistant', content: r.text });
+          /* 被截断如实说（用户 2026-09-26 报「输出被截断了」） */
+          if (r.truncated) setNote('回复被模型的输出上限截断了（' + r.model + '）：说「接着说」可以续', true);
+          else setNote(r.model + ' · ' + (r.text.length) + ' 字');
+        } catch (e) {
+          live.remove();
+          setNote('出错了：' + (e instanceof Error ? e.message : String(e)), true);
+        }
+      }
     } catch (e) {
-      live.remove();
+      /* `runTurn` 内部自己 catch 过；这里是宿主接线出问题时的兜底，别静默 */
       setNote('出错了：' + (e instanceof Error ? e.message : String(e)), true);
     }
     busy = false;
@@ -280,6 +326,8 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
   };
 
   host.querySelector('#ai-send')?.addEventListener('click', () => { void send(); });
+  /* 提议卡片的「应用」/「忽略」：与助手浮层**同一个**处理函数（事件委托，卡片跟着记录区重画） */
+  logEl.addEventListener('click', agentCardClick);
   inputEl.addEventListener('keydown', (e) => {
     if (isImeEnter(e)) return;
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
@@ -294,6 +342,24 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
   if (sessionWatch) window.removeEventListener('lingkuang-sessions', sessionWatch);
   sessionWatch = () => { if (!busy && document.body.contains(host)) { renderLog(); renderHead(); } };
   window.addEventListener('lingkuang-sessions', sessionWatch);
+  /* ⭐ 2C：卡片状态与模式在两个入口之间同步 —— 助手浮层点了「应用」或切了模式，这一页当场跟上
+     （同一格会话，屏幕不能各说各话）。换工具重挂前先把旧监听摘掉，别越积越多。 */
+  if (agentWatch) agentWatch.off();
+  const onCards = (e: Event): void => {
+    if (busy || !document.body.contains(host)) return;
+    renderLog(); renderHead();
+    const n = (e as CustomEvent).detail?.note;
+    if (typeof n === 'string' && n) setNote(n);
+  };
+  const onMode = (): void => { if (document.body.contains(host)) renderHead(); };
+  window.addEventListener('lingkuang-agent-cards', onCards);
+  window.addEventListener('lingkuang-agent-mode', onMode);
+  agentWatch = {
+    off: () => {
+      window.removeEventListener('lingkuang-agent-cards', onCards);
+      window.removeEventListener('lingkuang-agent-mode', onMode);
+    },
+  };
 
   setNote('正在读会话…');
   void ensureSessionsLoaded().then(() => {

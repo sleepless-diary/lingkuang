@@ -88,6 +88,16 @@ let disposeAll: (() => void) | null = null;
    这条历史**就是主会话（`role:'main'`）的历史** —— 助手不再有自己的 `chat.json`。
    `ensureLoaded()` 把指针接到 `mainSession().history`，写入一律走 `pushHistory()`。 */
 let history: ChatMsg[] = [];
+
+/** 主会话的历史数组 —— ⚠️ **读它一律走这里，别直接读模块变量**：会话对象会被
+ *  `adoptSessions()`（重读磁盘）整体重建 ⇒ 数组换了新对象，缓存的那份就成了"另一个世界"。
+ *  2C 实测踩到：AI 页在主会话里写了 2 条（磁盘/界面都 8 条），助手浮层重开却只画得出 6 条
+ *  —— 因为浮层手里还攥着重读之前那个数组。 */
+function hist(): ChatMsg[] {
+  const m = mainSession();
+  if (m && m.history !== history) history = m.history;
+  return history;
+}
 let loaded = false;
 let busy = false;
 /** 当前模式（⭐ 两个模式**都有**灵框内部的动作 —— 差别在自主程度：`chat` 一次只做一个动作，
@@ -100,11 +110,9 @@ let mode: AgentMode = 'chat';
 window.addEventListener('lingkuang-agent-mode', (e) => {
   const m = (e as CustomEvent).detail?.mode;
   if (m !== 'chat' && m !== 'agent') return;
-  /* ⚠️ 顺序要紧：**先**交给 setMode()（它带 `if (mode === next) return;` 的守卫，
-     自己会写 mode、重画按钮/说明、并给一句 setNote）。先手写 `mode = m` 的话，
-     setMode 会当场早退 ⇒ 变量变了、界面还停在旧模式（实测就是这么假的失败）。 */
-  if (openEl) setMode(m);
-  else mode = m;
+  /* ⭐ 2C：写入口只有一个 —— `setAgentMode()`（自带 `if (mode === next) return;` 守卫，
+     写状态 + 重画 + 再派发同一个事件 ⇒ 那一次必然早退，不成环）。 */
+  setAgentMode(m);
 });
 /** 「＋ 手动加一条」点了之后，列表里多出一行空输入框等着填 */
 let draft = false;
@@ -166,8 +174,9 @@ function pushHistory(m: ChatMsg): void {
 function splitContext(): void {
   if (Date.now() - lastActionAt < 350) return;
   lastActionAt = Date.now();
-  if (!history.length) { setNote('还没有对话，不用分割'); return; }
-  const above = history.length;
+  const h = hist();
+  if (!h.length) { setNote('还没有对话，不用分割'); return; }
+  const above = h.length;
   pushHistory({ role: 'system', content: '', div: true });
   setNote('已分割：上面 ' + above + ' 条不再发给模型；想接回来，把鼠标放到那条线上点叉');
   persist();
@@ -179,8 +188,9 @@ function splitContext(): void {
 function unsplitContext(): void {
   if (Date.now() - lastActionAt < 350) return;
   lastActionAt = Date.now();
-  for (let i = history.length - 1; i >= 0; i--) {
-    if ((history[i] as AgentMsg).div === true) { history.splice(i, 1); break; }
+  const h = hist();
+  for (let i = h.length - 1; i >= 0; i--) {
+    if ((h[i] as AgentMsg).div === true) { h.splice(i, 1); break; }
   }
   setNote('已重新接上：上面那些对话又回到上下文里了');
   persistSessions();
@@ -284,12 +294,29 @@ function cardHtml(i: number, c: { p: Proposal; done?: string; ignored?: boolean 
   );
 }
 
+/** 提议卡片的 HTML —— **两个入口共用**（助手浮层的消息区、AI 页主会话的记录区都调它）。
+ *  卡片索引就是 `cards` 的下标 ⇒ 两个入口画出来的 `data-prop-ok="i"` 指向同一张卡片。 */
+export function cardsHtml(): string {
+  return cards.map((c, i) => cardHtml(i, c)).join('');
+}
+
+/** 「用到动作：X」那一行 —— **AI 页主会话也要画它**（否则模型吐的动作 JSON 会被 mdToHtml
+ *  当成一段普通文字糊到创作者脸上，而动作其实已经执行了）。返回 null = 这条不是动作消息。 */
+export function agentCallRow(m: ChatMsg): string | null {
+  if (!isCallMsg(m)) return null;
+  const call = parseToolCall(m.content);
+  return '<div data-k="call" style="max-width:78%;font-size:12px;color:var(--accent);background:var(--surface-2);' +
+    'border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:5px 9px;">' +
+    '用到动作：' + escapeHtml(call?.tool ?? '?') + '</div>';
+}
+
 function renderMsgs(): void {
   const box = openEl?.querySelector('#lk-agent-msgs');
   if (!box) return;
-  const cut = cutIndex(history);
-  const head = history.length
-    ? history
+  const h = hist();
+  const cut = cutIndex(h);
+  const head = h.length
+    ? h
         .map((m, i) => {
           if ((m as AgentMsg).div === true) {
             return (
@@ -303,7 +330,7 @@ function renderMsgs(): void {
         })
         .join('')
     : '<div class="lk-agent__empty">问点什么吧。比如「这条时间线的冲突还缺什么」「帮我把正在编的那条设定写细一点」。</div>';
-  box.innerHTML = head + cards.map((c, i) => cardHtml(i, c)).join('');
+  box.innerHTML = head + cardsHtml();
   box.scrollTop = box.scrollHeight;
   /* 分割按钮的文案在这里同步；**接线只接一次** —— 挂在面板根上做事件委托，
      逐个按钮绑会在整块重画时重复接（一次点击跑两遍 = 分割当场被自己撤销）。 */
@@ -407,14 +434,22 @@ function renderMode(): void {
   renderPerm();   /* 权限那行的可用性跟着模式走：两处必须同时更新 */
 }
 
-function setMode(next: AgentMode): void {
+/* ⭐ 2C：模式**两个入口共享一份**（Ctrl+K 的助手浮层 + AI 页的主会话）。
+   `setAgentMode()` 是唯一写入口：改状态 → 重画本层 → 广播 `lingkuang-agent-mode`，
+   另一个入口听这个事件刷新自己的分段控件。 */
+export function getAgentMode(): AgentMode { return mode; }
+
+export function setAgentMode(next: AgentMode): void {
   if (mode === next) return;
   mode = next;
   renderMode();
   setNote(mode === 'agent'
     ? '已切到 Agent：能连着走多步（写入按下面那档权限走）'
     : '已切回聊天：一次只做一个动作（写入照样要过下面那关）');
+  window.dispatchEvent(new CustomEvent('lingkuang-agent-mode', { detail: { mode: next } }));
 }
+
+function setMode(next: AgentMode): void { setAgentMode(next); }
 
 function setNote(text: string, isErr = false): void {
   const el = openEl?.querySelector('#lk-agent-note');
@@ -426,18 +461,17 @@ function setNote(text: string, isErr = false): void {
 /* 写入动作：三档权限决定它怎么落地 ——
    只读 = 不执行（把意图讲给创作者）；逐项确认 = 出一张提议卡片等点「应用」；
    YOLO = 直接执行。三条路都往历史里塞一条「动作结果」，模型下一轮才知道发生了什么。 */
-function handleWrite(call: ToolCall): void {
-  if (!store) return;
+function handleWrite(call: ToolCall, host: AgentRunHost): void {
   const gate = gateWrite();
   if (gate === 'deny') {
-    pushHistory({ role: 'user', content: `【动作结果：${call.tool}】现在是「只读」档，没有执行。把你的意图写成创作者能照着改的话。` });
-    setNote('只读档：这次写入没有执行', true);
+    host.push({ role: 'user', content: `【动作结果：${call.tool}】现在是「只读」档，没有执行。把你的意图写成创作者能照着改的话。` });
+    host.note('只读档：这次写入没有执行', true);
     return;
   }
-  const plan = planWrite(call, store, mode);
+  const plan = planWrite(call, host.store, mode);
   if (!plan.ok) {
-    pushHistory({ role: 'user', content: `【动作结果：${call.tool}】${plan.note}` });
-    setNote(plan.note, true);
+    host.push({ role: 'user', content: `【动作结果：${call.tool}】${plan.note}` });
+    host.note(plan.note, true);
     return;
   }
   /* ⭐ `needsConfirm`（自我提权那类动作）**无视**"直接执行"档：那一档是创作者授权了平常的写入，
@@ -445,18 +479,25 @@ function handleWrite(call: ToolCall): void {
   if (gate === 'allow' && !plan.proposal.needsConfirm) {
     agentActing();
     const r = plan.proposal.apply();
-    pushHistory({ role: 'user', content: `【动作结果：${call.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
-    setNote(r.note);
+    host.push({ role: 'user', content: `【动作结果：${call.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
+    host.note(r.note);
     return;
   }
   cards.push({ p: plan.proposal });
-  setNote(plan.proposal.needsConfirm && gate === 'allow'
+  host.note(plan.proposal.needsConfirm && gate === 'allow'
     ? '这一步会放开更大的权限 —— 只有你点「应用」才会生效'
     : '写了一张提议卡片，点「应用」才落盘');
 }
 
-/* 卡片上的「应用」/「忽略」（事件委托：卡片随消息区一起重画） */
-function onCardClick(e: Event): void {
+/** 卡片状态变了：**两个入口都要跟着重画**（助手浮层直接重画；AI 页听 `lingkuang-agent-cards`） */
+function notifyCards(note?: string): void {
+  if (openEl) { renderMsgs(); if (note !== undefined) setNote(note); }
+  window.dispatchEvent(new CustomEvent('lingkuang-agent-cards', { detail: { note } }));
+}
+
+/* 卡片上的「应用」/「忽略」（事件委托：两个入口各自把监听挂在自己的消息容器上；
+   卡片跟着消息区一起重画 ⇒ 不能逐个绑） */
+export function agentCardClick(e: Event): void {
   const el = (e.target as HTMLElement).closest('[data-prop-ok], [data-prop-no]') as HTMLElement | null;
   if (!el) return;
   const i = Number(el.dataset.propOk ?? el.dataset.propNo ?? '-1');
@@ -464,11 +505,11 @@ function onCardClick(e: Event): void {
   if (!c) return;
   if (el.dataset.propNo !== undefined) {
     c.ignored = true;
-    renderMsgs();
+    notifyCards();
     return;
   }
   if (gateWrite() === 'deny') {
-    setNote('现在是「只读」档，改权限才能落盘', true);
+    if (openEl) setNote('现在是「只读」档，改权限才能落盘', true);
     return;
   }
   agentActing();
@@ -477,8 +518,46 @@ function onCardClick(e: Event): void {
   c.done = '已应用';
   pushHistory({ role: 'user', content: `【动作结果：${c.p.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
   /* 落盘由 pushHistory → pushMsg 负责 */
-  renderMsgs();
-  setNote(r.note);
+  notifyCards(r.note);
+}
+
+/* ── 一次提问（第 4 片 2C：两个入口共用这一份）────────────────────────
+   用户 2026-09-26：「**主会话和助手指向的是同一个会话**」⇒ 工具循环、系统提示、提议卡片
+   只实现一次：`runTurn()` 管逻辑，「画在哪 / 存哪里 / 提示写哪」三件事交给宿主
+   （`AgentRunHost`）。Ctrl+K 的助手浮层与 AI 页的主会话各给一个宿主 ——
+   同一格会话在两个入口因此**能力完全一致**（这就是 2C 的全部目的）。 */
+export interface AgentRunHost {
+  /** 消息区容器（流式气泡挂它上面） */
+  box: HTMLElement | null;
+  wrapClass?: string;
+  innerClass?: string;
+  bodyClass?: string;
+  bodyStyle?: string;
+  /** 底部提示 */
+  note(text: string, isErr?: boolean): void;
+  /** 重画消息区（提议卡片随之重画） */
+  rerender(): void;
+  /** 把一条消息塞进历史（浮层走 pushHistory、AI 页走 pushMsg —— 都是同一格主会话） */
+  push(m: ChatMsg): void;
+  /** 用哪份数据 */
+  store: Store;
+}
+
+/** 有没有一次提问正在跑（跨入口共用：AI 页靠它挡重复发送） */
+export function isAgentRunning(): boolean { return busy; }
+
+/** 助手浮层那个宿主 */
+function panelHost(): AgentRunHost {
+  return {
+    box: openEl?.querySelector<HTMLElement>('#lk-agent-msgs') ?? null,
+    wrapClass: 'lk-agent__cutwrap',
+    innerClass: 'lk-agent__msg is-ai',
+    bodyClass: 'lk-agent__bubble lk-md',
+    note: setNote,
+    rerender: () => { renderMsgs(); renderCtx(); },
+    push: pushHistory,
+    store: store as Store,
+  };
 }
 
 /* ── 发送 ─────────────────────────────────────────────────────────── */
@@ -488,17 +567,39 @@ async function send(): Promise<void> {
   const text = (ta?.value ?? '').trim();
   if (!text) return;
   if (ta) ta.value = '';
+  await runTurn(text, panelHost());
+}
+
+/** 一次提问的**共用实现**：助手浮层与 AI 页的主会话都走它 */
+export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
+  if (busy) return;
+  /* ⚠️ `busy` 必须在 `await` **之前**占位：`ensureLoaded()` 会让出这一帧，两次点击就都能挤进来
+     （老代码 busy=true 是同步设的，这个顺序不能变） */
   busy = true;
-  setNote('正在思考…');
-  pushHistory({ role: 'user', content: text });
-  renderMsgs();
-  renderCtx();
+  try {
+    await ensureLoaded();
+  } catch (e) {
+    busy = false;
+    host.note('出错：' + (e instanceof Error ? e.message : String(e)), true);
+    return;
+  }
+  /* 写入一律经这里：`host.push` 之后把指针重新对齐（AI 页写的是同一格会话，
+     对齐之后助手浮层下次重画读到的才是同一份）。`hist()` 顺带在开头对一次。 */
+  const push = (m: ChatMsg): void => {
+    host.push(m);
+    const cur = mainSession();
+    if (cur && cur.history !== history) history = cur.history;
+  };
+  hist();
+  host.note('正在思考…');
+  push({ role: 'user', content: text });
+  host.rerender();
   /* 系统提示按模式拼 —— 见 `agentSystemPrompt()`：**AI 页的「主会话」用的是同一个函数** */
-  const sys = agentSystemPrompt(store, mode);
+  const sys = agentSystemPrompt(host.store, mode);
   /* 输出上限不再由这里设 900（用户 2026-09-26：「ai 的输出被截断了」）：不传 = 引擎不设上限，
      只有「就要短答案」的地方（联想 / 起名 / 总结）才显式给 numPredict。 */
   const cfg = { temperature: 0.7 };
-  const box = openEl.querySelector<HTMLElement>('#lk-agent-msgs');
+  const box = host.box;
   let live: LiveBubble | null = null;
   try {
     /* 一次提问 = 最多 `roundMax` 轮：模型要么说话（结束），要么要求一个只读动作
@@ -507,13 +608,13 @@ async function send(): Promise<void> {
     const roundMax = mode === 'agent' ? AGENT_ROUNDS : CHAT_ROUNDS;
     for (let round = 0; round <= roundMax; round++) {
       /* 分割线之上的对话**不发给模型**（系统提示词、记忆、工作区现状都在 sys 里，照旧每次现拼） */
-      const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...sentHistory(history)];
+      const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...sentHistory(hist())];
       /* 流式（用户 2026-09-26：「我想要流式输出」）：先挂一个空气泡，增量到了就往里写。
          ⚠️ 两个模式下这一段都可能在吐动作 JSON —— 那种东西不给创作者看：从第一个 `{` 起就改说
          「正在整理成动作…」，这一轮走完再由 renderMsgs() 画成「用到动作」那一行。 */
       live?.remove();
       live = box
-        ? liveBubble(box, { wrapClass: 'lk-agent__cutwrap', innerClass: 'lk-agent__msg is-ai', bodyClass: 'lk-agent__bubble lk-md', scroll: box })
+        ? liveBubble(box, { wrapClass: host.wrapClass, innerClass: host.innerClass, bodyClass: host.bodyClass, bodyStyle: host.bodyStyle, scroll: box })
         : null;
       live?.placeholder('正在思考…');
       let acc = '';
@@ -540,52 +641,56 @@ async function send(): Promise<void> {
            纠正一次（进历史、不进气泡），还不行就不再把这坨 JSON 糊到创作者脸上。 */
         if (!fixed && round < roundMax) {
           fixed = true;
-          pushHistory({ role: 'user', content: FIX_NOTE });
-          setNote('它发来的动作格式不对，我让它按格式重发了一次…');
+          push({ role: 'user', content: FIX_NOTE });
+          host.note('它发来的动作格式不对，我让它按格式重发了一次…');
           continue;
         }
-        setNote('它两次都没按动作格式回话，这次先算了（可以再问一次，或换个模型）', true);
+        host.note('它两次都没按动作格式回话，这次先算了（可以再问一次，或换个模型）', true);
         break;
       }
       if (!call) {
-        pushHistory({ role: 'assistant', content: r.text || '（模型返回了空内容）' });
+        push({ role: 'assistant', content: r.text || '（模型返回了空内容）' });
         /* 被截断要如实说 —— 用户 2026-09-26 报「输出被截断了」时界面上什么都没有 */
-        if (r.truncated) setNote('回复被模型的输出上限截断了（' + (r.model || '模型') + '）：说「接着说」可以续', true);
-        else setNote(r.model === 'mock' ? '' : r.model ? '模型：' + r.model : '');
+        if (r.truncated) host.note('回复被模型的输出上限截断了（' + (r.model || '模型') + '）：说「接着说」可以续', true);
+        else host.note(r.model === 'mock' ? '' : r.model ? '模型：' + r.model : '');
         break;
       }
-      pushHistory({ role: 'assistant', content: r.text });
+      push({ role: 'assistant', content: r.text });
       if (isWriteTool(call.tool)) {
-        handleWrite(call);
+        handleWrite(call, host);
         break;
       }
-      const out = runReadTool(call, store);
-      pushHistory({ role: 'user', content: `【动作结果：${call.tool}】\n${out}` });
-      renderMsgs();
+      const out = runReadTool(call, host.store);
+      push({ role: 'user', content: `【动作结果：${call.tool}】\n${out}` });
+      host.rerender();
       if (round === roundMax) {
-        setNote(mode === 'agent' ? '动作调了几轮了，先停一下' : '聊天模式一次只做一个动作 —— 要我接着做就再说一声', true);
+        host.note(mode === 'agent' ? '动作调了几轮了，先停一下' : '聊天模式一次只做一个动作 —— 要我接着做就再说一声', true);
       }
     }
   } catch (e) {
-    /* 报错**不进历史**（否则会被反复喂回模型），只在面板底部提示 */
+    /* 报错**不进历史**（否则会被反复喂回模型），只在宿主底部提示 */
     live?.remove();
-    setNote('出错：' + (e instanceof Error ? e.message : String(e)) + '（检查设置里的 AI 模式与模型）', true);
+    host.note('出错：' + (e instanceof Error ? e.message : String(e)) + '（检查设置里的 AI 模式与模型）', true);
   }
   busy = false;
-  renderMsgs();
+  host.rerender();
+  /* ⭐ 2C：跑的过程中 `busy` 是 true ⇒ **另一个入口**的 `lingkuang-sessions` 监听会主动跳过重画
+     （那是为了不打断流式气泡，见 `openAgentPanel` 的 onSessions）。跑完必须补一次广播，
+     否则同一格会话在另一边还停在旧内容上（实测：AI 页写完 8 条，助手浮层只画得出 6 条）。 */
+  window.dispatchEvent(new CustomEvent('lingkuang-sessions'));
 }
 
 /* ── 从对话里总结偏好 ─────────────────────────────────────────────── */
 async function summarize(): Promise<void> {
   if (busy || !openEl) return;
-  if (!history.length) {
+  if (!hist().length) {
     setNote('还没聊过，没什么可总结的', true);
     return;
   }
   busy = true;
   setNote('正在读对话、总结偏好…');
   try {
-    const cands = await summarizePrefs(history);
+    const cands = await summarizePrefs(hist());
     let n = 0;
     for (const c of cands) if (addMemory(c, 'auto')) n++;
     renderMemory();
@@ -618,7 +723,7 @@ export function closeAgentPanel(): void {
   draft = false;
   cards = [];
   /* 模式回落：关掉面板 = 收回"动手"的授权，下次打开还是聊天（用户 2026-09-26：「平常是聊天」） */
-  mode = 'chat';
+  setAgentMode('chat');
   setMemorySink(null);
   disposeAll?.();
   disposeAll = null;
@@ -709,7 +814,7 @@ export function openAgentPanel(s: Store): () => void {
   el.querySelector('#lk-agent-close')?.addEventListener('click', () => closeAgentPanel());
   el.querySelector('#lk-agent-send')?.addEventListener('click', () => { void send(); });
   /* 提议卡片的「应用」/「忽略」（卡片跟消息区一起重画，所以用委托） */
-  el.querySelector('#lk-agent-msgs')?.addEventListener('click', onCardClick);
+  el.querySelector('#lk-agent-msgs')?.addEventListener('click', agentCardClick);
   const ta = el.querySelector<HTMLTextAreaElement>('#lk-agent-input');
   ta?.addEventListener('keydown', (e: KeyboardEvent) => {
     /* 中文输入法选词的回车不能当发送（复用 `src/ui/keys.ts` 的 isImeEnter） */

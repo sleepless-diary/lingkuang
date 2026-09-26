@@ -7,6 +7,9 @@
  *   ② **老数据一次性迁移**：老 `chat.json` 的对话（含分割线与动作回执）并进主会话，且只并一次；
  *   ③ **一套上下文**：从 AI 页发的那一轮也守分割线（线之上的对话不发给模型），
  *      而线之下的动作回执照发（它是模型该知道的事实）。
+ *   ④ **一套能力（2C，2026-09-26）**：主会话与助手共用 `runTurn()` ⇒ 从 AI 页也**真调动作**
+ *      （只读当场执行、写动作出同一张提议卡片、点「应用」照旧落 vault）；
+ *      模式开关（聊天 / Agent）两个入口共享一份状态。
  *
  * ⚠️ 断言里的「同一份」靠**元素/条数**证明，不靠"看起来一样"：
  *   助手说完 ⇒ AI 页主会话里的条数当场就多 2；AI 页说完 ⇒ 助手面板关开一次（读的是同一份内存数组）
@@ -39,6 +42,31 @@ function mainHist() {
   if (!Array.isArray(s)) return null;
   const m = s.find((x) => x && x.role === 'main');
   return m && Array.isArray(m.history) ? m.history : null;
+}
+
+/** vault 里所有 .md 的文本 —— ★11 用它证明「从 AI 页的写动作真落盘了」（只看界面不算数） */
+function vaultText() {
+  const root = process.env.LINGKUANG_VAULT || '';
+  let out = '';
+  const walk = (d) => {
+    let ents = [];
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.md$/i.test(e.name)) { try { out += fs.readFileSync(p, 'utf8'); } catch { /* 略过读不到的 */ } }
+    }
+  };
+  if (root) walk(root);
+  return out;
+}
+async function waitVault(needle, ms = 5000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (vaultText().indexOf(needle) >= 0) return true;
+    await sleep(200);
+  }
+  return false;
 }
 
 /** seed 里 chat.json 的条数（★8 用它证明"助手不再写 chat.json"） */
@@ -171,6 +199,9 @@ async function main() {
     { before: before4 ? before4.n : null, panel: p3 ? p3.n : null, ai: a3 ? a3.n : null });
 
   /* ── ⑤ AI 页说一句 ⇒ 助手面板里也有（关开面板读的还是那一份内存历史） ── */
+  /* ⭐ 2C：主会话现在走助手的 `runTurn()`（它会先看假引擎后门 `__lkAgentMock`）⇒ ★5 留下的假应答
+     必须清掉，否则这一轮根本不发请求，★7 的请求体断言就没东西可看。 */
+  await ev(`delete window.__lkAgentMock; true`);
   await ev(`(() => {
     window.__reqLog = [];
     if (!window.__origFetch) window.__origFetch = window.fetch;
@@ -204,17 +235,19 @@ async function main() {
       sysLen: last ? String(last.messages[0].content).length : 0,
       sysHasCtx: last ? String(last.messages[0].content).indexOf('【工作区现状】') >= 0 : false,
       sysChatMode: last ? String(last.messages[0].content).indexOf('【你现在是「聊天」模式】') >= 0 : false,
-      sysToolsOff: last ? String(last.messages[0].content).indexOf('create_entity') < 0 : false,
+      sysToolsOn: last ? String(last.messages[0].content).indexOf('create_entity') >= 0 : false,
       joined: last ? last.messages.map((m) => m.content).join(' ') : '',
     };
   })()`);
-  check('★7 从 AI 页发的这一轮：系统提示是**助手那一份**（聊天档 + 工作区现状，且没注入动作协议），分割线之上的对话没发给模型、回执照发',
+  /* ⭐ 2C 翻转：主会话与助手共用系统提示 ⇒ 动作协议**也在**（旧版这里断言 `sysToolsOff === true`，
+     那是"AI 页还没有提议卡片界面"时的权宜；现在卡片也在这一页了，协议必须注入）。 */
+  check('★7 从 AI 页发的这一轮：系统提示是**助手那一份**（聊天档 + 工作区现状 + 动作协议），分割线之上的对话没发给模型、回执照发',
     !!req && req.n === 1 && req.msgs && req.msgs[0].role === 'system' && req.sysHasCtx === true
-      && req.sysChatMode === true && req.sysToolsOff === true
+      && req.sysChatMode === true && req.sysToolsOn === true
       && /\/api\/chat$|\/chat\/completions$/.test(String(req.url || ''))
       && req.joined.indexOf('老助手说过的一句') < 0 && req.joined.indexOf('【动作结果：') >= 0
       && req.joined.indexOf('主会话共享测试二') >= 0,
-    { n: req ? req.n : null, url: req ? req.url : null, msgs: req ? req.msgs : null, sysLen: req ? req.sysLen : null, hasCtx: req ? req.sysHasCtx : null, chatMode: req ? req.sysChatMode : null, toolsOff: req ? req.sysToolsOff : null });
+    { n: req ? req.n : null, url: req ? req.url : null, msgs: req ? req.msgs : null, sysLen: req ? req.sysLen : null, hasCtx: req ? req.sysHasCtx : null, chatMode: req ? req.sysChatMode : null, toolsOn: req ? req.sysToolsOn : null });
 
   /* ── ⑦ 助手不再写 chat.json（这是"历史只有一个家"的磁盘证据） ── */
   await sleep(700);                                  /* AI 页挂着 ⇒ 走 sink 的 400ms 节流 */
@@ -224,6 +257,92 @@ async function main() {
     Array.isArray(chat2) && chat2.length === SEED_CHAT_N && String(chat2[3].content).indexOf('【动作结果：') === 0
       && Array.isArray(disk3) && disk3.length === 8,
     { chat: chat2 ? chat2.length : null, main: disk3 ? disk3.length : null });
+
+  /* ── ⑧ 2C：从 AI 页也能真动手（同一套 `runTurn`、同一张卡片、同一份落盘） ── */
+  const setMock = async (queue) => ev(`window.__lkSeen = []; window.__lkMockQ = ${JSON.stringify(queue)}; window.__lkAgentMock = (m) => { window.__lkSeen.push(m); return window.__lkMockQ.length ? window.__lkMockQ.shift() : '好的。'; }; true`);
+  const aiSay = async (text) => {
+    await ev(`(function () { const t = document.getElementById('ai-input'); t.value = ${JSON.stringify(text)}; document.getElementById('ai-send').click(); return true; })()`);
+    await sleep(1600);
+  };
+  await ev(openTool('ai'));
+  await sleep(700);
+  await ev(pickSession('主会话'));
+  await sleep(400);
+
+  await setMock(['{"tool":"list_entities","args":{}}', '列表我看过了，设定不多。']);
+  await aiSay('AI 页试一个只读动作');
+  const r10 = await ev(`(() => {
+    const log = document.getElementById('ai-log');
+    return {
+      call: log.querySelectorAll('[data-k="call"]').length,
+      callText: (log.querySelector('[data-k="call"]') || {}).textContent || '',
+      receipt: [...log.querySelectorAll('[data-k="receipt"]')].map((x) => x.textContent).join(' | '),
+      rawJson: log.textContent.indexOf('"tool"') >= 0,
+    };
+  })()`);
+  check('★10 从 AI 页发的**只读动作**真执行了（画成「用到动作」一行 + 回执块里有结果，没有把裸 JSON 当聊天字）',
+    !!r10 && r10.call === 1 && r10.callText.indexOf('list_entities') >= 0
+      && r10.receipt.indexOf('银发少女') >= 0 && r10.rawJson === false,
+    r10);
+
+  await setMock(['{"tool":"create_entity","args":{"name":"AI页建的条目","type":"角色"}}']);
+  await aiSay('AI 页建一条设定');
+  const w1 = await ev(`(() => {
+    const log = document.getElementById('ai-log');
+    const card = log.querySelector('.lk-agent__prop');
+    return {
+      cards: log.querySelectorAll('.lk-agent__prop').length,
+      title: card ? ((card.querySelector('.lk-agent__prop-h') || {}).textContent || '') : '',
+      ok: !!log.querySelector('[data-prop-ok]'),
+      settled: !!log.querySelector('.lk-agent__prop.is-settled'),
+    };
+  })()`);
+  const applied = await ev(`(function () { const b = document.querySelector('#ai-log [data-prop-ok]'); if (!b) return false; b.click(); return true; })()`);
+  await sleep(700);
+  const w2 = await ev(`(() => {
+    const log = document.getElementById('ai-log');
+    return {
+      settled: !!log.querySelector('.lk-agent__prop.is-settled'),
+      note: (document.getElementById('ai-note') || {}).textContent || '',
+      receipt: [...log.querySelectorAll('[data-k="receipt"]')].map((x) => x.textContent).join(' | '),
+    };
+  })()`);
+  const inVault = await waitVault('AI页建的条目');
+  check('★11 从 AI 页发的**写动作**出同一张提议卡片，点「应用」真落 vault（界面说改了不算数）',
+    !!w1 && w1.cards === 1 && w1.title.indexOf('AI页建的条目') >= 0 && w1.ok === true && w1.settled === false
+      && applied === true && !!w2 && w2.settled === true && w2.receipt.indexOf('create_entity') >= 0 && inVault === true,
+    { cards: w1 ? w1.cards : null, title: w1 ? w1.title : null, applied, settled: w2 ? w2.settled : null, note: w2 ? w2.note : null, inVault });
+
+  /* ── ⑨ 模式开关两个入口共享一份状态（在哪儿切都算数） ── */
+  const dom12 = await ev(`(() => {
+    const head = document.getElementById('ai-head');
+    const on = document.querySelector('#lk-toolbar .lk-tool-btn.is-on');
+    return {
+      aiMounted: !!document.getElementById('ai-log'),
+      btn: !!document.getElementById('lk-ai-mode-agent'),
+      head: head ? head.textContent : '',
+      toolOn: on && on.dataset ? (on.dataset.tool || '') : '',
+    };
+  })()`);
+  let m1 = '';
+  let m2 = null;
+  let m3 = '';
+  if (dom12 && dom12.btn) {
+    await ev(`document.getElementById('lk-ai-mode-agent').click(); true`);
+    await sleep(400);
+    m1 = await ev(`(document.getElementById('ai-head') || {}).textContent || ''`);
+    await ensurePanel(true);                           /* 幂等：面板已经开着就不动它 */
+    await sleep(300);
+    m2 = await ev(`(() => { const p = document.getElementById('lk-agent-panel'); return { mode: p ? p.dataset.mode : null, on: !!document.querySelector('#lk-agent-mode-agent.is-on') }; })()`);
+    await ev(`(function () { const b = document.getElementById('lk-agent-mode-chat'); if (!b) return false; b.click(); return true; })()`);
+    await sleep(400);
+    m3 = await ev(`(document.getElementById('ai-head') || {}).textContent || ''`);
+    await ev(ctrlK);
+    await sleep(400);
+  }
+  check('★12 模式开关两个入口共享一份状态（AI 页切 Agent ⇒ 助手面板就是 agent；面板切回聊天 ⇒ AI 页当场跟上）',
+    m1.indexOf('Agent：能连着走多步') >= 0 && !!m2 && m2.mode === 'agent' && m2.on === true && m3.indexOf('聊天：能查也能改') >= 0,
+    { dom: dom12, aiAgent: m1.indexOf('Agent：能连着走多步') >= 0, panel: m2, aiBackToChat: m3.indexOf('聊天：能查也能改') >= 0 });
 
   const errs = await ev(`window.__errs || []`);
   check('★9 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, { errs });

@@ -15,6 +15,34 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第五十七轮（2026-09-26）· 助手第 4 片 2C：AI 页主会话也能动手 + 模式开关两处共享
+
+用户原话（本轮起点）：「**可以，我先去干其他的事**」—— 上一轮把 2C 定成「工具循环 + 提议卡片抽共享模块 ⇒ AI 页主会话也能动手 + 模式开关进 AI 页」，随后放手让我做完。
+
+### ① 落地：一次提问抽成「宿主」共用一份（`src/ui/agent.ts`）
+- 新增 `export interface AgentRunHost { box; wrapClass?; innerClass?; bodyClass?; bodyStyle?; note(text, isErr?); rerender(); push(m); store }`：把「画在哪 / 存哪里 / 提示写哪」交给调用方，逻辑只有一份。
+- `export async function runTurn(text, host)` = 原 `send()` 的整段循环（系统提示 `agentSystemPrompt(host.store, mode)`、流式活气泡的类名取自宿主、动作解析与纠错轮、`CHAT_ROUNDS` / `AGENT_ROUNDS` 分档）；`panelHost()` 是浮层那份宿主，`send()` 退化成「读输入框 → `await runTurn(text, panelHost())`」。
+- 配套导出：`cardsHtml()`（卡片 HTML）、`agentCallRow(m)`（动作消息画成「用到动作：X」一行）、`agentCardClick(e)`（「应用 / 忽略」的唯一处理函数）、`getAgentMode()` / `setAgentMode(next)`（模式**唯一写入口**：写状态 + 重画本层 + 广播 `lingkuang-agent-mode`）、`isAgentRunning()`；`handleWrite(call, host)` 参数化；`notifyCards()` 在卡片状态变化时重画浮层并广播 `lingkuang-agent-cards`。
+- `src/ui/ai-workbench.ts`：主会话（`role:'main'`）的发送改走 `runTurn`（宿主 = 这一页：气泡进 `#ai-log`、历史走 `pushMsg`、卡片由 `renderLog()` 末尾的 `cardsHtml()` 画、提示写底部那行），头上加「模式 聊天 / Agent」分段（`#lk-ai-mode-chat` / `#lk-ai-mode-agent`）并监听 `lingkuang-agent-mode` / `lingkuang-agent-cards`；非主会话（角色 / 视角 / 主控）照旧只演（`AI_SESSION_FRAME` + `aiChatStream`）。
+
+### ② A/B（`tools/e2e/agent-main-session.cjs` 10 → 13 项）
+- 新增：**★10** 从 AI 页发的**只读动作**真执行（记录里出现「用到动作：list_entities」+ 回执块含「银发少女」，且不把裸 JSON 当聊天字）；**★11** 从 AI 页发的**写动作**出同一张提议卡片、点「应用」**真落 vault**（判据读 `%TEMP%\lk-evault2\vault` 下的 .md —— "界面说改了"不算数）；**★12** 模式开关两处同步（AI 页切 Agent ⇒ 浮层 `dataset.mode === 'agent'`；面板切回聊天 ⇒ AI 页当场跟上）。
+- **★7 翻转**：原来断言 `sysToolsOff`（AI 页那一轮的系统提示**没有**动作协议 —— 那是"AI 页还没有卡片界面"时的权宜），现在断言 `sysToolsOn`。
+- A/B：`git stash push -- src/` → `npx vite build` → 跑新套件 ⇒ 旧构建 **9/13**（★7 `toolsOn:false`、★10 `call:0`、★11 `cards:0`、★12 `dom.btn:false`）；`git stash pop` → 重建 ⇒ 新构建 **13/13**。
+
+### ③ 两个真缺陷（都是这轮 e2e 逼出来的，不是猜的）
+- **一个入口跑的时候，另一个入口的屏幕不跟**：`runTurn` 全程 `busy === true`，而另一个入口的 `lingkuang-sessions` 监听**故意**在 busy 时跳过重画（免得抹掉流式气泡）⇒ 一轮跑完必须**补一次广播**。实测症状：AI 页写完 8 条、`Ctrl+K` 浮层重开只画得出 **6** 条。修法 = `runTurn` 末尾 `busy = false; host.rerender();` 之后再 `window.dispatchEvent(new CustomEvent('lingkuang-sessions'))`（与 `src/ui/ai-sessions.ts` 自己那条广播同形）。
+- **历史数组的指针会被换掉**：`adoptSessions()`（重读磁盘）会**整体重建**会话对象 ⇒ `src/ui/agent.ts` 里缓存的 `history` 指向旧数组，两个入口各写各的"另一个世界"。修法 = 新增 `hist()`（读之前先把指针重新对齐 `mainSession().history`），`renderMsgs()` / `splitContext()` / `unsplitContext()` / `summarize()` / `runTurn()` 的读点一律改走它。
+- 顺带：`agentCallRow(m)` 是"AI 页也要画「用到动作」行"的必要件 —— 少了它，主会话那句动作 JSON 会被 `mdToHtml()` 当普通文字画在脸上（中间构建实测 `call:0 / rawJson:true`），而动作其实**已经执行**了。
+
+### ④ 测试坑（继续记）
+- 本套件的 ★6 依赖「切工具会关掉助手浮层」这个假设 —— **不成立**：浮层是 `position:fixed` 的独立节点，实测切到 codex 之后 `panelOpen()` 仍为 true。旧代码之所以能过 ★6，是因为 AI 页写完后 `pushMsg` 的广播**顺手把浮层的旧 DOM 重画了**；`runTurn`（busy 期间跳过）一来就露馅。修法是代码补广播（见 ③ 第一条），不是把断言改宽。
+- ★12 的写法教训：探针要先问「按钮在不在」（`dom12.btn`）再点，否则旧构建上 `getElementById(...).click()` 直接 `TypeError` 崩在 exit 2、整套看不到结果（A/B 套件要能在旧构建上**体面全红**）；打开浮层要用幂等的 `ensurePanel(true)`（`ctrlK` 是开关，浮层本来就开着时它会把面板**关掉** —— 第一版就是这么崩的）。
+- 页内探针仍然不许出现反引号（页面代码住在模板字符串里）。
+
+### ⑤ 回归（每套件单独起干净实例 + 清 userdata）
+`agent-main-session` **13/13**、`agent-panel` **21/21**、`agent-mode` **12/12**、`agent-tools` **19/19**、`agent-batch` **6/6**、`agent-memory` **15/15**、`agent-stream` **6/6**、`ai-sessions` **10/10**；三道检查 `node --check main.js` / `npx tsc --noEmit` / `npx vite build` 全绿。
+
 ## 第五十六轮（2026-09-26）· 助手模式语义翻转：聊天模式也留灵框内部的动作 + AI 能改「设置」了（阶段 2A）
 
 **用户原话**：「**聊天模式也留一点灵框内部的工具吧，agent 模式是在灵框外工作用的**」——
