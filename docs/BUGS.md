@@ -15,6 +15,69 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第四十三轮（2026-09-26）· 缩放时「标尺轻微卡顿 + 因果线跳位置」（**用户实测**）
+
+> 用户原话：「**缩放时标尺有轻微卡顿，而且渲染出的因果线会跳位置**」。
+> 两条症状同一个现场（每帧 `render()` 都会重画标尺与因果线），但**病根是两个**，都已用探针钉住。
+
+### ① 因果线跳位置 = `drawCauses()` 的退化分支是**硬切**
+- 病根：`src/ui/timeline.ts` 的 `drawCauses()` 里 `if ((x2 - x1) * dir <= 0) { x1 = a.x + dir * 2; … }`
+  —— 两圆点靠近到「贴边量互相越过」（阈值 `2·r·cosθ ≈ 11.87px`，r=7）时，端点被**一步搬到水平极点**
+  （离圆心 2px、与轴线同高）。
+- 实测（新探针 `tools/e2e/probe-causes-threshold.cjs`，连续细密缩放 deltaY -18×90，逐帧）：
+  同一条边 `Δx=10.6px → (dy 0, dx -2)`、`Δx=11.9px → (dy 3.71, dx -5.93)` ⇒ **一帧里端点横跳 3.93px
+  + 竖跳 3.71px = 5.4px**，而节点自身只动了 1.09px（worst 帧 `dCap 1.09 / dTip 4.68`）；
+  **两个圆点完全重合时更糟**：端点反向（`0:0:2:B`，箭头指向自己）。
+- 修法：按「还差多少才够贴边」**连续收缩** —— `k = min(1, gap / need)`、`need = (a.r + b.r) * cos(RIM_ANGLE)`，
+  端点一律 `x = 圆心 ± r·cosθ·k` / `y = 圆心 − r·sinθ·k`。`k=1` 时与原来的贴边几何**逐字等价**
+  （`gap ≥ need ⇒ seg = gap − need`），`gap < need` 时尖端沿切线连续滑向两圆接触点、弧长恒 0，
+  `op` 再乘 `k` ⇒ 完全重合时自然消隐，不再出现反向路径。
+- 回归：新套件 `tools/e2e/causes-line.cjs` **★1b**（结构性判据：尖端落进目标圆点内部时弧线必须已缩成一点）。
+  A/B：修复前 **insideLong 2056 帧**、第一帧就是 `{dst: n-e2e-b, off: 2, r: 7, arc: 7.19}`
+  （尖端钻进圆心 2px、弧却还画着 7.19px 长）；修复后 `insideLong 0` + `collapsedFrames 2058`（证明确实扫进了退化区）。
+  ⚠️ 相邻的 **★1**（尖端位移 − 节点位移 ≤ 2px）**单独用会假绿** —— 配对靠"离尖端最近的圆点"，
+  两圆点重叠时"最近"会换人，恰好把要抓的那一帧跳过（实测连栽三轮才定位）：保留它当回归篱笆，
+  真正有牙的是 ★1b（只在稀疏画布上有牙：加压夹具上最近圆点天然歧义，见套件注释）。
+
+### ② 卡顿 = 每帧整块重建（因果线 + 每边一次全树查询）
+- 病根：`drawCauses()` 每帧 `causesSvg.innerHTML = defs + 294 条 path`（294 个 `<marker>` 全新建、
+  HTML 重新解析），并且**每条边各查一次** `track.querySelector('[data-id=…]')` —— 294 边 × 2 = 588 次，
+  每次都扫 track 的 150 个子元素；`renderBase()` 那边每帧 `track.innerHTML` 也把 150 个节点全换新。
+- 实测（加压夹具 150 节点 / 294 边，`tools/e2e/probe-causes-profile.cjs`）：
+  帧间隔 **p50 12.6ms / p95 20.9ms / max 29.2ms，12/107 帧 > 20ms**；单次缩放 3 格
+  **`querySelector` 58,950 次 ≈ 631ms（~800 次/帧）**；CDP 自耗时排行 `he 103ms / ce 83ms /
+  getBoundingClientRect 55ms / querySelector 22ms`。轻夹具（4 节点）量不出来 ⇒ 与内容量成正比。
+- 修法：`drawCauses()` 里圆心表改成**每帧一次**集体查询（`track.querySelectorAll('[data-id]')`
+  + 每个真有用的圆点一次 `.cap` rect），`<path>` / `<marker>` 按**序号**常驻复用
+  （`causePaths` / `causeMarkers` / `causeDefs`，只写 `d` / `stroke-width` / `opacity` / marker 尺寸，
+  `defs` 只建一次），这一帧用不到的弧线 `style.display='none'` **不删**（留池子下次复用）。
+- 回归（同一套件）：**★2** `<path>` 元素身份不变（A/B：修复前 keepP **0** / 修复后 294/294）、
+  **★3** 每帧 DOM 查询数 ≤ 边数 + 节点数 + 20（A/B：修复前 **667 次/帧 > 464 上界 ⇒ FAIL**；
+  修复后 **140~154 次/帧**）、**★4** `<marker>` 身份不变且数量不增长（A/B：修复前 keepM 0）。
+- 📌 落地时踩的两个坑（都记在这儿，别再犯）：
+  ① 把 `const mid = 'lk-ca-' + (idx++);` 换成复用写法时**把 `idx++` 一起删了** —— 294 条边全写在
+     第 0 号 path 上、`idx` 停在 0，末尾那句"藏掉没用的"再把唯一一条藏掉 ⇒ **一条因果线都看不见**。
+     症状在 DOM 上：`aFound 150 / bFound 294 / idx 0`（临时观测点 `window.__dbgCauses` 抓到的）。
+  ② 套件代码住在**模板字符串**里 ⇒ 注释里也不许出现反引号（本轮连栽两次 `SyntaxError`）。
+  ③ 采样必须**逐帧**（rAF 采样器）且**两个方向都扫、而且不许对称**：轻夹具的阈值在**缩小**方向
+     （fit 档 14.8px/年 > 11.87px），加压夹具的在**放大**方向（0.58px/年 < 11.87px）；
+     对称的 ±45 步会**正好回到起点**、一次都不跨（实测因此假绿一轮）。
+  ④ 测试实例带 `LINGKUANG_TEST_WINDOW_NOFOCUS=1` 时 `noSmooth()` 为真 ⇒ 滚轮**当帧落值**、
+     每帧跳 ~1.3px，会跨过那一帧；套件里用 CDP `Emulation.setFocusEmulationEnabled {enabled:true}`
+     让页面内 `document.hasFocus()` 为真（不抢用户 OS 焦点）⇒ 走 rAF 缓动、每帧 ~0.1px 才看得见硬切。
+
+### ③ 回归与影响面
+- `causes-line` **7/7**（轻夹具与加压夹具各一遍，连跑两次一致）；A/B：修复前 **3/7**。
+- 既有套件全绿：`timeline-scale` 12/12、`scale-motion` 6/6、`storyline-focus` 13/13、`nonlinear-pan` 7/7。
+- 新增探针（留在库里）：`probe-causes-threshold.cjs`（细密缩放逐帧打每条边的端点偏移/是否反向，
+  是定 ① 的关键）、`probe-causes-profile.cjs`（rAF 帧间隔 + CDP Profiler 自耗时 + 查询次数）、
+  `probe-causes-zoom.cjs`、`probe-lk-state.cjs`；夹具 `seed-causes.cjs`（`LK_SEED_N=<n>` 加压模式）。
+  ⚠️ `seed-causes.cjs` 会清**整个世界目录**并清空 `worldbuilding.json` 的 `timelines`/`entities`
+  （否则上一轮留下的空时间线 `tl-side` 会被会话恢复选中、白跑一次）。
+- 未动：`renderBase()` 每帧 `track.innerHTML`（150 节点全换新）**仍是**一处整块重建 —— 本轮量到的
+  卡顿主因是因果线那半边（查询 + 294 个 marker），节点那半边留待有实测再动（聚焦/非线性两条渲染路径
+  也各自整块重建，改动面大、收益未量化）。
+
 ## 第四十二轮（2026-09-26）· 标尺刻度出入场（第 ⑤ 片）+ 两处顺带修的标尺缺陷
 
 > 交接单 ④⑤ 的收尾：④（`timeline-scale` 的 ★4 恒 FAIL）判定为**测试场景不成立**并改掉；

@@ -408,58 +408,133 @@ export function mountTimeline(
      旧实现用 wrapRect + 手调常数（-26 / -5）会让端点恒偏低 3px、并向内多缩 5px 钻进圆点里，
      相邻节点只差十几 px 时会读成"连到了旁边那个点"。
      箭头大小/线宽/不透明度随节点间距联动（缩小→变小变淡，避免挤在一起回旋/看不清） */
+  /* ── 因果线的 DOM 道具池（第 ④ 片）──────────────────────────────────────────
+     用户 2026-09-26 报「缩放时标尺有轻微卡顿，而且渲染出的因果线会跳位置」。
+     卡顿的那一半：旧写法每帧 `causesSvg.innerHTML = defs + 294 条 path`（294 个 marker 全新建、
+     HTML 重新解析），外加每条边各查一次 `track.querySelector('[data-id=…]')`
+     —— 294 边 × 2 = 588 次、每次都扫 track 的 150 个子元素（加压夹具实测 ~800 次/帧，
+     单次缩放 3 格 58,950 次 ≈ 631ms；150 节点时帧间隔 p95 20.9ms / 12/107 帧 > 20ms）。
+     现在 `<path>` / `<marker>` 都按**序号**常驻复用，只写变化的属性。 */
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  let causeDefs: SVGDefsElement | null = null;
+  const causeMarkers: { m: SVGMarkerElement; arrow: SVGPathElement }[] = [];
+  const causePaths: SVGPathElement[] = [];
+  type CauseCenter = { x: number; y: number; r: number };
+  /* 第 i 条弧线的箭头 marker（懒建，建好就一直用同一个元素） */
+  function causeMarkerSlot(i: number): { m: SVGMarkerElement; arrow: SVGPathElement } {
+    let slot = causeMarkers[i];
+    if (!slot) {
+      if (!causeDefs) {
+        causeDefs = document.createElementNS(SVG_NS, 'defs') as SVGDefsElement;
+        causesSvg.appendChild(causeDefs);
+      }
+      const m = document.createElementNS(SVG_NS, 'marker') as SVGMarkerElement;
+      m.setAttribute('id', 'lk-ca-' + i);
+      m.setAttribute('orient', 'auto');
+      const arrow = document.createElementNS(SVG_NS, 'path') as SVGPathElement;
+      arrow.setAttribute('fill', 'var(--fg)');
+      m.appendChild(arrow);
+      causeDefs.appendChild(m);
+      slot = { m, arrow };
+      causeMarkers[i] = slot;
+    }
+    return slot;
+  }
+  /* 第 i 条弧线的 path（同样懒建复用） */
+  function causePath(i: number): SVGPathElement {
+    let p = causePaths[i];
+    if (!p) {
+      p = document.createElementNS(SVG_NS, 'path') as SVGPathElement;
+      p.setAttribute('fill', 'none');
+      p.setAttribute('stroke', 'var(--fg)');
+      p.setAttribute('marker-end', `url(#lk-ca-${i})`);
+      causesSvg.appendChild(p);
+      causePaths[i] = p;
+    }
+    return p;
+  }
   function drawCauses() {
     const tl = timeline();
     const byId = new Map<string, TimelineNode>((tl?.nodes ?? []).map((n) => [n.id, n]));
-    let pathSvg = '';
-    let defsSvg = '';
     let idx = 0;
     /* 弧线形状系数：末端切线角度 = atan(CURVE_DY / CURVE_DX) ≈ 32°，与跨距无关，
        也是端点贴圆点边缘时用的到达角（两者必须同源，否则贴边方向与弧线切线不连续） */
     const CURVE_DX = 0.4, CURVE_DY = 0.25;
     const RIM_ANGLE = Math.atan2(CURVE_DY, CURVE_DX);
+    const cth = Math.cos(RIM_ANGLE), sth = Math.sin(RIM_ANGLE);
     const svgRect = causesSvg.getBoundingClientRect();
-    const nodeCenter = (id: string): { x: number; y: number; r: number } | null => {
-      const el = track.querySelector(`[data-id="${id}"]`) as HTMLElement | null;
-      if (!el) return null;
-      const dot = (el.querySelector('.cap') as HTMLElement | null) ?? el;
-      const r = dot.getBoundingClientRect();
-      return { x: r.left + r.width / 2 - svgRect.left, y: r.top + r.height / 2 - svgRect.top, r: r.width / 2 };
-    };
+    /* 圆心表：每帧**一次**集体查询 + 每个圆点只读一次 rect（旧写法每条边各查各的），
+       而且只查**真的有因果线**的节点 —— 孤点不读 rect、不逼布局。 */
+    const centers = new Map<string, CauseCenter>();
+    const needIds = new Set<string>();
     for (const n of tl?.nodes ?? []) {
       for (const cid of n.causes ?? []) {
-        if (!byId.get(cid)) continue;
-        const a = nodeCenter(n.id), b = nodeCenter(cid);
-        if (!a || !b) continue;
+        if (!byId.has(cid)) continue;
+        needIds.add(n.id);
+        needIds.add(cid);
+      }
+    }
+    if (needIds.size) {
+      track.querySelectorAll('[data-id]').forEach((el) => {
+        const id = (el as HTMLElement).dataset.id ?? '';
+        if (!needIds.has(id)) return;
+        const dot = (el.querySelector('.cap') as HTMLElement | null) ?? (el as HTMLElement);
+        const r = dot.getBoundingClientRect();
+        centers.set(id, { x: r.left + r.width / 2 - svgRect.left, y: r.top + r.height / 2 - svgRect.top, r: r.width / 2 });
+      });
+    }
+    for (const n of tl?.nodes ?? []) {
+      const a = centers.get(n.id);
+      if (!a) continue;
+      for (const cid of n.causes ?? []) {
+        const b = centers.get(cid);
+        if (!b) continue;
         const dir = b.x >= a.x ? 1 : -1;
         /* 端点落在圆点边缘、且**沿弧线自身的到达方向**（θ≈32°），而不是取水平极点：
            两个节点都落在轴线上，取水平极点会让尖端正好压在轴线上，看起来"连在线上"而不是
            连在节点上。沿切线方向贴边后，尖端落在圆周上、比圆心高 r·sinθ，明显离开轴线。
-           两圆点重叠到贴边量互相越过时，退回水平极点 + 2px 间距，避免弧线自交/退化。 */
-        const cth = Math.cos(RIM_ANGLE), sth = Math.sin(RIM_ANGLE);
-        let x1 = a.x + dir * a.r * cth, y1 = a.y - a.r * sth;
-        let x2 = b.x - dir * b.r * cth, y2 = b.y - b.r * sth;
-        let seg = Math.abs(x2 - x1);
-        if ((x2 - x1) * dir <= 0) {
-          x1 = a.x + dir * 2; y1 = a.y;
-          x2 = b.x - dir * 2; y2 = b.y;
-          seg = Math.abs(x2 - x1);
-        }
+           ⚠️ 两圆点靠近到"贴边量互相越过"时**不许硬切**（旧式 `if ((x2 - x1) * dir <= 0)` 分支）：
+           实测 Δx=10.6px 时尖端落在圆心（dy 0 / dx -2）、11.9px 时**一帧内**跳到圆周
+           （dy 3.71 / dx -5.93）—— 横跳 3.9px + 竖跳 3.7px，而节点自身只动了 1.09px，
+           缩放时看着就是「因果线跳位置」；完全重合时端点还会反向（箭头指向自己）。
+           改成按「还差多少才够贴边」连续收缩：k = gap / need 从 1 收到 0 ⇒ 尖端沿切线方向
+           连续滑向两圆的接触点，弧线随之缩成一点、`op` 乘 k 淡出 —— 任何一帧的位移都不超过
+           节点自身的位移。k = 1 时与原来的贴边几何**逐字等价**（gap ≥ need ⇒ seg = gap − need）。 */
+        const gap = Math.abs(b.x - a.x);
+        const need = (a.r + b.r) * cth;
+        const k = need > 0 ? Math.min(1, gap / need) : 1;
+        const x1 = a.x + dir * a.r * cth * k, y1 = a.y - a.r * sth * k;
+        const x2 = b.x - dir * b.r * cth * k, y2 = b.y - b.r * sth * k;
+        const seg = Math.abs(x2 - x1);
         /* 控制点随间距缩放：cdx < seg/2 不回旋。cdy 按跨距成比例（于是末端切线角度
            = cdy/cdx = RIM_ANGLE 恒定），端点因此始终以可见角度接近圆点——旧版把 cdy clamp 在
            绝对值 26px，跨距 >104px 后弧高就固定不变，缩放越大弧线越平、末端贴着轴线滑过去，
            看起来像没接到点上。上限取画布高度一半，避免跨距极大时弧线冲出画布 */
         const cdx = seg * CURVE_DX, cdy = Math.min(seg * CURVE_DY, track.clientHeight * 0.5);
-        /* 联动：箭头/线宽/不透明度随间距 */
+        /* 联动：箭头/线宽/不透明度随间距（`op` 再乘 k ⇒ 两圆点重合的极端情况下自然消隐，
+           不会留下一条零长度、方向未定义的反向箭头） */
         const mSize = Math.max(3, Math.min(6, seg * 0.04));      /* 箭头大小（调细为 1/3） */
         const width = Math.max(0.8, Math.min(1.6, seg * 0.006));  /* 线宽（更细） */
-        const op = Math.max(0.35, Math.min(0.9, seg / 130));
-        const mid = 'lk-ca-' + (idx++);
-        defsSvg += `<marker id="${mid}" markerWidth="${mSize}" markerHeight="${mSize}" refX="${mSize - 2}" refY="${mSize / 2}" orient="auto"><path d="M0,1 L${mSize - 1},${mSize / 2} L0,${mSize - 1} z" fill="var(--fg)"/></marker>`;
-        pathSvg += `<path d="M ${x1} ${y1} C ${x1 + dir * cdx} ${y1 - cdy}, ${x2 - dir * cdx} ${y2 - cdy}, ${x2} ${y2}" fill="none" stroke="var(--fg)" stroke-width="${width}" opacity="${op}" marker-end="url(#${mid})"></path>`;
+        const op = Math.max(0.35, Math.min(0.9, seg / 130)) * k;
+        /* 第 idx 条弧线：marker / path 都按序号复用，只写变化的属性
+           （旧写法这里每帧新建 294 个 marker + 294 条 path，还要重新解析一遍 HTML） */
+        const slot = causeMarkerSlot(idx);
+        const p = causePath(idx);
+        slot.m.setAttribute('markerWidth', String(mSize));
+        slot.m.setAttribute('markerHeight', String(mSize));
+        slot.m.setAttribute('refX', String(mSize - 2));
+        slot.m.setAttribute('refY', String(mSize / 2));
+        slot.arrow.setAttribute('d', `M0,1 L${mSize - 1},${mSize / 2} L0,${mSize - 1} z`);
+        p.setAttribute('d', `M ${x1} ${y1} C ${x1 + dir * cdx} ${y1 - cdy}, ${x2 - dir * cdx} ${y2 - cdy}, ${x2} ${y2}`);
+        p.setAttribute('stroke-width', String(width));
+        p.setAttribute('opacity', String(op));
+        if (p.style.display) p.style.display = '';
+        idx++;
       }
     }
-    causesSvg.innerHTML = defsSvg + pathSvg;
+    /* 这一帧用不到的弧线（图变小 / 换世界 / 没时间线 / 在聚焦线外）：藏掉，**不删** ——
+       元素留在池子里下次复用。 */
+    for (let i = idx; i < causePaths.length; i++) causePaths[i].style.display = 'none';
   }
 
   let render: () => void = renderBase;   /* 可被剧情线/循环包装重赋 */
