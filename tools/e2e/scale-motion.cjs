@@ -10,6 +10,8 @@
  *   ★2 新进场的刻度**带入场动画**，且关键帧是不透明度 + 缩放尺度（用户点名的两样）；
  *   ★3 离场的刻度**不是当场消失**：先退场（有动画）、至少 80ms 后才被摘掉（旧实现 = 同一帧删掉、0 动画）；
  *   ★4 守 `fill:'both'` 的坑：稳定后刻度上不许残留动画（否则被钉在动画值上）；
+ *   ★6 换档那一下**两批动画的时间区间不相交**（2026-09-26 一轮：不许出现两把尺子）；
+ *   ★7 换档时**"名字没变"的数字复用同一元素**（2026-09-26 二轮：数字不许整批重建 ⇒ 不闪）；
  *   ★5 全程没有未捕获异常。
  *
  * ⚠️ 环境前提两条（都是实测踩出来的）：
@@ -164,6 +166,11 @@ async function main() {
   const sw = await ev(`(async () => {
     const scale = document.querySelector('#lk-pane-timeline .tl-scale');
     if (!scale) return { fatal: 'no .tl-scale' };
+    /* 起始状态**自带干净 fit**（2026-09-26 补）：本套件连跑两次时，上一轮会把视图留在"缩放到极限"
+       的位置上，再往外缩会被夹住 ⇒ 12 步里一次换档都没发生 ⇒ 假 FAIL（实测 hitAt: -1）。
+       切一次「— 全览 —」拿回干净 fit（下拉的处理器里带 rAF fitAll），与首次运行等价。 */
+    const sel0 = document.getElementById('lk-line-sel');
+    if (sel0) { sel0.value = ''; sel0.dispatchEvent(new Event('change', { bubbles: true })); await new Promise((r) => setTimeout(r, 900)); }
     const majors = () => [...scale.querySelectorAll('.tl__axis-tick--major')];
     const labelsOf = (els) => els.map((el) => { const s = el.querySelector('.tl__axis-label'); return s ? s.textContent : ''; });
     const spanOf = (el) => { const a = el.getAnimations ? el.getAnimations()[0] : null; if (!a || !a.effect || !a.effect.getTiming) return null; const t = a.effect.getTiming(); return [t.delay, t.delay + t.duration]; };
@@ -199,6 +206,45 @@ async function main() {
     !!sw && !sw.fatal && sw.hitAt > 0 && sw.enterCount >= 3 && sw.leaveCount >= 3 && gapMs !== null && gapMs >= -20,
     sw ? { hitAt: sw.hitAt, prev: sw.prevCount, now: sw.nowCount, common: sw.common, anim: sw.animCount, enter: sw.enterCount, leave: sw.leaveCount, gapMs,
       enterSpans: sw.enter.slice(0, 3), leaveSpans: sw.leave.slice(0, 3) } : sw);
+
+  /* ★7 换档时**名字没变的那些数字必须复用同一元素**。
+     旧实现的 key 里带了 `stepSec` ⇒ 缩放每跨过一次档位（`quantStep()` 在 1/2/5/10×10^k 之间跳）
+     每根刻度的 key 就全变 ⇒ 整批判成"换档" ⇒ 数字先淡掉 100ms 再淡回来 =
+     用户 2026-09-26 实测报的「入场时标尺的文字会闪一下」（线落在原来那些位置上，所以"只有字在闪"）。
+     判据：两次落定之间**同名标签**的元素必须是同一个对象（旧实现 keep = 0）。
+     ⚠️ 样本必须真的是**换档**：判据不能只看"有同名标签"（同档位缩放本来就有 17/20 同名、
+     元素也本来就会复用 ⇒ 假绿）。年档的档位可以用标签自身的年份差读出来 ⇒ **中位年差变了**
+     才认。找样本的法子 = 交替方向逐格缩放，取第一个「前后都是纯年份标签且中位年差变了」的点。 */
+  const idrep = await ev(`(async () => {
+    const scale = document.querySelector('#lk-pane-timeline .tl-scale');
+    if (!scale) return { fatal: 'no .tl-scale' };
+    const sel0 = document.getElementById('lk-line-sel');
+    if (sel0) { sel0.value = ''; sel0.dispatchEvent(new Event('change', { bubbles: true })); await new Promise((r) => setTimeout(r, 900)); }
+    const majors = () => [...scale.querySelectorAll('.tl__axis-tick--major')];
+    const mapOf = (els) => { const m = new Map(); for (const el of els) { const s = el.querySelector('.tl__axis-label'); if (s) m.set(s.textContent, el); } return m; };
+    const yearsOf = (m) => { const out = []; for (const lab of m.keys()) { const mm = /^([0-9]+)年$/.exec(lab); if (!mm) return null; out.push(Number(mm[1])); } out.sort((a, b) => a - b); return out; };
+    const gapOf = (ys) => { if (!ys || ys.length < 4) return null; const d = []; for (let i = 1; i < ys.length; i++) d.push(ys[i] - ys[i - 1]); d.sort((a, b) => a - b); return d[Math.floor(d.length / 2)]; };
+    const shot = () => { const m = mapOf(majors()); return { map: m, n: m.size, gap: gapOf(yearsOf(m)) }; };
+    let prev = shot();
+    for (const d of [-100, 100]) {
+      for (let k = 1; k <= 12; k++) {
+        const wrap = scale.parentElement;
+        const r = wrap.getBoundingClientRect();
+        wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: d, altKey: true, clientX: r.left + Math.round(r.width / 2), clientY: r.top + 40, bubbles: true, cancelable: true }));
+        await new Promise((res) => setTimeout(res, 700));
+        const now = shot();
+        let common = 0, keep = 0;
+        for (const kv of now.map) { const was = prev.map.get(kv[0]); if (was) { common++; if (was === kv[1]) keep++; } }
+        const switched = prev.gap !== null && now.gap !== null && prev.gap !== now.gap;
+        if (switched && common >= 2) return { hitAt: k, dir: d, prevN: prev.n, nowN: now.n, prevGap: prev.gap, nowGap: now.gap, common: common, keep: keep };
+        prev = now;
+      }
+    }
+    return { hitAt: -1, prevN: prev.n, nowN: 0, prevGap: prev.gap, nowGap: null, common: 0, keep: 0 };
+  })()`);
+  check('★7 换档时"名字没变"的数字复用同一元素（不整批重建 ⇒ 数字不闪）',
+    !!idrep && !idrep.fatal && idrep.hitAt > 0 && idrep.common >= 2 && idrep.keep === idrep.common,
+    idrep);
 
   const errs = await ev(`window.__errs`);
   check('★5 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

@@ -288,8 +288,14 @@ export function mountTimeline(
        取刻度的成本由「可见宽度 / 主刻度间距」决定（stepSec 随 spacing 走），剔掉不增加成本。 */
     const ticks = warpSegs ? mainSec.filter((s) => inWarpSeg(s / SEC_PER_YEAR)) : mainSec;
     /* 这一帧该有的刻度（按 DOM 顺序：先主刻度、再小刻度/断口 —— 与旧实现的 `html + subHtml` 同序）。
-       ⚠️ key 里带了 `unit|stepSec`：换档（年→月、步长变了）时标签语义整体变了，
-       这时"旧的退场、新的入场"正是想要的那次交叉淡入；同一个档位里 key 只由时间决定 ⇒ 平移到哪儿都在。 */
+       ⚠️ key **只认身份**（种类|单位|时刻），**不认档位**（2026-09-26 二轮修复：用户实测
+       「入场时标尺的文字会闪一下」）。旧 key 里带了 `stepSec`，而缩放每跨过一次档位
+       （`quantStep()` 在 1/2/5/10×10^k 之间跳）**每根刻度的 key 就全变** ⇒ 整批判成"换档" ⇒
+       走"先出后进"⇒ 旧数字先淡掉 100ms 再淡回来 = 看着是**尺子没动、只有字在闪**
+       （线的相位没变，落在原来的位置上）。
+       现在换档时"还在的那些刻度"复用同一元素（原地不动、数字不重建），只有真新增/真消失的才出入场；
+       "整批换"改由**档位本身变了**（`tag` 变，见 `paintScale(items, tag)`）触发 —— 上一轮
+       "不许出现两把尺子"照旧。小刻度/断口同理：位置或区间变了就是新元素（取整仍用 `Math.round(s)`）。 */
     const tag = `${unit}|${stepSec}`;
     const items: { key: string; cls: string; left: number; html: string }[] = [];
     for (let i = 0; i < ticks.length; i++) {
@@ -306,7 +312,7 @@ export function mountTimeline(
       else if (unit === '分') showPrev = tpNow.values.hour !== tpPrev.values.hour; /* 跨小时才显示「时」 */
       else showPrev = !!(t.prev && tpNow.values.month !== tpPrev.values.month);
       const prev = showPrev ? `<span class="tl__axis-prev">${t.prev}</span>` : '';
-      items.push({ key: `M|${tag}|${s}`, cls: 'tl__axis-tick tl__axis-tick--major', left: x, html: `${prev}<span class="tl__axis-label">${t.cur}</span>` });
+      items.push({ key: `M|${unit}|${s}`, cls: 'tl__axis-tick tl__axis-tick--major', left: x, html: `${prev}<span class="tl__axis-label">${t.cur}</span>` });
     }
     /* 小刻度：在**相邻主刻度之间**等分插（旧代码用 start + k*subStep，年档会累计漂移） */
     for (let i = 0; i + 1 < ticks.length; i++) {
@@ -314,15 +320,15 @@ export function mountTimeline(
       /* 接缝：相邻两个主刻度之间只要「压缩轴上的距离 < 真实距离」，就说明中间隔着被截断的区段
          —— 那里既不插小刻度（插出来是假的密度），也不假装连续，画一个断口标记。 */
       if (warpSegs && (year2w(b / SEC_PER_YEAR) - year2w(a / SEC_PER_YEAR)) < (b - a) / SEC_PER_YEAR - 1e-9) {
-        items.push({ key: `C|${tag}|${a}|${b}`, cls: 'tl__axis-cut', left: Math.round((timeToX(a) + timeToX(b)) / 2), html: '⋯' });
+        items.push({ key: `C|${unit}|${a}|${b}`, cls: 'tl__axis-cut', left: Math.round((timeToX(a) + timeToX(b)) / 2), html: '⋯' });
         continue;
       }
       for (let k = 1; k < subDiv; k++) {
         const s = a + (b - a) * (k / subDiv);
-        items.push({ key: `m|${tag}|${Math.round(s)}`, cls: 'tl__axis-tick tl__axis-tick--minor', left: timeToX(s), html: '' });
+        items.push({ key: `m|${unit}|${Math.round(s)}`, cls: 'tl__axis-tick tl__axis-tick--minor', left: timeToX(s), html: '' });
       }
     }
-    paintScale(items);
+    paintScale(items, tag);
   }
 
   /* ── 标尺刻度的 DOM diff（第 ⑤ 片）───────────────────────────────────────────────────────
@@ -331,13 +337,20 @@ export function mountTimeline(
      把 180 来个刻度元素整体重建 —— 元素对象每帧都换新的（"整条标尺重画"的闪），
      也没有任何出入场可挂（当场删、当场建）。现在按 key diff：
      **还在的只改 left、新来的缩放淡入（`scaleTicksEnter`）、走掉的淡出后再摘（`scaleTicksLeaveAndRemove`）**。
-     key = `种类|unit|stepSec|时间` ⇒ 同一档位内只由时间决定，平移/缩放时绝大多数刻度都能认出来。 */
+     key = `种类|unit|时间`（**不含 stepSec**，见 `renderScale()` 里那段说明）⇒ 换档时"还在的那些刻度"
+     仍是同一个元素（数字不重建、不闪），只有真进出的才演动画。 */
   const scaleTicks = new Map<string, HTMLElement>();
+  /** 每根刻度**上一次写进去的 html**：复用的元素在换档后「上一级」那截文字可能不再是同一个
+      （时/分档的 `showPrev` 是拿 `s - stepSec` 比的）⇒ 内容真的变了才重写，
+      逐帧 `innerHTML =` 就又变回"整条标尺重画"了。 */
+  const scaleHtml = new WeakMap<HTMLElement, string>();
+  /** 上一次的档位（`unit|stepSec`）：档位一变就是"整批换"，见下面的分流。 */
+  let lastScaleTag = '';
   /** 换掉多少比例算「整批换」（换档）⇒ 走"先出后进"。0.5 = 一半以上的刻度都换了。 */
   const WHOLE_SWAP_RATIO = 0.5;
   /** 整批换时旧刻度的淡出时长；入场要等它走完（`start` 同一个值）—— 两批不许重叠。 */
   const WHOLE_OUT_MS = 100;
-  function paintScale(items: { key: string; cls: string; left: number; html: string }[]): void {
+  function paintScale(items: { key: string; cls: string; left: number; html: string }[], tag: string): void {
     const els: HTMLElement[] = [];
     const entering: HTMLElement[] = [];
     const seen = new Set<string>();
@@ -348,8 +361,12 @@ export function mountTimeline(
         el = document.createElement('div');
         el.className = it.cls;
         if (it.html) el.innerHTML = it.html;
+        scaleHtml.set(el, it.html);
         scaleTicks.set(it.key, el);
         entering.push(el);
+      } else {
+        const last = scaleHtml.get(el);
+        if (last !== it.html) { el.innerHTML = it.html; scaleHtml.set(el, it.html); }
       }
       el.style.left = `${it.left}px`;
       els.push(el);
@@ -372,11 +389,15 @@ export function mountTimeline(
          否则旧的淡出与新的淡入同时进行 = 屏上两把尺子叠在一起；
        · **零星换**（平移/同档缩放时从两端进出的一两根）⇒ 保持并行交叉淡入 —— 它们分居屏幕
          左右两端，读不出"两把尺子"，而且串行会让人看到标尺一截一截地闪。
-       判据用**相对比例**（不用绝对根数）：边缘变化实测约 6/111 ≈ 0.05，整批换 ≈ 1.0。
+       判据有两条（**档位变了**，或**比例**过了半）：档位变了（`tagChanged`）一定是整批 —— 这时
+       网格相位整体换了，"并行"必然读出两把尺子；比例那条兜住"档位没变但时间轴被重排"
+       （切聚焦/全览时线外刻度整片换掉）。边缘变化实测约 6/111 ≈ 0.05，两条都不会误触发。
        ⚠️ 别把整批那档的 `dur` 调长过入场的 `start`（见 `src/ui/motion.ts` 的 `scaleTicksLeaveAndRemove`）。 */
     const changed = entering.length + leaving.length;
     const union = items.length + leaving.length;
-    if (union > 0 && changed / union >= WHOLE_SWAP_RATIO) {
+    const tagChanged = tag !== lastScaleTag;
+    lastScaleTag = tag;
+    if (union > 0 && (tagChanged || changed / union >= WHOLE_SWAP_RATIO)) {
       if (leaving.length) scaleTicksLeaveAndRemove(leaving, { dur: WHOLE_OUT_MS, step: 0, maxDelay: 0 });
       if (entering.length) scaleTicksEnter(entering, { start: leaving.length ? WHOLE_OUT_MS : 0 });
     } else {
@@ -389,6 +410,7 @@ export function mountTimeline(
       一个**脱离文档**的元素上写 left，屏幕上的标尺会缺一截。 */
   function clearScale(): void {
     scaleTicks.clear();
+    lastScaleTag = '';
     scaleEl.innerHTML = '';
   }
 

@@ -100,6 +100,50 @@
   （⚠️ 会话落盘有 400ms 防抖，写完要等一会儿再杀应用）。
 - `probe-scale-zoom.cjs`：逐格 alt+滚轮缩小，打印每一档的「主刻度数 / 子元素数 / 前 5 个标签 / 前 3 个 left」
   —— 换档（步长变）那一刻一眼可见，也能看出"同一次重画的瞬间是 新+旧 两批同时在 DOM 里"。
+- `probe-scale-enter-frames.cjs`：**入场期间逐帧**打印 —— 在演刻度的父级 computed `opacity` / `transform` 矩阵 /
+  inline `left` / 动画个数，它 `.tl__axis-label` 的 `font-size` 与 `getBoundingClientRect()`（`x/width/top`，
+  宽度反映"字被缩放到多少"），以及全屏刻度数 `n` / 在演数 `animN` / **同屏重复标签数 `dup`**。
+- `probe-scale-enter-shot.cjs`：入场期间按 2x 截标尺条存成一串 PNG（肉眼比对"动画中"与"落定后"的字）。
+- `probe-scale-aa.cjs`：同一段文字在「完全静止 / 动画跑完但 `fill` 还挂着 / `autoRelease` 取消之后」各截一张
+  3x 放大图 —— 用来区分"抗锯齿或合成层切换"（本轮实测后两张**字节完全相同、同一 sha256** ⇒ 排除）。
+- `probe-scale-text-blink.cjs`：跨一次真换档，逐帧盯换档前每个数字的 computed `opacity` 与 `isConnected`
+  ⇒ 输出 `keptN / blinkedN`（用户视角的"字到底闪没闪"）。
+
+### ⑥ 换档时「标尺的文字会闪一下」（**用户实测**，已修）—— key 不该带档位
+- 用户原话：「**入场时标尺的文字会闪一下**」。
+- 排查（先钉机制，四步都留了探针）：逐帧采样（`probe-scale-enter-frames.cjs`）—— `dup: 0`（不是同屏两份文字）、
+  `opacity` 从 0.00 正确爬升（不是"先全亮再淡入"）、文字确实跟着 `scale(0.9)→1` 被缩放
+  （`.tl__axis-label` 实测宽度 `22.3 → 24.1`，`x` `-7.5 → -7.2`、`top` `78.6 → 78.9` 亚像素漂）；
+  像素比对（`probe-scale-aa.cjs`）——"动画跑完但 `fill` 还挂着"与"`autoRelease` 取消之后"两张 3x 放大图
+  **字节完全相同（同一 sha256）** ⇒ **抗锯齿/合成层切换这条被排除**。
+- 真病根：`renderScale()` 的 key 里带了 `stepSec`（原来的 `M|${unit}|${stepSec}|${s}`）。缩放每跨过一次档位
+  （`quantStep()` 在 1/2/5/10×10^k 之间跳）**每根刻度的 key 就全变** ⇒ `paintScale()` 判成"整批换" ⇒
+  走上一轮刚加的"先出后进"⇒ **旧数字淡掉 100ms、新数字再淡回来**。因为网格相位没变、线还落在原来那些位置上，
+  看上去就是**"尺子没动、只有字在闪"**（用户的原话正是"标尺的文字"而不是"标尺"）。
+- 修法（`src/ui/timeline.ts`）：key **只认身份** —— `M|${unit}|${s}` / `m|${unit}|${Math.round(s)}` /
+  `C|${unit}|${a}|${b}`，**去掉 `stepSec`**：换档时"还在的那些刻度"复用同一元素（原地不动、数字不重建），
+  只有真新增/真消失的才走入场/退场。"整批换"改由**档位本身变了**触发：`paintScale(items, tag)` 里
+  `const tagChanged = tag !== lastScaleTag`（`tag = unit|stepSec`），判据成为
+  `union > 0 && (tagChanged || changed / union >= WHOLE_SWAP_RATIO)` ⇒ 上一轮"不许出现两把尺子"照旧
+  （`scale-motion` ★6 仍 PASS、`gapMs: 0`）。
+  ⚠️ 复用的元素要**按需刷新 `innerHTML`**（key 不含 `stepSec` 后，时/分档的 `showPrev` 是拿 `s - stepSec` 比的）
+  —— 用 `scaleHtml`（`WeakMap<HTMLElement, string>`）记"上次写进去的 html"，**不同才重写**；
+  逐帧写 `innerHTML` 就又变回"整条标尺重画"了。`clearScale()` 里 `lastScaleTag` 一起复位。
+- 守卫：`tools/e2e/scale-motion.cjs` 新增 **★7** —— 交替方向逐格缩放，取第一个「**年档中位年差变了**」
+  （真换档；判据不能只看"有同名标签"：同档位缩放本来就有 17/20 同名、元素本来就会复用 ⇒ 假绿）
+  且前后都有 ≥2 个同名数字的点，断言那些数字**仍是同一个 DOM 对象**。
+  **A/B：修复前 `prevGap 2 → nowGap 1, common 7, keep 0`（FAIL）；修复后 `keep 7`（PASS）。**
+- 用户视角的量化（`probe-scale-text-blink.cjs`：逐帧盯换档前每个数字的 computed `opacity` 与 `isConnected`）：
+  同一次换档（2年 → 1年）里，**修复前 10 个数字全部暗到 0（`keptN: 0`）；修复后 7 个 `opacity` 全程 = 1
+  （根本没被碰）、剩下 3 个是滚出视野的正常退场**。
+- ⚠️ 顺带修掉 `scale-motion.cjs` **连跑两次的假 FAIL**：上一轮会把视图留在"缩放到极限"处，再往外缩被夹住
+  ⇒ ★6 的 12 步里一次换档都没发生（实测 `hitAt: -1`）。现在 ★6/★7 开头都先切一次「— 全览 —」拿干净 fit
+  （`#lk-line-sel` 派 `change('')`），与首次运行等价。
+- 回归：`scale-motion` **8/8**（连跑两次读数一致）、`scale-hidden-mount` **5/5**、`timeline-scale` **12/12**、
+  `nonlinear-pan` **7/7**、`storyline-focus` **13/13**。
+- 📌 夹具坑（我踩了）：`timeline-scale` 必须**只**播 `reset-entity-vault` + `seed-node`；多播了
+  `seed-storyline-focus`（跨度从 200 年变成几千年、档位从 2 年变 500 年）会让 ★0b/★1c/★2b 一起假 FAIL
+  （12/12 → 9/12），看着像回归。
 
 ## 第四十一轮（2026-09-19）· 新建节点面板与节点信息面板不一致 + 页签弹动（**用户实测**）
 
