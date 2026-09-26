@@ -55,6 +55,17 @@ export function setAgentFocus(f: AgentFocus | null): void {
   announce();
 }
 
+/** 启动时用**会话存档**里记着的那一条给助手一个起点（`src/ui/session.ts` 的 `restoreSession()` 调）。
+ *  为什么需要它：焦点只有设定库 / 沙盘**渲染时**才上报，落点若是助手 / AI 工作台，那边压根不挂载，
+ *  于是助手答「你此刻没有选中任何条目」（用户 2026-09-26 报的就是这句）—— 而存档里明明记着他上次在编哪一条。
+ *  ⚠️ 必须**不是 live**：工作台没在屏幕上，说成「正在编」就是谎报（`setAgentFocus()` 会把 live 拉回 true）。 */
+export function seedAgentFocus(f: AgentFocus | null): void {
+  if (sameFocus(focus, f) && !live) return;
+  focus = f;
+  live = false;
+  announce();
+}
+
 /** 工作台从屏幕上撤走（`src/ui/codex.ts` 的 dispose）——**不清空焦点**，只降级为「最近在看」。 */
 export function setAgentFocusLive(v: boolean): void {
   if (live === v) return;
@@ -140,9 +151,15 @@ function entitiesBlock(ws: Worldset): string {
 /** 「创作者此刻打开的那一条」——焦点条目的字段与正文（各自截断，正文给得多一点，那是创作者真正在写的东西）。
  *  ⚠️ 这一块在 `buildContext()` 里排在**第二位**（紧跟【工作区】）：用户 2026-09-18 实测「AI 看不到我打开的文件」，
  *  除了切工具被清空，另一个原因是它原来排在最后一行 —— 小模型读到后面就不看了。**它就是这条消息的主角，得放前面。** */
-function focusBlock(ws: Worldset): string {
+function focusBlock(store: Store, ws: Worldset): string {
   const f = focus;
-  if (!f || f.world !== ws.name) return '';
+  if (!f) return '';
+  /* ⚠️ 焦点可能落在**另一个世界**里（他切了世界、没换条目）：以前这里 f.world !== ws.name 就直接 return ''，
+     助手于是答「你没打开任何条目」——事实是他打开着一条，只是在别的世界。现在照常渲染、并说明它在哪个世界。 */
+  const owner = store.data.worldsets[f.world] ?? ws;
+  const away = f.world === ws.name
+    ? ''
+    : `\n  ⚠️ 这一条在**另一个世界**「${f.world}」里（他此刻的世界是「${ws.name}」——别把它当成当前世界的条目）`;
   /* 降级时标题也得换掉：还写「此刻打开的那一条」，模型会当成「他现在就在看」（用户实测连问两次都不改口） */
   const head = live ? '【创作者此刻打开的那一条】' : '【创作者最近打开过的那一条】';
   const age = live
@@ -154,19 +171,19 @@ function focusBlock(ws: Worldset): string {
     ? '\n  在哪：世界沙盘的时间线上（他刚点开这条看）'
     : '\n  在哪：设定库工作台';
   if (f.kind === 'entity') {
-    const e = ws.entities?.[f.id];
+    const e = owner.entities?.[f.id];
     if (!e) return '';
     const tname = ws.entityTypes?.[e.typeId]?.name ?? e.typeId;
     const fields = fieldsOf(e.properties);
     const doc = clip(e.doc, 600);
     return `${head}设定「${e.name}」（${tname}）`
-      + `\n  文件：${ws.name}/${ENTITY_DIR}/${tname}/${e.name}.md`
+      + `\n  文件：${f.world}/${ENTITY_DIR}/${tname}/${e.name}.md`
       + `${place}`
-      + `${fields ? '\n  字段：' + fields : ''}${doc ? '\n  正文：' + doc : ''}${age}`;
+      + `${fields ? '\n  字段：' + fields : ''}${doc ? '\n  正文：' + doc : ''}${away}${age}`;
   }
   let node: TimelineNode | undefined;
   let tlName = '';
-  for (const tl of Object.values(ws.timelines ?? {})) {
+  for (const tl of Object.values(owner.timelines ?? {})) {
     node = (tl.nodes ?? []).find((n) => n.id === f.id);
     if (node) { tlName = tl.name; break; }
   }
@@ -176,17 +193,18 @@ function focusBlock(ws: Worldset): string {
   const kind = node.kind ? node.kind : '事件';
   return `${head}事件「${node.year ?? '?'} 年 ${node.title}」`
     + `${node.kind && node.kind !== '事件' ? '（' + node.kind + '）' : ''}`
-    + `\n  文件：${ws.name}/${tlName}/${kind}/${node.title}.md`
+    + `\n  文件：${f.world}/${tlName}/${kind}/${node.title}.md`
     + `${place}`
     + `${node.desc ? '\n  简述：' + clip(node.desc, 200) : ''}`
     + `${fields ? '\n  字段：' + fields : ''}`
-    + `${doc ? '\n  正文：' + doc : ''}${age}`;
+    + `${doc ? '\n  正文：' + doc : ''}${away}${age}`;
 }
 
 /** 助手不知道该看哪一条时，**别让它拿世界名糊弄** —— 直接把「问清是哪一条」写进上下文 */
-const NO_FOCUS = '【创作者此刻打开的那一条】（没有：他没打开任何条目。'
-  + '他说「这个 / 这条 / 当前 / 我打开的文件」时，直接问他指的是哪一条，不要拿世界名或时间线名糊弄，'
-  + '也不要把【他最近做过的事】里的东西当成他此刻在看的东西）';
+const NO_FOCUS = '【创作者此刻打开的那一条】（没有：这会儿没有正在编的条目。'
+  + '**不要向他解释你看不到什么** —— 他说「这个 / 这条 / 当前 / 我打开的文件」时，先按【他最近做过的事】'
+  + '与【当前时间线】挑出最可能的那一条、一句话跟他确认（比如「你说的是刚改的「X」吗？」）；'
+  + '挑不出来就直接一句话问他是哪一条；不要拿世界名或时间线名糊弄，也**不要写「我看不到 / 你没有选中」这类解释**）';
 
 /** 「他此刻在哪个界面」——单独一条、排在【工作区】之后：光有焦点不够，
  *  模型得先知道他现在人在哪个工具里，才不会把「最近打开过的」说成「你正在看」。 */
@@ -203,7 +221,7 @@ export function buildContext(store: Store, budget = 4000): string {
   const parts: string[] = [
     `【工作区】当前世界「${ws.name}」（共 ${names.length} 个世界：${names.slice(0, 8).join('、')}）`,
     viewBlock(),
-    focusBlock(ws) || NO_FOCUS,
+    focusBlock(store, ws) || NO_FOCUS,
     /* 他最近改过什么（用户 2026-09-18：「能不能让这个 ai 能读到我的过去操作行为」）。
        排在焦点之后：先知道他在看哪一条，再看他刚才动过什么，顺序反了他会以为流水是当下这一条。 */
     activityBlock(),

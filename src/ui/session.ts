@@ -20,6 +20,7 @@
  *  时间线同理，`store.activeTimeline` 只活在内存里。
  */
 import type { Store } from '../store/store';
+import { seedAgentFocus } from './agent-context';
 
 /** 正在编的那一条。⚠️ 节点的身份必须带上 `tlId`：实体 id 全局唯一，节点 id 得先知道在哪条时间线里
  *  （`vault` 里也是 `<世界>/<时间线>/<种类>/<名字>.md`）。 */
@@ -117,6 +118,18 @@ export function restoreSession(store: Store): void {
   /* 时间线要在**世界落位之后**再判：`setActiveWorld()` 会把游标重挑成那条世界的第一条 */
   const ws = store.data.worldsets[store.activeWorld];
   if (s.timeline && ws?.timelines?.[s.timeline]) store.setActiveTimeline(s.timeline);
+  /* 把「上次在编的那一条」也交给助手（`src/ui/agent-context.ts`）——**和工具落点无关**，所以放在下面那个
+     early return 之前：落点若不是设定库（助手 / AI 工作台 / 沙盘），工作台不会挂载、也就**永远不会上报焦点**，
+     助手只能答「你没打开任何条目」，而事实是他上次在编那一条（用户 2026-09-26 报的这句）。
+     ⚠️ 走 `seedAgentFocus`（非 live）：「最近在看」才是真的 —— 工作台并没有在屏幕上。 */
+  const t = s.target;
+  if (t?.kind === 'entity' && ws?.entities?.[t.id]) {
+    const e = ws.entities[t.id];
+    seedAgentFocus({ kind: 'entity', world: store.activeWorld, id: e.id, title: e.name });
+  } else if (t?.kind === 'node') {
+    const n = ws?.timelines?.[t.tlId]?.nodes.find((x) => x.id === t.nodeId);
+    if (n) seedAgentFocus({ kind: 'node', world: store.activeWorld, id: n.id, title: n.title });
+  }
   if (!s.tool || s.tool === 'sandbox') return;   /* 沙盘是默认视图，不用点 */
   const btn = Array.from(document.querySelectorAll<HTMLElement>('.lk-tool-btn'))
     .find((b) => b.dataset.tool === s.tool);
