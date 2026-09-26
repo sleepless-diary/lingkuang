@@ -28,7 +28,8 @@ import { isWriteTool, looksLikeToolJson, parseToolCall, planWrite, runReadTool, 
 import { motionReduced } from './motion';
 import { isImeEnter } from './keys';
 import { escapeHtml } from './html';
-import { loadSettings, type AgentAsk, type AgentScope } from './settings';
+import { activeProviderProfile, type AgentAsk, type AgentScope } from './settings';
+import { providerSummary } from './ai-providers';
 import type { Store } from '../store/store';
 
 const PANEL_ID = 'lk-agent-panel';
@@ -257,9 +258,8 @@ function renderMsgs(): void {
 
 function renderMeta(): void {
   if (!openEl) return;
-  const cfg = loadSettings();
   const chip = openEl.querySelector('#lk-agent-model');
-  if (chip) chip.textContent = `${cfg.aiMode === 'api' ? 'API' : '本地'} · ${cfg.model}`;
+  if (chip) chip.textContent = providerSummary(activeProviderProfile());
   const f = getAgentFocus();
   const fchip = openEl.querySelector('#lk-agent-focus');
   if (fchip) {
@@ -539,7 +539,6 @@ export function closeAgentPanel(): void {
 export function openAgentPanel(s: Store): () => void {
   if (isAgentPanelOpen()) return () => closeAgentPanel();
   store = s;
-  const cfg = loadSettings();
   const el = document.createElement('aside');
   el.id = PANEL_ID;
   el.className = 'lk-agent';
@@ -549,7 +548,7 @@ export function openAgentPanel(s: Store): () => void {
     '<div class="lk-agent__head">' +
       '<div class="lk-agent__title">灵框助手</div>' +
       '<div class="lk-agent__chips">' +
-        `<span class="lk-agent__chip" id="lk-agent-model">${escapeHtml((cfg.aiMode === 'api' ? 'API' : '本地') + ' · ' + cfg.model)}</span>` +
+        `<span class="lk-agent__chip" id="lk-agent-model">${escapeHtml(providerSummary(activeProviderProfile()))}</span>` +
         '<span class="lk-agent__chip is-focus" id="lk-agent-focus">没打开条目</span>' +
       '</div>' +
       '<button class="lk-agent__split" id="lk-agent-split" title="把上面的对话切出上下文（系统提示词与长期记忆照常）">分割上下文</button>' +
@@ -567,10 +566,10 @@ export function openAgentPanel(s: Store): () => void {
       /* 两个**正交**旋钮：范围 × 询问（`src/ui/agent-perm.ts`）。分开摆而不是合成一个三选一：
          创作者能一眼说出"不许写 / 写了要问我 / 随你写"这三种之外，还能组合出第四种（只读+不问）。 */
       '<select class="lk-agent__perm-sel" id="lk-agent-scope">' +
-        SCOPES.map((v) => `<option value="${v}"${v === cfg.agentScope ? ' selected' : ''}>${SCOPE_LABEL[v]}</option>`).join('') +
+        SCOPES.map((v) => `<option value="${v}"${v === getAgentScope() ? ' selected' : ''}>${SCOPE_LABEL[v]}</option>`).join('') +
       '</select>' +
       '<select class="lk-agent__perm-sel" id="lk-agent-ask">' +
-        ASKS.map((v) => `<option value="${v}"${v === cfg.agentAsk ? ' selected' : ''}>${ASK_LABEL[v]}</option>`).join('') +
+        ASKS.map((v) => `<option value="${v}"${v === getAgentAsk() ? ' selected' : ''}>${ASK_LABEL[v]}</option>`).join('') +
       '</select>' +
       '<span class="lk-agent__perm-hint" id="lk-agent-perm-hint"></span>' +
     '</div>' +

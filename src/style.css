@@ -706,6 +706,27 @@ body {
 .lk-pop-in { animation: lk-pop var(--motion-base) var(--ease-standard) both; }
 /* 弹层遮罩比卡片快：遮罩是 chrome，卡片才是内容 */
 .lk-overlay-in { animation: lk-fade var(--motion-fast) linear both; }
+/* 设置面板**分页**（用户 2026-09-26：「再把设置分页做一下，就像 dsh（我比较熟悉这种模式）」）：
+   左侧导航 + 右侧分区。**四页的 DOM 一开始就都在**，只切 `display`（见 `src/ui/settings.ts`
+   的 `showPage`）—— 与工作台左树「两组都在骨架里只切显隐」同一条纪律：不重建 ⇒ 切回来时
+   草稿还在、滚动位置还在，也不会因为换页而让下面的内容整体跳一下。 */
+.lk-set-nav-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--fg-2);
+  font-size: var(--text-sm);
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.lk-set-nav-btn:hover { background: var(--surface); color: var(--fg); }
+.lk-set-nav-btn.is-on { background: var(--surface); color: var(--fg); font-weight: 600; border-left-color: var(--accent); }
+/* 供应商行里那个「这家配好了没」的小圆点由 JS 上色（本地 Ollama 不需要 Key ⇒ 直接算配好） */
+.lk-set-model-row:hover { background: var(--surface); }
 /* 内容区**换条目**（设定库点左列换一条）：动的是「同一块地方换成了别的内容」，
    所以从 0.5 不透明度落位，**不是从透明**——从 0 出来就是闪一下空白，那是用户报过的老毛病
    （见上面「整块容器不许淡入」那段）。也刻意只动 opacity 不加 transform：

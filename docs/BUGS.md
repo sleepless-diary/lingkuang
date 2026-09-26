@@ -15,6 +15,65 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第五十一轮（2026-09-26）· AI 供应商档案（可选 + 自定义）与设置面板分页
+
+用户原话：「**做成可选供应商和自定义供应商的版本吧，再把设置分页做一下，就像 dsh（我比较熟悉这种模式）**」。
+
+### ① 一家供应商 = 一行档案，不再是「一句 aiMode + 三个平铺字段」
+- 病根（体验）：老设置里「用谁」和「怎么连」挤在一起（`aiMode: 'ollama' | 'api'` + `baseUrl` + `apiKey` + `model`）——
+  想从本地 Ollama 换到 DeepSeek，得手打一遍端点、还得记得把 Key 填上、把旧 Key 清掉；换回来又得再手打一遍。
+- 现在：新增 `src/ui/ai-providers.ts` ⇒ `ProviderProfile = { id, name, preset, kind, baseUrl, apiKey, model }`。
+  `PRESETS` = 本地 Ollama / DeepSeek / OpenAI / 硅基流动 / 自定义（顺序即面板菜单顺序），
+  `providerFromPreset()` / `customProvider()` / `defaultProviders()`（出厂一条本地 Ollama）/
+  `sanitizeProvider()` / `activeOf()` / `providerSummary()` / `providerProblem()` / `probeCfgOf()`。
+- 「当前在用」= `Settings.activeProvider`（id），取用口是 `settings.ts` 的 `activeProviderProfile()`。
+  ⚠️ `ai-providers.ts` **不 import `settings.ts`**（那边要 import 这里做迁移，反向 import 会成环 —— 上一轮 `ai-models.ts` 已经栽过一次）。
+- 分寸借 DSH `dsh-client-ui-settings-models` 的 `ProviderEditor` / `CustomProviderCard`：
+  **预设只产候选**（只把端点填好，Key 与模型自己填）、**自定义是「创建」不是「编辑」**、
+  **失败点名是哪个字段**（`providerProblem()`：缺端点 / 缺模型 / 缺 Key 各说各的话，AI 调用前先抛这句人话，而不是发出去等 http 404）。
+
+### ② 迁移：老格式原地折成一条，一个字段都不丢
+- `loadSettings()` 里 `migrateProviders(stored)`：落盘已有合法 `providers` 就以它为准（脏条目走 `sanitizeProvider()` 过滤）；
+  否则把 `aiMode + baseUrl/apiKey/model` 折成**一条**（`aiMode === 'api'` ⇒ 自定义供应商 `pv-custom`，否则本地 Ollama），
+  `qwen3:14b` / `qwen2.5:14b` 仍回落到 `qwen2.5:7b`（正文会进 thinking 那两档）；
+  **`aiMode` / `baseUrl` / `apiKey` / `model` 四个老键搬完就删**（`saveSettings` 之后落盘只剩 `providers` + `activeProvider`）。
+- ⚠️ 只折出「他当时在用的那一条」，**不顺手塞四家没配 Key 的预设** —— 想要别的去「＋ 添加供应商」加。
+
+### ③ 设置面板分页（模型 / 画布 / 转场 / 演变）
+- 面板 = 左侧导航（`.lk-set-nav-btn[data-page]`）+ 右侧四个 `<section class="lk-set-page">` + 底部常驻「保存设置」；
+  卡片从 560 宽改成 `760 × min(76vh, 620px)`（有了确定高度，右侧分区才能自己滚）。
+- **四页 DOM 一开始就都在，只切 `display`**（`showPage()`）—— 与工作台左树「两组都在骨架里只切显隐」同一条纪律：
+  切回来草稿还在、滚动位置还在，也不会因为换页让内容整体跳一下；
+  ⚠️ 顺带保住了 `tools/e2e/settings-panel.cjs` ★3（四张卡片标题同屏都在）不用改。
+- 模型页结构：`#set-prov-list`（行 = 圆点「配好了没」+ 名字 + `模型 · 端点 · 协议` + 使用 / 编辑）
+  + `#set-prov-add` / `#set-prov-add-menu`（只列**还没加过的**预设 + 永远在的自定义 —— DSH `taken` 那条：已存在的路由不许被影子覆盖）
+  + `#set-prov-editor`（`#set-prov-name` / `#set-prov-kind` / `#set-prov-baseurl` / `#set-prov-apikey` / 模型选择器 `#set-model-*` / `#set-prov-use` / `#set-prov-del`）。
+  存盘时机与上一版一致：**供应商与画布偏好走「保存设置」，转场与演变立刻存盘**。
+
+### ④ 顺带把写死的模型统一掉（上一轮的「已报告未修」）
+- `src/ui/roleplay.ts`、`src/ui/tavern.ts` 不再 `aiChat(..., { model: 'qwen3:14b' })`，
+  `src/ui/ai-workbench.ts` 删掉 `const MODEL = 'qwen3:14b'` ⇒ 三处全部跟随**当前供应商选中的模型**；
+  状态行与助手 chip 也从「本地/API · 模型」改成**供应商名 · 模型**（`providerSummary()`）。
+- ⚠️ `main.js:1506-1549` 那条 AI 路径（`ai:associate` / `ai:classify`，读 `settings.json` 的 `s.ai` + `LINGKUANG_AI_*` 环境变量）
+  **仍是独立的、不受供应商档案影响** —— 它现在没有任何渲染进程调用方（`preload.js` 里还留着 `associate` / `classifyWords`），
+  属于历史遗留：要么哪天接上 `activeProviderProfile()`，要么整体删掉。
+
+### ⑤ 守卫与 A/B
+- 重写 `tools/e2e/settings-model-picker.cjs`（**17 项**）：★0 前置（4 个导航 + 4 个分区 + 四个标题同屏）/
+  ★1 分页是**切显隐不是重建**（切走再切回来仍是同一个 DOM 元素）/ ★2 出厂一家供应商且只有一家时不给删 /
+  ★3 编辑卡字段回填 / ★4 模型清单是**这一家的**端点问来的 / ★5 搜索 + 点选 + 手填 / ★6 保存才落盘 /
+  ★7 端点 500 写出原因且缓存清单不消失 / ★8 添加菜单只列没加过的 + 自定义 / ★9 点预设 ⇒ 加一条并自动打开编辑卡 /
+  ★10 OpenAI 兼容问 `/models` 带 Bearer / ★11 草稿切「当前在用」不算数，保存后才改 `activeProvider` /
+  ★12 自定义自己填名字与端点 / ★13 删除后行数回落且 `activeProvider` 不悬空 /
+  **★14 老格式迁移（端点 / Key / 模型 / 其它偏好一个不丢）+ ★14b 保存后四个老键清掉** / ★15 无异常。
+- **A/B：旧构建 ★0 起全 FAIL（`旧构建：设置面板没有分页导航 / 供应商清单`，exit 1 —— 守卫让它体面全红而非崩在 `undefined.shown`）；
+  新构建 17/17，连跑两次一致。**
+- 回归（每套件单独起干净实例 + 清 userdata，配正确夹具）：`settings-panel` 12/12、`codex-tree-view` 22/22、`toolbar-groups` 5/5、
+  `agent-mode` 10/10、`agent-tools` 19/19、`agent-memory` 15/15、`agent-panel` 21/21（★4 的 chip 文案按新口径改成「供应商 · 模型」）、
+  `motion-switch` 25/25、`entity-evolution` 49/49。
+- 📌 夹具坑（本轮又踩一次）：`agent-panel.cjs` 必须配 `seed-agent-chat.cjs`（我一开始配了 `seed-agent-memory` ⇒ ★7/★16/★17 三条
+  「盘上历史读回对话框 / 分割上下文」假 FAIL，读数都是 `n:0`）—— **套件头部的用法注释就是夹具清单，照它跑**。
+
 ## 第五十轮（2026-09-26）· 设置里的「模型」改成可选清单（照 DSH 的模型选择）
 
 用户原话：「**设置里面的 ai 选择能不能改成像 dsh 里面的模型选择一样**」。范围经确认 = **只改设置面板那一栏**

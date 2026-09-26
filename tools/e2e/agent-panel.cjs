@@ -159,8 +159,11 @@ async function main() {
       doc: t.includes('正文：实体自己的正文。'),
     };
   })()`);
-  check('★4 焦点小标签 + 模型标签（本地/API · 模型名）',
-    ctx1.chip === '正在编：银发少女' && /（本地|API）|(本地|API) · /.test(ctx1.model), { chip: ctx1.chip, model: ctx1.model });
+  /* ⚠️ 2026-09-26：chip 从「本地 / API · 模型名」改成了**供应商名 · 模型名**
+     （用户要求「做成可选供应商和自定义供应商的版本」⇒ 见 `src/ui/ai-providers.ts`）；
+     这个夹具用的是干净 userdata，所以默认那一家就是「本地 Ollama」。 */
+  check('★4 焦点小标签 + 模型标签（供应商 · 模型名）',
+    ctx1.chip === '正在编：银发少女' && ctx1.model === '本地 Ollama · qwen2.5:7b', { chip: ctx1.chip, model: ctx1.model });
   check('★5 上下文打包到了世界 / 时间线 / 设定清单 / **正在编那一条**（字段 + 正文 + 文件路径，且排在设定清单前）',
     ctx1.world && ctx1.timeline && ctx1.node && ctx1.setting && ctx1.focusEnt && ctx1.focusFile && ctx1.focusFirst && ctx1.fields && ctx1.doc && ctx1.len > 80,
     { world: ctx1.world, timeline: ctx1.timeline, node: ctx1.node, setting: ctx1.setting, focusEnt: ctx1.focusEnt, focusFile: ctx1.focusFile, focusFirst: ctx1.focusFirst, fields: ctx1.fields, doc: ctx1.doc, len: ctx1.len });

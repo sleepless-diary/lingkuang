@@ -51,8 +51,10 @@ export function openSettingsPanel(store: Store): () => void {
   card.setAttribute('aria-label', '设置');
   /* 卡片用**亮面**（`--surface`/`--fg`）：表单里的输入框、说明文字本来就是照亮面调的色，
      换成弹窗那种深色 chrome 会看不清。 */
+  /* ⚠️ 自 2026-09-26 起卡片里有**左侧导航 + 分区**（用户：「再把设置分页做一下，就像 dsh」）⇒
+     宽了（560 → 760）并且需要一个**确定的高度**，右侧分区才能自己滚（`#lk-set-body` 是 flex:1）。 */
   card.style.cssText =
-    'width:560px;max-width:100%;max-height:100%;display:flex;flex-direction:column;overflow:hidden;background:var(--surface);color:var(--fg);border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:var(--elev-raised);';
+    'width:760px;height:min(76vh,620px);max-width:100%;max-height:100%;display:flex;flex-direction:column;overflow:hidden;background:var(--surface);color:var(--fg);border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:var(--elev-raised);';
 
   const head = document.createElement('div');
   head.style.cssText =

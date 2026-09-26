@@ -1,7 +1,9 @@
-/** 角色扮演模块——AI 代入设定角色对话（本地 Ollama qwen3:14b 效果佳） */
+/** 角色扮演模块——AI 代入设定角色对话（用「设置 → 模型」里**当前在用**那家供应商与它选中的模型） */
 import type { Store } from '../store/store';
 import { aiChat, type ChatMsg } from './ai';
 import { isImeEnter } from './keys';
+import { activeProviderProfile } from './settings';
+import { providerSummary } from './ai-providers';
 
 export function renderRoleplay(_store: Store, host: HTMLElement): void {
   host.style.overflow = 'auto';
@@ -49,7 +51,7 @@ export function renderRoleplay(_store: Store, host: HTMLElement): void {
     history.push({ role: 'user', content: msg });
     try {
       status.textContent = 'AI 思考中…';
-      const reply = await aiChat(history, { model: 'qwen3:14b', temperature: 0.9, numPredict: 400 });
+      const reply = await aiChat(history, { temperature: 0.9, numPredict: 400 });
       bubble(reply.text || '(空回复)', 'ai');
       history.push({ role: 'assistant', content: reply.text });
     } catch (e) {
@@ -67,7 +69,7 @@ export function renderRoleplay(_store: Store, host: HTMLElement): void {
     log.innerHTML = '';
     bubble('（角色扮演开始，以「' + charSetting.split(/[，,\n]/)[0] + '」的身份回应）', 'ai');
     input.placeholder = '对角色说话…';
-    status.textContent = '角色扮演中 · qwen3:14b';
+    status.textContent = '角色扮演中 · ' + providerSummary(activeProviderProfile());
   });
 
   sendBtn.addEventListener('click', send);

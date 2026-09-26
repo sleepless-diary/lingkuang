@@ -3,6 +3,8 @@ import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { aiChat } from './ai';
 import { escapeHtml } from './html';
+import { activeProviderProfile } from './settings';
+import { providerSummary } from './ai-providers';
 
 export function renderTavern(store: Store, host: HTMLElement): void {
   host.style.overflow = 'auto';
@@ -69,13 +71,13 @@ export function renderTavern(store: Store, host: HTMLElement): void {
       const instruction = mode === 'sim'
         ? `你是剧情推演引擎。基于下面的剧情线/时间线，推演"下一步最可能发生的事件"，用 2-4 句话描述，续写剧情。\n\n${context}`
         : `你是剧情推演引擎。基于下面的剧情线/时间线，给出 2-3 个不同的分支走向（每个分支一句话，用「分支N：」开头）。\n\n${context}`;
-      const reply = await aiChat([{ role: 'user', content: instruction }], { model: 'qwen3:14b', temperature: mode === 'branch' ? 1.0 : 0.8, numPredict: 500 });
+      const reply = await aiChat([{ role: 'user', content: instruction }], { temperature: mode === 'branch' ? 1.0 : 0.8, numPredict: 500 });
       const text = reply.text || '(空回复)';
       bubble(text, 'ai');
     } catch (e) {
       bubble('⚠️ 推演失败：' + (e instanceof Error ? e.message : String(e)), 'ai');
     } finally {
-      status.textContent = '酒馆剧情推演 · qwen3:14b';
+      status.textContent = '酒馆剧情推演 · ' + providerSummary(activeProviderProfile());
     }
   }
 

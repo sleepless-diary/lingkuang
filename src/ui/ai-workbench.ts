@@ -12,7 +12,8 @@ import { entityTypeOf } from '../store/entities';
 import type { Entity } from '../store/types';
 import { aiChat, type ChatMsg } from './ai';
 import { isImeEnter } from './keys';
-import { loadSettings } from './settings';
+import { activeProviderProfile, loadSettings } from './settings';
+import { providerSummary } from './ai-providers';
 import { buildContext } from './agent-context';
 import { renderRoleplay } from './roleplay';
 import { renderTavern } from './tavern';
@@ -22,8 +23,6 @@ import {
   setSessionSink, toggleLink, activeSession, isLinked,
   type AiSession, type SessionRole,
 } from './ai-sessions';
-
-const MODEL = 'qwen3:14b';
 
 const api = (): any => (window as any).lingkuangAPI ?? {};
 
@@ -150,7 +149,7 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       const r = await aiChat([
         { role: 'system', content: '给下面这段对话起一个 2~6 个字的短标题，直接输出标题本身：不要标点、不要引号、不要解释。' },
         { role: 'user', content: transcript },
-      ], { model: MODEL, temperature: 0.3, numPredict: 24 });
+      ], { temperature: 0.3, numPredict: 24 });
       const title = String(r.text || '').replace(/[\s\r\n"'「」『』《》【】。，、！？：；]/g, '').slice(0, 12);
       if (title) { renameSession(s.id, title); setNote('按内容起了个名字：' + title); }
     } catch {
@@ -223,9 +222,9 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     const msgs: ChatMsg[] = sys ? [{ role: 'system', content: sys }] : [];
     msgs.push(...s.history);
     try {
-      const r = await aiChat(msgs, { model: MODEL, temperature: 0.85, numPredict: 500 });
+      const r = await aiChat(msgs, { temperature: 0.85, numPredict: 500 });
       pushMsg(id, { role: 'assistant', content: r.text });
-      setNote((r.model || MODEL) + ' · ' + (r.text.length) + ' 字');
+      setNote(r.model + ' · ' + (r.text.length) + ' 字');
     } catch (e) {
       setNote('出错了：' + (e instanceof Error ? e.message : String(e)), true);
     }
@@ -248,7 +247,7 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
   void ensureSessionsLoaded().then(() => {
     if (!listSessions().length) adoptSessions([]);
     renderAll();
-    setNote('本地 ' + MODEL + ' · 会话存在 agent/sessions.json（能手看手改）');
+    setNote(providerSummary(activeProviderProfile()) + ' · 会话存在 agent/sessions.json（能手看手改）');
     inputEl.focus();
   });
 }

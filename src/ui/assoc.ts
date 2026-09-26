@@ -2,7 +2,8 @@
  * 点击根词 → 展开联想（Ollama/API）；节点可拖拽（组跟随）；Alt+滚轮缩放；拖拽平移
  * 放在灵感触发器生成卡片下方，独立画布区域
  */
-import { loadSettings } from './settings';
+import { activeProviderProfile } from './settings';
+import { providerProblem } from './ai-providers';
 import { escapeHtml } from './html';
 
 interface AssocNode {
@@ -519,15 +520,17 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
     assocStatus(`展开「${node.word}」的联想…`);
     let words: string[] = [];
     try {
-      const cfg = loadSettings();
+      const p = activeProviderProfile();
+      const bad = providerProblem(p);
+      if (bad || !p) { assocStatus(bad || '还没配 AI 供应商（设置 → 模型）'); return; }
       const messages = [{ role: 'user', content: '你是词义联想引擎。给定一个词，生成 5-7 个不同的发散联想词。\n规则：1. 后一个词由前一个词自然联想而来 2. 词要具体、有画面感，2-4字中文名词为主 3. 输出格式：每行一个词，不要序号解释\n\n输入词：\n' + node.word }];
-      if (cfg.aiMode === 'api') {
-        if (!cfg.apiKey) { assocStatus('API 模式需在设置填 Key'); return; }
-        const r = await fetch(cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.apiKey }, body: JSON.stringify({ model: cfg.model, messages, temperature: 0.8, max_tokens: 200 }) });
+      if (p.kind === 'openai') {
+        /* 端点 / Key / 模型齐不齐由 providerProblem 在前面拦掉了 */
+        const r = await fetch(p.baseUrl.replace(/\/+$/, '') + '/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + p.apiKey }, body: JSON.stringify({ model: p.model, messages, temperature: 0.8, max_tokens: 200 }) });
         if (!r.ok) throw new Error('api ' + r.status);
         words = cleanWords((await r.json()).choices[0].message.content || '');
       } else {
-        const r = await fetch(cfg.baseUrl.replace(/\/+$/, '') + '/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: cfg.model, messages, stream: false, options: { temperature: 0.8, num_predict: 200, think: false } }) });
+        const r = await fetch(p.baseUrl.replace(/\/+$/, '') + '/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: p.model, messages, stream: false, options: { temperature: 0.8, num_predict: 200, think: false } }) });
         if (!r.ok) throw new Error('ollama ' + r.status);
         const msg = (await r.json()).message || {};
         /* qwen3: think:false 后内容应在 content；若仍空则读 thinking（兜底） */

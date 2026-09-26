@@ -158,7 +158,8 @@
 
 ### 5. 统一 AI 服务层 ⭐ 基础设施
 - [ ] 把现有 `aiChat()` 网关（Ollama / OpenAI 兼容双模式）升级为统一服务：`ai.run(task, context)` 单发分发（associate / classify / segment / draft / simulate…），新功能不再各自写 fetch
-- [x] **模型选择（2026-09-26 完成）**：用户原话「**设置里面的 ai 选择能不能改成像 dsh 里面的模型选择一样**」⇒ 设置面板的「模型」从手打文本框改成**可选清单**（新增 `src/ui/ai-models.ts`：本地 Ollama 问 `/api/tags`、API 模式问 `/models`；可搜索、可刷新；端点问不出来就把原因写在旁边、保留上次那份清单、手填兜底照旧）—— 照 DSH `ModelListEditor` 的分寸：**探测只产候选，用哪个由人点下去**。⚠️ `src/ui/roleplay.ts:52` 与 `src/ui/tavern.ts:72` 仍写死 `qwen3:14b`、`src/ui/ai-workbench.ts` 另有 `MODEL` 常量 ⇒ 设置里换模型**不影响**这三处（尚未统一，见 `BUGS.md` 第五十轮 ①）
+- [x] **模型选择（2026-09-26 完成）**：用户原话「**设置里面的 ai 选择能不能改成像 dsh 里面的模型选择一样**」⇒ 设置面板的「模型」从手打文本框改成**可选清单**（新增 `src/ui/ai-models.ts`：本地 Ollama 问 `/api/tags`、API 模式问 `/models`；可搜索、可刷新；端点问不出来就把原因写在旁边、保留上次那份清单、手填兜底照旧）—— 照 DSH `ModelListEditor` 的分寸：**探测只产候选，用哪个由人点下去**。（同批把 `src/ui/roleplay.ts:52` / `src/ui/tavern.ts:72` 写死的 `qwen3:14b` 与 `src/ui/ai-workbench.ts` 的 `MODEL` 常量统一到「当前供应商选中的模型」）
+- [x] **供应商档案 + 设置分页（2026-09-26 完成）**：用户原话「**做成可选供应商和自定义供应商的版本吧，再把设置分页做一下，就像 dsh（我比较熟悉这种模式）**」⇒ ① 新增 `src/ui/ai-providers.ts`：一家供应商 = 名字 + 协议（原生 Ollama / OpenAI 兼容）+ 端点 + Key + 模型，「当前在用」的那家由 `activeProvider` 记着，预设（本地 Ollama / DeepSeek / OpenAI / 硅基流动）一键加、自定义自己填，老格式 `aiMode + baseUrl/apiKey/model` 打开设置就原地折成一条档案（不丢配置）；② 设置面板改成**左侧导航 + 四页**（模型 / 画布 / 转场 / 演变，四页 DOM 常在、只切显隐）；③ 顺带把写死的 `qwen3:14b` 统一掉。守卫 `tools/e2e/settings-model-picker.cjs`（17 项，A/B 旧构建全红）
 - [ ] **应用层上下文注入**：角色/事件/地图数据由应用层查好塞进 prompt（本地 JSON 检索比 AI 自主查可靠）
 - [x] ~~**不做 agent 模式**（暂定）~~ —— **2026-09-15 用户改方向，此条作废**：用户要求「ai 真的工作，**类 agent**，但是主要工作还是在灵框内，有一个自己的对话框，有记忆，能总结创作者的偏好等，还有一个灵框内全局快捷键，按下就能呼出 ai」。原判断保留一半：**上下文仍然由应用层查好再塞进 prompt**（这条依然是原则），但多了对话框、长期记忆与工具调用 —— 见下面 §6「灵框内 AI 助手（agent）」
 - [ ] 本地优先不变：AI 永远是可选能力（双模式 + 费用自理声明）
