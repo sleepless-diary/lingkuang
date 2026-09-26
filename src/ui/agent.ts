@@ -100,6 +100,9 @@ function hist(): ChatMsg[] {
 }
 let loaded = false;
 let busy = false;
+/* 模型不吐思考时，只在**本次运行**里说明一次（用户 2026-09-26 问「还是看不到思考链」——
+   真因是他在用的 qwen2.5:7b 根本不吐 thinking 字段，而界面上一点痕迹都没有）。 */
+let noThinkHinted = false;
 /** 当前模式（⭐ 两个模式**都有**灵框内部的动作 —— 差别在自主程度：`chat` 一次只做一个动作，
  *  `agent` 可以连着走多步。见 `src/ui/agent-mode.ts` 顶部说明）。
  *  ⚠️ **面板会话态、不落盘**：每次打开都从 `chat` 开始。 */
@@ -606,6 +609,8 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
   let live: LiveBubble | null = null;
   /* 思考块（用户 2026-09-26「看不到他的思考诶」）：与气泡同生共死，但排在它上面 */
   let think: LiveThink | null = null;
+  /* 这一问有没有收到过一个字的思考：空 ⇒ 模型不吐（见末尾那条说明） */
+  let sawThink = false;
   try {
     /* 一次提问 = 最多 `roundMax` 轮：模型要么说话（结束），要么要求一个只读动作
        （执行完把结果喂回去，让它接着说）。写入动作一轮就结束 —— 要么落盘要么等点击。 */
@@ -631,7 +636,7 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
       let suppressed = false;
       const r = await agentAsk(msgs, {
         ...cfg,
-        onReasoning: (d: string) => think?.push(d),
+        onReasoning: (d: string) => { sawThink = true; think?.push(d); },
         onDelta: (d: string) => {
           acc += d;
           /* 自动化要看的「中间态」：测试先建好 window.__lkStreamLog，这里只往里记，正式运行零成本 */
@@ -645,6 +650,7 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
       if (!suppressed && !looksLikeToolJson(r.text)) live?.finish(r.text);
       /* 思考落定即折叠（正文才是主角；想回看点开它，历史里那份也还在）。
          真值以 `r.reasoning` 为准 —— 与下面落进历史的那一份对齐；空的话整块摘掉。 */
+      if (r.reasoning) sawThink = true;
       think?.finish(r.reasoning);
       /* ⭐ 两个模式**都解析动作**（2026-09-26 用户改口：聊天模式也有灵框内部的动作）；
          差别只在能连着走几步 —— `roundMax` 已经按模式定好了。别再说"聊天模式不解析"，
@@ -666,7 +672,13 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
         push({ role: 'assistant', content: r.text || '（模型返回了空内容）', reasoning: r.reasoning });
         /* 被截断要如实说 —— 用户 2026-09-26 报「输出被截断了」时界面上什么都没有 */
         if (r.truncated) host.note('回复被模型的输出上限截断了（' + (r.model || '模型') + '）：说「接着说」可以续', true);
-        else host.note(r.model === 'mock' ? '' : r.model ? '模型：' + r.model : '');
+        else if (!sawThink && !noThinkHinted) {
+          /* 模型压根不吐思考 —— 界面上原本一点痕迹都没有，分不清「功能没做」还是「这个模型没有」。
+             每个运行周期只说一次，之后安静（用户 2026-09-26 实测就是在用非推理模型）。 */
+          noThinkHinted = true;
+          host.note((r.model && r.model !== 'mock' ? '模型：' + r.model + ' · ' : '')
+            + '它不吐思考过程（这个模型不是推理模型）—— 想看得见思考，去「设置 → 模型」换成会推理的，比如本机的 qwen3:14b');
+        } else host.note(r.model === 'mock' ? '' : r.model ? '模型：' + r.model : '');
         break;
       }
       push({ role: 'assistant', content: r.text, reasoning: r.reasoning });

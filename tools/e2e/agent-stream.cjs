@@ -143,6 +143,13 @@ async function main() {
     !!md && md.mdClass === true && md.strong >= 1 && md.code >= 1 && md.li >= 2 && md.head >= 1 && md.bq >= 1 && md.hasAsterisk === false,
     md);
 
+  /* ---------- ①b 模型不吐思考时必须说明原因（用户 2026-09-26 实测在用 qwen2.5:7b ⇒ 一个字都没有，
+     界面上分不清「功能没做」还是「这个模型没有」） ---------- */
+  const noteOf = () => ev(`(function () { const n = document.getElementById('lk-agent-note'); return { text: n ? n.textContent : '', err: n ? n.classList.contains('is-err') : false }; })()`);
+  const n1 = await noteOf();
+  check('★1b ⭐模型不吐思考时，底部说明一次原因（旧构建：屏幕上一点痕迹都没有）',
+    String(n1.text).indexOf('不吐思考过程') >= 0 && n1.err === false, n1);
+
   /* ---------- ② 不截断：发出去的请求体里没有输出上限 ---------- */
   await ev(`window.__lkAgentMock = undefined; window.__reqLog = []; true`);
   await ask('这一句走真实通道，看看请求体。');
@@ -187,6 +194,10 @@ async function main() {
       && rising === true && after.live === false && after.caret === false
       && String(finalBubble).indexOf(CHUNKS[0]) >= 0 && String(finalBubble).indexOf(CHUNKS[2]) >= 0,
     { mid, lens, after, settledLen: String(finalBubble).length, rising });
+
+  const n3 = await noteOf();
+  check('★3b 这条说明只出现一次 —— 后面不吐思考的回合不再重复念它（不然每轮都在吵）',
+    String(n3.text).indexOf('不吐思考过程') < 0, n3);
 
   /* ---------- ④ 被截断要如实说 ---------- */
   await ev(`window.__lkAgentMock = { chunks: ['这是一段被模型输出上限切掉的'], gap: 30, truncated: true }; true`);

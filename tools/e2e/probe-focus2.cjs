@@ -31,7 +31,7 @@ async function main() {
       await sleep(1000);
       const b = await bubbles();
       const tail = b.length ? b[b.length - 1] : '';
-      if (tail && tail === last && (await ev(`(document.getElementById('lk-agent-note') || {}).textContent || ''`)).indexOf('思考') < 0) return tail;
+      if (tail && tail === last && (await ev(`(document.getElementById('lk-agent-note') || {}).textContent || ''`)).indexOf('正在思考') < 0) return tail;
       last = tail;
     }
     return '(超时) ' + last;
