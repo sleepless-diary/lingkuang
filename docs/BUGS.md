@@ -69,7 +69,23 @@
 `agent-panel` 21/21、`agent-main-session` 10/10、`agent-stream` 6/6、`agent-focus` 全过；三道检查
 `node --check main.js`(0) / `npx tsc --noEmit`(0) / `npx vite build`(0) 全绿。
 
-**还没做（同一天继续）**：**2B** 批量（`set_field{entities}` / `create_node{nodes}`）；**2C** 把工具循环与提议卡片
+### 2B（同一次会话接着做）：批量形态 —— 只在 Agent 模式认
+
+用户的分工落地：「Agent = 多步自主 + **批量改**」⇒ `src/ui/agent-tools.ts` 给两个写工具加批量形态：
+`set_field{entities:[名字…], field, value}`（同一字段、同一值，一次改一批；找不到的名字**跳过并写在卡片上**）与
+`create_node{nodes:[{title, year, kind?, desc?}…]}`（一次建一串；没 title 的项丢掉，不整批失败）。
+`planWrite(call, store, mode: AgentMode = 'agent')` 多收一个 `mode`：**批量形态只在 agent 模式放行** ——
+聊天模式收到批量就返回 `{ ok: false, note: '聊天模式一次只改一条 —— 要批量改请先切到 Agent 模式，或者一条一条说。' }`
+（`src/ui/agent.ts` 的 `handleWrite()` 传当前 mode）；`toolsPrompt(mode)` 的两句行为说明里也各写明了这一点。
+两种形态仍然**只出一张卡片**（标题写「改字段：2 条设定 · 发色」/「新建事件：2 个（主线）」，正文把每一项列清楚）。
+
+守卫 `tools/e2e/agent-batch.cjs`（新增 6 项，**第一次跑就 6/6**）：★1 先建出第二条设定当靶子、★2 批量改字段
+（一张卡片 + 点「应用」后**两条**都改）、★3 批量建事件（一张卡片 + 两个事件都建出来）、★4 聊天模式收到批量形态
+不出卡片、回执一句话让它切 Agent、数据一个字没动、★5 无异常。⭐ 判据一律以 **vault 里的 .md 内容**为准
+（「界面说改了」不算数）：`agent-batch.cjs` 的 `vaultText()` 递归读 `%TEMP%\lk-evault2\vault` 下全部 .md 再断言。
+回归：`agent-tools` 19/19、`agent-panel` 21/21、`agent-mode` 12/12；三道检查全绿。
+
+**还没做（同一天继续）**：**2C** 把工具循环与提议卡片
 抽成共享模块 ⇒ AI 页主会话也能动手 + 模式开关进 AI 页（那时 `ai-workbench.ts` 的 `tools = false` 要去掉）。
 
 ## 第五十五轮（2026-09-26）· AI 页的「主会话」与 Ctrl+K 助手合并成同一格会话（阶段 1）

@@ -434,7 +434,7 @@ function handleWrite(call: ToolCall): void {
     setNote('只读档：这次写入没有执行', true);
     return;
   }
-  const plan = planWrite(call, store);
+  const plan = planWrite(call, store, mode);
   if (!plan.ok) {
     pushHistory({ role: 'user', content: `【动作结果：${call.tool}】${plan.note}` });
     setNote(plan.note, true);

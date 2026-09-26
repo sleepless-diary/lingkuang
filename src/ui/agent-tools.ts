@@ -67,9 +67,9 @@ const READ_TOOLS: ToolSpec[] = [
 
 const WRITE_TOOLS: ToolSpec[] = [
   { name: 'create_entity', title: '新建设定', desc: '新建一条设定条目（会给它补上该类型的空字段）', args: '{ name: 名字, type?: 类型名, fields?: { 字段: 值 } }' },
-  { name: 'set_field', title: '改字段', desc: '改某条设定的一个字段值', args: '{ entity: 名字, field: 字段名, value: 值 }' },
+  { name: 'set_field', title: '改字段', desc: '改某条设定的一个字段值；也可以一次改一批（同一个字段、同一个值，仅 Agent 模式）', args: '{ entity: 名字, field: 字段名, value: 值 } 或 { entities: [名字…], field, value }' },
   { name: 'append_doc', title: '续写正文', desc: '在某条设定或某个事件的正文末尾追加一段', args: '{ target: "entity"|"node", name: 名字, text: 正文 }' },
-  { name: 'create_node', title: '新建事件', desc: '在当前时间线上建一个事件节点', args: '{ title: 标题, year: 年份, kind?: 种类, desc?: 一句简述 }' },
+  { name: 'create_node', title: '新建事件', desc: '在当前时间线上建一个事件节点；也可以一次建一批（仅 Agent 模式）', args: '{ title: 标题, year: 年份, kind?: 种类, desc?: 一句简述 } 或 { nodes: [{ title, year, kind?, desc? }…] }' },
   { name: 'rename_entity', title: '改名', desc: '给一条设定改名', args: '{ entity: 旧名字, name: 新名字 }' },
   /* ⭐ 灵框自己的设置（用户 2026-09-26：「给 AI 留一条改灵框设置的通道（包括聊天/Agent）」）。
      ⚠️ 只认白名单三个键 —— 不给模型碰"数据目录 / 界面布局 / 供应商密钥"这类东西的口子
@@ -103,8 +103,8 @@ export function toolsPrompt(mode: AgentMode = 'agent'): string {
     '⚠️ 不要写成 {"动作名":{…}}（例如 {"set_field":{…}}），也不要写成 {"name":…,"arguments":…} —— 那样我认不出来。',
     '要放开权限（切到 Agent 模式、把权限改宽）时，那张卡片**永远**要创作者点「应用」才会生效 —— 别催他。',
     mode === 'agent'
-      ? '不需要用动作时就用平常的话回答。**一次提问里可以连着提多个动作**（我最多放你走 8 步），批量活一次规划好。'
-      : '不需要用动作时就用平常的话回答。**一次提问只提一个动作**（这是「聊天」模式的规矩），做完把结果说给他、等他决定下一步。',
+      ? '不需要用动作时就用平常的话回答。**一次提问里可以连着提多个动作**（我最多放你走 8 步）；批量活（一次建好几个事件、给一批设定加同一个字段）**一次规划好再动手**：`set_field{entities:[…]}` 与 `create_node{nodes:[…]}` 两种批量形态只有在这个模式里认。'
+      : '不需要用动作时就用平常的话回答。**一次提问只提一个动作**（这是「聊天」模式的规矩），做完把结果说给他、等他决定下一步；**也不要用批量形态**（`entities`/`nodes` 两个键这个模式不认，要用得先切到 Agent）。',
   ].join('\n');
 }
 
@@ -131,6 +131,8 @@ const PRIMARY: Record<string, string> = {
 };
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '');
+/** 字段值的显示形态（数组用 / 连起来）—— 卡片与回执共用一个写法 */
+const fmtVal = (v: PropValue): string => (Array.isArray(v) ? v.join('/') : String(v));
 const knownTool = (v: unknown): string | null => {
   const n = str(v);
   return n && findTool(n) ? n : null;
@@ -296,8 +298,10 @@ export function runReadTool(call: ToolCall, store: Store): string {
 
 /* ---------------- 写入：先做成提议 ---------------- */
 
-/** 失败时返回一段人话错误（给模型看，让它改参数重试） */
-export function planWrite(call: ToolCall, store: Store): { ok: true; proposal: Proposal } | { ok: false; note: string } {
+/** 失败时返回一段人话错误（给模型看，让它改参数重试）。
+ *  ⭐ `mode` 只用来卡**批量形态**（`set_field{entities}` / `create_node{nodes}`）——
+ *  用户 2026-09-26 拍板：那种"一次动一批"的活只在 Agent 模式放行，聊天模式一次只做一个动作。 */
+export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent'): { ok: true; proposal: Proposal } | { ok: false; note: string } {
   const ws = currentWorld(store);
   const a = call.args;
   switch (call.tool) {
@@ -323,24 +327,56 @@ export function planWrite(call: ToolCall, store: Store): { ok: true; proposal: P
       };
     }
     case 'set_field': {
-      const e = findEntity(ws, str(a.entity));
-      if (!e) return { ok: false, note: `没找到叫「${str(a.entity)}」的设定。` };
       const field = str(a.field);
       if (!field) return { ok: false, note: '要改哪个字段？（args.field）' };
       const raw = a.value;
-      const old = e.properties?.[field];
-      const id = e.id;
       const value: PropValue = Array.isArray(raw)
         ? (raw as (string | number)[])
         : typeof raw === 'boolean' || typeof raw === 'number'
           ? raw
           : str(raw);
+      /* ⭐ 批量形态（阶段 2B）：`entities: [名字…]` —— 同一个字段、同一个值，一次改一批。
+         只在 Agent 模式放行；找不到的名字**跳过并写在卡片上**（不因为一条写错就整批不动）。 */
+      const many = Array.isArray(a.entities) ? (a.entities as unknown[]).map((n) => str(n)).filter(Boolean) : [];
+      if (many.length) {
+        if (mode !== 'agent') return { ok: false, note: '聊天模式一次只改一条 —— 要批量改请先切到 Agent 模式，或者一条一条说。' };
+        const hits = many.map((n) => findEntity(ws, n)).filter((e): e is Entity => !!e);
+        const miss = many.filter((n) => !findEntity(ws, n));
+        if (!hits.length) return { ok: false, note: `没找到这些设定：${miss.join('、')}。` };
+        const ids = hits.map((e) => e.id);
+        return {
+          ok: true,
+          proposal: {
+            tool: call.tool,
+            title: `改字段：${hits.length} 条设定 · ${field}`,
+            detail:
+              `都改成：${fmtVal(value)}\n` +
+              hits.map((e) => e.name).join('、') +
+              (miss.length ? `\n（没找到、跳过：${miss.join('、')}）` : ''),
+            apply: () => {
+              store.update((d) => {
+                for (const id of ids) {
+                  const ent = d.worldsets[store.activeWorld]?.entities?.[id];
+                  if (!ent) continue;
+                  if (!ent.properties) ent.properties = {};
+                  ent.properties[field] = value;
+                }
+              });
+              return { ok: true, note: `已把 ${hits.length} 条设定的 ${field} 改成 ${fmtVal(value)}（${hits.map((e) => e.name).join('、')}）` };
+            },
+          },
+        };
+      }
+      const e = findEntity(ws, str(a.entity));
+      if (!e) return { ok: false, note: `没找到叫「${str(a.entity)}」的设定。` };
+      const old = e.properties?.[field];
+      const id = e.id;
       return {
         ok: true,
         proposal: {
           tool: call.tool,
           title: `改字段：${e.name} · ${field}`,
-          detail: `${old === undefined ? '（原本没有这个字段）' : String(old)} → ${Array.isArray(value) ? value.join('/') : String(value)}`,
+          detail: `${old === undefined ? '（原本没有这个字段）' : String(old)} → ${fmtVal(value)}`,
           apply: () => {
             store.update((d) => {
               const ent = d.worldsets[store.activeWorld]?.entities?.[id];
@@ -348,7 +384,7 @@ export function planWrite(call: ToolCall, store: Store): { ok: true; proposal: P
               if (!ent.properties) ent.properties = {};
               ent.properties[field] = value;
             });
-            return { ok: true, note: `已把「${e.name}」的 ${field} 改成 ${Array.isArray(value) ? value.join('/') : String(value)}` };
+            return { ok: true, note: `已把「${e.name}」的 ${field} 改成 ${fmtVal(value)}` };
           },
         },
       };
@@ -402,6 +438,38 @@ export function planWrite(call: ToolCall, store: Store): { ok: true; proposal: P
       };
     }
     case 'create_node': {
+      /* ⭐ 批量形态（阶段 2B）：`nodes: [{title, year, kind?, desc?}…]` —— 一次建一串事件。
+         只在 Agent 模式放行；没有 title 的项直接丢掉（不整批失败）。 */
+      const manyNodes = Array.isArray(a.nodes) ? (a.nodes as unknown[]) : null;
+      if (manyNodes) {
+        if (mode !== 'agent') return { ok: false, note: '聊天模式一次只建一个 —— 要批量建请先切到 Agent 模式，或者一个一个说。' };
+        const tl0 = ws?.timelines?.[store.activeTimeline];
+        if (!tl0) return { ok: false, note: '当前没有打开的时间线，先在沙盘里选一条。' };
+        const items = manyNodes
+          .map((o) => (isObj(o) ? o : ({ title: o } as ToolArgs)))
+          .map((o) => ({ title: str(o.title), year: num(o.year) ?? 0, kind: str(o.kind), desc: str(o.desc) }))
+          .filter((it) => it.title);
+        if (!items.length) return { ok: false, note: '批量建事件要给我 nodes: [{ title, year }, …]（每一项都得有 title）。' };
+        const tlId0 = tl0.id;
+        const tlName = tl0.name;
+        return {
+          ok: true,
+          proposal: {
+            tool: call.tool,
+            title: `新建事件：${items.length} 个（${tlName}）`,
+            detail: items.map((it) => `${it.year} ${it.title}${it.kind ? ' · ' + it.kind : ''}`).join('\n'),
+            apply: () => {
+              for (const it of items) {
+                const partial: Partial<TimelineNode> = { title: it.title, year: it.year, type: 'story_event' };
+                if (it.kind) partial.kind = it.kind;
+                if (it.desc) partial.desc = it.desc;
+                addNode(store, tlId0, partial);
+              }
+              return { ok: true, note: `已在「${tlName}」上新建 ${items.length} 个事件：${items.map((it) => it.title).join('、')}` };
+            },
+          },
+        };
+      }
       const title = str(a.title);
       if (!title) return { ok: false, note: '新建事件要给我标题（args.title）。' };
       const tl = ws?.timelines?.[store.activeTimeline];
