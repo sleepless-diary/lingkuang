@@ -5,10 +5,14 @@ import { currentWorld } from '../store/store';
 /** 演变（设定库的版本历史）的三种模式，用户 2026-09-13 选「都做，把模式放到设置里面」 */
 export type EvolveMode = 'manual' | 'auto' | 'locked';
 
-/** 助手（Ctrl+K 那个）能动手到什么程度，用户 2026-09-15：
- *  「和真 agent 软件一样，有禁止，部分执行和 YOLO 什么的」⇒ 只读 / 逐项确认 / YOLO 三档。
- *  存取与闸门在 `src/ui/agent-perm.ts`，这里只放类型与默认值（沿用 `EvolveMode` 的做法）。 */
-export type AgentPerm = 'readonly' | 'confirm' | 'yolo';
+/** 助手「能动手到什么程度」= 两个**正交**旋钮（用户 2026-09-26：平常聊天、少数情况才让它动手）：
+ *   · `AgentScope`：**范围** —— 只读 / 可写（借 DSH `permission` 预设里的 sandbox 那一维）
+ *   · `AgentAsk`  ：**询问** —— 每次确认 / 直接执行（借 approval 那一维）
+ *  两者组合出的三种实际行为，与片 2~4 那个单档 `readonly|confirm|yolo` 一一对应
+ *  （见 `src/ui/agent-perm.ts`）；老的单档值在 `loadSettings()` 里一次性迁移过来。
+ *  ⚠️ 它们只在 **Agent 模式**下有意义 —— 聊天模式根本不动手（见 `src/ui/agent-mode.ts`）。 */
+export type AgentScope = 'readonly' | 'workspace';
+export type AgentAsk = 'always' | 'never';
 
 interface Settings {
   aiMode: 'ollama' | 'api';
@@ -27,7 +31,11 @@ interface Settings {
   motionSpeed: number;      // 速度倍率（改的是时长：300ms ÷ 倍率）
   motionStagger: number;    // 行错峰 ms（一行比上一行晚多少）
   motionEnterDx: number;    // 入场距离 px（同时是出场距离，往左走同样的量）
-  agentPerm: AgentPerm;     // 助手能动手到什么程度（只读 / 逐项确认 / YOLO；闸门在 src/ui/agent-perm.ts）
+  /* 助手能动手到什么程度（两个旋钮；闸门在 `src/ui/agent-perm.ts`，只在 Agent 模式下有意义）。
+     范围：readonly = 一个字都不许改；workspace = 可以写这个世界的设定与事件。
+     询问：always = 每次改动出一张提议卡片等你点「应用」；never = 直接执行。 */
+  agentScope: AgentScope;
+  agentAsk: AgentAsk;
 }
 
 const DEFAULTS: Settings = {
@@ -45,18 +53,39 @@ const DEFAULTS: Settings = {
   motionSpeed: 1,
   motionStagger: 10,
   motionEnterDx: 32,
-  /* 默认「逐项确认」：助手想改稿子得先给一张提议卡片、创作者点「应用」才落盘
-     —— 既不是什么都不让做（那样它没用），也不是一上来就全自动（那样风险太高）。 */
-  agentPerm: 'confirm',
+  /* 默认组合 = 可写 + 每次确认（＝原来的「逐项确认」档）：助手想改稿子得先给一张提议卡片、
+     创作者点「应用」才落盘 —— 既不是什么都不让做（那样它没用），也不是一上来就全自动（风险太高）。 */
+  agentScope: 'workspace',
+  agentAsk: 'always',
+};
+
+/** 老的单档权限（片 2~4 的 `agentPerm`）→ 两个旋钮的迁移表。
+ *  留在这里而不是 `agent-perm.ts`：迁移是**读设置**时的事，与闸门无关。 */
+const OLD_PERM: Record<string, { scope: AgentScope; ask: AgentAsk }> = {
+  readonly: { scope: 'readonly', ask: 'always' },
+  confirm: { scope: 'workspace', ask: 'always' },
+  yolo: { scope: 'workspace', ask: 'never' },
 };
 
 export function loadSettings(): Settings {
-  let s: Settings;
+  let stored: Record<string, unknown> = {};
   try {
-    s = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('lingkuang-settings') || '{}') };
+    stored = JSON.parse(localStorage.getItem('lingkuang-settings') || '{}');
   } catch {
-    s = { ...DEFAULTS };
+    stored = {};
   }
+  const s = { ...DEFAULTS, ...stored } as Settings;
+  /* 一次性迁移：老档位 → 两旋钮（只在创作者没显式设过新旋钮时才搬，且搬完把旧键删掉，
+     免得 `lingkuang-settings` 里一直留着一个已经不认得的键）。 */
+  if (typeof stored.agentPerm === 'string' && OLD_PERM[stored.agentPerm]) {
+    const m = OLD_PERM[stored.agentPerm];
+    if (stored.agentScope === undefined) s.agentScope = m.scope;
+    if (stored.agentAsk === undefined) s.agentAsk = m.ask;
+    delete (s as unknown as Record<string, unknown>).agentPerm;
+  }
+  /* 手改过 localStorage / 老版本写进怪值 ⇒ 回落到默认，别让闸门读到一个它不认识的档 */
+  if (s.agentScope !== 'readonly' && s.agentScope !== 'workspace') s.agentScope = DEFAULTS.agentScope;
+  if (s.agentAsk !== 'always' && s.agentAsk !== 'never') s.agentAsk = DEFAULTS.agentAsk;
   /* 默认用 qwen2.5:7b（content 正常输出）；qwen3:14b 内容全进 thinking 联想解析不了，回退 */
   if (s.model === 'qwen3:14b' || s.model === 'qwen2.5:14b') s.model = 'qwen2.5:7b';
   return s;

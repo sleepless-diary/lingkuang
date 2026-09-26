@@ -90,21 +90,22 @@ async function main() {
   await sleep(700);   // 等 ensureLoaded()（读 chat.json / memory.json）落地
   const opened = await ev(`(() => {
     const p = document.getElementById('lk-agent-panel');
-    const sel = p?.querySelector('#lk-agent-perm');
+    const sSel = p?.querySelector('#lk-agent-scope');
+    const aSel = p?.querySelector('#lk-agent-ask');
     return {
       exists: !!p,
       mem: !!p?.querySelector('.lk-agent__mem'), list: !!p?.querySelector('#lk-agent-mem-list'),
       sumBtn: !!p?.querySelector('#lk-agent-mem-sum'), addBtn: !!p?.querySelector('#lk-agent-mem-add'),
-      sel: !!sel,
-      opts: sel ? [...sel.options].map((o) => o.value) : [],
-      cur: sel ? sel.value : '',
+      sel: !!(sSel && aSel),
+      opts: (sSel ? [...sSel.options].map((o) => o.value) : []).join(',') + '/' + (aSel ? [...aSel.options].map((o) => o.value) : []).join(','),
+      cur: (sSel ? sSel.value : '') + '+' + (aSel ? aSel.value : ''),
       hint: (p?.querySelector('#lk-agent-perm-hint')?.textContent ?? '').slice(0, 12),
       gate: p?.dataset.gate ?? '',
     };
   })()`);
-  check('★1 Ctrl+K 开出来的面板里有「长期记忆」区（清单/总结/手动加）与权限下拉，三档齐全、默认「逐项确认」',
+  check('★1 Ctrl+K 开出来的面板里有「长期记忆」区（清单/总结/手动加）与权限两旋钮（范围 × 询问），默认「可写 + 每次确认」',
     opened.exists === true && opened.mem === true && opened.list === true && opened.sumBtn === true && opened.addBtn === true
-      && opened.sel === true && opened.opts.join(',') === 'readonly,confirm,yolo' && opened.cur === 'confirm'
+      && opened.sel === true && opened.opts === 'readonly,workspace/always,never' && opened.cur === 'workspace+always'
       && opened.hint.length > 0 && opened.gate === 'propose',
     { opts: opened.opts, cur: opened.cur, gate: opened.gate, hint: opened.hint });
 
@@ -173,16 +174,23 @@ async function main() {
      聊天模式下那行是禁用的、提示文案也不一样（聊天模式本身就不动手，见 `agent-mode.cjs`）。 */
   await ev(`document.getElementById('lk-agent-mode-agent').click(); true`);
   await sleep(300);
-  await ev(`(() => { const s = document.querySelector('#lk-agent-perm'); s.value = 'readonly'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  /* 摆「只读 + 每次确认」：只读档的文案是"只能看"，闸门 deny（★9/★11 一起守） */
+  await ev(`(function () {
+    const s = document.querySelector('#lk-agent-scope');
+    const a = document.querySelector('#lk-agent-ask');
+    s.value = 'readonly'; s.dispatchEvent(new Event('change', { bubbles: true }));
+    a.value = 'always'; a.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
   await sleep(300);
   const ro = await ev(`(() => {
     const p = document.getElementById('lk-agent-panel');
     let stored = '';
-    try { stored = (JSON.parse(localStorage.getItem('lingkuang-settings')) || {}).agentPerm || ''; } catch {}
-    return { gate: p.dataset.gate, cur: p.querySelector('#lk-agent-perm').value, stored, hint: (p.querySelector('#lk-agent-perm-hint')?.textContent ?? '').slice(0, 20) };
+    try { const s = JSON.parse(localStorage.getItem('lingkuang-settings')) || {}; stored = String(s.agentScope || '') + '+' + String(s.agentAsk || ''); } catch {}
+    return { gate: p.dataset.gate, cur: p.querySelector('#lk-agent-scope').value + '+' + p.querySelector('#lk-agent-ask').value, stored, hint: (p.querySelector('#lk-agent-perm-hint')?.textContent ?? '').slice(0, 20) };
   })()`);
-  check('★9 切成「只读」：面板记住、设置里存下（localStorage）、提示文案跟着换',
-    ro.cur === 'readonly' && ro.stored === 'readonly' && ro.hint.indexOf('只能看') >= 0,
+  check('★9 切成「只读」：面板记住、设置里存下（localStorage 两个键）、提示文案跟着换',
+    ro.cur === 'readonly+always' && ro.stored === 'readonly+always' && ro.hint.indexOf('只能看') >= 0,
     { cur: ro.cur, stored: ro.stored, hint: ro.hint });
   check('★11 只读档 → 闸门变 deny（片 3 的写工具照这个拦）',
     ro.gate === 'deny', { gate: ro.gate });
@@ -210,17 +218,23 @@ async function main() {
     prompt.ro === true && prompt.lastRole === 'user' && prompt.lastText === '我该注意什么？',
     { ro: prompt.ro, lastRole: prompt.lastRole });
 
-  /* ── ⑦ 切到 YOLO → 闸门 allow ── */
-  await ev(`(() => { const s = document.querySelector('#lk-agent-perm'); s.value = 'yolo'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  /* ── ⑦ 切到「可写 + 直接执行」→ 闸门 allow ── */
+  await ev(`(function () {
+    const s = document.querySelector('#lk-agent-scope');
+    const a = document.querySelector('#lk-agent-ask');
+    s.value = 'workspace'; s.dispatchEvent(new Event('change', { bubbles: true }));
+    a.value = 'never'; a.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
   await sleep(250);
   const yolo = await ev(`(() => {
     const p = document.getElementById('lk-agent-panel');
     let stored = '';
-    try { stored = (JSON.parse(localStorage.getItem('lingkuang-settings')) || {}).agentPerm || ''; } catch {}
-    return { gate: p.dataset.gate, stored, cur: p.querySelector('#lk-agent-perm').value };
+    try { const s = JSON.parse(localStorage.getItem('lingkuang-settings')) || {}; stored = String(s.agentScope || '') + '+' + String(s.agentAsk || ''); } catch {}
+    return { gate: p.dataset.gate, stored, cur: p.querySelector('#lk-agent-scope').value + '+' + p.querySelector('#lk-agent-ask').value };
   })()`);
-  check('★13 切成 YOLO：闸门变 allow、设置里存下',
-    yolo.gate === 'allow' && yolo.stored === 'yolo' && yolo.cur === 'yolo', yolo);
+  check('★13 切成「可写 + 直接执行」：闸门变 allow、设置里存下',
+    yolo.gate === 'allow' && yolo.stored === 'workspace+never' && yolo.cur === 'workspace+never', yolo);
 
   /* ── ⑧ 从对话里总结（假引擎吐一段"带代码栏与废话"的输出，顺带验容错） ── */
   const fenced = '好的，我读完了你们的对话：\n```json\n["不喜欢大段说明", "命名爱用两三个字"]\n```\n希望对你有用。';

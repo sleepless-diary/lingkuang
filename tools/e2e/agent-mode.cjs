@@ -79,7 +79,8 @@ async function main() {
   const modeSnap = () => ev(`(() => {
     const p = document.getElementById('lk-agent-panel');
     if (!p) return { exists: false };
-    const sel = p.querySelector('#lk-agent-perm');
+    const sSel = p.querySelector('#lk-agent-scope');
+    const aSel = p.querySelector('#lk-agent-ask');
     const seg = [...p.querySelectorAll('.lk-agent__seg-btn')];
     return {
       exists: true,
@@ -87,11 +88,27 @@ async function main() {
       agentClass: p.classList.contains('is-agent'),
       segs: seg.map((b) => b.dataset.mode + (b.classList.contains('is-on') ? ':on' : ':off')),
       permOff: !!(p.querySelector('.lk-agent__perm') || {}).classList.contains && p.querySelector('.lk-agent__perm').classList.contains('is-off'),
-      permDisabled: sel ? sel.disabled : null,
+      permDisabled: (sSel && aSel) ? (sSel.disabled && aSel.disabled) : null,
+      permScope: sSel ? sSel.value : '',
+      permAsk: aSel ? aSel.value : '',
+      permHint: (p.querySelector('#lk-agent-perm-hint') || {}).textContent || '',
       gate: p.dataset.gate || '',
       modeHint: (p.querySelector('#lk-agent-mode-hint') || {}).textContent || '',
     };
   })()`);
+  /* 摆权限两旋钮（范围 × 询问）。⚠️ 顺序：先派 scope 的 change（处理器会把 ask 下拉重置成已存值），
+     再写 ask.value 并派它的 change —— 反过来写会被 renderPerm() 覆盖掉。 */
+  const setKnobs = async (scope, ask) => {
+    await ev(`(function () {
+      const s = document.getElementById('lk-agent-scope');
+      const a = document.getElementById('lk-agent-ask');
+      if (!s || !a) return false;   /* 旧构建（单档权限）没有这两个下拉 ⇒ 让断言去 FAIL，别把套件崩掉 */
+      s.value = ${JSON.stringify(scope)}; s.dispatchEvent(new Event('change', { bubbles: true }));
+      a.value = ${JSON.stringify(ask)}; a.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`);
+    await sleep(250);
+  };
   const sysOf = () => ev(`(() => {
     /* __lkSeen 是「每次调用一条」的数组（每条 = 喂进去的 messages）；取最近一次 */
     const calls = window.__lkSeen || [];
@@ -129,6 +146,7 @@ async function main() {
   check('★1 ⭐打开面板默认是「聊天」：data-mode=chat、分段控件 chat 亮、权限那行压暗且下拉禁用',
     opened.exists === true && opened.mode === 'chat' && opened.agentClass === false
       && opened.segs.join(',') === 'chat:on,agent:off' && opened.permOff === true && opened.permDisabled === true
+      && ['readonly', 'workspace'].indexOf(opened.permScope) >= 0 && ['always', 'never'].indexOf(opened.permAsk) >= 0
       && opened.modeHint.indexOf('聊天') >= 0,
     opened);
 
@@ -163,6 +181,19 @@ async function main() {
       && agentUi.segs.join(',') === 'chat:off,agent:on' && agentUi.permOff === false
       && agentUi.permDisabled === false && ['deny', 'propose', 'allow'].indexOf(agentUi.gate) >= 0,
     agentUi);
+
+  /* ---------- ④b 权限是**两个正交旋钮**（范围 × 询问）---------- */
+  await setKnobs('readonly', 'never');
+  const knobRO = await modeSnap();
+  await setKnobs('workspace', 'never');
+  const knobYOLO = await modeSnap();
+  await setKnobs('workspace', 'always');
+  const knobOK = await modeSnap();
+  check('★4b ⭐权限 = 范围 × 询问两个旋钮：只读+直接执行 仍然不许写（范围优先），可写+直接执行 放行，可写+每次确认 出卡片',
+    knobRO.gate === 'deny' && knobRO.permScope === 'readonly' && knobRO.permAsk === 'never'
+      && knobYOLO.gate === 'allow' && knobYOLO.permAsk === 'never'
+      && knobOK.gate === 'propose' && knobOK.permHint.indexOf('逐项确认') >= 0,
+    { ro: knobRO.gate, yolo: knobYOLO.gate, ok: knobOK.gate, hint: knobOK.permHint.slice(0, 28) });
 
   await setMock(['我先看看有什么设定。']);
   await ask('现在都有哪些设定？');

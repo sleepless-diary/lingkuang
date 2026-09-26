@@ -15,6 +15,61 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第四十九轮（2026-09-26）· 灵框助手第 4 片：模式（平常聊天 / 少数情况 Agent）+ 权限从三档拆成两把旋钮
+
+承第二十九轮（助手的动作协议容错与焦点上报）。本片处理用户 2026-09-26 的一句话（在「dsh 有哪些设置可以搬到灵框」的讨论之后拍的方向）：
+
+> **「可以，直接做吧，我想让灵框平常是正常的聊天及工作，但是少数情况下有 agent 工作能力」**
+
+**目的**（先抓住目的再谈实现）：不是把权限旋钮做漂亮 —— 而是**给助手一个模式**：平时它就是普通的聊天/创作助手（轻、快、不打扰、不被 JSON 协议带偏），**少数情况显式"授权"**它才拿到动作协议与写闸门。权限的两把旋钮挂在这个模式上。拆成三片：**A 模式 / B 权限两旋钮 / C 忙碌时 Enter + 记录密度**（本轮做 A、B）。
+
+### 一、模式（新 `src/ui/agent-mode.ts`）
+
+- `export type AgentMode = 'chat' | 'agent'`、`MODES`、`MODE_LABEL`（聊天 / Agent）、`MODE_HINT`、`modePrompt(mode)`（chat 返回「【你现在是「聊天」模式】你只能聊天：读不到动作、也改不了灵框里的任何数据…不要说「我已经改好了」…也不要输出 JSON 指令」，agent 返回空串）。
+- ⭐ **模式不落盘、不进设置**：每次打开面板都从 chat 开始 —— 「少数情况」不该变成"忘了切回来"。`closeAgentPanel()` 里 `mode = 'chat'` 收回授权。
+- `src/ui/agent.ts`：sys 拼装变成 `[SYS_HEAD, modePrompt(mode), ...(mode === 'agent' ? [permissionPrompt(), toolsPrompt()] : []), memoryPrompt(), '【工作区现状】' + buildContext(store)]`；循环里 `const call = mode === 'agent' ? parseToolCall(r.text) : null;`，格式纠错轮也只在 agent 模式走。
+- 面板头（权限行之前）加「模式」分段：`#lk-agent-mode-chat` / `#lk-agent-mode-agent`，`openEl.dataset.mode` + `.is-agent` + 按钮 `.is-on` + `#lk-agent-mode-hint`；`src/style.css` 加 `.lk-agent__seg` / `.lk-agent__seg-btn.is-on` / `.lk-agent.is-agent`（左缘 accent + 标题前圆点）等。
+- ⚠️ **踩到的坑**：`isCallMsg(m)` 原来无条件 `parseToolCall` ⇒ 聊天模式下模型吐的 JSON 被画成「用到动作：create_entity」的动作卡片行，创作者会以为它真动手了。修法 = 首行 `if (mode !== 'agent') return false;`（副作用：agent 模式下真调用过的消息，切回聊天后显示成原始 JSON 文字 —— 可接受）。
+
+### 二、权限：单档三选一 → 两把**正交**旋钮（范围 × 询问）
+
+借 DSH `permission` 预设的两维（sandbox × approval）。`src/ui/settings.ts` 删 `AgentPerm` / `Settings.agentPerm`，加 `AgentScope = 'readonly' | 'workspace'`（默认 `'workspace'`）与 `AgentAsk = 'always' | 'never'`（默认 `'always'`）—— 两者合起来 = 原来的「逐项确认」。
+
+| 面板上选的 | 闸门 `gateWrite()` | 行为 |
+| --- | --- | --- |
+| 只读 + 每次确认 | `deny` | 一个字都不许改 |
+| 只读 + 直接执行 | `deny` | ⭐ **范围优先**：只读时"直接执行"无从谈起 |
+| 可写 + 每次确认 | `propose` | 出提议卡片，点「应用」才落盘 |
+| 可写 + 直接执行 | `allow` | 直接执行（原来的 YOLO） |
+
+- `src/ui/agent-perm.ts` 整体重写：`SCOPES` / `ASKS` / `SCOPE_LABEL`（只读/可写）/ `ASK_LABEL`（每次确认/直接执行）/ `permName(scope, ask)` / `permHint(scope, ask)`（**组合**成人话：单看"可写"不知道它会不会先问你）/ `getAgentScope()` / `getAgentAsk()` / `getAgentKnobs()` / `setAgentScope(s)` / `setAgentAsk(a)`（只改一把、另一把不动，变了才存 + 广播 `lingkuang-agent-perm`）/ `gateWrite()`（先看范围再问询问）/ `permissionPrompt()`（三档文案）。
+- `loadSettings()` 一次性迁移老键：`const OLD_PERM = { readonly: {readonly, always}, confirm: {workspace, always}, yolo: {workspace, never} }`，只在新键没设过时搬、搬完 `delete agentPerm`；另对两把旋钮做合法性回落（手改过 localStorage 也不让闸门读到不认识的档）。
+- 面板那一行改成两个 `<select>`：`#lk-agent-scope` + `#lk-agent-ask`（提示文案 `#lk-agent-perm-hint` = `permName() + '：' + permHint()`），聊天模式下两个都 `disabled` + 那行 `.is-off`；根元素 `data-gate` 照旧。
+
+### 三、守卫与 A/B
+
+- `tools/e2e/agent-mode.cjs` **9 → 10**：新增 **★4b「权限 = 范围 × 询问两个旋钮」**（只读+直接执行 ⇒ `deny`；可写+直接执行 ⇒ `allow`；可写+每次确认 ⇒ `propose` 且提示文案含「逐项确认」），★1 顺带断言两个下拉渲染出来了。
+- **A/B（`git stash push -- src/` + `npx vite build` + 重启实例）**：旧构建 ★1 **FAIL**（`permDisabled:null, permScope:"", permAsk:""` —— 两个下拉不存在）、★4 **FAIL**，随后 `setKnobs()` 直接抛 `TypeError: Cannot set properties of null (setting 'value')` 把套件崩在 ★4b 之前 ⇒ 已给 `setKnobs` 加 `if (!s || !a) return false;` 守卫，**让断言去 FAIL、别把套件崩掉**（否则后面几条断言全跑不到）。新构建 **10/10**。
+- 同步改：`tools/e2e/agent-tools.cjs`（`setPerm(scope, ask)` 两参 + `setPerm('workspace','always'|'readonly','always'|'workspace','never')`；★11 读 `localStorage` 的 `agentScope+agentAsk`）、`tools/e2e/agent-memory.cjs`（★1 断言 `opts` = `readonly,workspace/always,never`、`cur` = `workspace+always`；★9/★13 读写两把旋钮）、`tools/e2e/seed-agent-memory.cjs` 注释里的旧键名。
+- 回归（每套件**单独起干净实例**）：`agent-mode` **10/10**、`agent-tools` **19/19**、`agent-memory` **15/15**、`agent-panel` **21/21**；三道检查 `node --check main.js` / `npx tsc --noEmit` / `npx vite build` 全绿。
+
+### 四、坑与教训（本轮踩的）
+
+- ⚠️ **夹具污染会让旧套件假挂**：`agent-panel.cjs` 的 ★5/★6d 在"清过 localStorage 的干净起点"上报 `node:false / len:180`（chip 停在「最近在看」）—— 真因是 `%TEMP%\lk-evault2\worldbuilding.json` 里**累积**了历史夹具留下的空时间线（`order = ["tl-side","tl-主线"]`，tl-side 0 节点），而 `reset-entity-vault.cjs` **只清实体、不重建时间线**；`src/store/store.ts:25-29` 的 `pickTimeline(ws)` = `(ws.order ?? []).find(id => tls[id])` ⇒ 游标落在空时间线。旧跑法恰好靠 `localStorage['lingkuang-session']` 会话恢复指到有节点的主线，所以一直没露馅。
+  **根治配方**：① 杀测试实例 → ② `Remove-Item %TEMP%\lk-evault2 -Recurse -Force` → ③ 起一次应用让它自建 `worldbuilding.json`（~5s）后杀 → ④ 若 `formats.json` 还没生成，先跑 `node tools/e2e/seed-agent-chat.cjs`（它会建 formats.json；否则 `seed-node.cjs` 静默 exit 非 0）→ ⑤ `reset-entity-vault` + 需要的 seed → ⑥ 起应用 → 跑套件。
+- ⚠️ **PowerShell 5.1 按 GBK 读 UTF-8 的 `.ps1`**：把跑测脚本（含中文注释/字符串）写成 UTF-8 无 BOM 的 .ps1 ⇒ 解析报 `The string is missing the terminator: "` / `Missing closing '}'`（中文被拆成半个字符，把引号吃掉了）。⇒ **辅助 .ps1 一律写纯 ASCII**（要中文就写成 .cjs 用 node 跑）。
+- 📌 `window.__lkSeen` 有两种形态：`agent-tools.cjs` 是**数组**（每次调用 push 一条 messages），`agent-memory.cjs` 是**最后一次的 messages**（直接赋值）。写断言前先看清是哪种（本轮新套件里混过一次）。
+- 📌 摆两把旋钮的顺序：**先派 scope 的 `change`（处理器里 `renderPerm()` 会把 ask 下拉重置成已存值），再写 `ask.value` 并派它的 `change`** —— 反过来写会被覆盖掉。
+
+### 五、文档
+
+`docs/ARCHITECTURE.md` 四处（`src/ui/agent.ts` 行的模式与 sys 拼装 / 新增 `src/ui/agent-mode.ts` 行 / `src/ui/agent-perm.ts` 行重写成两把旋钮 + 迁移表 / `src/ui/settings.ts` 行补两把不上面板的旋钮）、`docs/ROADMAP.md`（第 2 片行改口径 + 新增「助手·第 4 片」）、`docs/USER_GUIDE.md`（新增「平常是聊天，要用才给手」+ 权限两把旋钮四行）、`docs/BUGS.md` 本轮。
+
+### 六、还开着的（C 片，下一轮）
+
+- `busyEnter: 'queue' | 'steer'`（默认 queue）：现在忙碌时 `send()` 首行 `if (busy || !openEl || !store) return;` ⇒ **回车静默无效**、文字留在输入框。落地要连通 AbortController（`src/ui/ai.ts` 的 `aiChat(messages, opts)` 加 `signal`、`agent-model.ts` 的 `AskOpts` 加 `signal`、`agent.ts` 存 `inflight`/queue，abort 后别把 AbortError 报成「出错」）。
+- `transcriptView: 'normal' | 'compact'`（默认 normal）：compact 时把 `.lk-agent__call` / `.lk-agent__tool` 折成一行（提议卡片不折），设置面板新增「助手」卡片放这两项。
+
 ## 第四十八轮（2026-09-26）· 「粗刻度改成不可重叠的」= 屏幕盒去重（第 ⑥ 轮交叉淡化的收尾）
 
 > 用户原话：「**标尺上面的粗刻度改成不可重叠的（就是有时候显得很密集）**」。

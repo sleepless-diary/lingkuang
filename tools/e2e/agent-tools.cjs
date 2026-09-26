@@ -94,8 +94,16 @@ async function main() {
     await ev(`(function () { const t = document.getElementById('lk-agent-input'); t.value = ${JSON.stringify(text)}; document.getElementById('lk-agent-send').click(); return true; })()`);
     await sleep(1000);
   };
-  const setPerm = async (p) => {
-    await ev(`(function () { const s = document.getElementById('lk-agent-perm'); s.value = ${JSON.stringify(p)}; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  /* 摆权限两旋钮（范围 × 询问）。⚠️ 顺序：先派 scope 的 change（处理器会把 ask 下拉重置成已存值），
+     再写 ask.value 并派它的 change —— 反过来写会被 renderPerm() 覆盖掉。 */
+  const setPerm = async (scope, ask) => {
+    await ev(`(function () {
+      const s = document.getElementById('lk-agent-scope');
+      const a = document.getElementById('lk-agent-ask');
+      s.value = ${JSON.stringify(scope)}; s.dispatchEvent(new Event('change', { bubbles: true }));
+      a.value = ${JSON.stringify(ask)}; a.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`);
     await sleep(250);
   };
   const rows = () => ev(`document.querySelectorAll('#cx-list [data-cx-id]').length`);
@@ -115,7 +123,7 @@ async function main() {
 
   /* 权限档也自己摆正（同样防串跑：上一份套件可能停在 YOLO 档）。
      「默认档就是逐项确认」那条不变量由 agent-memory.cjs ★1 在干净实例上守。 */
-  await setPerm('confirm');
+  await setPerm('workspace', 'always');
 
   /* ---------- ① 只读动作立刻执行 ---------- */
   await setMock(['{"tool":"list_entities","args":{}}', '列表我看过了，设定不多。']);
@@ -174,7 +182,7 @@ async function main() {
     { cards: card2.length, rows: await rows(), note: card2b[1].note });
 
   /* ---------- ⑤ 只读档：不给执行 ---------- */
-  await setPerm('readonly');
+  await setPerm('readonly', 'always');
   const gateRo = await ev(`document.getElementById('lk-agent-panel').dataset.gate`);
   await setMock(['{"tool":"create_entity","args":{"name":"测试只读档","type":"角色"}}']);
   await ask('建一条叫「测试只读档」的。');
@@ -182,18 +190,18 @@ async function main() {
   check('★10 只读档：不出卡片、不落盘、明白告诉你没执行',
     ro.gate === 'deny' && ro.cards === 2 && ro.rows === 2 && ro.note.indexOf('只读') >= 0, ro);
 
-  /* ---------- ⑥ YOLO：直接执行 ---------- */
-  await setPerm('yolo');
+  /* ---------- ⑥ 直接执行档：不问，直接落盘 ---------- */
+  await setPerm('workspace', 'never');
   const gateYolo = await ev(`document.getElementById('lk-agent-panel').dataset.gate`);
   await setMock(['{"tool":"create_entity","args":{"name":"测试自动","type":"角色"}}']);
   await ask('建一条叫「测试自动」的。');
   const yolo = {
     gate: gateYolo, cards: (await props()).length, rows: await rows(),
-    stored: await ev(`JSON.parse(localStorage.getItem('lingkuang-settings') || '{}').agentPerm`),
+    stored: await ev(`(function () { const s = JSON.parse(localStorage.getItem('lingkuang-settings') || '{}'); return String(s.agentScope || '') + '+' + String(s.agentAsk || ''); })()`),
     note: await noteText(),
   };
-  check('★11 YOLO 档：不用点，直接就落盘了（档位也存进了设置）',
-    yolo.gate === 'allow' && yolo.cards === 2 && yolo.rows === 3 && yolo.stored === 'yolo' && yolo.note.indexOf('已新建设定') >= 0, yolo);
+  check('★11 直接执行档（可写 + 不询问）：不用点，直接就落盘了（两旋钮也存进了设置）',
+    yolo.gate === 'allow' && yolo.cards === 2 && yolo.rows === 3 && yolo.stored === 'workspace+never' && yolo.note.indexOf('已新建设定') >= 0, yolo);
 
   /* ---------- ⑦ 认不出的裸 JSON ⇒ 回头纠正一次（不糊到创作者脸上）---------- */
   const callsBefore = await calls();
@@ -216,7 +224,7 @@ async function main() {
     unknown);
 
   /* ---------- ⑧ 名字当键（用户 2026-09-15 实测的形状）也要认 ---------- */
-  await setPerm('confirm');
+  await setPerm('workspace', 'always');
   await setMock(['{"set_field":{"entity":"银发少女","field":"发色","value":"墨黑"}}']);
   await ask('把银发少女的发色改成墨黑。');
   const keyed = await props();

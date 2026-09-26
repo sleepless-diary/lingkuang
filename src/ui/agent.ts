@@ -23,18 +23,17 @@ import {
   setMemorySink, summarizePrefs, updateMemory,
 } from './agent-memory';
 import { MODE_HINT, MODE_LABEL, MODES, modePrompt, type AgentMode } from './agent-mode';
-import { PERM_HINT, PERM_LABEL, gateWrite, getAgentPerm, permissionPrompt, setAgentPerm } from './agent-perm';
+import { ASKS, ASK_LABEL, SCOPES, SCOPE_LABEL, gateWrite, getAgentAsk, getAgentScope, permHint, permName, permissionPrompt, setAgentAsk, setAgentScope } from './agent-perm';
 import { isWriteTool, looksLikeToolJson, parseToolCall, planWrite, runReadTool, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
 import { motionReduced } from './motion';
 import { isImeEnter } from './keys';
 import { escapeHtml } from './html';
-import { loadSettings, type AgentPerm } from './settings';
+import { loadSettings, type AgentAsk, type AgentScope } from './settings';
 import type { Store } from '../store/store';
 
 const PANEL_ID = 'lk-agent-panel';
 /** 送给模型的历史条数上限（再往前的靠「上下文」与长期记忆，不靠堆对话） */
 const HISTORY_SEND = 16;
-const PERMS: AgentPerm[] = ['readonly', 'confirm', 'yolo'];
 
 const SYS_HEAD = [
   '你是「灵框」里的创作助手。灵框是世界观创作工作台：创作者在里面管理世界观、时间线事件、设定条目（角色/地点/物品/组织等）。',
@@ -303,22 +302,30 @@ function renderMemory(): void {
   if (draft) list.querySelector<HTMLInputElement>('.lk-agent__mem-item:last-child .lk-agent__mem-input')?.focus();
 }
 
-/* 权限：选了就存进设置（`lingkuang-settings`），并告诉模型它现在能动手到什么程度。
-   面板根上挂 `data-gate`（deny/propose/allow）——片 3 的写工具执行前问 `gateWrite()`，
+/* 权限：两个**正交**旋钮（范围 × 询问，`src/ui/agent-perm.ts`），选了就存进设置
+   （`lingkuang-settings` 的长设定期设定），并告诉模型它现在能动手到什么程度。
+   面板根上挂 `data-gate`（deny/propose/allow）——Agent 模式的写工具执行前问 `gateWrite()`，
    e2e 也直接读这个属性（不必反射模块）。 */
 function renderPerm(): void {
   if (!openEl) return;
-  const p = getAgentPerm();
-  const sel = openEl.querySelector<HTMLSelectElement>('#lk-agent-perm');
-  if (sel) {
-    if (sel.value !== p) sel.value = p;
-    /* 聊天模式没有"动手"这回事：控件留着（别让它跳），但禁掉并压暗 ——
-       免得看着像"权限已经生效"，也免得创作者以为改了权限就切过去了。 */
-    sel.disabled = mode !== 'agent';
-  }
+  const scope = getAgentScope();
+  const ask = getAgentAsk();
+  const sSel = openEl.querySelector<HTMLSelectElement>('#lk-agent-scope');
+  const aSel = openEl.querySelector<HTMLSelectElement>('#lk-agent-ask');
+  if (sSel && sSel.value !== scope) sSel.value = scope;
+  if (aSel && aSel.value !== ask) aSel.value = ask;
+  /* 聊天模式没有"动手"这回事：控件留着（别让它跳），但禁掉并压暗 ——
+     免得看着像"权限已经生效"，也免得创作者以为改了权限就切过去了。 */
+  const off = mode !== 'agent';
+  if (sSel) sSel.disabled = off;
+  if (aSel) aSel.disabled = off;
   const hint = openEl.querySelector('#lk-agent-perm-hint');
-  if (hint) hint.textContent = mode === 'agent' ? PERM_HINT[p] : '聊天模式用不上（切到 Agent 才动手）';
-  openEl.querySelector('.lk-agent__perm')?.classList.toggle('is-off', mode !== 'agent');
+  if (hint) {
+    hint.textContent = off
+      ? '聊天模式用不上（切到 Agent 才动手）'
+      : permName(scope, ask) + '：' + permHint(scope, ask);
+  }
+  openEl.querySelector('.lk-agent__perm')?.classList.toggle('is-off', off);
   openEl.dataset.gate = gateWrite();
 }
 
@@ -533,7 +540,6 @@ export function openAgentPanel(s: Store): () => void {
   if (isAgentPanelOpen()) return () => closeAgentPanel();
   store = s;
   const cfg = loadSettings();
-  const perm = getAgentPerm();
   const el = document.createElement('aside');
   el.id = PANEL_ID;
   el.className = 'lk-agent';
@@ -558,8 +564,13 @@ export function openAgentPanel(s: Store): () => void {
     '</div>' +
     '<div class="lk-agent__perm">' +
       '<span class="lk-agent__perm-lbl">权限</span>' +
-      '<select class="lk-agent__perm-sel" id="lk-agent-perm">' +
-        PERMS.map((p) => `<option value="${p}"${p === perm ? ' selected' : ''}>${PERM_LABEL[p]}</option>`).join('') +
+      /* 两个**正交**旋钮：范围 × 询问（`src/ui/agent-perm.ts`）。分开摆而不是合成一个三选一：
+         创作者能一眼说出"不许写 / 写了要问我 / 随你写"这三种之外，还能组合出第四种（只读+不问）。 */
+      '<select class="lk-agent__perm-sel" id="lk-agent-scope">' +
+        SCOPES.map((v) => `<option value="${v}"${v === cfg.agentScope ? ' selected' : ''}>${SCOPE_LABEL[v]}</option>`).join('') +
+      '</select>' +
+      '<select class="lk-agent__perm-sel" id="lk-agent-ask">' +
+        ASKS.map((v) => `<option value="${v}"${v === cfg.agentAsk ? ' selected' : ''}>${ASK_LABEL[v]}</option>`).join('') +
       '</select>' +
       '<span class="lk-agent__perm-hint" id="lk-agent-perm-hint"></span>' +
     '</div>' +
@@ -654,10 +665,15 @@ export function openAgentPanel(s: Store): () => void {
     el.querySelector('#lk-agent-mode-' + m)?.addEventListener('click', () => setMode(m));
   }
 
-  /* 权限三档 */
-  const permSel = el.querySelector<HTMLSelectElement>('#lk-agent-perm');
-  permSel?.addEventListener('change', () => {
-    setAgentPerm(permSel.value as AgentPerm);
+  /* 权限两旋钮：范围（只读/可写）× 询问（每次确认/直接执行） */
+  const scopeSel = el.querySelector<HTMLSelectElement>('#lk-agent-scope');
+  scopeSel?.addEventListener('change', () => {
+    setAgentScope(scopeSel.value as AgentScope);
+    renderPerm();
+  });
+  const askSel = el.querySelector<HTMLSelectElement>('#lk-agent-ask');
+  askSel?.addEventListener('change', () => {
+    setAgentAsk(askSel.value as AgentAsk);
     renderPerm();
   });
 

@@ -24,10 +24,10 @@ fs.writeFileSync(path.join(dir, 'memory.json'), JSON.stringify([
 ], null, 2), 'utf8');
 fs.writeFileSync(path.join(dir, 'chat.json'), '[]', 'utf8');
 
-// 顺手清掉测试 userData 里的 localStorage：片 2 的 ★1 要断言「默认档 = 逐项确认」，
-// 而上一轮跑完会把 `agentPerm: 'yolo'` 留在 localStorage 里 —— 脏起点会让那条断言假挂
-// （2026-09-15 实测：连跑第二遍 ★1 报 `cur:"yolo"`，14/15）。只在 LINGKUANG_TEST_USERDATA
-// 存在时才清 —— 绝不能碰用户正式 userData 的 localStorage。
+// 顺手清掉测试 userData 里的 localStorage：★1 要断言「默认档 = 可写 + 每次确认」，
+// 而上一轮跑完会把 `agentScope: 'workspace', agentAsk: 'never'`（直接执行）留在 localStorage 里 ——
+// 脏起点会让那条断言假挂（2026-09-15 实测：连跑第二遍 ★1 报 `cur:"yolo"`，14/15；片 4 之后键名是
+// agentScope/agentAsk）。只在 LINGKUANG_TEST_USERDATA 存在时才清 —— 绝不能碰用户正式 userData。
 const ud = process.env.LINGKUANG_TEST_USERDATA;
 if (ud) {
   fs.rmSync(path.join(ud, 'Local Storage'), { recursive: true, force: true });
