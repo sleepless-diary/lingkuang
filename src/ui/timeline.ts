@@ -63,7 +63,17 @@ export function mountTimeline(
   const targetView = { panX: 0, spacing: 2 };
   const EASE_K = 14;                       /* 每秒吃掉多少剩余比例：14 ≈ 250ms 基本到位 */
   let easeRaf = 0;
-  let easeTimer = 0;
+  /* 缓动看门狗（2026-09-26 由「固定 600ms 兜底」改）：只在 rAF **真的停摆**时才落值。
+     ⚠️ 旧写法 `setTimeout(..., 600)` 是「启动后 600ms 无条件 snapView()」——连滚多格时缓动本来
+     就可能跑过 600ms ⇒ 兜底把**还在跑的**缓动掐掉、一帧内直接落值。实测（100 格连续缩放、
+     `tools/e2e/probe-ease-edge.cjs` 逐帧）：61ms 起跑 → 664ms 兜底响 → view 从 -34,196,900
+     跳到 -125,926,000px（9,172 万 px）→ 675ms 再起跑 → 1278ms 再跳一次（3.9 亿 px）
+     ＝ 用户报的「在缩放尺度边缘时标尺缩放的缓动没生效」＋「缩放时标尺有轻微卡顿」（同一个病根）。
+     看门狗：`lastFrameAt` 每帧刷新，只有 `EASE_STALL_MS` 内**一帧都没出**才判定停摆（后台窗口/
+     未聚焦/节流 —— 也就是旧兜底真正要防的那件事）。 */
+  let easeWatchdog = 0;
+  let lastFrameAt = 0;
+  const EASE_STALL_MS = 250;
   /* 缩放锚点（第 3.9 片补）：用户实测「缩放时标尺会左右横移」——
      病根两条：① 锚点时间 `tAt` 用**还在动画中的当前视图**算，连滚两格就漂；
      ② 每帧把 spacing 和 panX **各自**插值，锚点自然按不住（spacing 变了 panX 没跟上）。
@@ -81,9 +91,11 @@ export function mountTimeline(
     if (noSmooth()) { snapView(); render(); return; }
     if (easeRaf) return;
     let last = performance.now();
+    lastFrameAt = last;                     /* 看门狗起点（首帧还没来，先按"刚活过"算） */
     const step = (now: number): void => {
       const dt = Math.min(0.1, (now - last) / 1000);   /* 卡帧时别一次吃掉太多 */
       last = now;
+      lastFrameAt = now;                    /* 看门狗：这一帧还活着 */
       const a = 1 - Math.exp(-EASE_K * dt);
       const ls = Math.log(view.spacing), lt = Math.log(targetView.spacing);
       view.spacing = Math.exp(ls + (lt - ls) * a);
@@ -96,17 +108,23 @@ export function mountTimeline(
       render();
       const done = Math.abs(targetView.panX - view.panX) < 0.05
         && Math.abs(Math.log(targetView.spacing / view.spacing)) < 0.0005;
-      if (done) { window.clearTimeout(easeTimer); snapView(); render(); easeRaf = 0; return; }
+      if (done) { window.clearTimeout(easeWatchdog); snapView(); render(); easeRaf = 0; return; }
       easeRaf = requestAnimationFrame(step);
     };
     easeRaf = requestAnimationFrame(step);
-    /* 兜底：rAF 被降频/暂停时（后台窗口、未聚焦、节流）平滑循环会停在半路 ——
-       600ms 后无条件落到目标值。实测过「平移 180px 只走了 27px 就停住」。 */
-    window.clearTimeout(easeTimer);
-    easeTimer = window.setTimeout(() => {
+    /* 兜底（看门狗）：rAF 被降频/暂停时（后台窗口、未聚焦、节流）平滑循环会停在半路 ——
+       那时才落值。**不是**按时间无条件落值，所以连滚多格的长缓动不会被半路打断。
+       实测过「平移 180px 只走了 27px 就停住」那种停摆，看门狗 250ms 内一定抓到。 */
+    window.clearTimeout(easeWatchdog);
+    const watch = (): void => {
+      if (performance.now() - lastFrameAt <= EASE_STALL_MS) {
+        easeWatchdog = window.setTimeout(watch, EASE_STALL_MS);   /* 还在出帧 ⇒ 什么都不做 */
+        return;
+      }
       if (easeRaf) { cancelAnimationFrame(easeRaf); easeRaf = 0; }
       snapView(); render();
-    }, 600);
+    };
+    easeWatchdog = window.setTimeout(watch, EASE_STALL_MS);
   }
 
   /* ── 坐标换算：出入公历 epoch 秒；spacing 为 px/年，内部用平均年宽(SEC_PER_YEAR)换算 ──
