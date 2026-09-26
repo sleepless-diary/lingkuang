@@ -15,6 +15,41 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第六十三轮（2026-09-26）· 「聊天/agent 在选中状态下也是荧光绿」＝ 选中态不该用颜色说
+
+**用户原话**：「聊天/agent在选中状态下也是荧光绿」（上一轮「这里面有三处荧光绿」整改完接着报的）。
+
+**病根**：两个入口的模式分段控件都把**选中**表达成荧光绿 ——
+`src/style.css` 的 `.lk-agent__seg-btn[data-mode="agent"].is-on { color: var(--accent); }`（助手浮层），
+`src/ui/ai-workbench.ts` 的 `renderHead()` 里两颗按钮的行内 `style="${BTN}color:var(--accent);border-color:var(--accent);"`（AI 页那一头）。
+
+**修法**：
+1. 选中 = **填充 + 凹陷 + 加粗**，不用颜色：`src/style.css` 的
+   `.lk-agent__seg-btn.is-on { background: var(--surface-2); color: var(--fg); font-weight: 600; box-shadow: inset 0 1px 3px rgba(58, 58, 52, 0.16); }`；
+   删掉 `.lk-agent__seg-btn[data-mode="agent"].is-on` 那条。
+2. **两处入口共用同一套类**：`src/ui/ai-workbench.ts` 里 AI 页那两颗按钮从「行内 `BTN` + 条件绿边」改成
+   `<span class="lk-agent__seg">` + `<button class="lk-agent__seg-btn[ is-on]" id="lk-ai-mode-chat|agent" data-mode="chat|agent">` ——
+   与 Ctrl+K 浮层同一个观感（同一个控件在两个入口不许长得不一样）。
+3. 浮层里剩下的 accent 只有两处：流式光标、`.lk-agent.is-agent` 的 `border-left-color`（"已经授权动手"那条线）。
+
+**守卫 `tools/e2e/agent-main-session.cjs` ★13 升级**：从"恰好一处 accent"收紧成"**一处都没有**" + 选中那颗必须在
+**非颜色**维度上与未选中不同（`filled`：选中/未选中的 computed `backgroundColor` 不相等且选中非透明；`bold`：`fontWeight` 更大）。
+**A/B**：旧构建 `{"n":1,"hits":[{"id":"lk-ai-mode-chat","txt":"聊天"}],"filled":false,"bold":false}` ⇒ 13/14 FAIL；
+新构建 `{"n":0,"hits":[],"onBg":"rgb(201, 198, 189)","offBg":"rgba(0, 0, 0, 0)","onWeight":"600","offWeight":"400","onColor":"rgb(35, 35, 36)","filled":true,"bold":true}` ⇒ **14/14 PASS**。
+
+**读数（探针 `tools/e2e/probe-greens-shot.cjs`）**：`node tools\e2e\probe-greens-shot.cjs ai` 现在打印「合计: 0 处」；
+不带参那一屏（浮层生成中）里 `.. 模式按钮(agent)` 的 `bg` = `rgb(201, 198, 189)`、`color` = `rgb(35, 35, 36)`（**不是**绿），
+整屏只剩流式光标 + 面板左边缘那两条。两张 2x 图（`%TEMP%\lk-greens-ai.png` / `lk-greens-panel.png`）都看过：选中那颗读得出来。
+
+**本轮踩的坑（两条都是判据/实现，不是环境）**：
+- ★13 改判据时**把 `const on` / `const ocs` 的声明漏掉了**（只写了 `return` 里用到它们的那几个字段）⇒
+  `FAIL 脚本异常: Error: eval: ReferenceError: on is not defined`、套件 `exit: 2`。与 2B 那轮"把 `idx++` 一起删掉"同一类错：
+  **改一个"用到某变量的表达式"之前，先确认那个变量还在。**
+- 「选中那颗有底色」这种判据在 AI 页**没有区分力**：`BTN` 常量本身已经带 `background: var(--surface-2)`
+  （`src/ui/ai-workbench.ts:40`），新旧构建的 `onFilled` 都是 `true` —— 判据必须比"**选中 vs 未选中**"的差，不能只看单侧。
+- 套件连跑污染（老坑，本轮又中一次）：四套塞进同一个 pwsh 循环里跑，`agent-panel` 18/21（★7/★16/★17 全是 `n:0`＝面板读到的历史是空的，
+  上一实例收尾写回盖掉了下次播种的 `agent/*.json`）；**单独重跑 21/21**。每套件单独起一次 runner + 跑前留几秒。
+
 ## 第六十二轮（2026-09-26）· AI 页那一头的三处荧光绿 → 只留「当前模式」
 
 用户原话（贴的就是那一头的文字）：「主会话 主没连别的会话25 条＝ Ctrl+K 的灵框助手（同一份对话）/ 模式 聊天 Agent / 聊天：能查也能改，一次只做一个动作，**这里面有三处荧光绿**」。

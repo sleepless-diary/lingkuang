@@ -461,10 +461,22 @@
   守卫：`tools/e2e/agent-stream.cjs` 的 ★11（判据必须**同时**验"不与光标同色"和"自己非透明"）。
   同一纪律也管 **AI 页那一头**（`src/ui/ai-workbench.ts` 的 `renderHead()`）：那儿原来三处荧光绿
   （角色 chip「主」+ 「＝ Ctrl+K 的灵框助手（同一份对话）」+ 当前模式按钮 —— 用户 2026-09-26：
-  「这里面有三处荧光绿」），现在只留**当前模式**那一个（另两处降到 `--fg-2`，chip 改成与助手浮层的
-  `.lk-agent__chip` 同款 `--fg-2` + `--border-strong`）。守卫 = `tools/e2e/agent-main-session.cjs` ★13
-  （数 `#ai-head` 里的 accent 元素，恰好 1 个且必须是模式按钮；⚠️ 边框判据必须带 `borderTopWidth > 0`
-  —— 无边框元素的 computed `borderColor` 就是 `currentColor`，不加这条会把所有 accent 文字都算"命中边框"）。
+  「这里面有三处荧光绿」），现在**一个都不留**（另两处降到 `--fg-2`，chip 改成与助手浮层的
+  `.lk-agent__chip` 同款 `--fg-2` + `--border-strong`）。
+- **"选中"不许用颜色说**（用户 2026-09-26 紧接着的那一轮：「聊天/agent 在选中状态下也是荧光绿」）：
+  位置/状态类信息（"我在哪一档"）改用**填充 + 凹陷 + 加粗** —— `src/style.css` 的
+  `.lk-agent__seg-btn.is-on { background: var(--surface-2); color: var(--fg); font-weight: 600;
+  box-shadow: inset 0 1px 3px rgba(58, 58, 52, 0.16); }`（原来那条
+  `.lk-agent__seg-btn[data-mode="agent"].is-on { color: var(--accent); }` 已删）。
+  两处入口（Ctrl+K 浮层 / AI 页那一头）**共用同一套 `.lk-agent__seg` / `.lk-agent__seg-btn` 类** ——
+  AI 页原来用行内 `BTN` + 条件绿边，现在换成这两个类 + `data-mode`；同一控件两处观感必须一致。
+  助手浮层里剩下的 accent 只有两处：流式光标、以及 `.lk-agent.is-agent` 那条左边缘授权线。
+  守卫 = `tools/e2e/agent-main-session.cjs` ★13（`#ai-head` 里 accent 元素**恰好 0 个** + 选中那颗
+  必须在**非颜色**维度上与未选中不同：`filled`（两者 backgroundColor 不等且选中非透明）与
+  `bold`（fontWeight 更大）。⚠️ 只判"选中那颗有底色"**没有区分力** —— `BTN` 常量本身已带
+  `background: var(--surface-2)`，新旧构建都是 true；必须比"选中 vs 未选中"的差。
+  ⚠️ 边框判据必须带 `borderTopWidth > 0` —— 无边框元素的 computed `borderColor` 就是 `currentColor`，
+  不加这条会把所有 accent 文字都算"命中边框"）。
 - **三个 API**：
   · `enter(el, cls = 'lk-enter')` 重放一次入场（摘类 → 强制重排 → 加类；只加类不重播）；
   · `staggerIn(container)` = **常驻**错峰（类留在容器上）—— 延迟不在 JS 里算，而是 CSS 按子项序号给

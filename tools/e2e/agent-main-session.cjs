@@ -344,10 +344,10 @@ async function main() {
     m1.indexOf('Agent：能连着走多步') >= 0 && !!m2 && m2.mode === 'agent' && m2.on === true && m3.indexOf('聊天：能查也能改') >= 0,
     { dom: dom12, aiAgent: m1.indexOf('Agent：能连着走多步') >= 0, panel: m2, aiBackToChat: m3.indexOf('聊天：能查也能改') >= 0 });
 
-  /* ★13 ⭐AI 页那一头只许一处荧光绿（用户 2026-09-26：「这里面有三处荧光绿」）。
+  /* ★13 ⭐AI 页那一头不许有荧光绿（第一轮：用户「这里面有三处荧光绿」；第二轮：「聊天/agent 在选中状态下也是荧光绿」）。
      基准色从页面上取（`#ai-send` 发送按钮的颜色 = accent），数 `#ai-head` 里文字/边框/底色
      撞上它的元素：旧构建三处（角色 chip「主」+「＝ Ctrl+K 的灵框助手（同一份对话）」+ 当前模式按钮）
-     ⇒ FAIL；修后只剩当前模式那个按钮 ⇒ PASS。
+     ⇒ FAIL；第一轮修后只剩当前模式那个按钮，第二轮连它一起去掉（选中改"填充 + 凹陷 + 加粗"）⇒ PASS。
      ⚠️ 边框只在 `borderTopWidth > 0` 时才算 —— 无边框元素的 computed `borderColor` 会等于
      `currentColor`，拿 `color` 一比就全"命中"，探针第一版就踩过这个假读数。 */
   const head13 = await ev(`(function () {
@@ -366,10 +366,28 @@ async function main() {
       const bg = cs.backgroundColor === ref;
       if (col || bd || bg) hits.push({ id: el.id || null, txt: (el.textContent || '').replace(/\\s+/g, ' ').slice(0, 16) });
     }
-    return { has: true, ref: ref, n: hits.length, hits: hits };
+    const seg = document.querySelectorAll('#ai-head .lk-agent__seg-btn');
+    let on = null; let off = null;
+    for (let i = 0; i < seg.length; i++) {
+      if (seg[i].classList.contains('is-on')) on = seg[i]; else if (!off) off = seg[i];
+    }
+    const ocs = on ? getComputedStyle(on) : null;
+    const fcs = off ? getComputedStyle(off) : null;
+    const clear = function (v) { return v === 'rgba(0, 0, 0, 0)' || v === 'transparent'; };
+    return { has: true, ref: ref, n: hits.length, hits: hits,
+      onId: on ? on.id : null, offId: off ? off.id : null,
+      onBg: ocs ? ocs.backgroundColor : null, offBg: fcs ? fcs.backgroundColor : null,
+      onWeight: ocs ? ocs.fontWeight : null, offWeight: fcs ? fcs.fontWeight : null,
+      onColor: ocs ? ocs.color : null,
+      filled: !!(ocs && fcs && ocs.backgroundColor !== fcs.backgroundColor && !clear(ocs.backgroundColor)),
+      bold: !!(ocs && fcs && parseInt(ocs.fontWeight, 10) > parseInt(fcs.fontWeight, 10)) };
   })()`);
-  check('★13 ⭐AI 页那一头只有一处荧光绿（= 当前模式那个按钮）：「主」chip 与「＝ Ctrl+K…」都该是次级灰',
-    !!head13 && head13.has === true && head13.n === 1 && head13.hits[0].id === 'lk-ai-mode-chat', head13);
+  /* 第二轮（用户紧接着报的）：「聊天/agent 在选中状态下**也是**荧光绿」⇒ 选中态改用
+     **填充 + 凹陷**表达（`--surface-2` 底 + 内阴影 + 字重 600），不再用颜色；判据因此从
+     "恰好一处 accent" 收紧成 "**一处都没有**"，另加一条"选中那颗必须有底色才算选中"。 */
+  check('★13 ⭐AI 页那一头没有荧光绿；"你在哪一档"靠**填充 + 加粗**表达（选中那颗有底色、比未选中粗，且不是 accent）',
+    !!head13 && head13.has === true && head13.n === 0 && head13.filled === true
+      && head13.bold === true && !!head13.onColor && head13.onColor !== head13.ref, head13);
 
   const errs = await ev(`window.__errs || []`);
   check('★9 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, { errs });
