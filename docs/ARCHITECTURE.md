@@ -28,7 +28,7 @@
 | `src/store/` | 数据层：`store.ts`（单一数据源 + 订阅）、`actions.ts`（修改入口）、`types.ts`（领域类型） |
 | `src/tools/` | `registry.ts`（工具栏工具注册表 + `Tool.group` 左栏分组；`openTool()` 给每次打开发一个**工具格** `.lk-tool-slot`——见「工具宿主」一段）+ `register.ts`（工具定义） |
 | `src/ui/shell.ts` | 壳 UI：世界栏 + 工具栏 + 沙盘 + 工具宿主。⭐ **时间线页签**（`renderTimelineTabs`）：结构签名只由**页签的 id 顺序**决定 —— 计数 / 名字 / 选中态一律**就地更新**（改 `.nm` 文本、`.cnt` 数字、toggle `is-active`），绝不重写 `innerHTML`（`tabs` 上常驻着 `.lk-enter-stagger`，一重建＝整条页签栏重播 `lk-wake` 上下弹，见 `docs/BUGS.md` 第四十一轮③）；只有**新增 / 删除时间线**才重建 + `staggerIn`，换页签（显式切换）播一次错峰。工具栏最开头调 `bindPanelEvents()`（面板型工具的按钮高亮同步 + **`Ctrl+K` 呼出灵框助手**；那个作用域里没有 store ⇒ 用模块级 `let shellStore: Store \| null = null`，在 `renderToolbar(store)` 里赋值） |
-| `src/ui/timeline.ts` | 世界沙盘时间线（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针）。⭐ **标尺刻度是 DOM diff、不是整块重画**（第 ⑤ 片，2026-09-26）：`renderScale()` 只**收集**这一帧该有的刻度（key = `种类|unit|时间/区间`，⭐ **不含档位 `stepSec`**）交给 `paintScale(items)` —— 还在的只改 `left`、复用的元素按需重写 `html`、走掉的**当场 `remove()`**。⭐ **刻度元素本身（那根线）永不播动画；只有里面的文字随缩放淡进淡出**（2026-09-26 三轮改口的最终态：上午按 09-19 那条做了 `opacity`+`scale(0.9)` 的整批出入场 → 下午用户否掉「**要不标尺动画去了吧，感觉有点，emm不符合我的预期**」⇒ 整套撤掉（标尺是**量具**，线与网格一起动读起来像"尺子自己在动"）→ 同日再一轮用户要「**标尺上的文字能不能随缩放比例稍微做一点不透明度的出入场**」⇒ 折中落地：`src/ui/motion.ts` 的 `labelFadeIn/labelFadeOut` 只写文字 span 的 `opacity`、**不做 `scale()`**（缩放会让 9px 等宽字重新栅格化 ＝ 用户当时报的「标尺的文字会闪一下」），且**只在视图真的在变的那几帧播**（`renderScale()` 的 `moving`；静止重画瞬间到位）。走掉的刻度留一拍让文字淡出，但它的线**当帧加 `.is-out` 变透明** ⇒ 屏上"看得见的线"永远只有一套，不重演第四十二轮的「两个重叠的标尺」）。⚠️ **DOM diff 必须留着** —— 它跟"播不播动画"是两件事，而且是"整条标尺重画"那个闪的解药（旧写法一句 `scaleEl.innerHTML = html + subHtml` 每帧重建 180 来个元素）。⚠️ 顺序比对**只比"活元素"之间的相对顺序**（不在这一帧 items 里的元素跳过），否则每帧要白搬一大批节点；⭐ **换档时"名字没变的数字"复用同一元素**（2026-09-26 二轮，用户实测「入场时标尺的文字会闪一下」）：key 只认身份、**不带 `stepSec`** ⇒ 档位变了也只有真新增/真消失的刻度才建/删，复用的元素**按需**重写 `html`（`scaleHtml` 这个 `WeakMap<HTMLElement, string>` 记"上次写进去的那份"，不同才写 —— 逐帧写就又成"整条标尺重画"了）—— ⚠️ 重写时**只淡"新出现的那一截"文字**（先用 `sigOf` 记旧 span 的类名+文本指纹，重写后只挑没出现过的淡入），否则整块再淡一遍就又变成那条「换档时数字闪一下」；退场元素记账在 `scaleFading: Map<string, HTMLElement>`（**同一个 key 绝不许有两个元素** —— 被缩放"捞回来"时复用并 `cancelLabelFade`）；⚠️ `clearScale()` 是"这一版标尺作废"的两处路径（无时间线 / 非线性模式）必须走的门，账本（`scaleTicks` 这个 key→元素 的 Map）要一起清 —— 只清 DOM 的话下一帧会往脱离文档的元素上写 `left`，屏幕上缺一截（`scaleFading` 与 `lastPaint.spacing = 0` 也在这里复位）。⭐ **宿主宽度从 0 变真时补一次重画**（`mountTimeline()` 末尾的 `ResizeObserver`）：宿主隐藏时 `wrap.clientWidth === 0` ⇒ 刻度范围算出来只有**一根**、`fitAll()` 按 0 宽算出下限 `spacing = 0.05`；而 `src/ui/shell.ts` 里"切回沙盘"那条分支只恢复显示、不重画 ⇒ 会话恢复（`src/ui/session.ts`）开局停在别的工具时，用户第一次切回沙盘就看到一根孤零零的刻度和没 fit 的视图（守卫 `tools/e2e/scale-hidden-mount.cjs`）。⭐ **分段映射（第 4.0 片 C）**：`rebuildWarp()` / `year2w(y)` / `w2year(w)` / `inWarpSeg(y)` —— 聚焦一条剧情线时，段与段之间的**空隙从时间轴上压掉**（每段按原长保留、段间长度归零，真实年 ↔ **压缩年** 单调映射）。`timeToX/xToTime` 是时间↔屏幕的**唯一**通道（节点/标尺/指针/色带/点击拖动/滚轮锚点全走它们）⇒ 底座只接这两个函数；段外节点由 `render` 包装器里的 `inLine()` 过滤，标尺把落在空隙里的刻度**剔掉**并在接缝处画 `.tl__axis-cut` 断口（不插假密度）。`fitAll()` 在压缩轴上量跨度。⚠️ 与 ROADMAP「非线性模式：节点间插值」共用这一层（都改 `year2w/w2year`）。⭐ **剧情线默认「全览」**：`renderStoryUI()` 不再自动落到第一条线（用户 2026-09-19「默认打开灵框时是全览」）。⭐ **非线性模式（`renderNonlinear()`）有自己那套视图游标 `nlPan/nlZoom`**：那一支的 x 是序列序、与时间无关，复用 `view.panX/spacing` 会让两种模式互相踩 ⇒ 滚轮平移 / Alt+滚轮缩放 / 空格拖动都接它，进模式与双击时归零（「刚好铺满」）；曾有「非线性下节点固定在屏幕上」的问题（x 里没有 pan、那一支也不响应滚轮，节点比屏宽时尾巴够不着）。⭐ **非线性 × 聚焦**：非线性那一支的 x 是序列序 ⇒ `renderStoryOverlay(true)` 把**时间遮罩/色带清掉**（它们按 `timeToX(年份)` 画，盖上去只会盖错地方），而**聚焦语义仍在 `renderNonlinear()` 里生效**（只排线内节点、等距）。⚠️ 那个参数是必须的——不能在里面读 `nonlinearMode`（`let`，启动那次 render 会走到这里，读它就是 TDZ 抛错）。⭐ **新建剧情线**：**聚焦下拉底部那一项「＋ 新建剧情线…」**（用户 2026-09-19）与面板头的「＋剧情线」按钮是**同一个动作** —— `openNewLinePanel()` 在右侧宿主展开创建面板（`renderNewLinePanel()`：名字 + 段列表 + 「＋ 添加一段」进拾取态 + 创建/取消；段默认给整条时间线的跨度）；⚠️ 段一律写**年**（旧 `#lk-line-new` 直接把 `yearEpoch(年)`＝**epoch 秒**写进 `segments`，那种线 `inLine(任何年份)` 都为 false ⇒ 聚焦它等于什么都看不见）；⚠️ 面板开着时 `renderSegPanel()` **早退**（同一个宿主，否则会被「这条线的段」冲掉） |
+| `src/ui/timeline.ts` | 世界沙盘时间线（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针）。⭐ **标尺刻度是 DOM diff、不是整块重画**（第 ⑤ 片，2026-09-26）：`renderScale()` 只**收集**这一帧该有的刻度（key = `种类|unit|时间/区间`，⭐ **不含档位 `stepSec`**）交给 `paintScale(items)` —— 还在的只改 `left`、复用的元素按需重写 `html`、走掉的**当场 `remove()`**。⭐ **刻度元素本身（那根线）永不播动画；文字的透明度是**位置的纯函数**（`labelWindow()`/`LABEL_PLATEAU`，**没有动画**）**（2026-09-26 三轮改口的最终态：上午按 09-19 那条做了 `opacity`+`scale(0.9)` 的整批出入场 → 下午用户否掉「**要不标尺动画去了吧，感觉有点，emm不符合我的预期**」⇒ 整套撤掉（标尺是**量具**，线与网格一起动读起来像"尺子自己在动"）→ 同日再一轮用户要「**标尺上的文字能不能随缩放比例稍微做一点不透明度的出入场**」⇒ 四轮（**最终态**）：用户看完报「**有了，但是文字会闪烁**」并给出新规格「**把整个缩放尺度当成一个 x 轴……文字的不透明度图像类似于一个正态分布（100% 不透明度的占比要长一点），每个文字依照对应的 x 计算当前的不透明度**」⇒ **全部动画删掉**、不透明度＝位置的纯函数（`labelWindow()` + `LABEL_PLATEAU`：中间 68% 恒 1、两头 `exp(−4t²)` 尾巴），走掉的刻度当帧 `remove()`（详见 `docs/BUGS.md` 第四十五轮）。⚠️ **DOM diff 必须留着** —— 它跟"播不播动画"是两件事，而且是"整条标尺重画"那个闪的解药（旧写法一句 `scaleEl.innerHTML = html + subHtml` 每帧重建 180 来个元素）。⚠️ 顺序比对**只比"活元素"之间的相对顺序**（不在这一帧 items 里的元素跳过），否则每帧要白搬一大批节点；⭐ **换档时"名字没变的数字"复用同一元素**（2026-09-26 二轮，用户实测「入场时标尺的文字会闪一下」）：key 只认身份、**不带 `stepSec`** ⇒ 档位变了也只有真新增/真消失的刻度才建/删，复用的元素**按需**重写 `html`（`scaleHtml` 这个 `WeakMap<HTMLElement, string>` 记"上次写进去的那份"，不同才写 —— 逐帧写就又成"整条标尺重画"了）—— ⚠️ 重写时**只淡"新出现的那一截"文字**（先用 `sigOf` 记旧 span 的类名+文本指纹，重写后只挑没出现过的淡入），否则整块再淡一遍就又变成那条「换档时数字闪一下」；退场元素记账在 `scaleFading: Map<string, HTMLElement>`（**同一个 key 绝不许有两个元素** —— 被缩放"捞回来"时复用并 `cancelLabelFade`）；⚠️ `clearScale()` 是"这一版标尺作废"的两处路径（无时间线 / 非线性模式）必须走的门，账本（`scaleTicks` 这个 key→元素 的 Map）要一起清 —— 只清 DOM 的话下一帧会往脱离文档的元素上写 `left`，屏幕上缺一截（`scaleFading` 与 `lastPaint.spacing = 0` 也在这里复位）。⭐ **宿主宽度从 0 变真时补一次重画**（`mountTimeline()` 末尾的 `ResizeObserver`）：宿主隐藏时 `wrap.clientWidth === 0` ⇒ 刻度范围算出来只有**一根**、`fitAll()` 按 0 宽算出下限 `spacing = 0.05`；而 `src/ui/shell.ts` 里"切回沙盘"那条分支只恢复显示、不重画 ⇒ 会话恢复（`src/ui/session.ts`）开局停在别的工具时，用户第一次切回沙盘就看到一根孤零零的刻度和没 fit 的视图（守卫 `tools/e2e/scale-hidden-mount.cjs`）。⭐ **分段映射（第 4.0 片 C）**：`rebuildWarp()` / `year2w(y)` / `w2year(w)` / `inWarpSeg(y)` —— 聚焦一条剧情线时，段与段之间的**空隙从时间轴上压掉**（每段按原长保留、段间长度归零，真实年 ↔ **压缩年** 单调映射）。`timeToX/xToTime` 是时间↔屏幕的**唯一**通道（节点/标尺/指针/色带/点击拖动/滚轮锚点全走它们）⇒ 底座只接这两个函数；段外节点由 `render` 包装器里的 `inLine()` 过滤，标尺把落在空隙里的刻度**剔掉**并在接缝处画 `.tl__axis-cut` 断口（不插假密度）。`fitAll()` 在压缩轴上量跨度。⚠️ 与 ROADMAP「非线性模式：节点间插值」共用这一层（都改 `year2w/w2year`）。⭐ **剧情线默认「全览」**：`renderStoryUI()` 不再自动落到第一条线（用户 2026-09-19「默认打开灵框时是全览」）。⭐ **非线性模式（`renderNonlinear()`）有自己那套视图游标 `nlPan/nlZoom`**：那一支的 x 是序列序、与时间无关，复用 `view.panX/spacing` 会让两种模式互相踩 ⇒ 滚轮平移 / Alt+滚轮缩放 / 空格拖动都接它，进模式与双击时归零（「刚好铺满」）；曾有「非线性下节点固定在屏幕上」的问题（x 里没有 pan、那一支也不响应滚轮，节点比屏宽时尾巴够不着）。⭐ **非线性 × 聚焦**：非线性那一支的 x 是序列序 ⇒ `renderStoryOverlay(true)` 把**时间遮罩/色带清掉**（它们按 `timeToX(年份)` 画，盖上去只会盖错地方），而**聚焦语义仍在 `renderNonlinear()` 里生效**（只排线内节点、等距）。⚠️ 那个参数是必须的——不能在里面读 `nonlinearMode`（`let`，启动那次 render 会走到这里，读它就是 TDZ 抛错）。⭐ **新建剧情线**：**聚焦下拉底部那一项「＋ 新建剧情线…」**（用户 2026-09-19）与面板头的「＋剧情线」按钮是**同一个动作** —— `openNewLinePanel()` 在右侧宿主展开创建面板（`renderNewLinePanel()`：名字 + 段列表 + 「＋ 添加一段」进拾取态 + 创建/取消；段默认给整条时间线的跨度）；⚠️ 段一律写**年**（旧 `#lk-line-new` 直接把 `yearEpoch(年)`＝**epoch 秒**写进 `segments`，那种线 `inLine(任何年份)` 都为 false ⇒ 聚焦它等于什么都看不见）；⚠️ 面板开着时 `renderSegPanel()` **早退**（同一个宿主，否则会被「这条线的段」冲掉） |
 | `src/ui/inspire.ts` | 灵感触发器（随机角色生成 + 词义联想入口） |
 | `src/ui/assoc.ts` | 词义联想**无限画布**（力导向 + 单线聚焦 + 视窗平移/缩放 + 拖节点贴边自动推视窗 + 手动摆过的节点钉住，钉住上限 `PIN_YIELD = 420`）；拖拽中只免"手里那一格"、线的另一头照常受力（＝线上的拉力）；没有世界边界（`HOME_W/HOME_H` 只是初始落点区与 SVG 作图区），框外连线靠 `.assoc__lines { overflow: visible }`；宿主高度由 `src/ui/inspire.ts` 的 `fitAssocHeight()` 让开 sticky 工具条，滚动容器用 `scrollParent()` 现找 |
 | ~~`src/ui/editor.ts`~~ | **已删除**（2026-09-13，用户批准「设定库和编辑器合成一个工作台」）。它的**树**并进了 `src/ui/codex.ts` 的左栏（`_設定` 分支、种类只列真有节点的、`_设定` 与时间线同缩进 —— 这些语义都在 codex.ts 里，注释也搬过去了）；`H1`/`插图` 两个正文按钮并进工作台的正文标题行；外部改动提示条搬到 `src/ui/vault-notice.ts`。工具入口从 `src/tools/register.ts` 撤掉 ⇒ 左栏创作组从 6 个变 5 个。历史实现要看就 `git show <commit>:src/ui/editor.ts`（`6d75086` 之前那一版是最后一版） |
@@ -431,32 +431,31 @@
 - **逐元素的 WAAPI 原语**（不走 CSS 类，因为元素是**被 diff 出来的**、不是"重放一次入场"）：
   `rowsLeave/rowsEnter`（换条目转场）、`rowSlideIn/rowsDropIn/rowLeaveAndRemove`（列表增删）、
   `flipRows`（其余项让位）、`smoothBoxHeight`（框高）。它们的共同前提是"**调用方先做 DOM diff**"。
-  ⭐ **标尺文字的淡入淡出**：`labelFadeIn/labelFadeOut/cancelLabelFade`（2026-09-26 三轮改口的最终态）——
-  作用元素是刻度里那**两个 span**（`.tl__axis-label` / `.tl__axis-prev`）、**只写 `opacity`**；
-  ⚠️ **绝不碰刻度元素本身**（`border-left` 是那根线）也**绝不做 `scale()`**。
-  由来：09-19 提「用不透明度和**缩放尺度**计算」→ 09-26 上午做（`opacity` + `scale(0.9)` 作用在
-  **刻度元素**上、整批换档还做"先出后进"）→ 同日下午用户否掉：「**要不标尺动画去了吧，感觉有点，
-  emm不符合我的预期**」（线与网格一起缩放＝"尺子自己在动"）⇒ 那对 `scaleTicksEnter/
-  scaleTicksLeaveAndRemove` **已删**；同日再一轮用户又说「**标尺上的文字能不能随缩放比例稍微做一点
-  不透明度的出入场**」⇒ 才有现在这对**只淡文字**的原语。第二层理由：`scale()` 会让 9px 等宽字重新
-  栅格化（实测 label 宽 22.3→24.1），正是当时那条「入场时标尺的文字会闪一下」。
-  守卫 = `tools/e2e/scale-motion.cjs` ★6（`maxLabelAnim ≥ 1` 且 `outFading ≥ 1` 且 `maxLabelMove === 0`）。
-  · **何时播**（"随缩放比例"）由 `src/ui/timeline.ts` 的 `renderScale()` 算：比"这一帧"与"上一次画标尺"的视图
-    ——`dSpacing = |log(view.spacing / lastPaint.spacing)|`、`dPan = |view.panX - lastPaint.panX|`，
-    `moving = lastPaint.spacing > 0 && (dSpacing > 0.0005 || dPan > 0.5)`；**静止重画一律瞬间到位**
-    （动画不挂 store 订阅，`motion.ts:15-17`）。时长 `dur = clamp(LABEL_MAX/(1+dSpacing*40), 90, 170)`。
-  · **`paintScale(items, zoom)` 仍是 DOM diff**：key 只认身份（`种类|unit|时间`）、**不带 `stepSec`**
-    （否则换档时"前后都在的数字"被整批重建 ⇒ 用户报的「标尺的文字会闪一下」，2026-09-26 二轮）；
-    复用的元素**按需**重写 `html`（`scaleHtml` 这个 `WeakMap<HTMLElement, string>`），且重写时**只淡新出现的那一截**
-    （`sigOf` 比对旧 span 指纹）。走掉的：有文字的 ⇒ 当帧 `.is-out`（线透明）+ 文字淡出后再摘；
-    没文字的（小刻度 / `⋯` 断口）⇒ **当场摘**。**同一个 key 绝不许有两个元素**：退场的元素记账在
-    `scaleFading: Map<string, HTMLElement>`，被缩放"捞回来"时复用并 `cancelLabelFade`。
-    ⚠️ 旧写法一句 `scaleEl.innerHTML = html + subHtml` 每帧重建 180 来个元素才是真正要避免的
-    （那个闪的解药是 diff，不是动画）。
-  · 守卫 = `tools/e2e/scale-motion.cjs`（★1 平移不重画 / ★2 **刻度元素**零动画 / ★3 换档复用元素 /
-    ★4 退场元素的线不可见 / ★4b 淡完即摘、无残留 / ★6 文字淡且只动 opacity）。
-    ⚠️ ★4 的第一版判据是"500ms 前后的 DOM 集合差分"⇒ 假 FAIL（差分量到的大多是没有文字的小刻度，
-    它们根本不进退场路径）；正确做法是**每滚一格连续 400ms 每帧直接盯 `is-out` 元素**。
+  ⭐ **标尺文字的不透明度 = 位置的纯函数**（2026-09-26 **四轮改口的最终态**；见 `docs/BUGS.md` 第四十五轮）：
+  `src/ui/timeline.ts` 的 `labelWindow(x, w)` + `LABEL_PLATEAU = 0.34` —— 中间 **68% 屏宽恒 1**、两头按高斯尾巴
+  `exp(−4t²)` 降到 0.018。**没有任何动画**：`paintScale(items)` 每帧只把 `op` 写进文字 span
+  （`.tl__axis-label` / `.tl__axis-prev`）的**行内 style**；刻度元素（`border-left` 那根线）永不参与。
+  由来（**别再往回改**）：09-19 提「用不透明度和**缩放尺度**计算」→ 09-26 上午做（`opacity` + `scale(0.9)` 挂
+  **刻度元素**、整批换档"先出后进"）→ 下午用户否：「**要不标尺动画去了吧，感觉有点，emm不符合我的预期**」⇒ 撤；
+  同日再要「**标尺上的文字能不能随缩放比例稍微做一点不透明度的出入场**」⇒ 只淡文字、按**时间**淡
+  （`labelFadeIn/labelFadeOut`，**已删**）→ 用户看完报「**有了，但是文字会闪烁**」并给出新规格
+  「**把整个缩放尺度当成一个 x 轴……每个文字依照对应的 x 计算当前的不透明度**」⇒ 现在这版。
+  · 为什么这就从根上不闪：位置连续变 ⇒ 纯函数连续变；没有"开始播 / 被取消 / 再从 0 淡一遍"这些状态。
+    旧版三种闪（逐帧探针实测：位置 `dx 0` 的一帧里 `opacity 0.005 → 1`）：边缘反复进出、被"捞回来"时 op 硬跳回 1、
+    淡完删掉再从 0 淡起。
+  · **走掉的刻度当场 `remove()`**：它的 x 已落在两端锥形里（op ≈ 0.018）⇒ 摘掉看不出来，也没有淡出可等。
+  · **`paintScale(items)` 仍是 DOM diff**：key 只认身份（`种类|unit|时间`）、**不带 `stepSec`**
+    （否则换档时"前后都在的数字"被整批重建 ⇒ 用户报的「标尺的文字会闪一下」，2026-09-26 二轮 —— **这条仍然有效**）；
+    复用的元素**按需**重写 `html`（`scaleHtml: WeakMap<HTMLElement, string>`）；每根刻度的文字 span 记在
+    `scaleLabels: WeakMap<HTMLElement, HTMLElement[]>`（创建 / 重写时记账）⇒ 每帧**零 DOM 查询**。
+    ⚠️ 旧写法一句 `scaleEl.innerHTML = html + subHtml` 每帧重建 180 来个元素才是真正要避免的（解药是 diff，不是动画）。
+  · 守卫 = `tools/e2e/scale-motion.cjs` **8 项**：★0 前置 / ★1 平移不重画（元素身份）/ ★2 **全程零动画**（含文字 span）/
+    ★3 换档复用元素 / ★4 **op = 位置的纯函数**（`midMin === 1`、`edgeMin ≤ 0.6`、按 |dx| 单调不增）/
+    ★4b **连续缩放时 `|dOp| / max(|dX|, 0.3) ≤ 0.08`**（"不闪"本身）/ ★5 走掉的当帧就摘 / ★6 无异常。
+    **A/B：修复前 4/8（★2 `maxLabelAnim 29`、★4 `edgeMin 1`、★5 `linger 13`、★4b `maxRatio 3.3161`）→ 修复后 8/8**。
+    ⚠️ ★4b 必须在**平滑路径**上量 ⇒ 套件里用 CDP `Emulation.setFocusEmulationEnabled {enabled:true}` 让页面内
+    `document.hasFocus()` 为真（实例带 `NOFOCUS` 时滚轮当帧落值、根本没有连续运动可测），量完关掉；
+    判据还要带 `movedFrames ≥ 5` 反假绿（否则"一次都没动"也会得 `maxRatio = 0`）。
 - ⚠️ **整块容器不许播动画**（用户 2026-09-12 反馈「切换工具时会闪黑一下」的真因）：抓帧实测，
   点工具后第一帧"里面内容已全部就位、只是整块发灰"（`#lk-module-view` 在低不透明度上），
   而且整块淡入把每个元素自己的错峰**完全盖住**。⇒ `openTool` 不再 `enter(host)`、回沙盘也不再

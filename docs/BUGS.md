@@ -15,7 +15,60 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
-## 第四十四轮（2026-09-26）· 标尺文字「随缩放比例」的透明度出入场（**用户三轮改口的最终态**）
+## 第四十五轮（2026-09-26）· 标尺文字改成「**位置的纯函数**」（**用户四轮改口的最终态**；取代第四十四轮那套按时间淡入淡出）
+
+> 用户原话：「**有了，但是文字会闪烁**，你是怎么实现的这个效果（大白话一点），我有一个想法」→
+> 讲完实现后给出规格：「**把整个缩放尺度当成一个 x 轴，在轴上时，文字的不透明度图像类似于一个正态分布的
+> 图像（100% 不透明度的占比要长一点），每个文字依照对应的 x 计算当前的不透明度**」。
+
+### ① 病根：**只要用"时间"驱动就会闪**
+- 第四十四轮那版是"正在缩放时，给新来的文字播一段 90~170ms 的 opacity 淡入、走掉的先淡出再摘"。
+  三种闪都是这套机制的必然产物：
+  ① 边缘反复进出 —— 同一块地方连着"淡出 → 又淡回来 → 再淡出"，每次重新淡入都**从 0 开始**；
+  ② 被"捞回来"时 `cancelLabelFade()` 把动画掐掉、`style.opacity = ''` ⇒ **从半透明一步跳回全亮**（硬跳）；
+  ③ 淡完删掉，同一数字马上又该出现 ⇒ 新元素**再从 0 淡起**（熄灭又点亮）。
+- **逐帧探针实测**（`tools/e2e/scale-motion.cjs` ★4b，开启 `Emulation.setFocusEmulationEnabled` 走缓动）：
+  同一根刻度的文字在**位置一点没动**（`dx 0`）的一帧里，`opacity` 从 **0.005 → 1**（`dop 0.995`）——
+  这就是用户看到的"闪"。
+
+### ② 修法：不透明度改成**位置的纯函数**（`src/ui/timeline.ts`）
+- `LABEL_PLATEAU = 0.34`：中间 **68% 屏宽恒 100% 不透明**（用户要的"100% 的占比要长一点"）；
+- 两头 `t = (|x − w/2| − 0.34·w/2) / (w/2 − 0.34·w/2)`、`op = exp(−4t²)` ⇒ 平台处 t=0 值与斜率都接得上
+  （交界无折角），贴到边缘 `t ≥ 1` 时给 `0.018`（≈看不见，免得边界上忽明忽暗）；
+- `paintScale(items)` 每帧只写文字 span（`.tl__axis-label` / `.tl__axis-prev`）的**行内** `opacity`：
+  **没有动画、没有过渡、没有"什么时候播"的判断**；刻度那根线永不参与。
+- 走掉的刻度**当场 `remove()`**：它的 x 已经落在锥形里、文字本来就只有 0.018 ⇒ 摘掉看不出来。
+- 性能：`scaleLabels: WeakMap<HTMLElement, HTMLElement[]>` 记每根刻度的文字 span（创建 / 重写 html 时记账）
+  ⇒ 每帧**零 DOM 查询**（仓库对每帧查询量敏感，见 `tools/e2e/causes-line.cjs` ★3）。
+- 随之删掉：`src/ui/motion.ts` 的 `labelFadeIn` / `labelFadeOut` / `cancelLabelFade` / `LabelFadeOpts`（无调用方，
+  文件从 629 行截到 577 行）、`src/style.css` 的 `.tl__axis-tick.is-out`、`timeline.ts` 里的 `scaleFading`、
+  `LABEL_MIN/LABEL_MAX`、`lastPaint`、`moving`、`sigOf`、`ZoomHint`、以及 `./motion` 的 import。
+- ✅ **DOM diff / 元素复用照旧留着**（那是"整条标尺重画"那个闪的解药，跟"播不播动画"是两件事）：
+  `scaleTicks` 账本、`scaleHtml` 按需重写 html、顺序修正循环、`clearScale()`。key **仍不带 `stepSec`**。
+
+### ③ 守卫重写：`tools/e2e/scale-motion.cjs`（**8 项**）
+- ★0 前置 / ★1 平移后元素身份不变 / ★2 **全程零动画**（刻度元素 + 文字 span，`maxAnim = maxLabelAnim = maxLabelMove = 0`）/
+  ★3 换档时同名数字复用同一元素 / ★4 **op = 位置的纯函数**（`midMin === 1`、`edgeMin ≤ 0.6`、按 |dx| 单调不增）/
+  ★4b **连续缩放时不透明度连续**（逐帧 `|dOp| / max(|dX|, 0.3) ≤ 0.08`，且 `movedFrames ≥ 5`）/
+  ★5 走掉的当帧就摘（`linger === 0`）/ ★6 无异常。
+- **A/B：修复前 4/8 → 修复后 8/8**（连跑两次读数一致）。修复前四项读数正是用户报的现象：
+  ★2 `maxLabelAnim 29`（文字在演动画）、★4 `edgeMin/edgeMax = 1`（边缘没有变暗这回事）、
+  ★5 `linger 13`（`nowN 134 → laterN 121`，走掉的刻度留了一拍）、★4b `maxRatio 3.3161 @ {dx 0, dop 0.995}`。
+  修复后：`maxAnim 0 / maxLabelAnim 0 / maxLabelMove 0 / linger 0 / maxRatio 0.0079~0.0081`，
+  形状读数 `{x:320,400,480 → op 1} / {x:0 → 0.018} / {x:800 → 0.029 / 0.139}`、`monotone true`。
+- 📌 **★4b 必须在"平滑路径"上量**：测试实例带 `LINGKUANG_TEST_WINDOW_NOFOCUS=1` 时 `noSmooth()` 为真、
+  滚轮**当帧落值**，根本没有连续运动可测 ⇒ 用 CDP `Emulation.setFocusEmulationEnabled {enabled:true}`
+  让页面内 `document.hasFocus()` 为真（**不抢用户 OS 焦点**，实测有效），量完再关掉。
+- 📌 ★4b 的判据必须带 `movedFrames ≥ 5` 这条**反假绿**：否则"一次都没动"也会得出 `maxRatio = 0`。
+
+### ④ 回归（每套件单独起干净实例）
+`timeline-scale` 12/12、`scale-hidden-mount` 5/5、`causes-line` 7/7、`storyline-focus` 13/13、
+`nonlinear-pan` 7/7；三道检查 `node --check main.js` / `npx tsc --noEmit` / `npx vite build` 全绿。
+
+## 第四十四轮（2026-09-26）· 标尺文字「随缩放比例」的透明度出入场（**已被第四十五轮取代**）
+
+> ⚠️ **这一轮的做法（按时间播 `labelFadeIn/labelFadeOut`）已被用户否掉**（「有了，但是文字会闪烁」），
+> 换成第四十五轮的"位置的纯函数"。下面保留全过程是为了说明**哪些坑别再踩**（尤其"用时间驱动必然闪"这条）。
 
 > 用户原话（这一轮）：「**标尺上的文字能不能随缩放比例稍微做一点不透明度的出入场**」。
 
