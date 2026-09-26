@@ -12,7 +12,6 @@ import { escapeHtml } from './html';
 import { confirmDialog } from './confirm';
 import { toEpoch, fromEpoch, calendarOf, timePointOf, buildYearTable } from '../calendar';
 import type { Calendar, YearTable } from '../calendar';
-import { scaleTicksEnter, scaleTicksLeaveAndRemove } from './motion';
 
 interface View {
   panX: number;
@@ -293,10 +292,8 @@ export function mountTimeline(
        （`quantStep()` 在 1/2/5/10×10^k 之间跳）**每根刻度的 key 就全变** ⇒ 整批判成"换档" ⇒
        走"先出后进"⇒ 旧数字先淡掉 100ms 再淡回来 = 看着是**尺子没动、只有字在闪**
        （线的相位没变，落在原来的位置上）。
-       现在换档时"还在的那些刻度"复用同一元素（原地不动、数字不重建），只有真新增/真消失的才出入场；
-       "整批换"改由**档位本身变了**（`tag` 变，见 `paintScale(items, tag)`）触发 —— 上一轮
-       "不许出现两把尺子"照旧。小刻度/断口同理：位置或区间变了就是新元素（取整仍用 `Math.round(s)`）。 */
-    const tag = `${unit}|${stepSec}`;
+       现在换档时"还在的那些刻度"复用同一元素（原地不动、数字不重建）。
+       小刻度/断口同理：位置或区间变了就是新元素（取整仍用 `Math.round(s)`）。 */
     const items: { key: string; cls: string; left: number; html: string }[] = [];
     for (let i = 0; i < ticks.length; i++) {
       const s = ticks[i];
@@ -328,31 +325,24 @@ export function mountTimeline(
         items.push({ key: `m|${unit}|${Math.round(s)}`, cls: 'tl__axis-tick tl__axis-tick--minor', left: timeToX(s), html: '' });
       }
     }
-    paintScale(items, tag);
+    paintScale(items);
   }
 
-  /* ── 标尺刻度的 DOM diff（第 ⑤ 片）───────────────────────────────────────────────────────
-     用户 2026-09-19：「年月日等刻度的**出入场用不透明度和缩放尺度**计算」。
-     旧写法一句 `scaleEl.innerHTML = html + subHtml`：每帧（平移/缩放/缓动都在调 render）
-     把 180 来个刻度元素整体重建 —— 元素对象每帧都换新的（"整条标尺重画"的闪），
-     也没有任何出入场可挂（当场删、当场建）。现在按 key diff：
-     **还在的只改 left、新来的缩放淡入（`scaleTicksEnter`）、走掉的淡出后再摘（`scaleTicksLeaveAndRemove`）**。
-     key = `种类|unit|时间`（**不含 stepSec**，见 `renderScale()` 里那段说明）⇒ 换档时"还在的那些刻度"
-     仍是同一个元素（数字不重建、不闪），只有真进出的才演动画。 */
+  /* ── 标尺刻度的 DOM diff（第 ⑤ 片；出入场动画已按用户要求撤掉）───────────────────────────
+     用户 2026-09-19：「年月日等刻度的**出入场用不透明度和缩放尺度**计算」→ 09-26 上午做了；
+     同日下午用户看完说：「**要不标尺动画去了吧，感觉有点，emm不符合我的预期**」⇒ **整套出入场撤掉**。
+     道理：标尺是**量具** —— 缩放/平移时该「纹丝不动地换值」。淡入淡出、先出后进这类表演在连续缩放里
+     读起来像"尺子自己在动"，反而干扰读数，也正是「两个重叠的标尺」「文字闪一下」两次体感问题的温床。
+     ⚠️ 但 **DOM diff / 元素复用必须留着** —— 它跟"播不播动画"是两件事，而且是「整条标尺重画」那个闪的
+     解药（旧写法一句 `scaleEl.innerHTML = html + subHtml` 每帧重建 180 来个元素、对象全换）。
+     现在：还在的只改 `left`（同一元素原地不动）、走掉的**当场摘掉**、新来的**当场出现**。 */
   const scaleTicks = new Map<string, HTMLElement>();
   /** 每根刻度**上一次写进去的 html**：复用的元素在换档后「上一级」那截文字可能不再是同一个
       （时/分档的 `showPrev` 是拿 `s - stepSec` 比的）⇒ 内容真的变了才重写，
       逐帧 `innerHTML =` 就又变回"整条标尺重画"了。 */
   const scaleHtml = new WeakMap<HTMLElement, string>();
-  /** 上一次的档位（`unit|stepSec`）：档位一变就是"整批换"，见下面的分流。 */
-  let lastScaleTag = '';
-  /** 换掉多少比例算「整批换」（换档）⇒ 走"先出后进"。0.5 = 一半以上的刻度都换了。 */
-  const WHOLE_SWAP_RATIO = 0.5;
-  /** 整批换时旧刻度的淡出时长；入场要等它走完（`start` 同一个值）—— 两批不许重叠。 */
-  const WHOLE_OUT_MS = 100;
-  function paintScale(items: { key: string; cls: string; left: number; html: string }[], tag: string): void {
+  function paintScale(items: { key: string; cls: string; left: number; html: string }[]): void {
     const els: HTMLElement[] = [];
-    const entering: HTMLElement[] = [];
     const seen = new Set<string>();
     for (const it of items) {
       seen.add(it.key);
@@ -363,7 +353,6 @@ export function mountTimeline(
         if (it.html) el.innerHTML = it.html;
         scaleHtml.set(el, it.html);
         scaleTicks.set(it.key, el);
-        entering.push(el);
       } else {
         const last = scaleHtml.get(el);
         if (last !== it.html) { el.innerHTML = it.html; scaleHtml.set(el, it.html); }
@@ -372,8 +361,8 @@ export function mountTimeline(
       els.push(el);
     }
     /* 顺序：刻度必须从左到右排（测试读 `querySelectorAll` 的顺序、以及 z 序都依赖它）。
-       ⚠️ 只比**活元素之间的相对顺序**：退场中的元素还留在 DOM 里、且下一帧就没影了，
-       把它们也算进比较就会每帧白搬一大批节点（实测把 20 个真新元素记成了 92 个"新增"）。 */
+       ⚠️ 只比**活元素之间的相对顺序**（撤动画之后 DOM 里本来就只有活元素，这层保险留着兜住
+       任何"账本里还留着已摘元素"的意外；旧实现每帧白搬一大批节点，见 BUGS 第四十二轮）。 */
     const live = new Set<Element>(els);
     let prevLive: Element | null = null;
     for (const el of els) {
@@ -382,35 +371,15 @@ export function mountTimeline(
       if (n !== el) scaleEl.insertBefore(el, n);
       prevLive = el;
     }
-    const leaving: HTMLElement[] = [];
-    for (const [key, el] of scaleTicks) if (!seen.has(key)) { scaleTicks.delete(key); leaving.push(el); }
-    /* 出入场分两种走法（用户 2026-09-26 反馈：「**有入场，但是会暂时出现两个重叠的标尺**」）：
-       · **整批换**（换档：年→月、步长 2→5；或切聚焦/全览那种时间轴重排）⇒ **先出后进**，
-         否则旧的淡出与新的淡入同时进行 = 屏上两把尺子叠在一起；
-       · **零星换**（平移/同档缩放时从两端进出的一两根）⇒ 保持并行交叉淡入 —— 它们分居屏幕
-         左右两端，读不出"两把尺子"，而且串行会让人看到标尺一截一截地闪。
-       判据有两条（**档位变了**，或**比例**过了半）：档位变了（`tagChanged`）一定是整批 —— 这时
-       网格相位整体换了，"并行"必然读出两把尺子；比例那条兜住"档位没变但时间轴被重排"
-       （切聚焦/全览时线外刻度整片换掉）。边缘变化实测约 6/111 ≈ 0.05，两条都不会误触发。
-       ⚠️ 别把整批那档的 `dur` 调长过入场的 `start`（见 `src/ui/motion.ts` 的 `scaleTicksLeaveAndRemove`）。 */
-    const changed = entering.length + leaving.length;
-    const union = items.length + leaving.length;
-    const tagChanged = tag !== lastScaleTag;
-    lastScaleTag = tag;
-    if (union > 0 && (tagChanged || changed / union >= WHOLE_SWAP_RATIO)) {
-      if (leaving.length) scaleTicksLeaveAndRemove(leaving, { dur: WHOLE_OUT_MS, step: 0, maxDelay: 0 });
-      if (entering.length) scaleTicksEnter(entering, { start: leaving.length ? WHOLE_OUT_MS : 0 });
-    } else {
-      if (entering.length) scaleTicksEnter(entering);
-      if (leaving.length) scaleTicksLeaveAndRemove(leaving);
-    }
+    /* 走掉的**当场摘掉** —— 撤掉动画之后没有"退场中"的中间态：DOM 与账本任何时刻一一对应，
+       屏上永远只有一把尺子（这正是用户两次体感反馈要的东西）。 */
+    for (const [key, el] of scaleTicks) if (!seen.has(key)) { scaleTicks.delete(key); el.remove(); }
   }
   /** 整块清空（无时间线 / 重挂载那种"这一版标尺作废"的路径）。
       ⚠️ 账本必须一起清：元素被 `innerHTML` 抹掉了、账本还记着的话，下一帧就会往
       一个**脱离文档**的元素上写 left，屏幕上的标尺会缺一截。 */
   function clearScale(): void {
     scaleTicks.clear();
-    lastScaleTag = '';
     scaleEl.innerHTML = '';
   }
 
