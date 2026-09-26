@@ -153,21 +153,42 @@ async function main() {
   const labels = before.map((t) => t.label);
   check('★3 一屏内没有重复的刻度标签', new Set(labels).size === labels.length, { n: labels.length, uniq: new Set(labels).size });
 
-  /* ── ④ 平移之后：同一标签必须跟着整体位移（这就是用户报的「数字会变」） ── */
-  /* 平移 = 普通滚轮（timeline.ts:505 `view.panX -= e.deltaY`）⇒ deltaY -180 让整条标尺右移 180px */
-  const panned = await ev(`(() => {
-    const el = document.querySelector('#lk-pane-timeline .tl__axis-tick--major') || document.querySelector('#lk-pane-timeline');
-    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -180, bubbles: true, cancelable: true }));
+  /* ── ④ 平移之后：同一标签必须跟着整体位移（这就是用户报的「数字会变」） ──
+     ⚠️ **这条自带独立起始状态**（2026-09-26 修）：它原来直接接在 ★2b 后面，而 ★2b 已经把视图
+     放大到 1e8 px/年、刻度走到**时/分**档 —— 那时 180px 只等于 57 秒，整屏标签会被整体换掉一批，
+     `common` 必然是空的（长期表现：★4 恒 FAIL，`panDelta 78` / `common: []`）。
+     那是**测试场景不成立**，不是产品 bug；所以先切回「全览」（下拉 change 的处理器里带
+     `requestAnimationFrame(() => fitAll())`，见 src/ui/timeline.ts:826-846）拿一个干净的 fit。 */
+  await ev(`(() => {
+    const s = document.getElementById('lk-line-sel');
+    if (!s) return false;
+    s.value = '';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   })()`);
+  const panBase = await stableTicks();
+  const baseGaps = [];
+  for (let i = 1; i < panBase.length; i++) baseGaps.push(panBase[i].x - panBase[i - 1].x);
+  check('★4a 平移的起始状态是干净的 fit（切回「全览」后主刻度 ≥ 3 条、最小间距 ≥ 40px，不是 ★2b 的时/分档）',
+    panBase.length >= 3 && baseGaps.length >= 2 && Math.min(...baseGaps) >= 40,
+    { n: panBase.length, minGap: baseGaps.length ? Math.min(...baseGaps) : 0, sample: panBase.slice(0, 4).map((t) => t.label) });
+  /* 平移 = 普通滚轮（timeline.ts:505 `view.panX -= e.deltaY`）⇒ deltaY -180 让整条标尺右移 180px */
   const PAN_PX = 180;
+  const panned = await ev(`(() => {
+    const el = document.querySelector('#lk-pane-timeline .tl__axis-tick--major') || document.querySelector('#lk-pane-timeline');
+    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -${PAN_PX}, bubbles: true, cancelable: true }));
+    return true;
+  })()`);
   const after = await stableTicks();
-  const mapA = new Map(before.map((t) => [t.label, t.x]));
+  const mapA = new Map(panBase.map((t) => [t.label, t.x]));
   const common = after.filter((t) => mapA.has(t.label)).map((t) => ({ label: t.label, dx: t.x - mapA.get(t.label) }));
   const deltas = [...new Set(common.map((c) => c.dx))];
-  const panDelta = (after[0]?.x ?? 0) - (before[0]?.x ?? 0);
+  const panDelta = (after[0]?.x ?? 0) - (panBase[0]?.x ?? 0);
+  /* 判据只看 `common`（两屏都在的那些标签）。⚠️ 别把 `after[0] - before[0]`（`panDelta`）也算进去：
+     平移后集合会在左边缘**换边**，`after[0]` 可能是新进场的刻度，那个差没有意义 ——
+     旧写法把它写进判据，等于"唯一准确的一次也会 FAIL"。`panDelta` 只留作诊断读数。 */
   check('★4 平移后同一标签整体位移一致（标签绑的是时间，不是屏幕位置）',
-    panned === true && panDelta === PAN_PX && common.length >= 2 && deltas.length === 1 && deltas[0] === PAN_PX,
+    panned === true && common.length >= 2 && deltas.length === 1 && deltas[0] === PAN_PX,
     { panDelta, expect: PAN_PX, common: common.slice(0, 5), deltas });
 
   /* ── ⑦ 反复切「非线性」不许堆积按钮（用户 2026-09-19 实测：切一次多一个） ── */
