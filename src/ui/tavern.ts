@@ -1,7 +1,9 @@
 /** 酒馆剧情推演模块——基于当前剧情线/时间线，AI 推演下一步剧情走向（分支选项） */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
-import { aiChat } from './ai';
+import { aiChatStream } from './ai';
+import { liveBubble } from './chat-live';
+import { mdToHtml } from './md';
 import { escapeHtml } from './html';
 import { activeProviderProfile } from './settings';
 import { providerSummary } from './ai-providers';
@@ -54,10 +56,16 @@ export function renderTavern(store: Store, host: HTMLElement): void {
     return `时间线「${tl.name}」\n节点：\n${nodes || '（空）'}\n剧情线：\n${lines || '（无）'}`;
   }
 
+  /* 气泡样式抽出来：一次性画（bubble）与流式画（liveBubble）同一套排版 */
+  const bubbleCss = (who: 'ai' | 'user'): string =>
+    `max-width:85%;padding:8px 12px;border-radius:var(--radius-sm);font-size:var(--text-sm);line-height:1.7;white-space:pre-wrap;align-self:${who === 'user' ? 'flex-end' : 'flex-start'};background:${who === 'user' ? 'rgba(158,194,98,.15)' : 'var(--surface-2)'};border:1px solid var(--border-soft);color:var(--fg);`;
+
   function bubble(text: string, who: 'ai' | 'user') {
     const div = document.createElement('div');
-    div.style.cssText = `max-width:85%;padding:8px 12px;border-radius:var(--radius-sm);font-size:var(--text-sm);line-height:1.7;white-space:pre-wrap;align-self:${who === 'user' ? 'flex-end' : 'flex-start'};background:${who === 'user' ? 'rgba(158,194,98,.15)' : 'var(--surface-2)'};border:1px solid var(--border-soft);color:var(--fg);`;
-    div.textContent = text;
+    div.style.cssText = bubbleCss(who);
+    /* AI 的推演过极简 markdown（2026-09-26 用户：「如 **文字** 这种」） */
+    if (who === 'user') div.textContent = text;
+    else { div.className = 'lk-md'; div.innerHTML = mdToHtml(text); }
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
   }
@@ -67,14 +75,17 @@ export function renderTavern(store: Store, host: HTMLElement): void {
     if (!tlId) { status.textContent = '请先选时间线'; return; }
     const context = contextFromTl(tlId);
     status.textContent = mode === 'sim' ? '正在推演下一步剧情…' : '正在生成分支选项…';
+    /* 流式：边生成边写（用户 2026-09-26「我想要流式输出」）；输出不再设 500 上限 */
+    const live = liveBubble(log, { bodyClass: 'lk-md', bodyStyle: bubbleCss('ai'), scroll: log });
+    live.placeholder('推演中…');
     try {
       const instruction = mode === 'sim'
         ? `你是剧情推演引擎。基于下面的剧情线/时间线，推演"下一步最可能发生的事件"，用 2-4 句话描述，续写剧情。\n\n${context}`
         : `你是剧情推演引擎。基于下面的剧情线/时间线，给出 2-3 个不同的分支走向（每个分支一句话，用「分支N：」开头）。\n\n${context}`;
-      const reply = await aiChat([{ role: 'user', content: instruction }], { temperature: mode === 'branch' ? 1.0 : 0.8, numPredict: 500 });
-      const text = reply.text || '(空回复)';
-      bubble(text, 'ai');
+      const reply = await aiChatStream([{ role: 'user', content: instruction }], { temperature: mode === 'branch' ? 1.0 : 0.8, onDelta: (d) => live.push(d) });
+      live.finish(reply.text || '(空回复)');
     } catch (e) {
+      live.remove();
       bubble('⚠️ 推演失败：' + (e instanceof Error ? e.message : String(e)), 'ai');
     } finally {
       status.textContent = '酒馆剧情推演 · ' + providerSummary(activeProviderProfile());

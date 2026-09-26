@@ -10,7 +10,9 @@ import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { entityTypeOf } from '../store/entities';
 import type { Entity } from '../store/types';
-import { aiChat, type ChatMsg } from './ai';
+import { aiChat, aiChatStream, type ChatMsg } from './ai';
+import { liveBubble } from './chat-live';
+import { mdToHtml } from './md';
 import { isImeEnter } from './keys';
 import { activeProviderProfile, loadSettings } from './settings';
 import { providerSummary } from './ai-providers';
@@ -115,8 +117,10 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       const mine = m.role === 'user';
       const bg = mine ? 'var(--accent)' : 'var(--surface-2)';
       const fg = mine ? 'var(--accent-on)' : 'var(--fg)';
+      /* AI 那边过极简 markdown（2026-09-26 用户：「如 **文字** 这种」）；自己打的字当纯文本 */
+      const inner = mine ? esc(m.content) : mdToHtml(m.content);
       return `<div style="display:flex;${mine ? 'justify-content:flex-end;' : ''}">` +
-        `<div style="max-width:78%;white-space:pre-wrap;word-break:break-word;background:${bg};color:${fg};border-radius:var(--radius-sm);padding:7px 10px;font-size:13px;line-height:1.7;">${esc(m.content)}</div></div>`;
+        `<div class="${mine ? '' : 'lk-md '}"style="max-width:78%;white-space:${mine ? 'pre-wrap' : 'normal'};word-break:break-word;background:${bg};color:${fg};border-radius:var(--radius-sm);padding:7px 10px;font-size:13px;line-height:1.7;">${inner}</div></div>`;
     }).join('');
     logEl.scrollTop = logEl.scrollHeight;
   };
@@ -221,11 +225,22 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     const sys = [AI_SESSION_FRAME, sessionPrompt(s, personaTextOf(store, s)), '【工作区现状】\n' + buildContext(store)].filter(Boolean).join('\n\n');
     const msgs: ChatMsg[] = sys ? [{ role: 'system', content: sys }] : [];
     msgs.push(...s.history);
+    /* 流式：边生成边写进气泡（用户 2026-09-26「我想要流式输出」）；输出不再设 500 上限 */
+    const live = liveBubble(logEl, {
+      bodyClass: 'lk-md',
+      bodyStyle: 'max-width:78%;word-break:break-word;background:var(--surface-2);color:var(--fg);border-radius:var(--radius-sm);padding:7px 10px;font-size:13px;line-height:1.7;',
+      scroll: logEl,
+    });
+    live.placeholder('在想…');
     try {
-      const r = await aiChat(msgs, { temperature: 0.85, numPredict: 500 });
+      const r = await aiChatStream(msgs, { temperature: 0.85, onDelta: (d) => live.push(d) });
+      live.finish(r.text);
       pushMsg(id, { role: 'assistant', content: r.text });
-      setNote(r.model + ' · ' + (r.text.length) + ' 字');
+      /* 被截断如实说（用户 2026-09-26 报「输出被截断了」） */
+      if (r.truncated) setNote('回复被模型的输出上限截断了（' + r.model + '）：说「接着说」可以续', true);
+      else setNote(r.model + ' · ' + (r.text.length) + ' 字');
     } catch (e) {
+      live.remove();
       setNote('出错了：' + (e instanceof Error ? e.message : String(e)), true);
     }
     busy = false;

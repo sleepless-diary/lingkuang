@@ -15,6 +15,79 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第五十三轮（2026-09-26）· AI 输出：不再截断 / 流式 / markdown 渲染
+
+用户原话：「**ai的输出被截断了，还有我想要流式输出，以及ai的回答没被渲染，如 `**文字**` 这种**」——
+三条都是「看得见」的问题，三条的病根也都在同一处：**`src/ui/ai.ts` 只做「一次问、一次答」**。
+
+### ① 输出被截断：上限被写死在代码里
+
+- 病根：`src/ui/ai.ts` 的 `aiChat()` 有 `const numPredict = opts?.numPredict ?? 600`，OpenAI 线发
+  `max_tokens`、Ollama 线发 `options.num_predict`；而 `src/ui/agent.ts` 的 `send()` 又显式传了
+  `{ temperature: 0.7, numPredict: 900 }`，角色扮演 400、酒馆 500、工作台 500 —— **长回答必然被切在半句**。
+- 修法（`src/ui/ai.ts`）：**调用方给了 `numPredict` 才发上限**。不给时 —— OpenAI 线整个 `max_tokens`
+  键不发（用端点自己的默认），Ollama 线发 `num_predict: -1`（Ollama 的「不限」）；同时把
+  `finish_reason === 'length'` / `done_reason === 'length'` 认出来，回成 `AiReply.truncated = true`。
+  助手（`src/ui/agent.ts`）与角色扮演 / 酒馆 / 工作台都**去掉了对话类上限**；仍然显式给上限的只剩
+  「就要短答案」的地方：联想 `200`、会话起名 `24`、记忆总结 `400`、工作台标题 `500`。
+- 助手侧还加了一句如实交代：`if (r.truncated) setNote('回复被模型的输出上限截断了（' + r.model + '）：说「接着说」可以续', true)`
+  —— 上一个版本的界面上**什么都不会说**，创作者只看到半句话。
+
+### ② 没有流式：`stream: false` + 等整段
+
+- 病根：两条线都是 `stream: false`，然后 `await r.json()` —— 界面「静着不动，然后啪地出现一大坨」。
+- 修法：新增 **`aiChatStream(messages, opts)`**（`src/ui/ai.ts`），`opts.onDelta?.(delta)` 逐片回调；
+  `aiChat()` 变成它的薄封装（不传 onDelta）。请求体 `stream: true`，逐行解析：
+  OpenAI 线 = SSE（`data: {…}` / `data: [DONE]`），Ollama 线 = NDJSON（一行一个 `{…}`）；
+  两条线共用一个 `eat(obj)` 分发，所以 **端点不理会 `stream` 参数、直接回一整包 JSON 也吃得下**
+  （e2e ★2 就是拿这个当探针：假端点回整包，界面照样显示出内容）。
+  qwen3 会把内容放 reasoning/thinking 通道 ⇒ `delta.reasoning_content` / `message.thinking` 照旧兜底。
+- **画进哪里**：新增 **`src/ui/chat-live.ts` 的 `liveBubble(parent, opts)`**（句柄
+  `{ root, push(delta), placeholder(text), finish(text?), remove(), text() }`）。四个聊天面
+  （助手 / 角色扮演 / 酒馆 / 工作台）都用它：先挂一个空气泡，增量到了往里写，落定 `finish()`。
+  ⚠️ `push()` **同步**落 DOM，**不用 rAF / 定时器节流** —— 测试实例是 `showInactive`（窗口不可见）时
+  rAF 不跑、定时器被节流到 ~1s，那样写出来的流式在自动化里**根本看不见**（本项目已栽过两次）。
+- ⚠️ 助手的 agent 模式可能在吐**动作 JSON**：那种东西不该给创作者看见。判据是
+  `acc.trimStart().startsWith('{')` ⇒ `placeholder('正在整理成动作…')`。
+  **不能**用现成的 `looksLikeToolJson()` —— 它要求整段是合法 JSON，流式的半截永远为 `false`。
+
+### ③ markdown 没被渲染：气泡里写的是转义后的原文
+
+- 病根：`src/ui/agent.ts` 的 `msgHtml()` 是 `` `<div class="lk-agent__bubble">${escapeHtml(m.content)}</div>` ``；
+  `src/ui/roleplay.ts` / `src/ui/tavern.ts` 的 `bubble()` 是 `div.textContent = text`；
+  `src/ui/ai-workbench.ts` 是 `esc(m.content)` ⇒ 屏幕上就是字面的 `**粗体**`。
+- 修法：新增 **`src/ui/md.ts` 的 `mdToHtml(src)`**（极简、安全：**先整段转义 `& < >` 再套标记**）：
+  行内 = 行内码 / `**strong**` / `*em*` / `~~del~~` / 只认 `http(s)` 的链接；块级 = 围栏代码块
+  （**含未闭合的**，流式过程中必然出现）、`#`~`######` 标题（封顶 h3）、`---`、`>` 引用、`-*+` 与 `1.` 列表；
+  其余行按段聚合、**单换行 → `<br>`**；**块与块之间不插换行**（老面板气泡带 `white-space:pre-wrap` 行内样式，
+  插换行会多出一堆空行）。四个面的泡泡都挂 `lk-md` 类拿样式（`src/style.css`），流式光标是
+  `.lk-md__caret`（2px 竖条，`prefers-reduced-motion` 下不闪）。
+
+### ④ 守卫与 A/B 读数（`tools/e2e/agent-stream.cjs`，新增）
+
+| | 旧构建 | 新构建 |
+|---|---|---|
+| ★1 markdown 真被渲染 | FAIL `mdClass:false, strong:0, hasAsterisk:true` | PASS `strong:1, code:1, li:2, head:1, bq:1` |
+| ★2 请求体没有输出上限 | FAIL `stream:false, num_predict:900` | PASS `stream:true, num_predict:-1` |
+| ★3 流式活气泡 + 单调增长 | FAIL `live:false, lens:[]` | PASS `mid{live:true,caret:true,len:9}, lens:[9,19,26], after.live:false` |
+| ★4 被截断要如实说 | FAIL 底部只有「模型：qwen2.5:7b」 | PASS「回复被模型的输出上限截断了（mock）…」 |
+| ★5 无未捕获异常 | PASS | PASS |
+| **合计** | **2/6** | **6/6** |
+
+- 假引擎（`src/ui/agent-model.ts`）新增**第四种写法**：`{ chunks: ['一','段'], gap: 150, truncated: true }`
+  —— 逐片喂 `onDelta`、片间 `await sleep(gap)`（**流式必须跨任务才看得见**）；旧的字符串 / 数组 / 函数
+  三种写法原样保留（`agent-tools` / `agent-memory` / `agent-mode` / `agent-panel` 都靠它们）。
+- 测试埋点：`window.__lkStreamLog`（助手 `onDelta` 里 `if (Array.isArray(log)) log.push({ len, t })`
+  —— 正式运行零成本）。
+- ⚠️ 旧构建不认分片假引擎（对象形态会**落到真实通道**）：套件一开场就把 `window.fetch` 换成**假端点**
+  （只记请求体、立刻回一整包），否则旧构建那一趟会去连本机 Ollama、可能一等等十秒。
+
+### ⑤ 坑（以后写这类套件别再踩）
+
+- e2e 的页面代码住在**模板字符串**里 ⇒ 注释与样例里都**不许出现反引号**。要在**被测内容**里放反引号时，
+  Node 侧用 `String.fromCharCode(96)` 拼、页面代码用普通双引号字符串拼（本轮「行内码」就是这么塞进去的）。
+- 断言要分得开：**「markdown 被渲染」与「流式」两条互不依赖**，否则在旧构建上一条挂会掩盖另一条的读数。
+
 ## 第五十二轮（2026-09-26）· 供应商真正生效：主进程那条 AI 路 + 写死的引擎名
 
 用户：「**输入框上怎么还是本地模型，话说我给你一个key吧，你先测试，稍后我删了重建一个**」。

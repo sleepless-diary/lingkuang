@@ -1058,6 +1058,42 @@ body {
 }
 .lk-agent__msg.is-user .lk-agent__bubble { background: var(--accent); color: var(--accent-on); }
 .lk-agent__msg.is-ai .lk-agent__bubble { background: var(--surface-2); color: var(--fg); border: 1px solid var(--border-soft); }
+
+/* ── 气泡里的极简 markdown（`src/ui/md.ts` 的输出；四个聊天面共用）─────────────────────
+   用户 2026-09-26：「ai 的回答没被渲染，如 **文字** 这种」——在那之前气泡是明文。
+   这里只管"看着像话"：字号/行距跟着气泡走（不写死），只给块级元素补该有的间距与强调。
+   ⚠️ 老面板的气泡是**行内** style.cssText（白空格 pre-wrap），类名压不过行内样式 ——
+      所以 mdToHtml 输出的块与块之间**不留换行**，pre-wrap 才不至于多出空行。 */
+.lk-md p { margin: 0 0 6px; }
+.lk-md > :last-child { margin-bottom: 0; }
+.lk-md strong { font-weight: 700; }
+.lk-md em { font-style: italic; }
+.lk-md del { opacity: 0.6; }
+.lk-md code {
+  font-family: var(--font-mono); font-size: 0.92em; background: var(--surface);
+  border: 1px solid var(--border-soft); border-radius: 3px; padding: 0 3px;
+}
+.lk-md__pre {
+  margin: 6px 0; padding: 8px 10px; background: var(--surface);
+  border: 1px solid var(--border-soft); border-radius: var(--radius-sm); overflow-x: auto;
+}
+.lk-md__pre code { background: none; border: none; padding: 0; font-size: 12px; line-height: 1.6; white-space: pre; }
+.lk-md h1, .lk-md h2, .lk-md h3 { margin: 8px 0 6px; font-size: 1.06em; font-weight: 700; color: var(--fg); }
+.lk-md h1:first-child, .lk-md h2:first-child, .lk-md h3:first-child { margin-top: 0; }
+.lk-md ul, .lk-md ol { margin: 4px 0 6px; padding-left: 20px; }
+.lk-md li { margin: 2px 0; }
+.lk-md blockquote { margin: 4px 0; padding: 2px 0 2px 9px; border-left: 2px solid var(--border); color: var(--fg-2); }
+.lk-md hr { margin: 8px 0; border: none; border-top: 1px solid var(--border-soft); }
+.lk-md a { color: var(--accent); text-decoration: none; }
+.lk-md a:hover { text-decoration: underline; }
+.lk-md__wait { color: var(--fg-2); }
+/* 流式光标：末尾一条闪的竖条（系统开了「减少动态效果」就不闪，只留一条实线） */
+.lk-md__caret {
+  display: inline-block; width: 2px; height: 1em; margin-left: 2px; vertical-align: -0.15em;
+  background: var(--accent); animation: lk-md-blink 1s steps(1, end) infinite;
+}
+@keyframes lk-md-blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .lk-md__caret { animation: none; } }
 .lk-agent__note { min-height: 15px; font-size: var(--text-xs); color: var(--fg-2); }
 .lk-agent__note.is-err { color: var(--danger); }
 .lk-agent__input { display: flex; flex-direction: column; gap: 6px; }

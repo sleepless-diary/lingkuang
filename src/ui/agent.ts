@@ -16,6 +16,8 @@
  */
 import { type ChatMsg } from './ai';
 import { agentAsk } from './agent-model';
+import { liveBubble, type LiveBubble } from './chat-live';
+import { mdToHtml } from './md';
 import { buildContext, getAgentFocus, isAgentFocusLive } from './agent-context';
 import { agentActing, loadActivity, recentActivity } from './agent-activity';
 import {
@@ -193,7 +195,10 @@ function msgHtml(m: ChatMsg): string {
     }
   }
   const who = m.role === 'user' ? 'is-user' : 'is-ai';
-  return `<div class="lk-agent__msg ${who}"><div class="lk-agent__bubble">${escapeHtml(m.content)}</div></div>`;
+  /* AI 那边过一遍极简 markdown（用户 2026-09-26：「ai 的回答没被渲染，如 **文字** 这种」）；
+     创作者自己打的字照旧当纯文本 —— 他写 `**` 就是想看见两个星号。 */
+  const body = m.role === 'user' ? escapeHtml(m.content) : mdToHtml(m.content);
+  return `<div class="lk-agent__msg ${who}"><div class="lk-agent__bubble${m.role === 'user' ? '' : ' lk-md'}">${body}</div></div>`;
 }
 
 /* 提议卡片：写入动作不直接落盘，先在这里等创作者点头（`应用` / `忽略`） */
@@ -437,7 +442,11 @@ async function send(): Promise<void> {
     memoryPrompt(),
     '【工作区现状】\n' + buildContext(store),
   ].filter(Boolean).join('\n\n');
-  const cfg = { temperature: 0.7, numPredict: 900 };
+  /* 输出上限不再由这里设 900（用户 2026-09-26：「ai 的输出被截断了」）：不传 = 引擎不设上限，
+     只有「就要短答案」的地方（联想 / 起名 / 总结）才显式给 numPredict。 */
+  const cfg = { temperature: 0.7 };
+  const box = openEl.querySelector<HTMLElement>('#lk-agent-msgs');
+  let live: LiveBubble | null = null;
   try {
     /* 一次提问 = 最多 MAX_ROUNDS 轮：模型要么说话（结束），要么要求一个只读动作
        （执行完把结果喂回去，让它接着说）。写入动作一轮就结束 —— 要么落盘要么等点击。 */
@@ -445,7 +454,29 @@ async function send(): Promise<void> {
     for (let round = 0; round <= MAX_ROUNDS; round++) {
       /* 分割线之上的对话**不发给模型**（系统提示词、记忆、工作区现状都在 sys 里，照旧每次现拼） */
       const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...sentHistory(history)];
-      const r = await agentAsk(msgs, cfg);
+      /* 流式（用户 2026-09-26：「我想要流式输出」）：先挂一个空气泡，增量到了就往里写。
+         ⚠️ agent 模式下这一段可能在吐动作 JSON —— 那种东西不给创作者看：从第一个 `{` 起就改说
+         「正在整理成动作…」，这一轮走完再由 renderMsgs() 画成「用到动作」那一行。 */
+      live?.remove();
+      live = box
+        ? liveBubble(box, { wrapClass: 'lk-agent__cutwrap', innerClass: 'lk-agent__msg is-ai', bodyClass: 'lk-agent__bubble lk-md', scroll: box })
+        : null;
+      live?.placeholder('正在思考…');
+      let acc = '';
+      let suppressed = false;
+      const r = await agentAsk(msgs, {
+        ...cfg,
+        onDelta: (d: string) => {
+          acc += d;
+          /* 自动化要看的「中间态」：测试先建好 window.__lkStreamLog，这里只往里记，正式运行零成本 */
+          const log = (window as any).__lkStreamLog;
+          if (Array.isArray(log)) log.push({ len: acc.length, t: Date.now() });
+          if (mode === 'agent' && acc.trimStart().startsWith('{')) { suppressed = true; live?.placeholder('正在整理成动作…'); return; }
+          live?.push(d);
+        },
+      });
+      /* 气泡收尾：正常说完就落定；在吐动作 JSON 就保持"正在整理成动作…"（不给 JSON 闪一下的机会） */
+      if (!suppressed && !(mode === 'agent' && looksLikeToolJson(r.text))) live?.finish(r.text);
       /* ⚠️ 聊天模式**不解析动作**：模型偶尔还是会对着"帮我改一下"吐一坨 JSON，
          那样的回复当普通文字画出来就行（创作者至少看得见它说了什么），
          不走纠错轮 —— 那是 agent 模式才有的来回。 */
@@ -464,7 +495,9 @@ async function send(): Promise<void> {
       }
       if (!call) {
         history.push({ role: 'assistant', content: r.text || '（模型返回了空内容）' });
-        setNote(r.model === 'mock' ? '' : r.model ? '模型：' + r.model : '');
+        /* 被截断要如实说 —— 用户 2026-09-26 报「输出被截断了」时界面上什么都没有 */
+        if (r.truncated) setNote('回复被模型的输出上限截断了（' + (r.model || '模型') + '）：说「接着说」可以续', true);
+        else setNote(r.model === 'mock' ? '' : r.model ? '模型：' + r.model : '');
         break;
       }
       history.push({ role: 'assistant', content: r.text });
@@ -480,6 +513,7 @@ async function send(): Promise<void> {
     persist();
   } catch (e) {
     /* 报错**不进历史**（否则会被反复喂回模型），只在面板底部提示 */
+    live?.remove();
     setNote('出错：' + (e instanceof Error ? e.message : String(e)) + '（检查设置里的 AI 模式与模型）', true);
   }
   busy = false;
