@@ -268,6 +268,56 @@ async function main() {
   check('★9 ⭐重开面板：思考是从历史里重画出来的（折叠着、文字仍是原来那段）',
     tRe.has === true && tRe.live === false && tRe.open === false && tRe.text === RSN_ALL && tRe.n === 1, tRe);
 
+  /* ---------- ⑧ ⭐**生成中**的思考块自己不许被压扁（用户 2026-09-26 第二轮：「用 deepseek 只能显示思考中」） ----------
+     病根：生成中那一块是 `#lk-agent-msgs` 的**直接**子元素，而消息列是
+     `display:flex; flex-direction:column; overflow-y:auto`；`.lk-think` 自带 `overflow:hidden`（体内还叠
+     `overflow-y:auto`）⇒ flex 项的**自动最小尺寸退化成 0** ⇒ 列表一长就被压到 **2px**，标题（20px）与
+     正文（~240px）被自己裁掉 ⇒ 屏幕上只剩气泡里那句「正在思考…」（用户看到的正是这个）。
+     落定后 `renderMsgs()` 把它挪进消息内部、不再是弹性项 ⇒ **点开历史那一条一直是好的**。
+     ⇒ 必须在**生成中**量（量折叠态/落定态都量不出这个坑，第一版守卫就是这么白跑的）。
+     先灌 5 条长消息把列表撑到确定溢出（负数空闲空间才会触发收缩）。 */
+  const LONG10 = '这一段用来把消息列表撑到溢出。'.repeat(40);
+  for (let i = 0; i < 5; i++) {
+    await ev('window.__lkAgentMock = ' + JSON.stringify('[撑高度 ' + i + '] ' + LONG10) + '; true');
+    await ask('撑高度 ' + i);
+    await sleep(700);
+  }
+  const RSN2 = [];
+  for (let i = 0; i < 8; i++) RSN2.push('把这件事想清楚：先看用户要什么，再看手里有哪些线索，然后一条条对起来。');
+  await ev('window.__lkAgentMock = { chunks: ["结论如下。"], reasoning: ' + JSON.stringify(RSN2) + ', gap: 400 }; true');
+  await ask('带一段长思考再说一次。');
+  const liveGeom = () => ev(`(function () {
+    const box = document.getElementById('lk-agent-msgs');
+    if (!box) return { has: false };
+    const t = box.querySelector(':scope > .lk-think');   /* 生成中那一块是盒子的直接子元素 */
+    if (!t) return { has: false };
+    const det = t.getBoundingClientRect();
+    const body = t.querySelector('.lk-think__body');
+    const br = body ? body.getBoundingClientRect() : null;
+    const sum = t.querySelector('.lk-think__sum');
+    const sr = sum ? sum.getBoundingClientRect() : null;
+    return {
+      has: true, live: t.classList.contains('is-live'), open: t.open,
+      overflow: box.scrollHeight > box.clientHeight + 1,
+      thinkH: Math.round(det.height), sumH: sr ? Math.round(sr.height) : -1,
+      bodyH: br ? Math.round(br.height) : -1,
+      bodyLen: body ? (body.textContent || '').length : -1,
+      spillPx: br ? Math.round(br.bottom - det.bottom) : -1,
+      sumSpillPx: sr ? Math.round(sr.bottom - det.bottom) : -1,
+    };
+  })()`);
+  let g10 = null;
+  for (let i = 0; i < 25; i++) {
+    await sleep(160);
+    const g = await liveGeom();
+    if (g && g.has === true && g.live === true && g.bodyLen > 120) { g10 = g; break; }
+  }
+  check('★10 ⭐生成中的思考块自己不被压扁：盒子高度容得下标题 + 正文（旧 CSS 实测 details 只有 2px、标题 20px/正文 100px 全被 overflow:hidden 裁掉 ⇒ 屏幕上只剩气泡里那句「正在思考…」）',
+    !!g10 && g10.live === true && g10.overflow === true && g10.bodyLen > 120
+      && g10.thinkH >= g10.sumH + Math.min(g10.bodyH, 60) - 6
+      && g10.spillPx <= 2 && g10.sumSpillPx <= 2, g10);
+  await sleep(2600);   /* 让它跑完再去看异常列表 */
+
   const errs = await ev(`window.__errs`);
   check('★5 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 

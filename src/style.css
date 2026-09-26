@@ -1049,6 +1049,9 @@ body {
   font-size: var(--text-xs); line-height: 1.6; color: var(--fg-2); white-space: pre-wrap;
 }
 .lk-agent__msgs { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+/* ⚠️ 滚动列里的直接子元素**一律不许被压扁**（同一类坑的通用防线，详见下面 `.lk-think` 的说明）：
+   flex 列里子元素默认 `flex-shrink: 1`，而任何自带 `overflow` 的子元素自动最小尺寸会退化成 0。 */
+.lk-agent__msgs > *, #ai-log > * { flex: 0 0 auto; }
 .lk-agent__empty { padding: 14px 6px; font-size: var(--text-xs); color: var(--fg-2); line-height: 1.8; }
 .lk-agent__msg { display: flex; }
 .lk-agent__msg.is-user { justify-content: flex-end; }
@@ -1104,6 +1107,14 @@ body {
 .lk-think {
   max-width: 92%; font-size: var(--text-xs); border: 1px dashed var(--border-strong);
   border-radius: var(--radius-sm); background: var(--surface); color: var(--fg-2); overflow: hidden;
+  /* ⚠️ **不许被压扁**（用户 2026-09-26 第二轮：「用 deepseek 只能显示思考中、看不到思考过程」）。
+     **生成中**那一块是 `#lk-agent-msgs` 的**直接**子元素，而消息列是
+     `display:flex; flex-direction:column; overflow-y:auto` —— 弹性项的 `flex-shrink` 默认 1，
+     而它自带 `overflow:hidden`（体内还叠了 `overflow-y:auto`）⇒ **自动最小尺寸退化成 0**
+     ⇒ 消息一多就被压到 **2px**：标题（20px）与正文（~240px）被自己的 `overflow:hidden` 整段裁掉，
+     屏幕上只剩气泡里那句「正在思考…」。落定后 `renderMsgs()` 把它挪进消息内部（不再是弹性项），
+     所以**点开看历史那一条一直是好的** —— 真坑只在生成中，实测：改前 2px、改后跟着正文长到 262px。 */
+  flex: 0 0 auto;
 }
 .lk-think__sum { cursor: pointer; padding: 3px 8px; user-select: none; list-style: none; }
 .lk-think__sum::-webkit-details-marker { display: none; }

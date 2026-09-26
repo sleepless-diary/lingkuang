@@ -15,6 +15,61 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第六十轮（2026-09-26）· 「用 deepseek 只能显示思考中」＝ 生成中的思考块被 flex 压成 2px
+
+用户原话：「**没有，我这边用deepseek还是只能显示思考中而不能显示思考过程**」。
+
+### 先排掉的三条（都不是原因）
+- 他确实重启到新构建了（应用 21:13:19 启动，`app-dist` 21:12:51）。
+- 读他正式应用 localStorage 里**最新一份**设置（⚠️ leveldb 的 `.log` 是追加写、同一条键有多份历史值，
+  必须取**最后一份**；第一版脚本取第一条 ⇒ 报 `activeProvider: undefined`/旧的 ollama 与已失效的老 key）：
+  真实是 `activeProvider = deepseek` + 新 key（`sk-009…`）。真发两次流式请求 ⇒ **DeepSeek 两个模型都吐
+  `reasoning_content`**（`deepseek-flash` 113 个事件、`deepseek-v4-pro` 178 个）。
+- 他盘上的 `sessions.json` 主会话最近三条 assistant **都带 `reasoning`**（`len 4000 / 3243 / 278`，
+  4000 正好是 `ai-sessions.ts` 的 `REASON_MAX`）⇒ 解析层与落盘都对，**问题只在屏幕**。
+
+### 真病根（探针实测）
+**生成中**那一块 `.lk-think` 是 `#lk-agent-msgs` 的**直接**子元素，而消息列是
+`display:flex; flex-direction:column; overflow-y:auto`；`.lk-think` 自带 `overflow:hidden`
+（体内还叠了 `overflow-y:auto`）⇒ flex 项的**自动最小尺寸退化成 0** ⇒ 列表一长就被压到 **2px**：
+标题（20px）与正文（~240px）被自己的 `overflow:hidden` 整段裁掉，屏幕上只剩气泡里那句「正在思考…」。
+读数（`probe-think-squeeze.cjs`，长列表 + 长思考，假引擎免费）：
+
+| | details 高 | 标题 | 正文 | 正文溢出盒外 |
+| --- | --- | --- | --- | --- |
+| 旧 CSS（生成中） | **2px** | 20px | 114px | 133px |
+| 修后（生成中） | **136px**（随正文长到 262px） | 20px | 114px | −1（在盒内） |
+
+⚠️ **落定后 `renderMsgs()` 把它挪进消息内部、不再是弹性项 ⇒ 点开历史那一条一直是好的**（241px）。
+第一版探针量的正是折叠态/落定态，于是误判成「点开也被压扁」→ 白跑一轮。**这个坑只能在生成中量。**
+
+### 修法（`src/style.css`）
+- `.lk-think { flex: 0 0 auto; }`（Vite 压缩成 `flex:none`）—— 实测生成中高度跟着正文长。
+- 另加一条通用防线：`.lk-agent__msgs > *, #ai-log > * { flex: 0 0 auto; }`（AI 页 `#ai-log` 是同一结构：
+  `flex:1; overflow-y:auto; display:flex; flex-direction:column`）。
+
+### 守卫
+`tools/e2e/agent-stream.cjs` 12 → **13** 项，新增 ★10：先灌 5 条长消息把列表撑到**确定溢出**
+（负数空闲空间才会触发收缩），再发一条长思考，**在生成中**取 `#lk-agent-msgs` 的**直接**子元素
+（`box.querySelector(':scope > .lk-think')`）并断言 `is-live === true` 且
+`thinkH >= sumH + min(bodyH, 60) − 6`、`spillPx ≤ 2`、`sumSpillPx ≤ 2`。
+**A/B：旧 src 12/13（`thinkH: 2 / sumH: 20 / bodyH: 114 / spillPx: 133`）→ 新 13/13**（`thinkH: 136`）。
+
+### 回归
+`agent-stream` 13/13、`agent-panel` 21/21、`agent-tools` 19/19、`agent-mode` 12/12、
+`agent-main-session` 13/13、`ai-sessions` 10/10；三道检查全绿。
+
+### 教训
+- **「看不见某某」的报告，量的相位必须对**：落定态/折叠态好，不代表生成中好 —— 探针要打在用户真正
+  盯着的那一刻（生成中），并显式断言 `is-live`，否则就是"在错误的时间量正确的元素"。
+- 读用户正式应用的 `localStorage` 做诊断时：Chromium leveldb 的 `.log` 追加写 ⇒ **取最后一份**；
+  且**永不打印 apiKey**（脚本里只打 masked 前缀与长度）。
+- 📌 夹具坑：`ai-sessions` **必须用默认夹具**（它自己建会话）；播 `seed-agent-main-session` 会让
+  ★0/★2/★6/★7 一起假 FAIL（读数 6/10 ⇒ 看着像回归，其实是被污染）。
+- 本轮保留的探针：`tools/e2e/probe-think-squeeze.cjs`（长列表 + 长思考逐帧量高度）、
+  `tools/e2e/probe-think-deepseek.cjs`（用**用户正式应用里那把 key**（或 `LK_KEY`/`LK_BASE`/`LK_MODEL`）
+  在隔离实例上真发起、逐秒看屏幕；key 只进测试实例的隔离 userdata、跑完即清）。
+
 ## 第五十九轮（2026-09-26）· 「还是看不到思考链」＝ 在用的模型根本不吐思考（不是功能坏）
 
 用户原话：「**还是看不到思考链**」（第五十八轮做完、他已经重启到新构建之后报的）。
