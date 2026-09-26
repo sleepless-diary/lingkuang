@@ -1,6 +1,7 @@
 /** 设置模块——AI 引擎（本地 Ollama / OpenAI 兼容 API）+ 偏好项；存 localStorage */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
+import { probeModels, readCatalog, type ModelCatalog, type ProbeCfg } from './ai-models';
 
 /** 演变（设定库的版本历史）的三种模式，用户 2026-09-13 选「都做，把模式放到设置里面」 */
 export type EvolveMode = 'manual' | 'auto' | 'locked';
@@ -127,9 +128,26 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
           <label style="font-size:var(--text-xs);color:var(--fg-2);">API Key（本地模式可留空）</label>
           <input id="set-apikey" type="password" value="${s.apiKey}" placeholder="sk-..." style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:5px 8px;font-size:var(--text-sm);outline:none;"/>
         </div>
-        <div style="display:flex;flex-direction:column;gap:4px;">
-          <label style="font-size:var(--text-xs);color:var(--fg-2);">模型</label>
-          <input id="set-model" type="text" value="${s.model}" placeholder="qwen2.5:7b / gpt-4o-mini" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:5px 8px;font-size:var(--text-sm);outline:none;"/>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <div style="display:flex;align-items:center;gap:6px;">
+            <label style="font-size:var(--text-xs);color:var(--fg-2);">模型</label>
+            <span id="set-model-hint" style="font-size:11px;color:var(--fg-2);margin-left:auto;text-align:right;"></span>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button id="set-model-btn" type="button" title="点开：列出端点提供的模型" style="flex:1;min-width:0;display:flex;align-items:center;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:5px 8px;font-size:var(--text-sm);cursor:pointer;text-align:left;">
+              <span id="set-model-cur" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${s.model || '（还没选模型）'}</span>
+              <span style="color:var(--fg-2);font-size:10px;flex-shrink:0;">▾</span>
+            </button>
+            <button id="set-model-refresh" type="button" title="问端点要一份最新清单" style="flex-shrink:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2);padding:5px 10px;font-size:var(--text-xs);cursor:pointer;">刷新</button>
+          </div>
+          <div id="set-model-menu" style="display:none;flex-direction:column;gap:6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2);padding:8px;">
+            <input id="set-model-search" type="text" placeholder="搜索模型名…" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 8px;font-size:var(--text-sm);outline:none;"/>
+            <div id="set-model-list" style="display:flex;flex-direction:column;gap:2px;max-height:210px;overflow:auto;"></div>
+            <div style="display:flex;gap:6px;">
+              <input id="set-model-manual" type="text" placeholder="或直接手填模型名" style="flex:1;min-width:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 8px;font-size:var(--text-sm);outline:none;"/>
+              <button id="set-model-manual-ok" type="button" style="flex-shrink:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2);padding:4px 10px;font-size:var(--text-xs);cursor:pointer;">用这个</button>
+            </div>
+          </div>
         </div>
       </div>
       <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;display:flex;flex-direction:column;gap:10px;">
@@ -198,15 +216,124 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
     el.addEventListener('change', () => fn(el.value));
     return el;
   };
-  bind('#set-baseurl', (v) => (s.baseUrl = v));
-  bind('#set-apikey', (v) => (s.apiKey = v));
-  bind('#set-model', (v) => (s.model = v));
+  /* ── 模型选择（用户 2026-09-26：「设置里面的 ai 选择能不能改成像 dsh 里面的模型选择一样」）──
+     原来是个手打模型名的文本框：写错了要到发请求那一刻才知道。现在点开是**从端点问来的清单**
+     （Ollama `/api/tags` / OpenAI 兼容 `/models`，见 `src/ui/ai-models.ts`），可搜索、可刷新；
+     端点连不上就把原因写在旁边，下面那行手填照旧能用 —— 借 DSH `ModelListEditor` 的分寸：
+     探测只产候选，用哪个由人点下去，绝不背着他改配置。 */
+  const mBtn = host.querySelector('#set-model-btn') as HTMLButtonElement | null;
+  const mCur = host.querySelector('#set-model-cur') as HTMLElement | null;
+  const mMenu = host.querySelector('#set-model-menu') as HTMLElement | null;
+  const mList = host.querySelector('#set-model-list') as HTMLElement | null;
+  const mSearch = host.querySelector('#set-model-search') as HTMLInputElement | null;
+  const mHint = host.querySelector('#set-model-hint') as HTMLElement | null;
+  const mRefresh = host.querySelector('#set-model-refresh') as HTMLButtonElement | null;
+  const mManual = host.querySelector('#set-model-manual') as HTMLInputElement | null;
+  const mManualOk = host.querySelector('#set-model-manual-ok') as HTMLButtonElement | null;
+  const probeCfg = (): ProbeCfg => ({ aiMode: s.aiMode, baseUrl: s.baseUrl, apiKey: s.apiKey });
+  /* 打开面板先用缓存那份（端点没开也看得见上次拉到的），只有「刷新」成功才覆盖它 */
+  let catalog: ModelCatalog | null = readCatalog(probeCfg());
+  let probing = false;
+  const hhmm = (t: number): string => {
+    const d = new Date(t);
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  };
+  function markModelStale(): void {
+    if (mHint) mHint.textContent = '端点改了 —— 点「刷新」重新问一次';
+  }
+  function showMenu(open: boolean): void {
+    if (!mMenu) return;
+    mMenu.style.display = open ? 'flex' : 'none';
+    mBtn?.classList.toggle('is-open', open);
+  }
+  function paintModelList(): void {
+    if (!mList) return;
+    const q = (mSearch?.value || '').trim().toLowerCase();
+    const rows: { id: string; meta: string; cur: boolean }[] = [];
+    /* 当前值永远在单子上（哪怕端点这次没报它：清单是缓存的、或手填过一个端点没有的名字） */
+    if (s.model) rows.push({ id: s.model, meta: '当前在用', cur: true });
+    for (const m of catalog?.models ?? []) if (!rows.some((r) => r.id === m.id)) rows.push({ id: m.id, meta: m.meta, cur: false });
+    const shown = rows.filter((r) => !q || r.id.toLowerCase().includes(q));
+    mList.textContent = '';
+    if (!shown.length) {
+      const empty = document.createElement('div');
+      empty.textContent = q ? '没有匹配的模型' : '清单还是空的 —— 点「刷新」问一次端点';
+      empty.style.cssText = 'font-size:var(--text-xs);color:var(--fg-2);padding:2px 0;';
+      mList.appendChild(empty);
+      return;
+    }
+    for (const r of shown) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'lk-set-model-row' + (r.cur ? ' is-cur' : '');
+      row.dataset.model = r.id;
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;width:100%;background:transparent;border:1px solid '
+        + (r.cur ? 'var(--accent)' : 'transparent') + ';border-radius:var(--radius-sm);padding:4px 6px;color:var(--fg);font-size:var(--text-xs);cursor:pointer;text-align:left;';
+      const name = document.createElement('span');
+      name.textContent = r.id;
+      name.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' + (r.cur ? 'font-weight:600;' : '');
+      const meta = document.createElement('span');
+      meta.textContent = r.meta;
+      meta.style.cssText = 'flex-shrink:0;color:var(--fg-2);font-size:11px;';
+      row.append(name, meta);
+      row.addEventListener('click', () => pickModel(r.id));
+      mList.appendChild(row);
+    }
+  }
+  function pickModel(name: string): void {
+    s.model = name;
+    if (mCur) mCur.textContent = name;
+    showMenu(false);
+    if (mHint) mHint.textContent = '已选 ' + name + '（点「保存设置」落盘）';
+    paintModelList();
+  }
+  async function probeModelList(): Promise<void> {
+    if (probing) return;
+    probing = true;
+    if (mHint) mHint.textContent = '正在问端点要清单…';
+    if (mRefresh) mRefresh.disabled = true;
+    const res = await probeModels(probeCfg());
+    probing = false;
+    if (mRefresh) mRefresh.disabled = false;
+    if (res.ok && res.catalog) {
+      catalog = res.catalog;
+      if (mHint) mHint.textContent = res.catalog.models.length + ' 个模型 · ' + hhmm(res.catalog.at) + ' 拉的';
+    } else if (mHint) {
+      mHint.textContent = '拉取失败：' + res.error + '（下面那行可以手填）';
+    }
+    paintModelList();
+  }
+  mBtn?.addEventListener('click', () => {
+    const open = mMenu?.style.display !== 'flex';
+    showMenu(open);
+    if (!open) return;
+    paintModelList();
+    /* 第一次打开、手上还没有清单 ⇒ 直接问一次（缓存里有就不打扰端点） */
+    if (!catalog || !catalog.models.length) void probeModelList();
+  });
+  mRefresh?.addEventListener('click', () => void probeModelList());
+  mSearch?.addEventListener('input', () => paintModelList());
+  mManualOk?.addEventListener('click', () => { const v = (mManual?.value || '').trim(); if (v) pickModel(v); });
+  mManual?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const v = (mManual?.value || '').trim();
+    if (v) pickModel(v);
+  });
+  if (mHint) {
+    mHint.textContent = catalog
+      ? catalog.models.length + ' 个模型 · ' + hhmm(catalog.at) + ' 拉的'
+      : '点开可列出端点提供的模型';
+  }
+  paintModelList();
+  bind('#set-baseurl', (v) => { s.baseUrl = v; markModelStale(); });
+  bind('#set-apikey', (v) => { s.apiKey = v; markModelStale(); });
   bind('#set-glide', (v) => { s.glide = parseFloat(v); (host.querySelector('#set-glide-v') as HTMLElement).textContent = v; });
   bind('#set-sens', (v) => { s.sensitivity = parseFloat(v); (host.querySelector('#set-sens-v') as HTMLElement).textContent = v; });
   bind('#set-ruler', (v) => { s.rulerDensity = parseFloat(v); (host.querySelector('#set-ruler-v') as HTMLElement).textContent = v; });
   host.querySelectorAll('input[name="aiMode"]').forEach((el) => {
     (el as HTMLInputElement).addEventListener('change', () => {
       s.aiMode = (el as HTMLInputElement).value as Settings['aiMode'];
+      markModelStale();
     });
   });
   /* 演变模式与锁定点：**立刻存盘并广播**（不用等"保存设置"）——

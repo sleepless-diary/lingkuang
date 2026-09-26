@@ -15,6 +15,53 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第五十轮（2026-09-26）· 设置里的「模型」改成可选清单（照 DSH 的模型选择）
+
+用户原话：「**设置里面的 ai 选择能不能改成像 dsh 里面的模型选择一样**」。范围经确认 = **只改设置面板那一栏**
+（不动 `roleplay.ts` / `tavern.ts` 里写死的模型名 —— 那算另一件活，见 ① 末尾）。
+
+### ① 做了什么
+
+- 新增 `src/ui/ai-models.ts`（数据层）：`probeModels(cfg)` 去问端点要清单 —— `aiMode === 'ollama'` 问
+  `{baseUrl}/api/tags`（`models[].name` + `details.parameter_size` / `quantization_level` + `size`），
+  `aiMode === 'api'` 问 `{baseUrl}/models`（`data[].id` + `owned_by`，带 `Bearer apiKey`）；`TIMEOUT_MS = 5000`
+  （AbortController）；**永远 resolve**（失败当 `{ ok:false, error }` 返回，不 throw）。清单按
+  `cacheKey() = aiMode|baseUrl` 缓存进 localStorage **`lingkuang-model-cache`**，**失败不覆盖缓存**
+  ⇒ 端点没开也还看得见上次拉到的（`readCatalog()` / `writeCatalog()`）。
+- `src/ui/settings.ts`：删掉手打文本框 `#set-model`，换成选择器 —— `#set-model-btn`（触发器，显示当前模型）
+  + `#set-model-refresh` + 展开的 `#set-model-menu`（`#set-model-search` 搜索 / `#set-model-list` 清单行 /
+  `#set-model-manual` + `#set-model-manual-ok` 手填兜底）；状态与失败原因写在 `#set-model-hint` 那行小字上。
+  **当前值永远在单子上**（那行小字写「当前在用」）；点一行只改内存里的 `s.model`，落盘仍走「保存设置」
+  （与同组的 Base URL / Key 一致）；改 Base URL / Key / 模式 ⇒ 小字换成「端点改了 —— 点「刷新」重新问一次」；
+  清单为空时**首次展开**才去问端点（有缓存就不打扰端点）。
+- 借 DSH `ModelListEditor` 的三条分寸：**探测只产候选**（绝不背着你把配置写掉）、**失败不是死路**
+  （原因写在还能手填的那行旁边）、清单是端点自己报的（参数量/量化/体积都是它的话）。
+- ⚠️ **没做**（已单独告诉用户）：`src/ui/roleplay.ts:52` 与 `src/ui/tavern.ts:72` **写死 `qwen3:14b`**、
+  `src/ui/ai-workbench.ts` 另有 `MODEL` 常量 ⇒ 设置里换了模型**不影响**这三处。这是真缺陷，但改它等于动三处
+  非设置代码，本轮按用户选定的范围（A）不动。
+
+### ② 守卫 `tools/e2e/settings-model-picker.cjs`（9 项）与 A/B
+
+- 做法：stub 掉 `window.fetch`（只截 `/api/tags` 与 `/models`，其余原样放过去）⇒ **不依赖本机真装着 Ollama**。
+  ★0 前置（面板开出来了）/ ★1 结构（有触发器+刷新+搜索+手填，旧的 `#set-model` 已不在）/ ★2 清单按端点返回渲染
+  （3 行 + `3B · Q4_K_M · 1.8 GB` 那类小字 + 「当前在用」行）/ ★3 搜索过滤 / ★4 点一行 ⇒ 触发器换成它、
+  菜单收起、保存后 localStorage 就是它 / ★5 端点 500 ⇒ 写明原因且**清单不消失**（缓存兜底）/
+  ★6 手填兜底（端点连不上也能用一个外面的名字）/ ★7 换 API 模式后问的是 `/models` 且带 `Bearer sk-test` / ★8 无异常。
+- **A/B：旧构建 1/9**（★0 起全 FAIL：`hasOldInput: true`、没有 `#set-model-btn`）**→ 新构建 9/9，连跑两次一致。**
+- 📌 **坑一**：第一版 ★5/★6 忘了清 ★3 输入的搜索词「3b」⇒ 单子仍被 `3b` 过滤着，看着像"缓存丢了 / 手填没进单子"，
+  假 FAIL 两条。**凡是"前一步改过筛选态"的步骤，后面读 DOM 前要么清掉、要么显式断言筛选仍在。**
+- 📌 **坑二**：点选模型那一瞬菜单就收起了 ⇒ **不能在点完当帧读清单**（★6 改成「保存后重新点开，
+  手填的名字应作为『当前在用』留在单子上」）。
+- 📌 **坑三**：旧构建上没有 `#set-model-btn`，直接 `getElementById('set-model-btn').click()` 会让套件崩在
+  `TypeError: Cannot read properties of null (reading 'click')`（exit 2，只留一行报错、看不出哪几条没过）
+  ⇒ 现在开头判 `pre.hasBtn !== true` 就把 ★2~★7 一律记 FAIL 并跳过交互（与 `agent-mode.cjs` 里
+  `setKnobs()` 那个空值守卫同一个教训：**A/B 套件要能在旧构建上"体面地全红"**）。
+
+### ③ 回归
+
+`settings-panel` **12/12**、`agent-mode` **10/10**、`scale-motion` **10/10**、`timeline-scale` **12/12**
+（每套件单独起干净实例 + 清 userdata）；三道检查 `node --check main.js` / `npx tsc --noEmit` / `npx vite build` 全绿。
+
 ## 第四十九轮（2026-09-26）· 灵框助手第 4 片：模式（平常聊天 / 少数情况 Agent）+ 权限从三档拆成两把旋钮
 
 承第二十九轮（助手的动作协议容错与焦点上报）。本片处理用户 2026-09-26 的一句话（在「dsh 有哪些设置可以搬到灵框」的讨论之后拍的方向）：
