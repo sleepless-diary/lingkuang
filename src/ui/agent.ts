@@ -20,6 +20,7 @@ import { liveBubble, type LiveBubble } from './chat-live';
 import { mdToHtml } from './md';
 import { buildContext, getAgentFocus, isAgentFocusLive } from './agent-context';
 import { agentActing, loadActivity, recentActivity } from './agent-activity';
+import { HIST_MAX, adoptSessions, ensureSessionsLoaded, mainSession, persistSessions, pushMsg } from './ai-sessions';
 import {
   addMemory, adoptFromDisk, getMemory, memoryPrompt, removeMemory,
   setMemorySink, summarizePrefs, updateMemory,
@@ -65,9 +66,25 @@ const SYS_HEAD = [
     '别问他做过的事（现状里就有），也别把那些改动说成是你做的。',
 ].join('\n');
 
+/** 助手这一次对话的**系统提示**（AI 页的「主会话」也用这一份 —— 两处入口是同一格会话，
+ *  提示词不能有两副面孔）。⚠️ 动作协议与权限段**只在 agent 模式**注入：聊天模式只要看见协议，
+ *  本地小模型就会时不时吐半截 JSON 给创作者看。两种模式都带长期记忆与工作区现状。 */
+export function agentSystemPrompt(st: Store, m: AgentMode = mode): string {
+  return [
+    SYS_HEAD,
+    modePrompt(m),
+    ...(m === 'agent' ? [permissionPrompt(), toolsPrompt()] : []),
+    memoryPrompt(),
+    '【工作区现状】\n' + buildContext(st),
+  ].filter(Boolean).join('\n\n');
+}
+
 let openEl: HTMLElement | null = null;
 let store: Store | null = null;
 let disposeAll: (() => void) | null = null;
+/* ⭐ 2026-09-26（用户：「其实我最开始的想法是主会话和助手指向的是同一个会话」）：
+   这条历史**就是主会话（`role:'main'`）的历史** —— 助手不再有自己的 `chat.json`。
+   `ensureLoaded()` 把指针接到 `mainSession().history`，写入一律走 `pushHistory()`。 */
 let history: ChatMsg[] = [];
 let loaded = false;
 let busy = false;
@@ -117,12 +134,22 @@ export function sentHistory(list: ChatMsg[], max = HISTORY_SEND): ChatMsg[] {
 
 /** 分割 / 重新接上（按钮在面板头上；「重新接上」在分割线本身上 —— 鼠标移上去才出现那个叉） */
 let lastActionAt = 0;
+
+/** 往**主会话**的历史里塞一条并落盘（助手与 AI 页共用这一份历史，所以一律走它）。
+ *  ⚠️ 不能直接 `history.push`：只有 `pushMsg` 会裁剪 HIST_MAX、并触发 `ai-sessions` 的落盘。 */
+function pushHistory(m: ChatMsg): void {
+  const s = mainSession();
+  if (!s) return;
+  pushMsg(s.id, m);
+  history = s.history;
+}
+
 function splitContext(): void {
   if (Date.now() - lastActionAt < 350) return;
   lastActionAt = Date.now();
   if (!history.length) { setNote('还没有对话，不用分割'); return; }
   const above = history.length;
-  history.push({ role: 'system', content: '', div: true } as AgentMsg);
+  pushHistory({ role: 'system', content: '', div: true });
   setNote('已分割：上面 ' + above + ' 条不再发给模型；想接回来，把鼠标放到那条线上点叉');
   persist();
   renderMsgs();
@@ -137,7 +164,7 @@ function unsplitContext(): void {
     if ((history[i] as AgentMsg).div === true) { history.splice(i, 1); break; }
   }
   setNote('已重新接上：上面那些对话又回到上下文里了');
-  persist();
+  persistSessions();
   renderMsgs();
 }
 
@@ -145,12 +172,24 @@ async function ensureLoaded(): Promise<void> {
   if (loaded) return;
   loaded = true;
   try {
+    /* ⭐ 先保证会话（主会话）在内存里，再把历史指针接过去 —— 助手可以比 AI 工具先开（Ctrl+K 浮层），
+       那时 `ai-sessions` 的落盘口子还没被 AI 页注入，所以它自带兜底写。 */
+    await ensureSessionsLoaded();
+    let main = mainSession();
+    if (!main) { adoptSessions([]); main = mainSession(); }
+    history = main?.history ?? [];
     const r = await api()?.agentLoad?.();
-    if (r?.ok && Array.isArray(r.chat)) {
-      /* ⚠️ 分割线（div:true）也要读回来，否则重开面板「分割」就白做了 */
-      history = r.chat
+    /* ⭐ 一次性迁移：老版本助手的历史住在 `agent/chat.json`（`r.chat`）。**只有主会话还空着**时才并
+       进来 —— 迁过一次之后主会话非空，就不会重复追加；老文件留着不动（创作者资产，要能备份）。 */
+    if (r?.ok && Array.isArray(r.chat) && main && !main.history.length) {
+      const old = r.chat
         .filter((m: any) => m && typeof m.content === 'string' && (m.div === true || m.role === 'user' || m.role === 'assistant'))
-        .map((m: any) => (m.div === true ? ({ role: 'system', content: '', div: true } as AgentMsg) : ({ role: m.role, content: m.content } as AgentMsg)));
+        .map((m: any) => (m.div === true ? ({ role: 'system', content: '', div: true } as ChatMsg) : ({ role: m.role, content: m.content } as ChatMsg)));
+      if (old.length) {
+        main.history = old.slice(-HIST_MAX);
+        history = main.history;
+        persistSessions();
+      }
     }
     if (r?.ok) adoptFromDisk(r.memory);
     if (r?.ok) loadActivity(r.activity);
@@ -161,7 +200,9 @@ async function ensureLoaded(): Promise<void> {
 
 function persist(): void {
   try {
-    void api()?.agentSave?.({ chat: history, memory: getMemory(), activity: recentActivity() });
+    /* ⚠️ 不再写 chat：对话归**会话**所有（`pushHistory` → `ai-sessions` 的落盘口子），
+       这里只剩长期记忆与操作流水；`agent:save` 是「给了才写」，不带 chat 就不会碰老文件。 */
+    void api()?.agentSave?.({ memory: getMemory(), activity: recentActivity() });
   } catch {
     /* 落盘失败不该影响这一次对话 */
   }
@@ -170,7 +211,7 @@ function persist(): void {
 /* ── 渲染 ─────────────────────────────────────────────────────────── */
 /* 动作的调用与结果都是**对话的一部分**（要喂回模型），但显示上不能混成聊天气泡：
    调用显示成一行「用到动作」，结果显示成一小块说明。 */
-const RESULT_RE = /^【动作结果：([^】]+)】/;
+export const RESULT_RE = /^【动作结果：([^】]+)】/;
 
 function isCallMsg(m: ChatMsg): boolean {
   /* ⚠️ 只有 agent 模式才把这种消息画成「用到动作」那一行（片 4）：
@@ -374,20 +415,20 @@ function handleWrite(call: ToolCall): void {
   if (!store) return;
   const gate = gateWrite();
   if (gate === 'deny') {
-    history.push({ role: 'user', content: `【动作结果：${call.tool}】现在是「只读」档，没有执行。把你的意图写成创作者能照着改的话。` });
+    pushHistory({ role: 'user', content: `【动作结果：${call.tool}】现在是「只读」档，没有执行。把你的意图写成创作者能照着改的话。` });
     setNote('只读档：这次写入没有执行', true);
     return;
   }
   const plan = planWrite(call, store);
   if (!plan.ok) {
-    history.push({ role: 'user', content: `【动作结果：${call.tool}】${plan.note}` });
+    pushHistory({ role: 'user', content: `【动作结果：${call.tool}】${plan.note}` });
     setNote(plan.note, true);
     return;
   }
   if (gate === 'allow') {
     agentActing();
     const r = plan.proposal.apply();
-    history.push({ role: 'user', content: `【动作结果：${call.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
+    pushHistory({ role: 'user', content: `【动作结果：${call.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
     setNote(r.note);
     return;
   }
@@ -415,8 +456,8 @@ function onCardClick(e: Event): void {
   const r = c.p.apply();
   /* 卡片上只留一句短话：这句长说明下面已经有一块【动作结果】了，同一条话画两遍很吵 */
   c.done = '已应用';
-  history.push({ role: 'user', content: `【动作结果：${c.p.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
-  persist();
+  pushHistory({ role: 'user', content: `【动作结果：${c.p.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
+  /* 落盘由 pushHistory → pushMsg 负责 */
   renderMsgs();
   setNote(r.note);
 }
@@ -430,19 +471,11 @@ async function send(): Promise<void> {
   if (ta) ta.value = '';
   busy = true;
   setNote('正在思考…');
-  history.push({ role: 'user', content: text });
+  pushHistory({ role: 'user', content: text });
   renderMsgs();
   renderCtx();
-  /* 系统提示按模式拼：聊天模式**不许出现**动作协议与权限段 —— 那是"能动手"才该看到的
-     说明书（本地小模型只要看见协议，就会时不时吐半截 JSON 给创作者看）。
-     两种模式都带长期记忆与工作区现状。 */
-  const sys = [
-    SYS_HEAD,
-    modePrompt(mode),
-    ...(mode === 'agent' ? [permissionPrompt(), toolsPrompt()] : []),
-    memoryPrompt(),
-    '【工作区现状】\n' + buildContext(store),
-  ].filter(Boolean).join('\n\n');
+  /* 系统提示按模式拼 —— 见 `agentSystemPrompt()`：**AI 页的「主会话」用的是同一个函数** */
+  const sys = agentSystemPrompt(store);
   /* 输出上限不再由这里设 900（用户 2026-09-26：「ai 的输出被截断了」）：不传 = 引擎不设上限，
      只有「就要短答案」的地方（联想 / 起名 / 总结）才显式给 numPredict。 */
   const cfg = { temperature: 0.7 };
@@ -487,7 +520,7 @@ async function send(): Promise<void> {
            纠正一次（进历史、不进气泡），还不行就不再把这坨 JSON 糊到创作者脸上。 */
         if (!fixed && round < MAX_ROUNDS) {
           fixed = true;
-          history.push({ role: 'user', content: FIX_NOTE });
+          pushHistory({ role: 'user', content: FIX_NOTE });
           setNote('它发来的动作格式不对，我让它按格式重发了一次…');
           continue;
         }
@@ -495,23 +528,22 @@ async function send(): Promise<void> {
         break;
       }
       if (!call) {
-        history.push({ role: 'assistant', content: r.text || '（模型返回了空内容）' });
+        pushHistory({ role: 'assistant', content: r.text || '（模型返回了空内容）' });
         /* 被截断要如实说 —— 用户 2026-09-26 报「输出被截断了」时界面上什么都没有 */
         if (r.truncated) setNote('回复被模型的输出上限截断了（' + (r.model || '模型') + '）：说「接着说」可以续', true);
         else setNote(r.model === 'mock' ? '' : r.model ? '模型：' + r.model : '');
         break;
       }
-      history.push({ role: 'assistant', content: r.text });
+      pushHistory({ role: 'assistant', content: r.text });
       if (isWriteTool(call.tool)) {
         handleWrite(call);
         break;
       }
       const out = runReadTool(call, store);
-      history.push({ role: 'user', content: `【动作结果：${call.tool}】\n${out}` });
+      pushHistory({ role: 'user', content: `【动作结果：${call.tool}】\n${out}` });
       renderMsgs();
       if (round === MAX_ROUNDS) setNote('动作调了几轮了，先停一下', true);
     }
-    persist();
   } catch (e) {
     /* 报错**不进历史**（否则会被反复喂回模型），只在面板底部提示 */
     live?.remove();
@@ -718,9 +750,13 @@ export function openAgentPanel(s: Store): () => void {
   renderMode();   /* 内部会一并刷新权限那行（聊天模式下它不可用） */
   setNote('');
   void ensureLoaded().then(() => { renderMsgs(); renderMemory(); });
+  /* ⭐ 同一格会话的**屏幕**也要同步（见 `src/ui/ai-sessions.ts` 的 announce）：AI 页往主会话里写了
+     东西时，这层浮层得当场重画。⚠️ 正在生成时不重画 —— 会把这条流式气泡一起抹掉。 */
+  const onSessions = (): void => { if (!busy && isAgentPanelOpen()) renderMsgs(); };
+  window.addEventListener('lingkuang-sessions', onSessions);
   if (ta) ta.focus();
   window.dispatchEvent(new CustomEvent('lingkuang-panel', { detail: { id: 'agent', open: true } }));
-  return () => closeAgentPanel();
+  return () => { window.removeEventListener('lingkuang-sessions', onSessions); closeAgentPanel(); };
 }
 
 export function toggleAgentPanel(s: Store): void {

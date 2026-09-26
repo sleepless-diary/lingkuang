@@ -8,6 +8,13 @@
  * 落盘 `%APPDATA%\lingkuang\agent\sessions.json`（**裸数组**，与 `chat.json` / `memory.json` 同款：
  * 创作者资产，要能手看、手改、备份），走 `preload.js` 的 `agentLoad()` / `agentSave({ sessions })`
  * —— `main.js` 的 `agent:save` 是「**给了才写**」，只带 sessions 的那次保存不会碰 chat/memory/activity。
+ *
+ * ⭐ 2026-09-26（用户：「其实我最开始的想法是主会话和助手指向的是同一个会话」）：
+ *  `role:'main'` 那条**就是 Ctrl+K 的「灵框助手」**—— 同一份历史、同一个身份。助手不再有自己的
+ *  `chat.json`（老文件只在首次迁进来一次，之后停写）。因此：
+ *  ① 助手拿这条会话走 `mainSession()`；
+ *  ② **落盘兜底**：助手的浮层可以在 AI 工具没挂载时用（那时 `sink` 还没被注入），所以 `persist()`
+ *     在没有 sink 时自己写 —— 否则那些对话只活在内存里，一关就没。
  */
 import { uid } from '../store/ids';
 import type { ChatMsg } from './ai';
@@ -39,7 +46,7 @@ export const ROLE_LABEL: Record<SessionRole, string> = {
 
 const ROLES: SessionRole[] = ['main', 'character', 'perspective', 'director'];
 /** 单个会话最多留多少条（历史是给「接着聊」用的，不是归档） */
-const HIST_MAX = 120;
+export const HIST_MAX = 120;
 /** 「连接」只带被连会话最近这么多条 —— 全带会把上下文撑爆，也会让主控盖过当前会话 */
 export const LINK_TAIL = 8;
 
@@ -55,8 +62,18 @@ export function setSessionSink(fn: ((sessions: AiSession[]) => void) | null): vo
   sink = fn;
 }
 
+/* ⚠️ 兜底写：助手浮层**不依赖 AI 工具挂载**（`sink` 由 `src/ui/ai-workbench.ts` 在
+   renderAiWorkbench 里注入），没注入时自己写。节流 400ms —— 与 AI 页那份节流同一个量级。 */
+let saveTimer = 0;
 function persist(): void {
-  try { sink?.(list); } catch { /* 落盘失败不该打断聊天 */ }
+  if (sink) {
+    try { sink(list); } catch { /* 落盘失败不该打断聊天 */ }
+    return;
+  }
+  try {
+    window.clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => { void api().agentSave?.({ sessions: list }); }, 400);
+  } catch { /* 落盘失败不该打断聊天 */ }
 }
 
 function isRole(x: unknown): x is SessionRole {
@@ -66,6 +83,9 @@ function isRole(x: unknown): x is SessionRole {
 function normMsg(m: any): ChatMsg | null {
   if (!m || typeof m.content !== 'string') return null;
   const role = m.role === 'user' || m.role === 'assistant' || m.role === 'system' ? m.role : 'assistant';
+  /* ⚠️ 分割线（`div:true`）必须一起读回来：它现在是**助手与 AI 页共用**的那条会话里的界碑，
+     丢了就等于助手的「分割上下文」白做（助手那边老代码也单独守过这一点）。 */
+  if (m.div === true) return { role: 'system', content: '', div: true } as ChatMsg;
   return { role, content: m.content } as ChatMsg;
 }
 
@@ -90,6 +110,13 @@ export function adoptSessions(raw: unknown): void {
   if (!list.some((s) => s.id === activeId)) activeId = list[0].id;
 }
 
+/** 广播「这格会话的历史变了」：助手（Ctrl+K 浮层）与 AI 页各挂一个监听，把「同一格会话」落到
+ *  **屏幕上** —— 只共享数据、屏幕不跟，创作者会以为两边是两格。用 window 事件而不是互相 import：
+ *  两个模块谁都不该依赖对方的渲染函数。 */
+function announce(): void {
+  try { window.dispatchEvent(new CustomEvent('lingkuang-sessions')); } catch { /* 没有 window 就算了 */ }
+}
+
 /** 懒加载一次（AI 工具第一次打开时调；重复调用共享同一个 promise） */
 export function ensureSessionsLoaded(): Promise<void> {
   if (!loadOnce) {
@@ -109,6 +136,11 @@ export function ensureSessionsLoaded(): Promise<void> {
 export function persistSessions(): void { persist(); }
 
 export function listSessions(): AiSession[] { return list; }
+
+/** `role:'main'` 那条 = **Ctrl+K 的灵框助手**用的那一条（`adoptSessions` 保证它一定存在） */
+export function mainSession(): AiSession | null {
+  return list.find((s) => s.role === 'main') ?? null;
+}
 
 export function activeSession(): AiSession | null {
   return list.find((s) => s.id === activeId) ?? list[0] ?? null;
@@ -199,14 +231,18 @@ export function pushMsg(id: string, m: ChatMsg): void {
   if (s.history.length > HIST_MAX) s.history.splice(0, s.history.length - HIST_MAX);
   s.at = Date.now();
   persist();
+  announce();
 }
 
 export function clearHistory(id: string): void {
   const s = list.find((x) => x.id === id);
   if (!s || !s.history.length) return;
-  s.history = [];
+  /* ⚠️ 必须**原地清空**而不是换一个数组：助手模块把 `history` 指针接到了这个数组上
+     （`src/ui/agent.ts` 的 pushHistory），换数组会让它继续往一串没人看的旧数据里写。 */
+  s.history.length = 0;
   s.at = Date.now();
   persist();
+  announce();
 }
 
 /** 生成这个会话的系统提示：角色设定 + 连着谁（只带尾巴，标明「这是别的会话说的」） */

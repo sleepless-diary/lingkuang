@@ -7,7 +7,7 @@
  *      —— 用户要「主要工作还是在灵框内」，聊天时得能一边看着设定改）；主区一动不动；
  *   ② 上下文注入：`src/ui/agent-context.ts` 的 `buildContext()` 把「世界 / 当前时间线 / 设定 / 正在编」
  *      整理成文本（ROADMAP §5 的原则：应用层查好再塞），面板上那份预览就是它；
- *   ③ 对话历史落盘：走主进程 `agent:load` / `agent:save`（`<userData>/agent/chat.json`，**裸数组**）
+ *   ③ 对话历史落盘：走主进程 `agent:load` / `agent:save`（`<userData>/agent/chat.json`，**裸数组**；⚠️ 2026-09-26 起**助手的对话历史住在 `agent/sessions.json` 的主会话上**，chat.json 沦为老数据的家 —— 见 `tools/e2e/agent-main-session.cjs`）
  *      —— 是创作者资产，要能备份/查看/手改，所以不放 localStorage；
  *   ④ Ctrl+K：应用内快捷键（不走 Electron `globalShortcut`，免抢系统按键）。
  *
@@ -443,11 +443,12 @@ async function main() {
       && split.cutN === split.allN && split.cutN === preSplit.wraps
       && split.cutText.indexOf('以上 ' + split.allN + ' 条') > 0 && split.ctxWork === true,
     { pre: preSplit, after: split });
-  /* 落盘是异步的（persist 走 agent:save）⇒ 轮询 chat.json，别死等 */
+  /* 落盘是异步的（persist 走 agent:save）⇒ 轮询 **sessions.json 里主会话的历史**，别死等
+     （2026-09-26 起助手的历史归主会话；chat.json 只是老数据的家，不再被写） */
   /* 分割按钮有 350ms 去抖（防重复接线双触发）⇒ 真人也要隔一下再点「取消分割」 */
   await sleep(500);
   const diskDiv = await (async () => {
-    const rd = () => { try { const v = JSON.parse(fs.readFileSync(path.join(agentDir(), 'chat.json'), 'utf8')); return Array.isArray(v) ? v : null; } catch { return null; } };
+    const rd = () => { try { const v = JSON.parse(fs.readFileSync(path.join(agentDir(), 'sessions.json'), 'utf8')); const m = Array.isArray(v) ? v.find((x) => x && x.role === 'main') : null; return m && Array.isArray(m.history) ? m.history : null; } catch { return null; } };
     for (let i = 0; i < 14; i++) { const v = rd(); if (v && v.some((m) => m && m.div === true)) return v; await sleep(500); }
     return rd();
   })();
@@ -455,7 +456,7 @@ async function main() {
   await ev(`document.querySelector('.lk-agent__cut .lk-agent__cut-x')?.click(); true`);
   await sleep(300);
   const unSplit = await ev(`(() => ({ cut: !!document.querySelector('#lk-agent-msgs .lk-agent__cut'), label: document.querySelector('#lk-agent-split')?.textContent ?? '', marked: document.querySelectorAll('#lk-agent-msgs .lk-agent__cutwrap.is-cut').length }))()`);
-  check('★17 分割会落盘（chat.json 里多一条 div:true，重开面板仍在）＋点线上的叉能重新接上（线与压暗都消失、按钮不变）',
+  check('★17 分割会落盘（**sessions.json 主会话**的历史里多一条 div:true，重开面板仍在）＋点线上的叉能重新接上（线与压暗都消失、按钮不变）',
     Array.isArray(diskDiv) && diskDiv.filter((m) => m && m.div === true).length === 1
       && unSplit.cut === false && unSplit.label === '分割上下文' && unSplit.marked === 0,
     { divN: Array.isArray(diskDiv) ? diskDiv.filter((m) => m && m.div === true).length : null, unSplit });

@@ -15,6 +15,49 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第五十五轮（2026-09-26）· AI 页的「主会话」与 Ctrl+K 助手合并成同一格会话（阶段 1）
+
+> 用户原话：「**话说主会话为什么没有工具啊**」。我先答清事实 —— AI 页（`src/ui/ai-workbench.ts`）**从未接线**：
+> 系统提示只有 `AI_SESSION_FRAME` + `sessionPrompt()` + `buildContext()`，没有 `toolsPrompt()`、没有 `parseToolCall()`、
+> 没有提议卡片，整文件 `工具|tool` 零命中；工具只活在 `src/ui/agent.ts`（`mode === 'agent' ? [permissionPrompt(), toolsPrompt()] : []`），
+> 而且助手默认从**聊天模式**起步（用户自己定的规矩）。
+> 用户随后给出真正的意图：「**其实我最开始的想法是主会话和助手指向的是同一个会话**」，并拍板
+> 「**只主会话能动手，角色/视角/主控保持纯演**」。
+
+- **病根**（两条独立的事实）：① 工具不在 AI 页；② 两者**各有一份历史** —— AI 页读 `agent/sessions.json` 里 `role:'main'` 那条的 `history`，
+  助手读模块级 `let history`（`persist()` 写 `{ chat, memory, activity }` → `agent/chat.json`）。同一个人、同一份工作区现状，
+  却聊着两段互不相干的对话；在 AI 页问过的事，助手不知道。
+- **修法（阶段 1 = 一份历史 + 一套上下文 + 屏幕同步）**：
+  ① `src/ui/ai-sessions.ts`：新增 **`mainSession()`**；`normMsg()` **保留分割线** `div`（否则助手「分割上下文」重载后白做）；
+     `HIST_MAX` 改导出；**`clearHistory()` 改原地清空**（`s.history.length = 0` —— 换数组会让助手的指针指向没人看的旧数组）；
+     `persist()` 加**兜底写**（助手浮层可以在 AI 工具没挂载时用，那时 `sink` 还没注入；没兜底，那些话一关就没）；
+     新增 **`announce()`** 广播 `lingkuang-sessions`。
+  ② `src/ui/agent.ts`：删掉自己的历史来源 —— `ensureLoaded()` 里 `await ensureSessionsLoaded()` 后把 `history` 接到 `mainSession().history`，
+     **9 处 `history.push` 全换成 `pushHistory()`**（= `pushMsg`，负责裁剪 `HIST_MAX` 与落盘）；`sentHistory`/`cutIndex` 照旧（现在读的是共用历史）；
+     `persist()` **不再写 `chat`**；老 `chat.json` **只在主会话还空着时**一次性迁入（迁过不重复；老文件留着不动 —— 创作者资产）；
+     新增导出 **`agentSystemPrompt(store, m = mode)`**（AI 页用同一个函数）与 `RESULT_RE`。
+  ③ `src/ui/ai-workbench.ts`：主会话走 `agentSystemPrompt(store, 'chat')` + `sentHistory(s.history)`（与助手同一条规矩：线之上的不发、只带最后 16 条）；
+     渲染把 `div` 画成「上下文分割点」、`【动作结果：…】` 画成系统回执块（`data-k="div"|"receipt"`），**不再当成创作者说的话**；
+     头上加一行「＝ Ctrl+K 的灵框助手（同一份对话）」。
+  ④ `src/ui/ai.ts`：`ChatMsg` 加 `div?: boolean`（标记住在共用类型上，两边都认得）。
+  ⑤ **屏幕同步**：`lingkuang-sessions` 两边各挂一个监听（助手面板在 `busy` 时不重画 —— 会抹掉流式气泡；AI 页换工具重挂前先摘旧监听）。
+- **不变量** `tools/e2e/agent-main-session.cjs`（10 项）+ 夹具 `tools/e2e/seed-agent-main-session.cjs`
+  （老 `chat.json` 四条：话 / 答 / 分割线 / 动作回执；`sessions.json` = 空历史的「主会话」+ 一条角色会话「艾德温」）。
+  **A/B：改前 2/10 → 改后 10/10**；旧构建读数 `disk:0`（没迁移）、`chat:6`（助手还在往 chat.json 写）、AI 页主会话只有一个空态 `div`。
+- 既有套件 `tools/e2e/agent-panel.cjs` 的 **★17 跟着改口径**：「分割会落盘」的**家**从 `chat.json` 搬到 `sessions.json` 的主会话
+  （★8/★15 测的是 `agent:save` 通道本身 —— 「给了才写」—— 继续保留）。
+- **踩到的两个坑**：① ★7 第一版把**回复文本**断言进它自己的请求体（`messages` 里当然没有刚生成的那句）⇒ 断言写错对象；
+  ② ★6 第一版假 FAIL（`ai:8 / panel:6`）暴露的其实是真缺口 —— **数据共享了、屏幕没跟**（面板不重画就一直显示旧条数），
+  于是补了 ⑤ 的广播。这不是测试写法问题：改成"同一格会话"就必须让两处屏幕跟着变。
+- **回归**：`agent-main-session` 10/10、`agent-panel` 21/21、`agent-mode` 10/10、`agent-tools` 19/19、`agent-memory` 15/15、
+  `agent-focus` 通过、`agent-stream` 6/6、`ai-sessions` 10/10、`settings-model-picker` 通过；
+  三道检查 `node --check main.js` / `npx tsc --noEmit` / `npx vite build` 全绿。
+- **阶段 2（未做，已与用户约定）**：把助手的工具循环与**提议卡片**抽成共享模块 ⇒ AI 页主会话也能动手
+  （角色/视角/主控不注入协议 ⇒ 天然纯演）；AI 页加「聊天 / Agent」模式开关（与助手共用同一份 `mode`）；
+  并按用户要求**给 AI 留一条改灵框设置的通道**（**含聊天/Agent 模式本身**）——
+  ⚠️ 这里有个安全张力要先定方案：聊天模式本来没有工具通道，所以「AI 自己切到 Agent」要么走提议卡片（人来点），
+  要么开一条极窄的专用通道；做这一步之前先给用户方案，不擅自放开授权。
+
 ## 第五十四轮（2026-09-26）· 助手「我看不到你打开了哪个条目」：焦点不再凭空消失（+ 不许念局限）
 
 ### 用户报的（原话）

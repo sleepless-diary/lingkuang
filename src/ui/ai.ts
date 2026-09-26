@@ -16,7 +16,14 @@
 import { activeProviderProfile } from './settings';
 import { providerProblem } from './ai-providers';
 
-export interface ChatMsg { role: 'system' | 'user' | 'assistant'; content: string; }
+export interface ChatMsg {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+  /** 助手的**上下文分割线**（落盘 { role:'system', content:'', div:true }）：它自己不是消息，只是
+   *  「从这里往上不再发给模型」的界碑。⚠️ 2026-09-26 起 AI 页的「主会话」与 Ctrl+K 助手是**同一格
+   *  会话**（同一份历史），所以这个标记必须住在共用类型上，两边都认得。 */
+  div?: boolean;
+}
 export interface AiReply {
   text: string;
   model: string;

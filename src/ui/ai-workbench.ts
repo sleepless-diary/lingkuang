@@ -19,6 +19,7 @@ import { providerSummary } from './ai-providers';
 import { buildContext } from './agent-context';
 import { renderRoleplay } from './roleplay';
 import { renderTavern } from './tavern';
+import { RESULT_RE, agentSystemPrompt, sentHistory } from './agent';
 import {
   AI_SESSION_FRAME, adoptSessions, clearHistory, createSession, ensureSessionsLoaded, listSessions, linkSummary,
   markAutoNamed, pushMsg, removeSession, renameSession, sessionPrompt, setActiveSession, setSessionPersona,
@@ -27,6 +28,9 @@ import {
 } from './ai-sessions';
 
 const api = (): any => (window as any).lingkuangAPI ?? {};
+
+/* 跨入口同步用的监听（见 renderAiWorkbench 尾部）：换工具重挂时必须先摘掉旧的，别越积越多 */
+let sessionWatch: (() => void) | null = null;
 
 const BTN = 'background:var(--surface-2);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--fg-2);font-size:12px;padding:3px 8px;cursor:pointer;';
 const INPUT = 'background:var(--surface-2);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--fg);font-size:12px;padding:4px 7px;font-family:inherit;';
@@ -88,6 +92,7 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       `<span style="font-size:11px;color:var(--accent);border:1px solid var(--accent);border-radius:var(--radius-pill);padding:1px 7px;margin-left:7px;">${roleOfLabel(s)}</span>` +
       `<span style="font-size:11px;color:var(--fg-2);margin-left:8px;">${esc(linkSummary(s))}</span>` +
       `<span style="font-size:11px;color:var(--fg-2);margin-left:8px;">${s.history.length} 条</span>` +
+      (s.role === 'main' ? '<span style="font-size:11px;color:var(--accent);margin-left:8px;">＝ Ctrl+K 的灵框助手（同一份对话）</span>' : '') +
       `<span style="font-size:11px;color:var(--fg-2);margin-left:10px;">人设</span>` +
       `<select id="ai-persona" style="${INPUT}margin-left:5px;max-width:190px;">` + personaOptions(store, s.personaId ?? '') + '</select>' +
       `<button id="ai-clear" style="margin-left:6px;${BTN}">清空对话</button>` +
@@ -114,6 +119,23 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       return;
     }
     logEl.innerHTML = s.history.map((m) => {
+      /* ⭐ 2026-09-26：这一格可能与**助手**共用历史（`role:'main'` 就是 Ctrl+K 的灵框助手），
+         两类「系统痕迹」不能画成聊天气泡 —— ① 分割线 `div:true`；② `【动作结果：…】` 的系统回执
+         （它的 role 是 user，照旧画就成了「创作者说过这句话」）。 */
+      if (m.div === true) {
+        return '<div data-k="div" style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--fg-2);">' +
+          '<span style="flex:1;height:1px;background:var(--border-strong);"></span>上下文分割点' +
+          '<span style="flex:1;height:1px;background:var(--border-strong);"></span></div>';
+      }
+      if (m.role === 'user') {
+        const receipt = RESULT_RE.exec(m.content);
+        if (receipt) {
+          return '<div data-k="receipt" style="max-width:78%;font-size:12px;color:var(--fg-2);background:var(--surface-2);' +
+            'border:1px dashed var(--border-strong);border-radius:var(--radius-sm);padding:6px 9px;">' +
+            '<div style="font-weight:600;">' + esc(receipt[1]) + '</div>' +
+            '<pre style="margin:3px 0 0;white-space:pre-wrap;font-family:inherit;">' + esc(m.content.slice(receipt[0].length).trim()) + '</pre></div>';
+        }
+      }
       const mine = m.role === 'user';
       const bg = mine ? 'var(--accent)' : 'var(--surface-2)';
       const fg = mine ? 'var(--accent-on)' : 'var(--fg)';
@@ -222,9 +244,16 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     setNote('在想…');
     /* 系统提示 = 灵框是什么 + 这次会话的人设（或「没选人设」的反向约束）+ 当前工作区现状。
        工作区现状每次现拼，所以助手/会话看到的都是他此刻在编的东西。 */
-    const sys = [AI_SESSION_FRAME, sessionPrompt(s, personaTextOf(store, s)), '【工作区现状】\n' + buildContext(store)].filter(Boolean).join('\n\n');
+    /* ⭐ 主会话（`role:'main'`）**就是 Ctrl+K 的灵框助手**：系统提示与「发多少条」都用助手那一套
+       （`agentSystemPrompt` / `sentHistory`），否则同一格会话在两个入口会像两副面孔。
+       ⚠️ 这里按 **chat** 拼（不注入动作协议）：AI 页还没有提议卡片那套界面，要动手请去助手面板切
+       Agent。分割线（`div:true`）之上的对话不发给模型 —— 与助手同一条规矩。 */
+    const isMain = s.role === 'main';
+    const sys = isMain
+      ? agentSystemPrompt(store, 'chat')
+      : [AI_SESSION_FRAME, sessionPrompt(s, personaTextOf(store, s)), '【工作区现状】\n' + buildContext(store)].filter(Boolean).join('\n\n');
     const msgs: ChatMsg[] = sys ? [{ role: 'system', content: sys }] : [];
-    msgs.push(...s.history);
+    msgs.push(...(isMain ? sentHistory(s.history) : s.history));
     /* 流式：边生成边写进气泡（用户 2026-09-26「我想要流式输出」）；输出不再设 500 上限 */
     const live = liveBubble(logEl, {
       bodyClass: 'lk-md',
@@ -257,6 +286,13 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
 
   host.querySelector('#ai-open-roleplay')?.addEventListener('click', () => renderRoleplay(store, host));
   host.querySelector('#ai-open-tavern')?.addEventListener('click', () => renderTavern(store, host));
+
+  /* ⭐ 反向同步（用户 2026-09-26：「主会话和助手指向的是同一个会话」）：助手那层浮层往主会话里
+     写了东西时，这一页得当场重画 —— 只共享数据、屏幕不跟，创作者会以为两边是两格。
+     ⚠️ 正在生成时不重画（会抹掉自己那条流式气泡）；换工具重挂前先把旧监听摘掉。 */
+  if (sessionWatch) window.removeEventListener('lingkuang-sessions', sessionWatch);
+  sessionWatch = () => { if (!busy && document.body.contains(host)) { renderLog(); renderHead(); } };
+  window.addEventListener('lingkuang-sessions', sessionWatch);
 
   setNote('正在读会话…');
   void ensureSessionsLoaded().then(() => {
