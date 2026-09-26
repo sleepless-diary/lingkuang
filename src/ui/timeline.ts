@@ -12,6 +12,7 @@ import { escapeHtml } from './html';
 import { confirmDialog } from './confirm';
 import { toEpoch, fromEpoch, calendarOf, timePointOf, buildYearTable } from '../calendar';
 import type { Calendar, YearTable } from '../calendar';
+import { scaleTicksEnter, scaleTicksLeaveAndRemove } from './motion';
 
 interface View {
   panX: number;
@@ -286,7 +287,11 @@ export function mountTimeline(
     /* 聚焦时：段间空隙在屏幕上宽度为 0 ⇒ 落在空隙里的刻度要**剔掉**（否则全叠在接缝上）。
        取刻度的成本由「可见宽度 / 主刻度间距」决定（stepSec 随 spacing 走），剔掉不增加成本。 */
     const ticks = warpSegs ? mainSec.filter((s) => inWarpSeg(s / SEC_PER_YEAR)) : mainSec;
-    let html = '';
+    /* 这一帧该有的刻度（按 DOM 顺序：先主刻度、再小刻度/断口 —— 与旧实现的 `html + subHtml` 同序）。
+       ⚠️ key 里带了 `unit|stepSec`：换档（年→月、步长变了）时标签语义整体变了，
+       这时"旧的退场、新的入场"正是想要的那次交叉淡入；同一个档位里 key 只由时间决定 ⇒ 平移到哪儿都在。 */
+    const tag = `${unit}|${stepSec}`;
+    const items: { key: string; cls: string; left: number; html: string }[] = [];
     for (let i = 0; i < ticks.length; i++) {
       const s = ticks[i];
       const x = timeToX(s);
@@ -301,24 +306,72 @@ export function mountTimeline(
       else if (unit === '分') showPrev = tpNow.values.hour !== tpPrev.values.hour; /* 跨小时才显示「时」 */
       else showPrev = !!(t.prev && tpNow.values.month !== tpPrev.values.month);
       const prev = showPrev ? `<span class="tl__axis-prev">${t.prev}</span>` : '';
-      html += `<div class="tl__axis-tick tl__axis-tick--major" style="left:${x}px;">${prev}<span class="tl__axis-label">${t.cur}</span></div>`;
+      items.push({ key: `M|${tag}|${s}`, cls: 'tl__axis-tick tl__axis-tick--major', left: x, html: `${prev}<span class="tl__axis-label">${t.cur}</span>` });
     }
     /* 小刻度：在**相邻主刻度之间**等分插（旧代码用 start + k*subStep，年档会累计漂移） */
-    let subHtml = '';
     for (let i = 0; i + 1 < ticks.length; i++) {
       const a = ticks[i], b = ticks[i + 1];
       /* 接缝：相邻两个主刻度之间只要「压缩轴上的距离 < 真实距离」，就说明中间隔着被截断的区段
          —— 那里既不插小刻度（插出来是假的密度），也不假装连续，画一个断口标记。 */
       if (warpSegs && (year2w(b / SEC_PER_YEAR) - year2w(a / SEC_PER_YEAR)) < (b - a) / SEC_PER_YEAR - 1e-9) {
-        subHtml += `<div class="tl__axis-cut" style="left:${Math.round((timeToX(a) + timeToX(b)) / 2)}px;">⋯</div>`;
+        items.push({ key: `C|${tag}|${a}|${b}`, cls: 'tl__axis-cut', left: Math.round((timeToX(a) + timeToX(b)) / 2), html: '⋯' });
         continue;
       }
       for (let k = 1; k < subDiv; k++) {
         const s = a + (b - a) * (k / subDiv);
-        subHtml += `<div class="tl__axis-tick tl__axis-tick--minor" style="left:${timeToX(s)}px;"></div>`;
+        items.push({ key: `m|${tag}|${Math.round(s)}`, cls: 'tl__axis-tick tl__axis-tick--minor', left: timeToX(s), html: '' });
       }
     }
-    scaleEl.innerHTML = html + subHtml;
+    paintScale(items);
+  }
+
+  /* ── 标尺刻度的 DOM diff（第 ⑤ 片）───────────────────────────────────────────────────────
+     用户 2026-09-19：「年月日等刻度的**出入场用不透明度和缩放尺度**计算」。
+     旧写法一句 `scaleEl.innerHTML = html + subHtml`：每帧（平移/缩放/缓动都在调 render）
+     把 180 来个刻度元素整体重建 —— 元素对象每帧都换新的（"整条标尺重画"的闪），
+     也没有任何出入场可挂（当场删、当场建）。现在按 key diff：
+     **还在的只改 left、新来的缩放淡入（`scaleTicksEnter`）、走掉的淡出后再摘（`scaleTicksLeaveAndRemove`）**。
+     key = `种类|unit|stepSec|时间` ⇒ 同一档位内只由时间决定，平移/缩放时绝大多数刻度都能认出来。 */
+  const scaleTicks = new Map<string, HTMLElement>();
+  function paintScale(items: { key: string; cls: string; left: number; html: string }[]): void {
+    const els: HTMLElement[] = [];
+    const entering: HTMLElement[] = [];
+    const seen = new Set<string>();
+    for (const it of items) {
+      seen.add(it.key);
+      let el = scaleTicks.get(it.key);
+      if (!el) {
+        el = document.createElement('div');
+        el.className = it.cls;
+        if (it.html) el.innerHTML = it.html;
+        scaleTicks.set(it.key, el);
+        entering.push(el);
+      }
+      el.style.left = `${it.left}px`;
+      els.push(el);
+    }
+    /* 顺序：刻度必须从左到右排（测试读 `querySelectorAll` 的顺序、以及 z 序都依赖它）。
+       ⚠️ 只比**活元素之间的相对顺序**：退场中的元素还留在 DOM 里、且下一帧就没影了，
+       把它们也算进比较就会每帧白搬一大批节点（实测把 20 个真新元素记成了 92 个"新增"）。 */
+    const live = new Set<Element>(els);
+    let prevLive: Element | null = null;
+    for (const el of els) {
+      let n: ChildNode | null = prevLive ? prevLive.nextSibling : scaleEl.firstChild;
+      while (n && !live.has(n as Element)) n = n.nextSibling;
+      if (n !== el) scaleEl.insertBefore(el, n);
+      prevLive = el;
+    }
+    const leaving: HTMLElement[] = [];
+    for (const [key, el] of scaleTicks) if (!seen.has(key)) { scaleTicks.delete(key); leaving.push(el); }
+    if (entering.length) scaleTicksEnter(entering);
+    if (leaving.length) scaleTicksLeaveAndRemove(leaving);
+  }
+  /** 整块清空（无时间线 / 重挂载那种"这一版标尺作废"的路径）。
+      ⚠️ 账本必须一起清：元素被 `innerHTML` 抹掉了、账本还记着的话，下一帧就会往
+      一个**脱离文档**的元素上写 left，屏幕上的标尺会缺一截。 */
+  function clearScale(): void {
+    scaleTicks.clear();
+    scaleEl.innerHTML = '';
   }
 
   /* ── 渲染节点 ── */
@@ -327,7 +380,7 @@ export function mountTimeline(
     const tl = timeline();
     if (!tl) {
       track.innerHTML = '<div style="padding:20px;font-size:var(--text-sm);color:var(--fg-2);">无时间线 · 待建</div>';
-      scaleEl.innerHTML = '';
+      clearScale();
       return;
     }
     const nodes = tl.nodes;
@@ -1425,7 +1478,7 @@ export function mountTimeline(
     const pitch = Math.max(8, basePitch * nlZoom);
     /* 顶部标尺是按**时间**画刻度的，而这里的 x 是序列序 → 刻度与节点对不上；
        标尺正是这个模式要排除的「时间干扰」，清空（切回线性时 baseRender 会重画）。 */
-    scaleEl.innerHTML = '';
+    clearScale();
     track.innerHTML =
       `<div class="tl-line" style="left:0;right:0;"></div>` +
       ordered
@@ -1540,4 +1593,24 @@ export function mountTimeline(
     if (ctxMenu && !ctxMenu.contains(e.target as Node)) closeCtx();
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCtx(); });
+
+  /* ── 宿主宽度变化时补一次重画（2026-09-26 第 ⑤ 片顺带修）─────────────────────────────────
+     病根：`renderScale()` 的刻度范围是按 `wrap.clientWidth` 算的，而**宿主被藏起来时它是 0**
+     —— 于是只画得出**一根**刻度（实测 `majors: 1, minors: 0`），`fitAll()` 也会按 0 宽算出
+     `spacing = 下限 0.05`（等于没 fit）。而"切回沙盘"那条路（`src/ui/shell.ts` 里 `id === 'sandbox'`
+     的分支）只**恢复显示**、不重画 ⇒ 这根孤零零的刻度会一直挂着。
+     触发场景是现成的：会话恢复（`src/ui/session.ts`，09-19 加的）让应用**开局停在设定库**，
+     于是沙盘宿主是"隐藏着挂载"的，用户第一次切回沙盘就看到一根刻度 + 没 fit 的视图。
+     这里兜底：宽度**变了**就重画（重画不动视图，只是按新宽度重算刻度）；
+     其中"从 0 变成真宽度"那一次额外补 `fitAll()` —— 之前那次 fit 是按 0 宽算的，不算数。 */
+  let lastW = wrap.clientWidth;
+  new ResizeObserver(() => {
+    const w = wrap.clientWidth;
+    if (w === lastW) return;
+    const wasZero = lastW === 0;
+    lastW = w;
+    if (w === 0) return;          /* 又被藏起来了：这一帧画什么都看不见，等它出来再画 */
+    if (wasZero) fitAll();
+    render();
+  }).observe(wrap);
 }

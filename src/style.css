@@ -424,6 +424,11 @@ body {
   top: 0;
   height: 100%;
   border-left: 1px solid var(--border-soft);
+  /* 出入场用「不透明度 + 缩放尺度」（第 ⑤ 片，`src/ui/motion.ts` 的 scaleTicksEnter/LeaveAndRemove）。
+     锚在**左上角**：刻度的盒宽是 0（只有一条 border-left），锚在角上才能让它自己那一格钉在原地 ——
+     锚在中心时缩放会让刻度的 x 飘（`transform-origin` 的百分比 × 0 宽虽然也是 0，
+     但纵向会从中间缩，12px 的主刻度看着就是"从腰上长出来"）。 */
+  transform-origin: 0 0;
 }
 /* 断口（第 4.0 片 C）：聚焦剧情线时段间的空隙被**压掉**了，标尺在这里"跳过了一段时间"。
    画一个居中的小省略号，让人明白数字的中断是故意的、不是标尺出错；

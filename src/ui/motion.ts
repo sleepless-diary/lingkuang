@@ -575,3 +575,69 @@ export function smoothHeights(container: HTMLElement | null, before: number[]): 
     window.setTimeout(done, 900);
   });
 }
+
+/* ── 标尺刻度（世界沙盘 `.tl-scale`）：不透明度 + 缩放尺度的出入场 ──────────────────────────────
+   用户 2026-09-19：「年月日等刻度的**出入场用不透明度和缩放尺度**计算」。
+   旧实现是 `src/ui/timeline.ts` 的 `renderScale()` 结尾 `scaleEl.innerHTML = html + subHtml`
+   —— 每帧（平移/缩放/缓动都在调 render）把 180 来个刻度元素**整体重建**：
+   ① 元素对象每帧都换新的 ⇒「整条标尺重画」地闪；② 没有出入场（当场消失、当场出现，无处可挂）。
+   现在改成按 key 做 DOM diff（在 `renderScale()` 的 `paintScale()` 里），这里只负责两件事：
+   新来的**缩放淡入**、走掉的**缩放淡出之后再摘**。
+
+   ⚠️ 与 `rowsLeaveAndRemove` 同一个坑：`fill:'both'` 的动画跑完仍留在 `getAnimations()` 里，
+   所以摘元素**不能**顺手先 cancel —— 顺序必须是"先 remove、再 cancel"（反了的话，
+   "它到底是演完才被摘的、还是当场被删的"就没法从 DOM 上验证了，`tools/e2e/scale-motion.cjs` ★3 盯这条）。 */
+
+/** 一次最多给多少根刻度挂动画。换档（年→月/步长变）时整批上百根一起换，
+    全都挂动画没有意义（屏幕上一片交叉淡入），也白压主线程；超出的直接落位。 */
+const TICK_ANIM_MAX = 400;
+/** 单根刻度的时长：比行级 `ROW_DUR`(300) 短一点 —— 刻度是"环境"，不该抢内容的戏 */
+const TICK_DUR = 220;
+/** 刻度错峰总量的上限（200 根刻度按 8ms 铺开 = 1.6s，太久；封顶 90ms 就够看出"依次"） */
+const TICK_MAX_STAGGER = 90;
+
+/** 一批刻度的**入场**：`opacity 0 / scale(.9)` → `1 / none`（快→慢），按序号轻微错峰。
+ *  缩放锚点在 CSS 里定成 `.tl__axis-tick { transform-origin: 0 0 }` —— 刻度的**盒宽是 0**
+ *  （只有一条 border-left），锚在左上角才能让"它自己那一格"钉在原地，不会缩放时横移。 */
+export function scaleTicksEnter(els: HTMLElement[], o: RowMotionOpts = {}): Animation[] {
+  if (!els.length || motionReduced()) return [];
+  const dur = o.dur ?? TICK_DUR;
+  const step = o.step ?? 8;
+  const maxDelay = o.maxDelay ?? TICK_MAX_STAGGER;
+  const batch = els.slice(0, TICK_ANIM_MAX);
+  const anims = batch.map((el, i) =>
+    el.animate(
+      [{ opacity: 0, transform: 'scale(0.9)' }, { opacity: 1, transform: 'none' }],
+      { duration: dur, delay: Math.min(i * step, maxDelay), easing: EASE_DECEL, fill: 'both' }
+    )
+  );
+  autoRelease(anims, dur + Math.min(step * batch.length, maxDelay));
+  return anims;
+}
+
+/** 一批刻度的**退场**：`1 / none` → `opacity 0 / scale(.9)`（慢→快），**演完再摘掉元素**。
+ *  ⚠️ 起点不写 `opacity`：平滑缩放的每一帧都会有刻度进出，一根刚入场到一半的刻度可能马上又要退场，
+ *  起点写死 1 会让它先跳到全亮再淡出（`rowsLeave` 当年就是靠 `naturalOpacity()` 绕开这类跳变的）。 */
+export function scaleTicksLeaveAndRemove(els: HTMLElement[], o: RowMotionOpts = {}): void {
+  if (!els.length) return;
+  if (motionReduced()) { for (const el of els) el.remove(); return; }
+  const dur = o.dur ?? TICK_DUR;
+  const step = o.step ?? 8;
+  const maxDelay = o.maxDelay ?? TICK_MAX_STAGGER;
+  const batch = els.slice(0, TICK_ANIM_MAX);
+  /* 超出上限的那些不演，直接摘 —— 留着不动的话它们会以全亮的样子多待 dur 毫秒 */
+  for (const el of els.slice(TICK_ANIM_MAX)) el.remove();
+  const anims = batch.map((el, i) =>
+    el.animate(
+      [{ transform: 'none' }, { opacity: 0, transform: 'scale(0.9)' }],
+      { duration: dur, delay: Math.min(i * step, maxDelay), easing: EASE_ACCEL, fill: 'both' }
+    )
+  );
+  const kill = (): void => {
+    for (const el of els) el.remove();                                   /* ⚠️ 先摘 */
+    for (const a of anims) { try { a.cancel(); } catch { /* 已取消 */ } }  /* 再 cancel */
+  };
+  Promise.all(anims.map((a) => a.finished.catch(() => { /* 被取消过 */ }))).then(kill);
+  /* 兜底：隐藏/降频窗口里 `finished` 可能永远不来（与 `autoRelease` 同一个理由） */
+  window.setTimeout(kill, dur + Math.min(step * batch.length, maxDelay) + 800);
+}

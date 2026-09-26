@@ -1,0 +1,167 @@
+/* 不变量：**标尺刻度是"在的留下、新来的入场、走掉的后退场"**，不是每次重画整条标尺。
+ *
+ * 用户 2026-09-19 原话：「年月日等刻度的**出入场用不透明度和缩放尺度**计算」。
+ * 病根（旧实现）：`src/ui/timeline.ts` 的 `renderScale()` 结尾是 `scaleEl.innerHTML = html + subHtml`
+ * —— 每帧（平移/缩放/缓动都在调 render）把 180 来个刻度元素**整体重建**，
+ * 于是：① 元素对象每帧都换新的（"整条标尺重画"的闪动）；② 没有任何出入场（当场消失、当场出现）。
+ *
+ * 判据（三条各盯一种"没做"）：
+ *   ★1 平移后仍在屏上的刻度**元素身份不变**（旧实现 = 0 个存活）；
+ *   ★2 新进场的刻度**带入场动画**，且关键帧是不透明度 + 缩放尺度（用户点名的两样）；
+ *   ★3 离场的刻度**不是当场消失**：先退场（有动画）、至少 80ms 后才被摘掉（旧实现 = 同一帧删掉、0 动画）；
+ *   ★4 守 `fill:'both'` 的坑：稳定后刻度上不许残留动画（否则被钉在动画值上）；
+ *   ★5 全程没有未捕获异常。
+ *
+ * ⚠️ 环境前提两条（都是实测踩出来的）：
+ *   ① 窗口**必须可见**（`LINGKUANG_TEST_WINDOW_POS="1920,0"` 开副屏）：窗口 hidden 时 rAF 不跑，
+ *      启动 fit（`src/ui/timeline.ts:653`）与切聚焦的 fit（`:845`）都挂在 rAF 上 ⇒ 视图停在默认档。
+ *   ② 不聚焦没关系（`LINGKUANG_TEST_WINDOW_NOFOCUS=1`）：`noSmooth()` 为真 ⇒ 滚轮当帧落值，
+ *      平移的几何是确定的（正合本套件"同步读 DOM"的读法）。
+ *
+ * 用法：起干净实例（reset-entity-vault + seed-node，端口 9346），
+ *   LK_CDP_PORT=9346 node tools/e2e/scale-motion.cjs
+ */
+const PORT = process.env.LK_CDP_PORT || '9346';
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const results = [];
+function check(n, ok, extra) { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${extra !== undefined ? '   ' + JSON.stringify(extra) : ''}`); }
+
+async function main() {
+  let target = null;
+  for (let i = 0; i < 120; i++) {
+    try { const l = await (await fetch(`http://127.0.0.1:${PORT}/json`)).json(); target = l.find((t) => t.type === 'page' && t.webSocketDebuggerUrl); if (target) break; } catch {}
+    await sleep(200);
+  }
+  if (!target) { console.log(`FAIL 无法连接 CDP ${PORT}`); process.exit(1); }
+  const w = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((res, rej) => { w.onopen = res; w.onerror = rej; });
+  let id = 0; const pending = new Map();
+  w.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } };
+  const send = (method, params) => new Promise((res) => { const i = ++id; pending.set(i, res); w.send(JSON.stringify({ id: i, method, params })); });
+  const ev = async (expr) => {
+    const r = await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
+    if (r.result?.exceptionDetails) throw new Error('eval: ' + (r.result.exceptionDetails.exception?.description || ''));
+    return r.result?.result?.value;
+  };
+
+  await sleep(1500);
+  await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); true`);
+  await ev(`document.querySelector('[data-tool="sandbox"]').click(); true`);
+  for (let i = 0; i < 20; i++) { if (await ev(`document.querySelectorAll('#lk-pane-timeline .tl-scale .tl__axis-tick--major').length > 0`)) break; await sleep(300); }
+  await sleep(800);   /* 让启动 fit 与入场动画落地 */
+
+  const report = await ev(`(async () => {
+    const scale = document.querySelector('#lk-pane-timeline .tl-scale');
+    if (!scale) return { fatal: 'no .tl-scale' };
+    const majors = () => [...scale.querySelectorAll('.tl__axis-tick--major')];
+    const before = majors();
+    const beforeSet = new Set(before);
+    const added = [], removed = [];
+    let addedAnimated = 0, removedAnimated = 0, sampleAddedFrames = null, sampleAddedName = null, sampleRemovedPlay = null;
+    const t0 = performance.now();
+    const removalDelays = [];
+    /* ⚠️ 一次 insertBefore 会把节点记成**一加一删**（这是"移动"，不是"进出"）：
+       不排掉的话，20 个真新元素会被记成 92 个"新增"，而"摘除延迟"也被移动记录污染成 4ms。
+       判据 = **同一次回调里既出现在 addedNodes 又出现在 removedNodes** ⇒ 移动。
+       （⚠️ 这段住在模板字符串里：注释里不许出现反引号或美元花括号。） */
+    const mo = new MutationObserver((recs) => {
+      const addSet = new Set(), remSet = new Set(), adds = [], rems = [];
+      for (const rec of recs) {
+        for (const n of rec.addedNodes) if (n.nodeType === 1) { adds.push(n); addSet.add(n); }
+        for (const n of rec.removedNodes) if (n.nodeType === 1) { rems.push(n); remSet.add(n); }
+      }
+      for (const n of adds) {
+        if (remSet.has(n)) continue;          /* 移动，不是新来的 */
+        added.push(n);
+        const an = n.getAnimations ? n.getAnimations() : [];
+        if (an.length) {
+          addedAnimated++;
+          if (!sampleAddedFrames) {
+            const eff = an[0].effect;
+            sampleAddedFrames = eff && eff.getKeyframes ? eff.getKeyframes().map((k) => ({ opacity: k.opacity, transform: k.transform })) : null;
+            sampleAddedName = n.className;
+          }
+        }
+      }
+      for (const n of rems) {
+        if (addSet.has(n)) continue;          /* 移动，不是走掉的 */
+        removed.push(n);
+        const an = n.getAnimations ? n.getAnimations() : [];
+        if (an.length) { removedAnimated++; if (!sampleRemovedPlay) sampleRemovedPlay = an[0].playState; }
+        removalDelays.push(Math.round(performance.now() - t0));
+      }
+    });
+    mo.observe(scale, { childList: true });
+    /* 平移 180px（普通滚轮；不聚焦的测试窗口里 noSmooth() 真 ⇒ 当帧落值，几何是确定的） */
+    const anchor = scale.querySelector('.tl__axis-tick--major') || scale.parentElement;
+    anchor.dispatchEvent(new WheelEvent('wheel', { deltaY: -180, bubbles: true, cancelable: true }));
+    /* 先让 MutationObserver 的微任务把"同一次重画"记完，再等退场动画走完 */
+    await new Promise((r) => setTimeout(r, 0));
+    const syncAdded = added.length, syncRemoved = removed.length, syncAddedAnimated = addedAnimated, syncRemovedAnimated = removedAnimated;
+    /* 退场窗口内**采样**：正在退场的刻度此刻还在 DOM 里、且身上挂着动画。
+       （不在"被摘掉的那一刻"读：remove() 与 cancel() 在同一个任务里，MutationObserver 的回调是
+        微任务、跑的时候动画已经取消了 —— 那会儿读永远是 0，测不出东西。） */
+    let midAnimatedMax = 0, midAliveMax = 0;
+    for (let i = 0; i < 16; i++) {
+      await new Promise((r) => setTimeout(r, 40));
+      const kids = [...scale.children];
+      const anim = kids.filter((el) => el.getAnimations && el.getAnimations().length).length;
+      if (anim > midAnimatedMax) midAnimatedMax = anim;
+      if (kids.length > midAliveMax) midAliveMax = kids.length;
+    }
+    await new Promise((r) => setTimeout(r, 1200));
+    mo.disconnect();
+    const after = majors();
+    const keep = after.filter((el) => beforeSet.has(el)).length;
+    const lingering = after.filter((el) => el.getAnimations && el.getAnimations().length).length;
+    return {
+      reduced: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      before: before.length, after: after.length, keep,
+      added: added.length, removed: removed.length,
+      syncAdded, syncRemoved, syncAddedAnimated, syncRemovedAnimated,
+      addedAnimated, removedAnimated, sampleAddedFrames, sampleAddedName, sampleRemovedPlay,
+      midAnimatedMax, midAliveMax,
+      minRemovalDelayMs: removalDelays.length ? Math.min(...removalDelays) : null,
+      lingering,
+      labels: after.slice(0, 4).map((el) => el.querySelector('.tl__axis-label')?.textContent ?? ''),
+    };
+  })()`);
+  console.log('report =', JSON.stringify({ ...report, sampleAddedFrames: report.sampleAddedFrames ? report.sampleAddedFrames.slice(0, 2) : null }));
+
+  check('★0 前置：标尺有主刻度、没开「减少动态效果」（否则出入场按设计不播）',
+    !report.fatal && report.reduced === false && report.before >= 5, { before: report.before, after: report.after, reduced: report.reduced });
+
+  /* ★1 不重画：平移后仍在屏上的刻度必须是**同一批 DOM 对象**（旧实现每帧 innerHTML ⇒ keep = 0） */
+  check('★1 平移不重画标尺：留在屏上的刻度元素身份不变（keep ≥ 一半）',
+    report.keep >= Math.max(1, Math.round(report.before * 0.5)),
+    { before: report.before, after: report.after, keep: report.keep });
+
+  /* ★2 入场：新出现的刻度带入场动画，关键帧是不透明度 + 缩放尺度（用户点名的两样） */
+  const frames = report.sampleAddedFrames || [];
+  const f0 = frames[0] || {}, f1 = frames[frames.length - 1] || {};
+  const hasFade = f0.opacity === '0' || f0.opacity === 0;
+  const hasEndOpaque = f1.opacity === '1' || f1.opacity === 1 || f1.opacity === undefined;
+  const hasScale = !!(f0.transform && /scale/.test(f0.transform));
+  check('★2 新进场的刻度有入场动画（不透明度 0→1 + 缩放尺度），且每个新刻度都带',
+    report.syncAdded > 0 && report.syncAddedAnimated === report.syncAdded && hasFade && hasEndOpaque && hasScale,
+    { added: report.syncAdded, animated: report.syncAddedAnimated, frames, hasFade, hasScale });
+
+  /* ★3 退场：离场的刻度**不在同一次重画里删掉** —— 它先播退场动画（窗口内采样到"身上有动画的刻度"），
+     并且至少 80ms 后才被摘掉。旧实现的 `innerHTML =` 是同一帧删旧建新（摘除延迟 ≈ 2ms、动画 0 个）。 */
+  check('★3 离场的刻度先退场再摘掉（退场窗口内有刻度在演 + 摘除延迟 ≥ 80ms）',
+    report.removed > 0 && report.midAnimatedMax >= 3 && report.minRemovalDelayMs !== null && report.minRemovalDelayMs >= 80,
+    { removed: report.removed, midAnimatedMax: report.midAnimatedMax, midAliveMax: report.midAliveMax, minRemovalDelayMs: report.minRemovalDelayMs });
+
+  /* ★4 守 `fill:'both'`：稳定后刻度上不许残留动画（残留 = 被钉在动画值上 / 空转） */
+  check('★4 稳定后没有残留动画（fill:both 的动画都收干净了）',
+    report.lingering === 0, { lingering: report.lingering, after: report.after });
+
+  const errs = await ev(`window.__errs`);
+  check('★5 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
+
+  const pass = results.filter(Boolean).length;
+  console.log(`\n==== ${pass}/${results.length} PASS ====`);
+  w.close();
+  process.exit(pass === results.length ? 0 : 1);
+}
+main().catch((e) => { console.log('FAIL 脚本异常: ' + (e && e.stack ? e.stack : e)); process.exit(2); });

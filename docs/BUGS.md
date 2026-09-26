@@ -15,6 +15,67 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第四十二轮（2026-09-26）· 标尺刻度出入场（第 ⑤ 片）+ 两处顺带修的标尺缺陷
+
+> 交接单 ④⑤ 的收尾：④（`timeline-scale` 的 ★4 恒 FAIL）判定为**测试场景不成立**并改掉；
+> ⑤（`docs/HANDOFF-20260919.md` 的 ⑤）用户原话：「年月日等刻度的**出入场用不透明度和缩放尺度**计算」。
+
+### ① ⑤ 标尺刻度：整块重画 → **按 key 的 DOM diff + 出入场**
+- 病根：`src/ui/timeline.ts` 的 `renderScale()` 结尾一句 `scaleEl.innerHTML = html + subHtml` ——
+  平移/缩放/缓动**每一帧**都在调 `render()`，于是 180 来个刻度元素**每帧整体重建**：
+  ① 元素对象全换新的 ⇒ 用户说的「整块标尺重画」的闪；② 没有任何出入场可挂（当场删、当场建）。
+- 修法（两处）：
+  · `src/ui/timeline.ts`：`renderScale()` 只**收集**这一帧该有的刻度
+    （`items: {key, cls, left, html}[]`，`key = 种类|unit|stepSec|时间`，
+    ⚠️ 带上 `unit|stepSec` ⇒ 换档时"旧的退场、新的入场"正好是一次交叉淡入），
+    交给新的 `paintScale(items)`：**还在的只改 `left`、新来的入场、走掉的退场**；
+    新增 `clearScale()` 给"这一版标尺作废"的两处（无时间线、非线性模式）—— **账本必须一起清**
+    （只 `innerHTML=''` 的话，下一帧会往脱离文档的元素上写 `left`，屏幕上缺一截）。
+  · `src/ui/motion.ts`：`scaleTicksEnter(els, {dur, step, maxDelay})` / `scaleTicksLeaveAndRemove(els, …)`
+    —— `opacity 0↔1` + `scale(.9)↔none`（用户点名的两样），`TICK_DUR=220`、
+    错峰封顶 `TICK_MAX_STAGGER=90`、一次最多 `TICK_ANIM_MAX=400` 根；
+    缩放锚点在 `src/style.css` 的 `.tl__axis-tick { transform-origin: 0 0 }`（盒宽是 0，锚在角上才不会缩放时横移）。
+- 两个坑（都踩过）：
+  · 顺序比对**只比"活元素"的相对顺序**（跳过退场中的元素）。第一版拿 `prev.nextSibling` 当落点，
+    每帧把一整批节点白搬一遍 —— 测试里把 **20 个真新元素记成了 92 个"新增"**（`insertBefore` 的移动 = 一加一删）。
+  · 退场清理顺序必须是**先 `remove()` 再 `cancel()`**：`fill:'both'` 的动画跑完仍在 `getAnimations()` 里，
+    反过来的话"它到底是不是演完才被摘的"就无从验证（`scale-motion.cjs` ★3 的采样判据）。
+- 回归：新增 `tools/e2e/scale-motion.cjs` **6 项**（★1 元素身份不变 / ★2 入场关键帧是不透明度+缩放 /
+  ★3 退场窗口内采样到"身上有动画的刻度" 且摘除延迟 ≥ 80ms / ★4 稳定后不残留动画 / ★5 无异常）。
+  **A/B：修复前 3/6**（挂 ★1/★2/★3，读数 `keep 0` / `midAnimatedMax 0` / `minRemovalDelayMs 2`）。
+  既有套件：`timeline-scale` **12/12**、`motion-switch` **25/25**、`nonlinear-pan` **7/7**、`create-node-panel` **15/15**。
+
+### ② ④ `timeline-scale` 的 ★4 恒 FAIL = 测试场景不成立（已改）
+- 原判据：`panDelta === PAN_PX`（`after[0].x - before[0].x`）+ `common` 里位移一致。★4 跑在 ★2b 之后，
+  那时视图已被放大 60 格到 **1e8 px/年、刻度是时/分** —— 180px 只等于 57 秒，整屏标签被换掉一批，
+  `common` 必然为空（实测 `panDelta 78`、`common: []`）。**是测试自带的场景问题，不是产品 bug。**
+- 改法：★4 前先切回「全览」拿一个**干净起始状态**（`#lk-line-sel` 派 `change('')` ⇒
+  `requestAnimationFrame(() => fitAll())`），新增 **★4a** 断言这个起点（主刻度 ≥ 3、最小间距 ≥ 40px）；
+  判据**只认 `common`**（`after[0]-before[0]` 在集合换边时没有意义，改成诊断读数）。
+- ⚠️ **环境前提（本轮实测逼出来的）**：测试实例窗口**必须可见**。`visibilityState: hidden` 时 rAF 不跑，
+  而**启动 fit** 与**切聚焦的 fit** 都挂在 `requestAnimationFrame` 上（`src/ui/timeline.ts:653`、`:845`）
+  ⇒ 视图一直停在默认档（`panX 0 / spacing 2`），`★0b`（312 年那根刻度）与 `★4a` 会一起挂 —— 看着像产品坏了。
+  开副屏：`LINGKUANG_TEST_WINDOW_POS="1920,0"`。
+
+### ③ 顺带发现并修掉的真缺陷：**宿主隐藏时挂载沙盘 ⇒ 标尺只有一根刻度、视图也没 fit**
+- 机制：`renderScale()` 的刻度范围按 `wrap.clientWidth` 算，宿主隐藏时它是 **0** ⇒ 只画得出**一根**刻度
+  （实测 `majors: 1, minors: 0`），`fitAll()` 也按 0 宽算出下限 `spacing = 0.05`（等于没 fit）。
+  而 `src/ui/shell.ts` 里"切回沙盘"那条分支（`id === 'sandbox'`）**只恢复显示、不重画** ⇒ 一直挂着。
+- 触发场景是现成的：**会话恢复**（`src/ui/session.ts`，09-19 加的功能）让应用**开局停在设定库**，
+  沙盘宿主就是"隐藏着挂载"的 —— 用户第一次切回沙盘就看到一根孤零零的刻度。
+- 修法：`mountTimeline()` 末尾挂 `ResizeObserver` —— 宽度**变了**就 `render()`（重画不动视图，
+  只是按新宽度重算刻度）；"从 0 变成真宽度"那一次额外补 `fitAll()`。
+- 守卫：新增 `tools/e2e/scale-hidden-mount.cjs` **5 项**（隐藏 `.lk-right` → 派一次滚轮逼出"宽度 0 的重画"
+  → 再显示）。**A/B：修复前 3/5**（★2/★3 挂：`was 1, now 1`，修复后 `was 1, now 12`）。
+- 📌 这也是 `tools/e2e/nonlinear-pan.cjs` **★0 偶发 FAIL（`majors: 1`）**的来源 —— 不是它的 bug，
+  也不是第 ⑤ 片的回归（同一个几何状态，两种启动时序下随机出现）。修掉后按原批次顺序复跑稳定。
+
+### ④ 本轮顺手加的自查工具（都留在 `tools/e2e/`）
+- `probe-scale.cjs`：打印标尺与聚焦下拉的当下状态（刻度数/标签/left、wrap 宽度、非线性开关）。
+- `probe-scale-boot.cjs`：从"点开沙盘"那一刻起每 150ms 采样一次（看是"一直很少"还是"先少后多"）；
+  带 `--set-session=<tool>` 模式，可把「上次打开的工具」写进会话存档用来构造初始状态
+  （⚠️ 会话落盘有 400ms 防抖，写完要等一会儿再杀应用）。
+
 ## 第四十一轮（2026-09-19）· 新建节点面板与节点信息面板不一致 + 页签弹动（**用户实测**）
 
 > 用户原话：「给创建节点做专门适配（**创建面板要有名字/年份/种类/模板字段 + 创建/取消**，
