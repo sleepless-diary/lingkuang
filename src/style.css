@@ -1268,6 +1268,34 @@ body {
 .lk-agent__fs-x:hover { color: var(--danger); background: var(--surface-2); }
 .lk-agent__fs-note { padding: 0 8px 4px; font-size: 10px; color: var(--fg-2); line-height: 1.6; }
 .lk-agent__fs-acts { display: flex; gap: 6px; padding: 0 8px 8px; }
+/* 拖进会话的附件（片 4，2026-09-29）：把草稿/素材文件夹直接拖进输入框上面那条，材料跟这一问一起交出去。
+   ⚠️ 空的时候**不能是 0 高** —— 0 高的 div 根本拖不中（拖放目标得有个可命中的面），所以留一条 18px 的
+   提示条；有了 chip 之后它自己撑开。`is-drop` 用 **outline** 而不是 border/padding：outline 不参与布局，
+   拖进来时输入框不会往下跳。 */
+.lk-agent__attach { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.lk-agent__attach:empty { min-height: 18px; }
+.lk-agent__attach:empty::before { content: '把文件或文件夹拖到这里，当这一问的材料'; font-size: 10px; color: var(--muted); }
+.lk-agent__attach.is-drop { outline: 1px dashed var(--accent); outline-offset: 2px; border-radius: var(--radius-sm); }
+.lk-attach-chip {
+  display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%;
+  padding: 1px 3px 1px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.lk-attach-chip__name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--text-xs); color: var(--fg);
+}
+.lk-attach-chip__tag {
+  flex: none; padding: 1px 5px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 10px; color: var(--fg-2);
+}
+/* 灵框外的材料：发出去之后助手用之前还要创作者点一下授权 —— 这句得看得见（与 `.lk-agent__fs-tag.is-warn` 同款） */
+.lk-attach-chip__tag.is-warn { color: var(--danger); border-color: var(--danger); }
+.lk-attach-x {
+  width: 16px; height: 16px; flex: none; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--fg-2); font-size: 12px; line-height: 1; cursor: pointer;
+}
+.lk-attach-x:hover { color: var(--danger); background: var(--surface-2); }
 /* 动作（片 3）：调用写成一行小字、结果缩成一块说明、写入是一张要你点头的提议卡片 */
 .lk-agent__call { align-self: flex-start; font-size: var(--text-xs); color: var(--muted); padding: 0 2px; }
 .lk-agent__tool {

@@ -1418,9 +1418,14 @@ ipcMain.handle('fs:add-root', async (e, payload) => {
     const r = mainWin ? await dialog.showOpenDialog(mainWin, opts) : await dialog.showOpenDialog(opts);
     if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true, roots: fsRootsPublic() };
     p = r.filePaths[0];
-  } else if (!process.env.LINGKUANG_TEST_USERDATA) {
-    /* 正式运行只认对话框选出来的目录（见上：目录授权是创作者的动作） */
-    return fsErr('文件夹要你在对话框里亲手选');
+  } else if (!String(p).trim()) {
+    return fsErr('要加哪个文件夹？给我一个完整路径');
+  } else {
+    /* 带 path 的形态是**提议卡片那条路**（助手提 `allow_folder` 动作 ⇒ 创作者点「应用」才走到这里）。
+       ⚠️ 为什么敢让渲染层递路径：**人还在环里** —— 提示词注入最多让模型"提一张卡片"，
+       落不落盘由创作者点那一下决定；而且**加进来的目录一律只读**（要可写还得他再去点一下）。
+       白名单因此仍然是"创作者亲手交出来的目录清单"，只是入口多了一个更省事的。
+       对话框那条 UI 路径（不给 path）永远也在，见上。（e2e 也靠这条：测试实例之外带 path 现在合法） */
   }
   let st = null;
   try { st = fs.statSync(p); } catch (err) { return fsErr('这个路径不存在：' + p); }
@@ -1473,7 +1478,7 @@ ipcMain.handle('fs:list', (e, payload) => {
 
 ipcMain.handle('fs:read', (e, payload) => {
   const p = (payload && payload.path) ? String(payload.path) : '';
-  if (!fsMatchRoot(p, false)) return fsErr('这个路径不在助手能看的文件夹里：' + p);
+  if (!fsMatchRoot(p, false)) return fsErr('这个路径不在助手能看的文件夹里：' + p + '（要读它，得让创作者把这个文件夹交给助手：面板「助手 → 文件夹 → ＋ 添加文件夹」，或者提一个 allow_folder 动作让他点一下「应用」）');
   try {
     const st = fs.statSync(p);
     if (st.isDirectory()) return fsErr('这是个文件夹，用 list_files 列它：' + p);
@@ -1488,7 +1493,7 @@ ipcMain.handle('fs:search', (e, payload) => {
   const p = (payload && payload.path) ? String(payload.path) : VAULT_DIR();
   const q = (payload && payload.q) ? String(payload.q) : '';
   if (!q.trim()) return fsErr('要搜什么？（q）');
-  if (!fsMatchRoot(p, false)) return fsErr('这个路径不在助手能看的文件夹里：' + p);
+  if (!fsMatchRoot(p, false)) return fsErr('这个路径不在助手能看的文件夹里：' + p + '（要读它，得让创作者把这个文件夹交给助手：面板「助手 → 文件夹 → ＋ 添加文件夹」，或者提一个 allow_folder 动作让他点一下「应用」）');
   const need = q.toLowerCase();
   const hits = [];
   let seen = 0;
@@ -1536,7 +1541,7 @@ ipcMain.handle('fs:write', (e, payload) => {
     const ro = fsMatchRoot(p, false);
     return fsErr(ro
       ? '「' + ro.label + '」是只读的 —— 要往那儿写，得先在助手面板的「文件夹」里把它改成可写'
-      : '这个路径不在助手能写的文件夹里：' + p);
+      : '这个路径不在助手能写的文件夹里：' + p + '（要让助手能写这儿，得先把这个文件夹交给它：面板「助手 → 文件夹 → ＋ 添加文件夹」再点成「可写」，或者提一个 allow_folder 动作让他点一下「应用」—— 之后每次写仍然要你逐次点「应用」）');
   }
   try {
     const full = path.resolve(p);
@@ -1547,6 +1552,172 @@ ipcMain.handle('fs:write', (e, payload) => {
     else fs.writeFileSync(full, text, 'utf8');
     return { ok: true, path: full, bytes: Buffer.byteLength(text, 'utf8'), mode };
   } catch (err) { return fsErr(String(err.message || err)); }
+});
+
+/* ── IPC: 助手的「联网手」：搜索 + 抓网页（片 2，2026-09-29）──────────────
+   用户原话：「把能做的东西都写了吧…联网搜索还有拖入文件到会话什么的」。范围仍然只加了**联网搜索/抓网页**：
+   没有 shell、没有 MCP 客户端。
+
+   ⭐ 分工与 fs 那条一致：**主进程是唯一出手的人**（渲染进程直连第三方会被 CORS 拦，见 BUGS 第六十四轮
+   Ollama `Origin: null` 403 那条教训）。渲染层只负责把话说给模型听（`src/ui/agent-web.ts`）。
+   ⚠️ 不需要任何 key：搜走 Bing 的 RSS 端点（`?format=rss`，纯 XML，好解析、不挑 UA），
+   拿不到就用 DuckDuckGo 的 html 端点兜底。密钥类服务（Brave/Tavily/firecrawl）都**不**接 —— 那要创作者配 key，
+   而这一轮的目的是"开箱能用"。
+   ⚠️ 安全：只认 http/https；**本机与私网地址一律不抓**（助手不该被用来戳局域网里的服务）；
+   测试实例例外（`LINGKUANG_TEST_USERDATA` 存在时放行 —— e2e 靠 127.0.0.1 上的夹具服务器验解析）。 */
+const WEB_TIMEOUT_MS = 12000;
+const WEB_TEXT_MAX = 12000;
+const WEB_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) LingKuang/3.0 (assistant)';
+
+/** 网址能不能抓：语法 + 协议 + 私网三关。返回 '' = 放行，否则是给模型看的人话。 */
+function webBlocked(raw) {
+  let u = null;
+  try { u = new URL(String(raw || '')); } catch (err) { return '这个网址看不懂：' + raw; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return '只认 http/https 的网址（不碰本地文件和其他协议）：' + raw;
+  if (process.env.LINGKUANG_TEST_USERDATA) return '';   /* 测试实例：放行本地夹具 */
+  const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const priv = h === 'localhost' || h.endsWith('.localhost') || h === '::1' || h === '0.0.0.0'
+    || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^169\.254\./.test(h)
+    || /^172\.(1[6-9]|2\d|3[01])\./.test(h);
+  return priv ? '这是本机/内网地址，助手不去碰它：' + u.host : '';
+}
+
+/** 抓一个网址的文本（搜索与抓网页共用）：超时、看 content-type、限长。 */
+async function webGet(url, opt = {}) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), WEB_TIMEOUT_MS);
+  try {
+    const r = await fetch(url, {
+      signal: ctl.signal,
+      redirect: 'follow',
+      headers: {
+        'User-Agent': WEB_UA,
+        'Accept': opt.accept || 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      },
+    });
+    if (!r.ok) return { ok: false, error: '那个网址回了 http ' + r.status + (r.status === 404 ? '（页面没了）' : '') };
+    const body = await r.text();
+    return { ok: true, body, type: String(r.headers.get('content-type') || ''), finalUrl: r.url || url };
+  } catch (err) {
+    const msg = err && err.name === 'AbortError' ? '等太久（' + Math.round(WEB_TIMEOUT_MS / 1000) + ' 秒）没回应' : String((err && err.message) || err);
+    /* Node 的 fetch 失败只给一句 "fetch failed"，真正的原因在 `err.cause`（ENOTFOUND / ECONNREFUSED / 证书…）。
+       不带出来，模型与创作者都只能看到干巴巴四个字。 */
+    const cause = err && err.cause ? (err.cause.code || err.cause.message) : '';
+    return { ok: false, error: '连不上：' + msg + (cause ? '（' + cause + '）' : '') };
+  } finally { clearTimeout(timer); }
+}
+
+const webDecode = (s) => String(s || '')
+  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+  .replace(/&apos;/g, "'").replace(/&nbsp;/g, ' ').replace(/&mdash;/g, '—').replace(/&ndash;/g, '–')
+  .replace(/&hellip;/g, '…').replace(/&amp;/g, '&')
+  .replace(/&#x([0-9a-f]+);/gi, (m, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch (e) { return m; } })
+  .replace(/&#(\d+);/g, (m, d) => { try { return String.fromCodePoint(Number(d)); } catch (e) { return m; } });
+
+/** HTML → 人话文本：先剁 script/style/注释，再把块级标签换成换行，最后合空白。 */
+function htmlToText(html) {
+  let s = String(html || '');
+  s = s.replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ');
+  s = s.replace(/<(br|\/p|\/div|\/li|\/tr|\/h[1-6]|\/section|\/article)[^>]*>/gi, '\n');
+  s = s.replace(/<[^>]+>/g, '');
+  s = webDecode(s).replace(/[ \t\u00a0]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  return s;
+}
+
+/** 解析 Bing 的 RSS（`<item><title>…</title><link>…</link><description>…</description></item>`）。
+ *  ⚠️ 不引 XML 库：这个格式极稳，正则够用（而且 XML 解析器在 asar 里多一个依赖也多一份麻烦）。 */
+function parseRssItems(xml, limit) {
+  const out = [];
+  const blocks = String(xml || '').split(/<item[ >]/i).slice(1);
+  for (const b of blocks) {
+    const pick = (tag) => {
+      const m = b.match(new RegExp('<' + tag + '[^>]*>([\\s\\S]*?)<\\/' + tag + '>', 'i'));
+      if (!m) return '';
+      return webDecode(m[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')).trim();
+    };
+    const title = pick('title');
+    const link = pick('link');
+    const desc = pick('description');
+    if (!title && !link) continue;
+    out.push({ title: title || link, url: link, snippet: desc });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/** DuckDuckGo 的 html 端点兜底：结果在 `<a class="result__a" href="…">标题</a>` 里。
+ *  （DDG 会给限流页 —— 拿不到就如实回"没搜到"，别编。） */
+function parseDdgItems(html, limit) {
+  const out = [];
+  const re = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(String(html || ''))) && out.length < limit) {
+    let url = webDecode(m[1]);
+    const wrapped = url.match(/[?&]uddg=([^&]+)/);
+    if (wrapped) { try { url = decodeURIComponent(wrapped[1]); } catch (e) { /* 原样 */ } }
+    const title = htmlToText(m[2]).trim();
+    if (title && url) out.push({ title, url, snippet: '' });
+  }
+  return out;
+}
+
+ipcMain.handle('web:search', async (e, payload) => {
+  const q = String((payload && payload.q) || '').trim();
+  const limit = Math.min(Math.max(Number((payload && payload.limit) || 6) || 6, 1), 10);
+  if (!q) return { ok: false, error: '要搜什么？（q）' };
+  const enc = encodeURIComponent(q);
+  /* 测试实例可以指定一个夹具端点（e2e 拿 127.0.0.1 上的假 Bing RSS 验解析） */
+  const engines = process.env.LINGKUANG_TEST_WEB_SEARCH
+    ? [{ name: '测试夹具', url: process.env.LINGKUANG_TEST_WEB_SEARCH.replace('{q}', enc), kind: 'rss' }]
+    : [
+      { name: 'Bing', url: 'https://www.bing.com/search?format=rss&count=' + limit + '&q=' + enc, kind: 'rss' },
+      { name: 'DuckDuckGo', url: 'https://html.duckduckgo.com/html/?q=' + enc, kind: 'ddg' },
+    ];
+  let lastErr = '';
+  for (const eng of engines) {
+    const r = await webGet(eng.url, { accept: eng.kind === 'rss' ? 'application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.8' : 'text/html,*/*;q=0.8' });
+    if (!r.ok) { lastErr = eng.name + '：' + r.error; continue; }
+    const results = (eng.kind === 'rss' ? parseRssItems(r.body, limit) : parseDdgItems(r.body, limit)).slice(0, limit);
+    if (results.length) return { ok: true, q, engine: eng.name, results };
+    lastErr = eng.name + '：没给出结果';
+  }
+  return { ok: false, error: '这次没搜到（' + (lastErr || '引擎都没回话') + '）。换个说法，或者用 web_fetch 直接开一个你知道的网址。' };
+});
+
+ipcMain.handle('web:fetch', async (e, payload) => {
+  const raw = String((payload && payload.url) || '').trim();
+  if (!raw) return { ok: false, error: '要开哪个网页？（url）' };
+  /* ⚠️ 只在**完全没写协议**时补 https://（形如 `example.com/a` 的省事写法）。
+     已带 scheme 的原样交给 webBlocked() 判 —— 否则 `file:///C:/…` 会被补成 `https://file:///C:/…`、
+     协议门形同虚设（那条 URL 的 host 恰好是 "file"，后面只会变成一个连不上的怪域名）。 */
+  const url = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : 'https://' + raw;
+  const bad = webBlocked(url);
+  if (bad) return { ok: false, error: bad };
+  const r = await webGet(url);
+  if (!r.ok) return { ok: false, error: r.error };
+  const type = r.type.toLowerCase();
+  const head = r.body.slice(0, 4000);
+  const titleM = head.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const title = titleM ? htmlToText(titleM[1]).slice(0, 200) : '';
+  const isHtml = /html|xml/.test(type) || /^\s*<(?:!doctype|html)/i.test(head);
+  /* 文本类放行（含 JSON / XML / RSS / JS 这些 `application/*` 的"其实是文本"的类型）——
+     模型偶尔要开一个接口地址；图片 / PDF / 压缩包才拒。 */
+  const textish = /^text\//.test(type) || /json|xml|rss|atom|javascript|ecmascript|x-sh|x-yaml/.test(type);
+  if (!isHtml && !textish && type) {
+    return { ok: false, error: '这不是网页文本（content-type: ' + type + '）—— 图片/PDF/压缩包读不了' };
+  }
+  /* ⚠️ 跟了跳转之后再确认一次落点：`redirect:'follow'` 时最终网址可能是内网地址
+     （请求已经发出去了，但**内容不许交出去**）。 */
+  const hop = webBlocked(r.finalUrl || url);
+  if (hop) return { ok: false, error: '那个网址跳到了不该去的地方，内容没取：' + hop };
+  const full = isHtml ? htmlToText(r.body) : r.body;
+  const truncated = full.length > WEB_TEXT_MAX;
+  return { ok: true, url: r.finalUrl, title, text: truncated ? full.slice(0, WEB_TEXT_MAX) : full, chars: full.length, truncated };
 });
 
 /* ── IPC: read the character lib ───────────────────────────── */

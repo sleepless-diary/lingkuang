@@ -89,7 +89,16 @@ async function call<T>(fn: (a: RawFsApi) => Promise<Record<string, unknown>>): P
   }
 }
 
-/** 加一个文件夹（不给 path = 弹系统对话框让创作者亲手选；给了 path 只有测试实例认） */
+/* ⭐ 清单变了要让**面板也跟着重画**（用户 2026-09-29 实测：他让助手读桌面，
+   助手被白名单拦下、只会说"请确认路径是否正确"，面板里那个「文件夹」块还是空的 —— 他根本不知道该去哪加）。
+   现在助手能自己提一张 `allow_folder` 卡片，创作者点完「应用」之后清单就在这儿变的 ⇒ 广播一声，
+   面板（`src/ui/agent.ts` 里监听）立刻把它列出来。 */
+function rootsChanged(): void {
+  window.dispatchEvent(new CustomEvent('lingkuang-agent-fs'));
+}
+
+/** 加一个文件夹（不给 path = 弹系统对话框让创作者亲手选；给了 path 走的是**提议卡片**那条路 ——
+ *  助手提 `allow_folder`、创作者点「应用」才会到这儿。两条路都是"创作者亲手交出来"，而且**一律只读**。） */
 export async function fsAddRoot(p?: string): Promise<FsResult<FsRootsData>> {
   const a = api();
   if (!a) return noApi();
@@ -97,6 +106,7 @@ export async function fsAddRoot(p?: string): Promise<FsResult<FsRootsData>> {
     const r = await a.addRoot(p ? { path: p } : undefined);
     if (r && r.ok) {
       roots = (r.roots as FsRoot[]) ?? roots;
+      rootsChanged();
       return { ok: true, data: r as unknown as FsRootsData };
     }
     if (r && r.canceled) return { ok: false, error: '（没有选文件夹）', canceled: true };
@@ -108,13 +118,13 @@ export async function fsAddRoot(p?: string): Promise<FsResult<FsRootsData>> {
 
 export async function fsRemoveRoot(p: string): Promise<FsResult<FsRootsData>> {
   const out = await call<FsRootsData>((a) => a.removeRoot(p));
-  if (out.ok && out.data.roots) roots = out.data.roots;
+  if (out.ok && out.data.roots) { roots = out.data.roots; rootsChanged(); }
   return out;
 }
 
 export async function fsSetRootWrite(p: string, write: boolean): Promise<FsResult<FsRootsData>> {
   const out = await call<FsRootsData>((a) => a.setRootWrite(p, write));
-  if (out.ok && out.data.roots) roots = out.data.roots;
+  if (out.ok && out.data.roots) { roots = out.data.roots; rootsChanged(); }
   return out;
 }
 
@@ -160,10 +170,18 @@ export function fsPrompt(): string {
   const rows = roots.map((r) => `- ${r.path}（${r.write ? '可写' : '只读'}${r.builtin ? '，灵框库' : ''}${r.exists === false ? '，现在不见了' : ''}）`);
   return [
     '【你能碰的文件夹】',
-    rows.length ? '创作者已经把这些文件夹交给你了：' : '除灵框库外，创作者还没给你别的文件夹。',
+    /* ⭐ 这两句是给模型**定心的**（用户 2026-09-29 实测：他被白名单拦下之后，模型回了一句
+       「目前我只能操作灵框内的数据，无法直接读取或写入灵框外的文件」——**错**，而且正是这句让他以为功能不存在）。
+       所以先说清"你能读能写灵框外的文件"，再说清"清单之外怎么办"。 */
+    '⭐ 你不是"只能动灵框里的数据"：灵框**外**的文件你照样能读能写（list_files / read_file / search_files / write_file / append_file），' +
+      '只是**得创作者先把那个文件夹交给你**。',
+    '创作者已经把这些文件夹交给你了：',
     ...rows,
-    '看文件（list_files / read_file / search_files）随时可用，读到的是磁盘上真实的内容 —— 先看再说，别凭印象编。',
-    '写文件用 write_file / append_file：**灵框库以外的每一次写，都要创作者亲手点「应用」**（就算权限是「直接执行」也一样）；标「只读」的文件夹根本写不进去（要写请让创作者在助手面板的「文件夹」里改成可写）。',
+    '⚠️ 清单**之外**的文件夹：**别直接说"我做不到"、也别让他去检查路径**（路径多半是对的，是权限没给）。提一个动作 —— ' +
+      '{"tool":"allow_folder","args":{"path":"<那个文件夹的绝对路径>"}}（要写就再加 "write":true）—— 他会看到一张卡片，' +
+      '点「应用」文件夹就到手了（默认只读）。点了之后再照常 list_files / read_file。',
+    '看文件随时可用，读到的是磁盘上真实的内容 —— 先看再说，别凭印象编。',
+    '写文件用 write_file / append_file：**灵框库以外的每一次写，都要创作者亲手点「应用」**（就算权限是「直接执行」也一样）；标「只读」的文件夹根本写不进去（要写就提一个 write:true 的 allow_folder 动作）。',
     '路径一律写**完整绝对路径**（Windows 上形如 D:\\素材\\人物表.md），不要用相对路径，也不要猜路径 —— 不确定就先 list_files 看一眼。',
   ].join('\n');
 }

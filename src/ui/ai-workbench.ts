@@ -17,6 +17,8 @@ import { isImeEnter } from './keys';
 import { activeProviderProfile, loadSettings } from './settings';
 import { providerSummary } from './ai-providers';
 import { buildContext } from './agent-context';
+/* 拖进会话的附件（片 4）：与助手浮层**同一个**模块、同一套 chip —— 材料跟这一问一起交出去 */
+import { attachBind, attachBlock, attachChipsRender, attachClear, attachCount } from './agent-attach';
 import { renderRoleplay } from './roleplay';
 import { renderTavern } from './tavern';
 /* ⭐ 2C：主会话与 Ctrl+K 的助手是**同一格会话、同一套能力** ⇒ 这一页直接用助手那一套：
@@ -63,6 +65,8 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
         '<div id="ai-head" style="padding:10px 14px 6px;border-bottom:1px solid var(--border);"></div>' +
         '<div id="ai-log" style="flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:8px;"></div>' +
         '<div id="ai-note" style="padding:0 14px;font-size:11px;color:var(--fg-2);min-height:15px;"></div>' +
+        /* 拖进会话的附件（片 4）：与助手浮层同一个模块、同一套 chip（材料跟这一问一起交出去） */
+        '<div class="lk-agent__attach" id="ai-attach" style="padding:0 14px;"></div>' +
         '<div style="padding:8px 14px 12px;display:flex;gap:6px;">' +
           `<textarea id="ai-input" rows="2" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）" style="flex:1;min-width:0;resize:none;${INPUT}"></textarea>` +
           `<button id="ai-send" style="${BTN}color:var(--accent);border-color:var(--accent);">发送</button>` +
@@ -278,9 +282,14 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     const s = activeSession();
     /* 两个入口共用"正在跑"的标志：同一格会话不能在浮层和这一页同时跑两轮 */
     if (!s || busy || isAgentRunning()) return;
-    const text = inputEl.value.trim();
-    if (!text) return;
+    const raw = inputEl.value.trim();
+    /* ⭐ 有拖进来的材料时，"没打字"也算有话可说（材料本身就是这一问的上下文） */
+    if (!raw && !attachCount()) return;
+    /* 材料拼在**用户消息正文前面**；主会话与非主会话（角色/视角/主控）走同一条 */
+    const text = attachCount() ? attachBlock() + '\n\n' + raw : raw;
     inputEl.value = '';
+    attachClear();
+    attachChipsRender();
     busy = true;
     const id = s.id;
     const isMain = s.role === 'main';
@@ -371,10 +380,16 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
   const onMode = (): void => { if (document.body.contains(host)) renderHead(); };
   window.addEventListener('lingkuang-agent-cards', onCards);
   window.addEventListener('lingkuang-agent-mode', onMode);
+  /* 拖进会话的附件（片 4）：zone = chips = `#ai-attach`（拖放与 chip 同一块，与助手浮层同构）。
+     这一页整页重画（`host.innerHTML`）时旧 zone 会离开文档，`attachChipsRender()` 会顺手把绑定丢掉；
+     这里再显式摘一次，双保险。 */
+  const attachZone = host.querySelector<HTMLElement>('#ai-attach');
+  const offAttach = attachZone ? attachBind(attachZone, attachZone, setNote) : null;
   agentWatch = {
     off: () => {
       window.removeEventListener('lingkuang-agent-cards', onCards);
       window.removeEventListener('lingkuang-agent-mode', onMode);
+      offAttach?.();
     },
   };
 

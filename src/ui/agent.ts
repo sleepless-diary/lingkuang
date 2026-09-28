@@ -15,6 +15,8 @@
  *    （系统提示里没有动作协议、回复也不解析动作），显式切到 `agent` 才拿到工具与权限闸门。
  */
 import { type ChatMsg } from './ai';
+/* 拖进会话的附件（片 4）：材料跟这一问一起交出去 —— 拼在用户消息**前面**（见 `send()`） */
+import { attachBind, attachBlock, attachChipsRender, attachClear, attachCount } from './agent-attach';
 import { agentAsk } from './agent-model';
 import { liveBubble, liveThink, thinkBlockHtml, type LiveBubble, type LiveThink } from './chat-live';
 import { mdToHtml } from './md';
@@ -605,9 +607,14 @@ function panelHost(): AgentRunHost {
 async function send(): Promise<void> {
   if (busy || !openEl || !store) return;
   const ta = openEl.querySelector<HTMLTextAreaElement>('#lk-agent-input');
-  const text = (ta?.value ?? '').trim();
-  if (!text) return;
+  const raw = (ta?.value ?? '').trim();
+  /* ⭐ 有拖进来的材料时，"没打字"也算有话可说（材料本身就是这一问的上下文） */
+  if (!raw && !attachCount()) return;
+  /* 材料拼在**用户消息正文前面**；发给模型的那条与消息区里显示的那条是同一个 `text`（别分叉） */
+  const text = attachCount() ? attachBlock() + '\n\n' + raw : raw;
   if (ta) ta.value = '';
+  attachClear();
+  attachChipsRender();
   await runTurn(text, panelHost());
 }
 
@@ -853,6 +860,7 @@ export function openAgentPanel(s: Store): () => void {
     '<div class="lk-agent__msgs" id="lk-agent-msgs"></div>' +
     '<div class="lk-agent__note" id="lk-agent-note"></div>' +
     '<div class="lk-agent__input">' +
+      '<div class="lk-agent__attach" id="lk-agent-attach"></div>' +
       '<textarea id="lk-agent-input" rows="3" placeholder="问点什么…（Enter 发送，Shift+Enter 换行）"></textarea>' +
       '<button class="lk-agent__send" id="lk-agent-send">发送</button>' +
     '</div>';
@@ -878,15 +886,27 @@ export function openAgentPanel(s: Store): () => void {
   window.addEventListener('lingkuang-agent-focus', onFocus);
   const onPerm = (): void => { renderPerm(); };
   window.addEventListener('lingkuang-agent-perm', onPerm);
+  /* ⭐ 白名单在外面变了（最常见：助手提了一张 `allow_folder` 卡片、创作者点了「应用」）⇒ 这块要当场重画。
+     没有这条的话，创作者点完卡片切到这个折叠块，看到的还是"能碰 1 个" —— 他刚授权的那条不在里面。 */
+  const onFs = (): void => { renderFs(); };
+  window.addEventListener('lingkuang-agent-fs', onFs);
+  /* 拖放那三个监听挂在 `#lk-agent-attach` 上（只在**这个 zone** 上，不动全局），关面板时要摘掉 */
+  let offAttach: (() => void) | null = null;
   disposeAll = (): void => {
     window.removeEventListener('keydown', onKey);
     window.removeEventListener('lingkuang-agent-focus', onFocus);
     window.removeEventListener('lingkuang-agent-perm', onPerm);
+    window.removeEventListener('lingkuang-agent-fs', onFs);
+    offAttach?.();
+    offAttach = null;
     unsub();
   };
 
   el.querySelector('#lk-agent-close')?.addEventListener('click', () => closeAgentPanel());
   el.querySelector('#lk-agent-send')?.addEventListener('click', () => { void send(); });
+  /* 拖进会话的附件（片 4）：材料跟这一问一起交出去。`attachChipsRender()` 在 `attachBind()` 里已经调过。 */
+  const attachZone = el.querySelector<HTMLElement>('#lk-agent-attach');
+  if (attachZone) offAttach = attachBind(attachZone, attachZone, setNote);
   /* 提议卡片的「应用」/「忽略」（卡片跟消息区一起重画，所以用委托） */
   el.querySelector('#lk-agent-msgs')?.addEventListener('click', agentCardClick);
   const ta = el.querySelector<HTMLTextAreaElement>('#lk-agent-input');

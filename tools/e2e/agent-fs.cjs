@@ -10,13 +10,17 @@
  * ⭐ 最要紧的几条断言：
  *   ★7  —— `..\outside\secret.txt` 照样被拒（前缀比较之前先 realpath）；
  *   ★13 —— 「直接执行」档下灵框外的写**仍然**出卡片（用户选的档：写灵框外一律逐次确认）；
- *   ★9b —— 白名单真的进了系统提示（模型知道它能碰哪些文件夹）。
+ *   ★9b —— 白名单真的进了系统提示（模型知道它能碰哪些文件夹）；
+ *   ★17 —— **拦下来必须给模型一条出路**（动作结果里带 `allow_folder`）—— 用户 2026-09-29 实测：
+ *          助手被拦下只会说「请确认路径是否正确」，他因此以为"这 AI 读写不了灵框外"；
+ *   ★19 —— 助手自己提的 `allow_folder` 卡片，点「应用」才真加进白名单，而且是**只读**（默认档）。
  *
  * 前置（同一 pwsh 调用里做，再重启实例）：
  *   $env:LINGKUANG_TEST_DATA=<lk-fs>\worldbuilding.json; $env:LINGKUANG_VAULT=<lk-fs>\vault
  *   $env:LINGKUANG_TEST_USERDATA=<lk-fs>\userdata
  * 夹具（readonly/ 素材 + outside/ 白名单外的秘密文件）由本套件自己造；白名单靠 `fs:add-root` 带 path
- * 加进来 —— 带 path 的加目录**只有测试实例认**（正式运行只认对话框，见 main.js 那段"测试后门"）。
+ * 加进来。⭐ 带 path 的加目录**现在正式运行也认**（走的是"助手提卡片、创作者点「应用」"那条路，
+ * 人还在环里，见 main.js 那段注释）；不给 path 的那条（系统对话框）永远是 UI 的正路。
  * 跑：$env:LK_CDP_PORT=9500; node tools\e2e\agent-fs.cjs
  */
 const fs = require('fs');
@@ -205,10 +209,11 @@ async function main() {
   const sysHasFs = await ev(`(function () {
     const seen = window.__lkSeen || [];
     const sys = seen.length && seen[seen.length - 1][0] ? String(seen[seen.length - 1][0].content) : '';
-    return { hasBlock: sys.indexOf('【你能碰的文件夹】') >= 0, hasRo: sys.indexOf(${json(RO)}) >= 0, hasVault: sys.indexOf(${json(VAULT)}) >= 0, readonlyWord: sys.indexOf('只读') >= 0 };
+    return { hasBlock: sys.indexOf('【你能碰的文件夹】') >= 0, hasRo: sys.indexOf(${json(RO)}) >= 0, hasVault: sys.indexOf(${json(VAULT)}) >= 0, readonlyWord: sys.indexOf('只读') >= 0,
+             canOutside: sys.indexOf('文件你照样能读能写') >= 0, escape: sys.indexOf('allow_folder') >= 0 };
   })()`);
-  check('★9b ⭐ 白名单真的进了系统提示（模型知道它能碰哪些文件夹、哪条只读）',
-    sysHasFs.hasBlock && sysHasFs.hasRo && sysHasFs.hasVault && sysHasFs.readonlyWord, sysHasFs);
+  check('★9b ⭐ 白名单真的进了系统提示（清单 + 只读标记 + "你不是只能动灵框里的数据" + 清单外走 allow_folder）',
+    sysHasFs.hasBlock && sysHasFs.hasRo && sysHasFs.hasVault && sysHasFs.readonlyWord && sysHasFs.canOutside && sysHasFs.escape, sysHasFs);
 
   /* ---------- ★10 助手往只读文件夹写：拒绝、不出版卡片 ---------- */
   const cardsA = await cards();
@@ -292,6 +297,66 @@ async function main() {
     removed.rows === 1 && (rootsEnd.roots || []).length === 1 && !!rootsEnd.roots[0].builtin &&
     removed.summary.indexOf('1 个') >= 0,
     { ...removed, roots: rootsEnd.roots });
+
+  /* ---------- ★17 拦下来必须给**出路**（allow_folder） ----------
+     用户 2026-09-29 实测踩到的坑：他把桌面文件夹路径丢给助手，助手被白名单拦下之后只会说
+     「请确认路径是否正确」，他因此以为"这 AI 读写不了灵框外"。⇒ 动作结果里必须有那条路。 */
+  const cardsD = await cards();
+  await setMock([`{"tool":"list_files","args":{"path":${json(OUT)}}}`, '那我先问问你愿不愿意把它交给我。']);
+  await ask('看看 outside 里有什么。');
+  const hint = await ev(`(function () {
+    const seen = window.__lkSeen || [];
+    /* ⚠️ 要看的是**喂回给模型的那条动作结果**（最后一次调用里 messages 的**最后一条**），
+       不是 messages[0]（那是系统提示 —— 里面也有 'allow_folder' 字样，会把这条件变成假绿）。 */
+    const arr = seen.length ? seen[seen.length - 1] : [];
+    const lastMsg = arr.length ? String(arr[arr.length - 1].content || '') : '';
+    return { hasAsk: lastMsg.indexOf('allow_folder') >= 0, hasWhy: lastMsg.indexOf('不在助手能看的文件夹里') >= 0, cards: document.querySelectorAll('#lk-agent-msgs .lk-agent__prop').length };
+  })()`);
+  check('★17 ⭐ 白名单外的读被拦下时，动作结果给了模型一条出路（让创作者点一张 allow_folder 卡片）',
+    hint.hasAsk && hint.hasWhy && hint.cards === cardsD, { ...hint, before: cardsD });
+
+  /* ---------- ★18 助手**自己**要一个文件夹 ⇒ 出一张卡片，点之前不生效 ----------
+     ⚠️ 这里**故意递一个文件路径**（模型被 `read_file` 拦下时多半就这么递）：授权的粒度是文件夹，
+     所以卡片上出现的必须是它**所在的文件夹**，并写明"你要的是文件、交出来的是文件夹"。 */
+  await setMock([`{"tool":"allow_folder","args":{"path":${json(path.join(OUT, 'secret.txt'))}}}`, '那我等你点一下。']);
+  await ask('把 outside 交给我吧。');
+  const askCard = await ev(`(function () {
+    const cards = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__prop')];
+    const c = cards[cards.length - 1];
+    return c ? { title: (c.querySelector('.lk-agent__prop-h') || {}).textContent || '', text: c.textContent || '', ok: !!c.querySelector('[data-prop-ok]') } : null;
+  })()`);
+  const rootsAsk = await api('roots()');
+  check('★18 `allow_folder` 出一张「把文件夹交给助手」的卡片（**递文件路径也会退到它所在的文件夹**）、点「应用」之前白名单一点没变',
+    !!askCard && askCard.title.indexOf('把文件夹交给助手') >= 0 && askCard.text.indexOf('只读') >= 0 &&
+    askCard.text.indexOf(OUT) >= 0 && askCard.text.indexOf('secret.txt') >= 0 &&
+    (rootsAsk.roots || []).length === 1,
+    { card: askCard, roots: rootsAsk.roots });
+
+  /* ---------- ★19 点「应用」⇒ 真加进白名单（**默认只读**）、面板那块当场重画 ---------- */
+  await ev(`(function () { const b = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__prop [data-prop-ok]')].pop(); if (b) b.click(); return true; })()`);
+  await sleep(700);
+  const rootsGranted = await api('roots()');
+  const granted = (rootsGranted.roots || []).find((r) => r.path.toLowerCase() === OUT.toLowerCase());
+  const panelAfterGrant = await ev(`({
+    rows: document.querySelectorAll('#lk-agent-fs-list .lk-agent__fs-item').length,
+    summary: (document.getElementById('lk-agent-fs-summary') || {}).textContent || '',
+    settled: (function () { const c = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__prop')].pop(); return c ? c.className : ''; })(),
+  })`);
+  check('★19 ⭐ 点「应用」才真加进来，而且是**只读**（默认档）；面板的「文件夹」块跟着重画',
+    !!granted && granted.write === false && granted.builtin !== true &&
+    panelAfterGrant.rows === 2 && panelAfterGrant.summary.indexOf('2 个') >= 0 &&
+    String(panelAfterGrant.settled).indexOf('is-settled') >= 0,
+    { granted, ...panelAfterGrant });
+
+  /* ---------- ★20 已经交过的文件夹不再重复要（幂等，且**不出**卡片） ---------- */
+  const cardsE = await cards();
+  await setMock([`{"tool":"allow_folder","args":{"path":${json(OUT)}}}`, '哦对，它已经在了。']);
+  await ask('再把 outside 交给我。');
+  const againNote = await noteText();
+  const rootsAgain = await api('roots()');
+  check('★20 已经交给助手的文件夹不会再要一张卡片（提示里说清"早就交给你了"）',
+    (await cards()) === cardsE && againNote.indexOf('早就交给你了') >= 0 && (rootsAgain.roots || []).length === 2,
+    { note: againNote, cards: await cards(), before: cardsE });
 
   /* ---------- ★16 收尾 ---------- */
   const errs = await ev(`window.__errs`);

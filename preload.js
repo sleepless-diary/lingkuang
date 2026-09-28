@@ -1,5 +1,5 @@
 /* 灵框 v3 · preload —— 渲染进程与主进程的安全桥 */
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('lingkuangAPI', {
   /* load the worldbuilding data (timelines + docs + people/places) */
@@ -61,6 +61,18 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
     read: (p) => ipcRenderer.invoke('fs:read', { path: p }),
     search: (p, q) => ipcRenderer.invoke('fs:search', { path: p, q }),
     write: (p, text, mode) => ipcRenderer.invoke('fs:write', { path: p, text, mode })
+  },
+  /* 灵框助手的「联网手」：搜索 + 抓网页（片 2，2026-09-29）。
+     ⭐ 只有主进程能出手（渲染进程直连第三方会被 CORS 拦），且由主进程把关"只认 http/https、不碰本机内网"。 */
+  web: {
+    search: (q, limit) => ipcRenderer.invoke('web:search', { q, limit }),
+    fetch: (url) => ipcRenderer.invoke('web:fetch', { url })
+  },
+  /* ⭐ 拖进会话的文件要拿到**磁盘路径**（Electron 30 起 `File.path` 没了，官方给的这条：
+     渲染层的 File 对象交给 preload，由 `webUtils.getPathForFile()` 换路径）。拿不到就返回空串 ——
+     内容照样能靠 FileReader 读（见 `src/ui/agent-attach.ts`），只是"灵框外 ⇒ 要授权"那句提示会少一点信息。 */
+  pathForFile: (file) => {
+    try { return webUtils.getPathForFile(file) || ''; } catch (e) { return ''; }
   },
   /* 退出前同步落盘：beforeunload 里用，异步 IPC 在窗口销毁后不保证跑完 */
   flushSync: (payload) => ipcRenderer.sendSync('app:flush-sync', payload),
