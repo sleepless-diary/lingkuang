@@ -20,6 +20,7 @@ import { addEntity, addNode } from '../store/actions';
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import type { Entity, PropValue, TimelineNode, Worldset } from '../store/types';
+import { fsAvailable, fsDefaultPath, fsList, fsPrompt, fsRead, fsRootOf, fsRootsCached, fsSearch, fsWrite } from './agent-fs';
 import { setAgentAsk, setAgentScope } from './agent-perm';
 import type { AgentMode } from './agent-mode';
 import type { AgentAsk, AgentScope } from './settings';
@@ -39,8 +40,9 @@ export interface Proposal {
   title: string;
   /** 卡片正文，人话描述这次要改什么 */
   detail: string;
-  /** 应用时真正落盘的函数 */
-  apply: () => { ok: boolean; note: string };
+  /** 应用时真正落盘的函数。⭐ 允许是 async：灵框外的文件写要走主进程 IPC（`src/ui/agent-fs.ts`），
+   *  两个调度方（`src/ui/agent.ts` 的 `handleWrite()` / `agentCardClick()`）一律 `await` 它。 */
+  apply: () => { ok: boolean; note: string } | Promise<{ ok: boolean; note: string }>;
   /** ⭐ 这一条**永远**只出卡片、不许自动执行（创作者把询问关成「直接执行」也一样）。
    *  用在"自我提权"这类动作上：`set_mode` 切到 Agent、把权限范围放宽 —— 那一步必须他亲手点。 */
   needsConfirm?: boolean;
@@ -52,6 +54,8 @@ interface ToolSpec {
   desc: string;
   /** 参数说明（进提示词，让模型知道该给什么键） */
   args: string;
+  /** 灵框**外**的文件动作：只在文件通道可用时列进提示词（旧版主进程没有 `fs:*` 通道） */
+  needsFs?: boolean;
 }
 
 /* ---------------- 只读动作 ---------------- */
@@ -61,6 +65,10 @@ const READ_TOOLS: ToolSpec[] = [
   { name: 'read_entity', title: '看一条设定', desc: '读出某条设定的类型、全部字段与正文', args: '{ name: 名字 }' },
   { name: 'list_nodes', title: '列出事件', desc: '列出当前时间线上的事件（年份 + 标题 + 种类）', args: '{}' },
   { name: 'search', title: '搜一搜', desc: '在世界里按关键词搜设定与事件，给名字和年份', args: '{ q: 关键词 }' },
+  /* ⭐ 片 1（2026-09-28）：灵框**外**的文件 —— 只读三件，白名单由主进程把关（`src/ui/agent-fs.ts`） */
+  { name: 'list_files', title: '列文件夹', desc: '列出某个文件夹里有什么（目录 / 名字 / 大小 / 改动时间）', args: '{ path: 文件夹绝对路径 }', needsFs: true },
+  { name: 'read_file', title: '读文件', desc: '读一个文本文件的内容（2 MB 以内）', args: '{ path: 文件绝对路径 }', needsFs: true },
+  { name: 'search_files', title: '搜文件', desc: '在一个文件夹里按关键词找内容，给「文件:行号:那一行」', args: '{ q: 关键词, path?: 文件夹绝对路径 }', needsFs: true },
 ];
 
 /* ---------------- 写入动作 ---------------- */
@@ -76,6 +84,9 @@ const WRITE_TOOLS: ToolSpec[] = [
      （apiKey 一概不认：那是密钥，只该由创作者自己在设置面板里填）。 */
   { name: 'set_setting', title: '改设置', desc: '改助手自己的设置：权限范围 / 是否每次询问 / 模式', args: '{ key: "agentScope"|"agentAsk"|"agentMode", value: 新值 }' },
   { name: 'set_mode', title: '切模式', desc: '把助手切到「聊天」或「Agent」模式（切到 Agent 永远要创作者点一下）', args: '{ mode: "chat"|"agent" }' },
+  /* ⭐ 片 1：写文件。`needsConfirm` 在 `planWrite()` 里按"是不是灵框库外"逐条决定（见那一节）。 */
+  { name: 'write_file', title: '写文件', desc: '新建或整篇覆盖一个文本文件（灵框库以外每次都要创作者点「应用」）', args: '{ path: 文件绝对路径, text: 内容 }', needsFs: true },
+  { name: 'append_file', title: '追加到文件', desc: '在一个文本文件末尾追加一段（文件不存在就建）', args: '{ path: 文件绝对路径, text: 内容 }', needsFs: true },
 ];
 
 export function findTool(name: string): ToolSpec | undefined {
@@ -89,14 +100,18 @@ export function isWriteTool(name: string): boolean {
 /** 给系统提示用：把能用的动作列出来 + 说清怎么调。
  *  ⭐ 2026-09-26 用户改口后**两个模式都注入**这份协议（「聊天模式也留一点灵框内部的工具」），
  *  差别只在最后那句"一次能做几步"：聊天一次一个、Agent 可以连着走多步（见 `agent-mode.ts`）。
- *  ⚠️ 灵框**外**的能力（文件 / 命令 / 联网）现在一条都没有 —— 将来加进来时在这里另起一段。 */
+ *  ⭐ 2026-09-28（片 1）：灵框**外**的**文件**动作加进来了 —— `needsFs` 标着的那些只在主进程真有
+ *  `fs:*` 通道时列出（否则模型会对着不存在的工具空转）；后面再跟一段 `fsPrompt()`，说清"你能碰哪些
+ *  文件夹、规矩是什么"。⚠️ 命令 / 联网 / 抓网页**仍然一条都没有**（这一轮用户只批了文件读写）。 */
 export function toolsPrompt(mode: AgentMode = 'agent'): string {
-  const rows = READ_TOOLS.map((t) => `- ${t.name} ${t.args} —— ${t.desc}`)
-    .concat(WRITE_TOOLS.map((t) => `- ${t.name}（要创作者点头）${t.args} —— ${t.desc}`));
+  const live = (t: ToolSpec): boolean => !t.needsFs || fsAvailable();
+  const rows = READ_TOOLS.filter(live).map((t) => `- ${t.name} ${t.args} —— ${t.desc}`)
+    .concat(WRITE_TOOLS.filter(live).map((t) => `- ${t.name}（要创作者点头）${t.args} —— ${t.desc}`));
   return [
     '【你能用的动作】',
     '只读的可以随时用，我会立刻把结果给你；写入的不会直接生效，会先变成一张要创作者点「应用」的提议卡片。',
     ...rows,
+    fsPrompt(),
     '要动用某个动作时，**整条回复只写一行 JSON**，别夹散文、别加解释。两个键的名字必须是 tool 和 args：',
     '{"tool":"read_entity","args":{"name":"安德希亚城"}}',
     '{"tool":"set_field","args":{"entity":"霜精灵","field":"描述","value":"霜精灵是生活在北境冻原的种族。"}}',
@@ -128,6 +143,11 @@ const PRIMARY: Record<string, string> = {
   rename_entity: 'name',
   set_setting: 'value',
   set_mode: 'mode',
+  list_files: 'path',
+  read_file: 'path',
+  search_files: 'q',
+  write_file: 'text',
+  append_file: 'text',
 };
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '');
@@ -244,8 +264,53 @@ function fieldsLine(e: Entity, max = 12): string {
 
 /* ---------------- 只读：立刻执行 ---------------- */
 
-/** 返回给模型看的文本结果（人话，别太长） */
-export function runReadTool(call: ToolCall, store: Store): string {
+const baseName = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
+const fmtSize = (n: number): string => (n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + ' MB' : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B');
+/** 一次读给模型看的字数上限（全文另说 —— 超过就明说"只给了前 N 字"，别让它以为读完了） */
+const FILE_READ_CAP = 6000;
+
+/** 文件类只读动作（片 1）：白名单由主进程把关，这里只把结果说成人话。
+ *  ⚠️ 只读 = 随时可用、不进提议卡片；但"只读"只保证**不改**文件，读到的照样是私有素材。 */
+async function runFileRead(call: ToolCall): Promise<string> {
+  const a = call.args;
+  if (call.tool === 'list_files') {
+    const p = str(a.path) || fsDefaultPath();
+    if (!p) return '要列哪个文件夹？给我完整路径。';
+    const r = await fsList(p);
+    if (!r.ok) return r.error;
+    const { entries, root } = r.data;
+    const head = `「${p}」（${root.label}${root.write ? ' · 可写' : ' · 只读'}）里 ${entries.length} 项：`;
+    if (!entries.length) return head + '\n（空文件夹）';
+    return head + '\n' + entries.map((e) => `${e.dir ? '[目录] ' : ''}${e.name}${e.dir ? '' : '（' + fmtSize(e.size) + '）'}`).join('\n');
+  }
+  if (call.tool === 'read_file') {
+    const p = str(a.path);
+    if (!p) return '要读哪个文件？给我完整路径。';
+    const r = await fsRead(p);
+    if (!r.ok) return r.error;
+    const text = r.data.text ?? '';
+    const body = text.length > FILE_READ_CAP
+      ? text.slice(0, FILE_READ_CAP) + `\n…（全文 ${text.length} 字，这里只给了前 ${FILE_READ_CAP} 字）`
+      : text;
+    return `「${p}」（${fmtSize(r.data.size)}）\n${body || '（空文件）'}`;
+  }
+  /* search_files */
+  const q = str(a.q);
+  if (!q) return '要搜什么关键词？（q）';
+  const p = str(a.path) || fsDefaultPath();
+  if (!p) return '要搜哪个文件夹？给我完整路径。';
+  const r = await fsSearch(p, q);
+  if (!r.ok) return r.error;
+  const hits = r.data.hits;
+  if (!hits.length) return `在「${p}」里翻过 ${r.data.scanned} 个文件，没找到「${q}」。`;
+  return `在「${p}」里找到 ${hits.length} 处（翻过 ${r.data.scanned} 个文件）：\n` +
+    hits.map((h) => `${h.file}:${h.line}: ${h.text}`).join('\n');
+}
+
+/** 返回给模型看的文本结果（人话，别太长）。
+ *  ⭐ 是 **async** 的：灵框外的文件读要走主进程 IPC（`fs:*` 通道）。唯一调用点 = `src/ui/agent.ts`
+ *  `runTurn()` 里那句 `const out = await runReadTool(call, host.store)`。 */
+export async function runReadTool(call: ToolCall, store: Store): Promise<string> {
   const ws = currentWorld(store);
   const a = call.args;
   switch (call.tool) {
@@ -291,6 +356,10 @@ export function runReadTool(call: ToolCall, store: Store): string {
       }
       return hits.length ? hits.slice(0, 20).join('\n') : `没搜到和「${str(a.q)}」有关的东西。`;
     }
+    case 'list_files':
+    case 'read_file':
+    case 'search_files':
+      return await runFileRead(call);
     default:
       return `不认识的动作：${call.tool}`;
   }
@@ -561,6 +630,43 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
                所以广播一条事件，由那边收（与 `lingkuang-agent-perm` / `lingkuang-sessions` 同一套做法）。 */
             window.dispatchEvent(new CustomEvent('lingkuang-agent-mode', { detail: { mode: value } }));
             return { ok: true, note: value === 'agent' ? '已切到 Agent 模式（能连着走多步）' : '已切回聊天模式（一次只做一个动作）' };
+          },
+        },
+      };
+    }
+    /* ⭐ 片 1（2026-09-28）：灵框**外**的文件写。
+       三道门在这里各就各位：① 认不出在哪个白名单文件夹里 ⇒ 直接拒绝（人话告诉它该请创作者加进来）；
+       ② 那个文件夹是只读 ⇒ 拒绝；③ **灵框库以外** ⇒ `needsConfirm: true`（即便权限是「直接执行」，
+       也必须创作者亲手点「应用」—— 这是他选的档："写灵框外一律逐次确认"）。
+       ⚠️ 这里的前缀判断只为了**出卡片**；真正拦人的是主进程 `main.js` 的 `fsMatchRoot()`（realpath）。 */
+    case 'write_file':
+    case 'append_file': {
+      const p = str(a.path);
+      const text = str(a.text);
+      if (!p) return { ok: false, note: '要写哪个文件？给我完整绝对路径（args.path）。' };
+      if (!text) return { ok: false, note: '要写什么内容？（args.text）' };
+      const root = fsRootOf(p);
+      if (!root) {
+        const allowed = fsRootsCached().map((r) => r.path).join('、') || '（还没接过文件夹）';
+        return { ok: false, note: `「${p}」不在助手能碰的文件夹里（能碰的只有：${allowed}）。要写外面，请创作者在助手面板的「文件夹」里先把它加进来，或者写到灵框库里。` };
+      }
+      if (!root.write) {
+        return { ok: false, note: `「${root.label}」是**只读**的，写不进去。要写请让创作者把它改成「可写」，或者写到灵框库里。` };
+      }
+      const outside = !root.builtin;
+      const append = call.tool === 'append_file';
+      return {
+        ok: true,
+        proposal: {
+          tool: call.tool,
+          title: `${append ? '追加到文件' : '写文件'}：${baseName(p)}`,
+          detail: `路径：${p}\n${outside ? `（**灵框库外** —— ${root.label}${root.write ? ' · 可写' : ''}，只有你点「应用」才会落盘）\n` : ''}${clip(text, 300)}`,
+          needsConfirm: outside,
+          apply: async () => {
+            const r = await fsWrite(p, text, append ? 'append' : 'overwrite');
+            return r.ok
+              ? { ok: true, note: `已${append ? '追加到' : '写入'} ${r.data.path}（${r.data.bytes} 字节）` }
+              : { ok: false, note: `没写成：${r.error}` };
           },
         },
       };

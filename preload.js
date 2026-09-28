@@ -49,6 +49,19 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
   readNodeText: (wsName, tlName, nodeId) => ipcRenderer.invoke('vault:readNode', { wsName, tlName, nodeId }),
   /* 导入图片到 vault assets（返回相对路径） */
   importImage: () => ipcRenderer.invoke('vault:importImage'),
+  /* 灵框助手的「文件夹手」：灵框**外**文件的读写（片 1）。
+     ⭐ 白名单与路径校验都在主进程（`userData/agent-roots.json` + realpath 前缀比较），
+     这里只是把 `fs:*` 通道摆出来；本层拿不到任何通用 fs —— 想加通道先改 main.js。 */
+  fs: {
+    roots: () => ipcRenderer.invoke('fs:roots'),
+    addRoot: (payload) => ipcRenderer.invoke('fs:add-root', payload),
+    removeRoot: (p) => ipcRenderer.invoke('fs:remove-root', p),
+    setRootWrite: (p, write) => ipcRenderer.invoke('fs:set-root-write', { path: p, write }),
+    list: (p) => ipcRenderer.invoke('fs:list', { path: p }),
+    read: (p) => ipcRenderer.invoke('fs:read', { path: p }),
+    search: (p, q) => ipcRenderer.invoke('fs:search', { path: p, q }),
+    write: (p, text, mode) => ipcRenderer.invoke('fs:write', { path: p, text, mode })
+  },
   /* 退出前同步落盘：beforeunload 里用，异步 IPC 在窗口销毁后不保证跑完 */
   flushSync: (payload) => ipcRenderer.sendSync('app:flush-sync', payload),
   /* 备份管理（target: 'data' = 世界观数据 | 'lib' = 角色词库）

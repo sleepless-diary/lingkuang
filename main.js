@@ -1327,6 +1327,228 @@ ipcMain.handle('vault:unwatch', () => {
   return { ok: true };
 });
 
+/* ── IPC: 灵框助手的「文件夹手」—— 灵框**外**的文件读写（片 1）
+   （用户 2026-09-28：「可以写，我想要灵框成为一个功能完备的AI」；范围他只勾了「文件读写」，
+     安全档选了「白名单目录默认只读；写灵框外一律逐次确认」）──
+   目的：助手要能整理素材 —— 读一份人物表、把设定导成 txt、往他自己的笔记目录里写点东西。
+   三道门（按重要性排，改这里之前先读这一整段）：
+     ① **白名单**（本段）：只有 roots 里的目录能碰。内置一条 = vault（恒在、可写）；其余由创作者在对话框里
+        亲手添加、**默认只读**。清单落盘 userData/agent-roots.json（与设置分开存：这是"你能碰哪些目录"的
+        授权清单，看得见、可手改、可删）。
+     ② **路径校验在主进程做**（`fsMatchRoot`）：realpath 归一之后必须落在某个 root 里面 —— 软链、
+        `..`、Windows 短名与大小写差异都在这里被拉平。渲染层那份前缀判断只用来"出卡片时说清这是什么"，
+        **不是安全边界**。
+     ③ **写另有一道闸**：灵框库以外的写，`src/ui/agent-tools.ts` 一律标 `needsConfirm` ——
+        即便权限是「直接执行」也要创作者亲手点「应用」。本段的 `fs:write` 是最后一道：绕过渲染层也只写得到
+        可写的 root 里面。
+   测试后门：设了 `LINGKUANG_TEST_USERDATA` 的实例允许 `fs:add-root` 带 path 直接加（自动化点不了系统
+   文件对话框）；正式运行**只认对话框选出来的目录** —— 目录授权是创作者的动作，不能让渲染层替他做。 */
+const FS_ROOTS_FILE = () => path.join(app.getPath('userData'), 'agent-roots.json');
+const FS_READ_MAX = 2 * 1024 * 1024;   /* 单文件读取上限 2 MB（再大就不是"文本素材"了） */
+const FS_WRITE_MAX = 4 * 1024 * 1024;  /* 一次写入上限 4 MB */
+const FS_SEARCH_HITS = 60;             /* 搜索命中上限 */
+const FS_WALK_MAX = 4000;              /* 一次搜索最多看多少个文件 */
+const FS_SKIP_DIRS = new Set(['node_modules', '.git', '.trash', 'dist', 'app-dist', '__pycache__']);
+const FS_TEXT_EXT = /\.(md|markdown|txt|json|jsonl|csv|tsv|log|ini|toml|yml|yaml|xml|html?|css|js|mjs|cjs|ts|tsx|jsx|vue|py|sh|ps1|bat|srt|ass|vtt|tex|ris|bib)$/i;
+
+function fsRootsList() {
+  const out = [{ path: VAULT_DIR(), label: '灵框库（vault）', write: true, builtin: true }];
+  let raw = [];
+  try {
+    const j = JSON.parse(fs.readFileSync(FS_ROOTS_FILE(), 'utf8'));
+    if (Array.isArray(j)) raw = j;
+  } catch (e) { raw = []; }
+  for (const r of raw) {
+    if (!r || typeof r.path !== 'string' || !r.path) continue;
+    out.push({ path: r.path, label: r.label || path.basename(r.path) || r.path, write: !!r.write });
+  }
+  return out;
+}
+/** userData 里那份（**不含**内置 vault）—— 增删改都写它，别把"有效清单"直接存回去 */
+function fsRootsExtra() {
+  return fsRootsList().filter((r) => !r.builtin).map((r) => ({ path: r.path, label: r.label, write: r.write }));
+}
+function fsRootsSave(list) {
+  const dir = path.dirname(FS_ROOTS_FILE());
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(FS_ROOTS_FILE(), JSON.stringify(list, null, 2), 'utf8');
+}
+function fsRootsPublic() {
+  return fsRootsList().map((r) => ({ path: r.path, label: r.label, write: r.write, builtin: !!r.builtin, exists: fs.existsSync(r.path) }));
+}
+/** 归一成「小写 + 正斜杠 + 去尾斜杠」。目标还不存在（新建文件）时退化为"最近的已存在祖先 + 余下段"，
+    否则 realpathSync 会当场抛。段数上限防异常输入转死循环。 */
+function fsNorm(p) {
+  let cur = path.resolve(String(p));
+  const tail = [];
+  for (let i = 0; i < 64; i++) {
+    if (fs.existsSync(cur)) {
+      let real = cur;
+      try { real = fs.realpathSync(cur); } catch (e) { real = cur; }
+      const all = tail.length ? path.join(real, ...tail) : real;
+      return all.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    }
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    tail.unshift(path.basename(cur));
+    cur = parent;
+  }
+  return path.resolve(String(p)).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+/** 这个路径落在哪个 root 里（needWrite 时只认可写的 root）；不在任何 root 里 = null */
+function fsMatchRoot(p, needWrite) {
+  if (!p || !path.isAbsolute(String(p))) return null;
+  const t = fsNorm(p);
+  for (const r of fsRootsList()) {
+    if (needWrite && !r.write) continue;
+    const root = fsNorm(r.path);
+    if (t === root || t.startsWith(root + '/')) return r;
+  }
+  return null;
+}
+const fsErr = (msg) => ({ ok: false, error: msg });
+
+ipcMain.handle('fs:roots', () => ({ ok: true, roots: fsRootsPublic() }));
+
+ipcMain.handle('fs:add-root', async (e, payload) => {
+  let p = payload && typeof payload.path === 'string' ? payload.path : '';
+  if (!p) {
+    const opts = { title: '选一个助手能看的文件夹', properties: ['openDirectory', 'createDirectory'] };
+    /* 有主窗口就以它为父（对话框居中在窗口上）；没有就退成不带父窗口的调用 */
+    const r = mainWin ? await dialog.showOpenDialog(mainWin, opts) : await dialog.showOpenDialog(opts);
+    if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true, roots: fsRootsPublic() };
+    p = r.filePaths[0];
+  } else if (!process.env.LINGKUANG_TEST_USERDATA) {
+    /* 正式运行只认对话框选出来的目录（见上：目录授权是创作者的动作） */
+    return fsErr('文件夹要你在对话框里亲手选');
+  }
+  let st = null;
+  try { st = fs.statSync(p); } catch (err) { return fsErr('这个路径不存在：' + p); }
+  if (!st.isDirectory()) return fsErr('要选一个文件夹，不是文件：' + p);
+  const abs = path.resolve(p);
+  const list = fsRootsExtra();
+  if (list.some((r) => fsNorm(r.path) === fsNorm(abs))) return { ok: true, roots: fsRootsPublic(), existed: true };
+  list.push({ path: abs, label: path.basename(abs) || abs, write: false });   /* ⭐ 默认只读 */
+  fsRootsSave(list);
+  return { ok: true, roots: fsRootsPublic() };
+});
+
+ipcMain.handle('fs:remove-root', (e, p) => {
+  const abs = path.resolve(String(p || ''));
+  if (fsNorm(abs) === fsNorm(VAULT_DIR())) return fsErr('灵框库不能从清单里去掉 —— 助手的基本工作区就是它');
+  fsRootsSave(fsRootsExtra().filter((r) => fsNorm(r.path) !== fsNorm(abs)));
+  return { ok: true, roots: fsRootsPublic() };
+});
+
+ipcMain.handle('fs:set-root-write', (e, payload) => {
+  const abs = path.resolve(String((payload && payload.path) || ''));
+  if (fsNorm(abs) === fsNorm(VAULT_DIR())) return fsErr('灵框库本来就是可写的');
+  const list = fsRootsExtra();
+  const hit = list.find((r) => fsNorm(r.path) === fsNorm(abs));
+  if (!hit) return fsErr('清单里没有这个文件夹');
+  hit.write = !!(payload && payload.write);
+  fsRootsSave(list);
+  return { ok: true, roots: fsRootsPublic() };
+});
+
+ipcMain.handle('fs:list', (e, payload) => {
+  const p = (payload && payload.path) ? String(payload.path) : VAULT_DIR();
+  const root = fsMatchRoot(p, false);
+  if (!root) return fsErr('这个路径不在助手能看的文件夹里：' + p);
+  try {
+    if (!fs.existsSync(p)) return fsErr('没有这个文件夹：' + p);
+    if (!fs.statSync(p).isDirectory()) return fsErr('这不是文件夹，用 read_file 读它：' + p);
+    const out = [];
+    for (const d of fs.readdirSync(p, { withFileTypes: true })) {
+      if (d.name.startsWith('.')) continue;   /* 点文件一律不给看（.git / .obsidian / 各种缓存） */
+      const full = path.join(p, d.name);
+      let sz = 0, mt = 0;
+      try { const s = fs.statSync(full); sz = s.size; mt = s.mtimeMs; } catch (err) { continue; }
+      out.push({ name: d.name, dir: d.isDirectory(), size: sz, mtime: mt, write: !!fsMatchRoot(full, true) });
+    }
+    out.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name, 'zh') : a.dir ? -1 : 1));
+    return { ok: true, path: p, root: { label: root.label, write: root.write }, entries: out.slice(0, 300) };
+  } catch (err) { return fsErr(String(err.message || err)); }
+});
+
+ipcMain.handle('fs:read', (e, payload) => {
+  const p = (payload && payload.path) ? String(payload.path) : '';
+  if (!fsMatchRoot(p, false)) return fsErr('这个路径不在助手能看的文件夹里：' + p);
+  try {
+    const st = fs.statSync(p);
+    if (st.isDirectory()) return fsErr('这是个文件夹，用 list_files 列它：' + p);
+    if (st.size > FS_READ_MAX) return fsErr('文件太大（' + Math.round(st.size / 1024) + ' KB）：一次只读 2 MB 以内的文本');
+    const buf = fs.readFileSync(p);
+    if (buf.includes(0)) return fsErr('这看起来是二进制文件，读不了');
+    return { ok: true, path: p, size: st.size, text: buf.toString('utf8') };
+  } catch (err) { return fsErr(String(err.message || err)); }
+});
+
+ipcMain.handle('fs:search', (e, payload) => {
+  const p = (payload && payload.path) ? String(payload.path) : VAULT_DIR();
+  const q = (payload && payload.q) ? String(payload.q) : '';
+  if (!q.trim()) return fsErr('要搜什么？（q）');
+  if (!fsMatchRoot(p, false)) return fsErr('这个路径不在助手能看的文件夹里：' + p);
+  const need = q.toLowerCase();
+  const hits = [];
+  let seen = 0;
+  const walk = (dir, depth) => {
+    if (hits.length >= FS_SEARCH_HITS || seen > FS_WALK_MAX || depth > 8) return;
+    let items = [];
+    try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch (err) { return; }
+    for (const d of items) {
+      if (hits.length >= FS_SEARCH_HITS || seen > FS_WALK_MAX) return;
+      if (d.name.startsWith('.')) continue;
+      if (d.isDirectory()) {
+        if (FS_SKIP_DIRS.has(d.name)) continue;
+        walk(path.join(dir, d.name), depth + 1);
+        continue;
+      }
+      seen++;
+      if (!FS_TEXT_EXT.test(d.name)) continue;
+      const full = path.join(dir, d.name);
+      let st = null;
+      try { st = fs.statSync(full); } catch (err) { continue; }
+      if (st.size > 512 * 1024) continue;
+      let text = '';
+      try { text = fs.readFileSync(full, 'utf8'); } catch (err) { continue; }
+      const rel = path.relative(p, full) || d.name;
+      const lines = text.split(/\r?\n/);
+      for (let i = 0; i < lines.length && hits.length < FS_SEARCH_HITS; i++) {
+        if (lines[i].toLowerCase().includes(need)) hits.push({ file: rel, line: i + 1, text: lines[i].trim().slice(0, 200) });
+      }
+    }
+  };
+  try {
+    walk(p, 0);
+    return { ok: true, path: p, q, hits, scanned: seen };
+  } catch (err) { return fsErr(String(err.message || err)); }
+});
+
+ipcMain.handle('fs:write', (e, payload) => {
+  const p = (payload && payload.path) ? String(payload.path) : '';
+  const text = payload && typeof payload.text === 'string' ? payload.text : '';
+  const mode = payload && payload.mode === 'append' ? 'append' : 'overwrite';
+  if (!p) return fsErr('要写哪个文件？（path）');
+  if (Buffer.byteLength(text, 'utf8') > FS_WRITE_MAX) return fsErr('一次写的太多了（超过 4 MB）');
+  const root = fsMatchRoot(p, true);
+  if (!root) {
+    const ro = fsMatchRoot(p, false);
+    return fsErr(ro
+      ? '「' + ro.label + '」是只读的 —— 要往那儿写，得先在助手面板的「文件夹」里把它改成可写'
+      : '这个路径不在助手能写的文件夹里：' + p);
+  }
+  try {
+    const full = path.resolve(p);
+    if (fs.existsSync(full) && fs.statSync(full).isDirectory()) return fsErr('这是个文件夹，不能当文件写：' + p);
+    const dir = path.dirname(full);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (mode === 'append') fs.appendFileSync(full, text, 'utf8');
+    else fs.writeFileSync(full, text, 'utf8');
+    return { ok: true, path: full, bytes: Buffer.byteLength(text, 'utf8'), mode };
+  } catch (err) { return fsErr(String(err.message || err)); }
+});
+
 /* ── IPC: read the character lib ───────────────────────────── */
 /* 词库有两个位置：
    - LIB_SEED：随包分发的只读种子（__dirname/data/character_lib.json）。

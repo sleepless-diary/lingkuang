@@ -1234,6 +1234,40 @@ body {
   font-size: var(--text-xs); font-family: var(--font-body); cursor: pointer;
 }
 .lk-agent__mem-btn:hover { color: var(--accent); border-color: var(--accent); }
+/* 文件夹（片 1，2026-09-28）：助手能碰哪些目录 —— 权限那行的第二半（权限 = 能改到什么程度，
+   文件夹 = 能碰到哪儿）。一行一个文件夹：名字 + 「灵框库 / 不见了」小标签 + 只读⇄可写 + ×。 */
+.lk-agent__fs { border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
+.lk-agent__fs > summary { padding: 5px 8px; font-size: var(--text-xs); color: var(--fg-2); cursor: pointer; }
+.lk-agent__fs-list {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 0 8px 6px; max-height: 150px; overflow-y: auto;
+}
+.lk-agent__fs-empty { padding: 2px 0 4px; font-size: var(--text-xs); color: var(--fg-2); line-height: 1.6; }
+.lk-agent__fs-item { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.lk-agent__fs-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--text-xs); color: var(--fg);
+}
+/* 清单里那条指向的文件夹已经不在磁盘上了（被改名/删掉）：划掉 + 变暗，别让它看着还能用 */
+.lk-agent__fs-item.is-missing .lk-agent__fs-name { color: var(--muted); text-decoration: line-through; }
+.lk-agent__fs-tag {
+  flex: none; padding: 1px 5px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 10px; color: var(--fg-2);
+}
+.lk-agent__fs-tag.is-warn { color: var(--danger); border-color: var(--danger); }
+.lk-agent__fs-btn {
+  flex: none; padding: 1px 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: transparent; color: var(--fg-2);
+  font-size: var(--text-xs); font-family: var(--font-body); cursor: pointer;
+}
+.lk-agent__fs-btn:hover { color: var(--accent); border-color: var(--accent); }
+.lk-agent__fs-x {
+  width: 18px; height: 18px; flex: none; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--fg-2); font-size: 13px; line-height: 1; cursor: pointer;
+}
+.lk-agent__fs-x:hover { color: var(--danger); background: var(--surface-2); }
+.lk-agent__fs-note { padding: 0 8px 4px; font-size: 10px; color: var(--fg-2); line-height: 1.6; }
+.lk-agent__fs-acts { display: flex; gap: 6px; padding: 0 8px 8px; }
 /* 动作（片 3）：调用写成一行小字、结果缩成一块说明、写入是一张要你点头的提议卡片 */
 .lk-agent__call { align-self: flex-start; font-size: var(--text-xs); color: var(--muted); padding: 0 2px; }
 .lk-agent__tool {

@@ -28,6 +28,7 @@ import {
 import { MODE_HINT, MODE_LABEL, MODES, modePrompt, type AgentMode } from './agent-mode';
 import { ASKS, ASK_LABEL, SCOPES, SCOPE_LABEL, gateWrite, getAgentAsk, getAgentScope, permHint, permName, permissionPrompt, setAgentAsk, setAgentScope } from './agent-perm';
 import { isWriteTool, looksLikeToolJson, parseToolCall, planWrite, runReadTool, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
+import { fsAddRoot, fsAvailable, fsRemoveRoot, fsRootsCached, fsSetRootWrite, refreshFsRoots, type FsRoot } from './agent-fs';
 import { motionReduced } from './motion';
 import { isImeEnter } from './keys';
 import { escapeHtml } from './html';
@@ -424,6 +425,36 @@ function renderPerm(): void {
   openEl.dataset.gate = gateWrite();
 }
 
+/* 文件夹（片 1，2026-09-28）：助手能碰哪些目录 —— 与「权限」并排，因为那是同一件事的两半
+   （权限 = 能改到什么程度；文件夹 = 能碰到哪儿）。
+   ⭐ 白名单住在**主进程**（`userData/agent-roots.json`，见 `main.js` 的 `fs:*` 段），这一层只负责画与增删。
+   ⚠️ 加进来的文件夹**默认只读**；而灵框库以外的写**永远**另出一张提议卡片要创作者点「应用」
+   —— 这是他在"白名单 + 闸门"那一问里选的档。这个面板不提供任何"关掉它"的开关，别加。 */
+function fsRowHtml(r: FsRoot): string {
+  const gone = r.exists === false ? '<span class="lk-agent__fs-tag is-warn">不见了</span>' : '';
+  const tag = r.builtin ? '<span class="lk-agent__fs-tag">灵框库</span>' : '';
+  const w = r.builtin
+    ? '<span class="lk-agent__fs-tag">可写</span>'
+    : `<button class="lk-agent__fs-btn" data-fs-path="${escapeHtml(r.path)}" data-fs-w="${r.write ? '0' : '1'}" title="${r.write ? '改成只读（助手只能看）' : '允许助手往里写（每次仍会出提议卡片）'}">${r.write ? '可写' : '只读'}</button>`;
+  const x = r.builtin ? '' : `<button class="lk-agent__fs-x" data-fs-del="${escapeHtml(r.path)}" title="从清单里去掉">×</button>`;
+  return '<div class="lk-agent__fs-item' + (r.exists === false ? ' is-missing' : '') + '">' +
+    `<span class="lk-agent__fs-name" title="${escapeHtml(r.path)}">${escapeHtml(r.label)}</span>${gone}${tag}${w}${x}</div>`;
+}
+
+function renderFs(): void {
+  if (!openEl) return;
+  const all = fsRootsCached();
+  const extra = all.filter((r) => !r.builtin).length;
+  const sum = openEl.querySelector('#lk-agent-fs-summary');
+  if (sum) {
+    sum.textContent = fsAvailable()
+      ? `文件夹（助手能碰 ${all.length} 个${extra ? ' · 你加的 ' + extra + ' 个' : ''}）`
+      : '文件夹（这个版本还没接上文件通道）';
+  }
+  const list = openEl.querySelector('#lk-agent-fs-list');
+  if (list) list.innerHTML = all.map(fsRowHtml).join('') || '<div class="lk-agent__fs-empty">还没有能碰的文件夹。</div>';
+}
+
 /* 模式：`chat`（默认）⇄ `agent`。切进 agent 是**显式授权**，所以状态必须看得见
    （分段控件 `.is-on` + 面板根 `.is-agent`）—— 不然"我现在是不是在 agent 里"没人知道。
    模式不进设置、不落盘：关掉面板再打开 = 回到聊天（用户 2026-09-26：「平常是正常的聊天」）。 */
@@ -467,32 +498,34 @@ function setNote(text: string, isErr = false): void {
 /* 写入动作：三档权限决定它怎么落地 ——
    只读 = 不执行（把意图讲给创作者）；逐项确认 = 出一张提议卡片等点「应用」；
    YOLO = 直接执行。三条路都往历史里塞一条「动作结果」，模型下一轮才知道发生了什么。 */
-function handleWrite(call: ToolCall, host: AgentRunHost): void {
+function handleWrite(call: ToolCall, host: AgentRunHost): Promise<void> {
   const gate = gateWrite();
   if (gate === 'deny') {
     host.push({ role: 'user', content: `【动作结果：${call.tool}】现在是「只读」档，没有执行。把你的意图写成创作者能照着改的话。` });
     host.note('只读档：这次写入没有执行', true);
-    return;
+    return Promise.resolve();
   }
   const plan = planWrite(call, host.store, mode);
   if (!plan.ok) {
     host.push({ role: 'user', content: `【动作结果：${call.tool}】${plan.note}` });
     host.note(plan.note, true);
-    return;
+    return Promise.resolve();
   }
-  /* ⭐ `needsConfirm`（自我提权那类动作）**无视**"直接执行"档：那一档是创作者授权了平常的写入，
-     不等于授权助手自己把权限往宽里调 —— 这一步必须他亲手点「应用」。 */
+  /* ⭐ `needsConfirm`（自我提权 / 灵框外的文件写）**无视**"直接执行"档：那一档是创作者授权了平常的写入，
+     不等于授权助手自己把权限往宽里调、或往灵框外的磁盘上写 —— 这两步必须他亲手点「应用」。 */
   if (gate === 'allow' && !plan.proposal.needsConfirm) {
     agentActing();
-    const r = plan.proposal.apply();
-    host.push({ role: 'user', content: `【动作结果：${call.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
-    host.note(r.note);
-    return;
+    /* ⭐ `apply()` 可能是 async（文件写要走主进程 IPC）—— 这里必须 await，否则回执先于落盘 */
+    return Promise.resolve(plan.proposal.apply()).then((r) => {
+      host.push({ role: 'user', content: `【动作结果：${call.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
+      host.note(r.note);
+    });
   }
   cards.push({ p: plan.proposal });
   host.note(plan.proposal.needsConfirm && gate === 'allow'
     ? '这一步会放开更大的权限 —— 只有你点「应用」才会生效'
     : '写了一张提议卡片，点「应用」才落盘');
+  return Promise.resolve();
 }
 
 /** 卡片状态变了：**两个入口都要跟着重画**（助手浮层直接重画；AI 页听 `lingkuang-agent-cards`） */
@@ -503,28 +536,30 @@ function notifyCards(note?: string): void {
 
 /* 卡片上的「应用」/「忽略」（事件委托：两个入口各自把监听挂在自己的消息容器上；
    卡片跟着消息区一起重画 ⇒ 不能逐个绑） */
-export function agentCardClick(e: Event): void {
+export function agentCardClick(e: Event): Promise<void> {
   const el = (e.target as HTMLElement).closest('[data-prop-ok], [data-prop-no]') as HTMLElement | null;
-  if (!el) return;
+  if (!el) return Promise.resolve();
   const i = Number(el.dataset.propOk ?? el.dataset.propNo ?? '-1');
   const c = cards[i];
-  if (!c) return;
+  if (!c) return Promise.resolve();
   if (el.dataset.propNo !== undefined) {
     c.ignored = true;
     notifyCards();
-    return;
+    return Promise.resolve();
   }
   if (gateWrite() === 'deny') {
     if (openEl) setNote('现在是「只读」档，改权限才能落盘', true);
-    return;
+    return Promise.resolve();
   }
   agentActing();
-  const r = c.p.apply();
-  /* 卡片上只留一句短话：这句长说明下面已经有一块【动作结果】了，同一条话画两遍很吵 */
-  c.done = '已应用';
-  pushHistory({ role: 'user', content: `【动作结果：${c.p.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
-  /* 落盘由 pushHistory → pushMsg 负责 */
-  notifyCards(r.note);
+  /* ⭐ `apply()` 可能是 async（灵框外的文件写）—— 等它落定再报"已应用" */
+  return Promise.resolve(c.p.apply()).then((r) => {
+    /* 卡片上只留一句短话：这句长说明下面已经有一块【动作结果】了，同一条话画两遍很吵 */
+    c.done = '已应用';
+    pushHistory({ role: 'user', content: `【动作结果：${c.p.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
+    /* 落盘由 pushHistory → pushMsg 负责 */
+    notifyCards(r.note);
+  });
 }
 
 /* ── 一次提问（第 4 片 2C：两个入口共用这一份）────────────────────────
@@ -600,6 +635,9 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
   host.note('正在思考…');
   push({ role: 'user', content: text });
   host.rerender();
+  /* ⭐ 系统提示里要写清"你能碰哪些文件夹"（`toolsPrompt()` 是同步的，读的是 `agent-fs.ts` 的缓存），
+     所以每轮开始先刷一次白名单：创作者刚加的文件夹这一问就能用上，删掉的也不会再列。 */
+  if (fsAvailable()) await refreshFsRoots();
   /* 系统提示按模式拼 —— 见 `agentSystemPrompt()`：**AI 页的「主会话」用的是同一个函数** */
   const sys = agentSystemPrompt(host.store, mode);
   /* 输出上限不再由这里设 900（用户 2026-09-26：「ai 的输出被截断了」）：不传 = 引擎不设上限，
@@ -683,10 +721,10 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
       }
       push({ role: 'assistant', content: r.text, reasoning: r.reasoning });
       if (isWriteTool(call.tool)) {
-        handleWrite(call, host);
+        await handleWrite(call, host);
         break;
       }
-      const out = runReadTool(call, host.store);
+      const out = await runReadTool(call, host.store);
       push({ role: 'user', content: `【动作结果：${call.tool}】\n${out}` });
       host.rerender();
       if (round === roundMax) {
@@ -794,6 +832,15 @@ export function openAgentPanel(s: Store): () => void {
       '</select>' +
       '<span class="lk-agent__perm-hint" id="lk-agent-perm-hint"></span>' +
     '</div>' +
+    /* 文件夹（片 1）：与「权限」并排 —— 权限说"能改到什么程度"，文件夹说"能碰到哪儿"。 */
+    '<details class="lk-agent__fs">' +
+      '<summary id="lk-agent-fs-summary">文件夹（助手能碰 0 个）</summary>' +
+      '<div class="lk-agent__fs-list" id="lk-agent-fs-list"></div>' +
+      '<div class="lk-agent__fs-note">加进来的文件夹默认<b>只读</b>；点成「可写」之后，助手每次往灵框库外加东西仍然会出一张提议卡片，要你点「应用」才落盘。</div>' +
+      '<div class="lk-agent__fs-acts">' +
+        '<button class="lk-agent__mem-btn" id="lk-agent-fs-add">＋ 添加文件夹</button>' +
+      '</div>' +
+    '</details>' +
     '<details class="lk-agent__mem">' +
       '<summary id="lk-agent-mem-summary">长期记忆（0 条偏好）</summary>' +
       '<div class="lk-agent__mem-list" id="lk-agent-mem-list"></div>' +
@@ -897,11 +944,43 @@ export function openAgentPanel(s: Store): () => void {
     renderPerm();
   });
 
+  /* 文件夹（片 1）：加（走系统对话框；只有测试实例能由代码给路径）/ 去掉 / 只读⇄可写。
+     每条路都回一份**新清单**（主进程说了算），照它重画就行 —— 不在这一层自己改状态。 */
+  el.querySelector('.lk-agent__fs')?.addEventListener('click', (e) => {
+    const t = e.target as HTMLElement | null;
+    if (!t) return;
+    if (t.closest('#lk-agent-fs-add')) {
+      void fsAddRoot().then((r) => {
+        renderFs();
+        if (!r.ok && !r.canceled) setNote(r.error, true);
+      });
+      return;
+    }
+    const del = t.closest('[data-fs-del]') as HTMLElement | null;
+    if (del) {
+      void fsRemoveRoot(del.dataset.fsDel || '').then((r) => { renderFs(); if (!r.ok) setNote(r.error, true); });
+      return;
+    }
+    const w = t.closest('[data-fs-w]') as HTMLElement | null;
+    if (w) {
+      const toWrite = w.dataset.fsW === '1';
+      void fsSetRootWrite(w.dataset.fsPath || '', toWrite).then((r) => {
+        renderFs();
+        setNote(r.ok
+          ? (toWrite ? '这个文件夹改成可写了 —— 灵框库外的写仍然会先出提议卡片' : '这个文件夹改成只读了')
+          : r.error, !r.ok);
+      });
+    }
+  });
+
   renderMsgs();
   renderMeta();
   renderCtx();
   renderMemory();
   renderMode();   /* 内部会一并刷新权限那行（聊天模式下它不可用） */
+  renderFs();
+  /* 白名单在主进程，先画一次缓存（面板一开就有东西看），再后台问一次真相 */
+  if (fsAvailable()) void refreshFsRoots().then(() => renderFs());
   setNote('');
   void ensureLoaded().then(() => { renderMsgs(); renderMemory(); });
   /* ⭐ 同一格会话的**屏幕**也要同步（见 `src/ui/ai-sessions.ts` 的 announce）：AI 页往主会话里写了
