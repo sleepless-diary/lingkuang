@@ -85,6 +85,9 @@ const SNAP = `(() => {
     }),
     addShown: addMenu ? getComputedStyle(addMenu).display !== 'none' : null,
     addMenu: [].slice.call(document.querySelectorAll('#set-prov-add-menu [data-preset]')).map(function (b) { return b.dataset.preset; }),
+    addMenuHave: [].slice.call(document.querySelectorAll('#set-prov-add-menu [data-preset]')).map(function (b) {
+      return { id: b.dataset.preset, have: b.dataset.have || '', text: b.textContent };
+    }),
     editorShown: ed ? getComputedStyle(ed).display !== 'none' : null,
     edTitle: g('set-prov-title') ? g('set-prov-title').textContent : null,
     edName: g('set-prov-name') ? g('set-prov-name').value : null,
@@ -264,10 +267,15 @@ async function main() {
   await clickSel('#set-prov-add');
   await sleep(150);
   const addOpen = await snap();
-  check('★8 添加菜单列出「还没加过」的预设（DeepSeek / OpenAI / 硅基流动）+ 永远在的自定义供应商；已加过的 Ollama 不再出现',
-    addOpen.addShown === true && addOpen.addMenu.indexOf('deepseek') >= 0 && addOpen.addMenu.indexOf('openai') >= 0
-      && addOpen.addMenu.indexOf('siliconflow') >= 0 && addOpen.addMenu.indexOf('custom') >= 0 && addOpen.addMenu.indexOf('ollama') < 0,
-    { addMenu: addOpen.addMenu });
+  check('★8 添加菜单把五家预设都列出来：还没加过的（DeepSeek / OpenAI / 硅基流动）点一下加一条；'
+    + '**已经加过的 Ollama 也在、标着「已有」**（⚠️ 2026-09-28 改：以前把它藏起来 ⇒ 想改 Key 的人在菜单里找不到它，'
+    + '用户实测报「我没看到deepseek什么的诶」）；永远在的自定义供应商',
+    addOpen.addShown === true
+      && ['ollama', 'deepseek', 'openai', 'siliconflow', 'custom'].every((pid) => addOpen.addMenu.indexOf(pid) >= 0)
+      && (addOpen.addMenuHave.filter((r) => r.id === 'ollama')[0] || {}).have === 'ollama'
+      && String((addOpen.addMenuHave.filter((r) => r.id === 'ollama')[0] || {}).text || '').indexOf('已有') >= 0
+      && (addOpen.addMenuHave.filter((r) => r.id === 'deepseek')[0] || {}).have === '',
+    { addMenu: addOpen.addMenu, addMenuHave: addOpen.addMenuHave });
 
   /* ── ★9 点预设 ⇒ 直接加一条并把端点/协议填好（预设只产候选，Key 还得自己填） ── */
   await clickSel('#set-prov-add-menu [data-preset="deepseek"]');

@@ -25,7 +25,8 @@ const PORT = process.env.LK_CDP_PORT || '9500';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /* 旧构建上的占位标题：只为让 A/B 全红时看得清"哪几条"没过 */
 const REST_TITLES = [
-  '★1 点预设 ⇒ 只让人看见 Key（名字/协议/端点折进高级）', '★2 粘 Key + 保存并启用 ⇒ 不等底部保存就已落盘',
+  '★1 点预设 ⇒ 只让人看见 Key（名字/协议/端点折进高级）',
+  '★1b 已加过的那家仍列在菜单里并标「已有」、点它不重复加（旧逻辑把它藏起来 ⇒ 找不到改 Key 的地方）', '★2 粘 Key + 保存并启用 ⇒ 不等底部保存就已落盘',
   '★3 模型由电脑替你挑（偏好在清单里就用偏好，否则挑一个像对话的）', '★4 问 /models 且带上这把 Key',
   '★7 「高级」能展开、名字/端点回填正确', '★5 Key 不对 ⇒ 不装成功、展开高级、Key 不丢、不落盘',
   '★5b 没配成的那家草稿能删掉', '★6 不用 Key 的本地预设也能一键启用', '★6b 本地那条不因缺 Key 被拦',
@@ -87,6 +88,9 @@ const SNAP = `(() => {
       return { id: r.dataset.prov, text: r.textContent };
     }),
     presets: [].slice.call(document.querySelectorAll('#set-prov-add-menu [data-preset]')).map(function (b) { return b.dataset.preset; }),
+    presetsHave: [].slice.call(document.querySelectorAll('#set-prov-add-menu [data-preset]')).map(function (b) {
+      return { id: b.dataset.preset, have: b.dataset.have || '', text: b.textContent };
+    }),
     providers: Array.isArray(store.providers) ? store.providers.map(function (p) {
       return { id: p.id, name: p.name, preset: p.preset, kind: p.kind, baseUrl: p.baseUrl, apiKey: p.apiKey, model: p.model };
     }) : null,
@@ -165,11 +169,29 @@ async function main() {
       && (s1.sum || '').indexOf('https://api.deepseek.com/v1') >= 0 && (s1.sum || '').indexOf('按量付费') >= 0
       && (s1.title || '').indexOf('添加') >= 0 && (s1.title || '').indexOf('DeepSeek') >= 0
       && s1.cur === '（还没选模型）' && s1.edKey === ''
-      /* ⚠️ 判据用 `ollama`（出厂那家）而不是 `deepseek`：菜单是"打开时画一次、加完就收起"的，
-         收起后 DOM 里那几行还是旧内容（重建要等下次打开）⇒ 拿"刚点过的那条已经不在"当判据是错的，
-         该看的是"打开那一刻 taken 过滤生效了没有"（出厂那条不在 = 生效了）。 */
-      && s1.presets.indexOf('ollama') < 0 && s1.presets.indexOf('custom') >= 0,
+      /* ⚠️ 判据不拿"刚点过的那条已经不在"：菜单是"打开时画一次、加完就收起"的，收起后 DOM 里那几行
+         还是旧内容。这里看的是"打开那一刻还没加过的 DeepSeek 能加、且五家预设都在菜单里"（见 ★1b）。 */
+      && s1.presets.indexOf('deepseek') >= 0 && s1.presets.indexOf('custom') >= 0,
     { rows: s1.rows.map((r) => r.id), adv: s1.advShown, sum: s1.sum, title: s1.title, cur: s1.cur, presets: s1.presets });
+
+  /* ── ★1b 已经加过的那家**照样列在菜单里**（用户实测报的坑：「我没看到deepseek什么的诶」——
+     他清单里早就有一条 DeepSeek，而旧逻辑把"已加过的预设"从菜单里藏起来了 ⇒ 想改 Key 的人找不到入口）：
+     小字写「已有」，点它**不重复加**、开的是那家的"编辑"卡（预设那家就是简化卡 ⇒ 改 Key 两步） ── */
+  await openAddMenu();
+  await sleep(200);
+  const s1bMenu = await snap();
+  await clickPreset('deepseek');
+  await sleep(300);
+  const s1b = await snap();
+  const dsRow = s1bMenu.presetsHave.filter((r) => r.id === 'deepseek')[0] || {};
+  check('★1b 已加过的那家仍列在菜单里并标「已有」（旧逻辑把它藏起来），点它**不重复加**、'
+    + '开的是「编辑供应商」而不是「添加」（简化卡照旧：高级折叠 + 主按钮「保存并启用」）',
+    s1bMenu.presets.indexOf('deepseek') >= 0 && s1bMenu.presets.indexOf('ollama') >= 0
+      && dsRow.have === 'deepseek' && String(dsRow.text || '').indexOf('已有') >= 0
+      && s1b.rows.length === 2 && s1b.rows.filter((r) => r.id === 'deepseek').length === 1
+      && String(s1b.title || '').indexOf('编辑供应商') >= 0
+      && s1b.advShown === false && s1b.saveAddShown === true,
+    { presetsHave: s1bMenu.presetsHave, rows: s1b.rows.map((r) => r.id), title: s1b.title, adv: s1b.advShown });
 
   /* ── ★2 粘 Key + 点「保存并启用」⇒ **不等底部「保存设置」就已落盘**（这就是"填 Key 就能用"） ── */
   await setInput('#set-prov-apikey', 'sk-quick');

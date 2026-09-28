@@ -50,6 +50,9 @@ const SNAP = `(() => {
   return {
     addShown: menu ? getComputedStyle(menu).display !== 'none' : null,
     presets: [].slice.call(document.querySelectorAll('#set-prov-add-menu [data-preset]')).map(function (b) { return b.dataset.preset; }),
+    presetsHave: [].slice.call(document.querySelectorAll('#set-prov-add-menu [data-preset]')).map(function (b) {
+      return { id: b.dataset.preset, have: b.dataset.have || '', text: b.textContent };
+    }),
     locals: [].slice.call(document.querySelectorAll('#set-prov-add-menu [data-local]')).map(function (b) { return { id: b.dataset.local, text: b.textContent }; }),
     rows: [].slice.call(document.querySelectorAll('#set-prov-list > div')).map(function (r) { return { id: r.dataset.prov, text: r.textContent }; }),
     edName: g('set-prov-name') ? g('set-prov-name').value : null,
@@ -126,12 +129,17 @@ async function main() {
     s1.locals.length === 4 && s1.locals.some((l) => l.id === 'qwen3:32b') && s1.locals.some((l) => l.id === 'bge-m3:latest')
       && s1.locals.every((l) => l.text.indexOf('本地 Ollama · ') === 0) && (tagsAsked || 0) >= 1,
     { locals: s1.locals, tagsAsked: tagsAsked });
-  /* ★1b：本机模版**不许污染静态预设清单**（tests 里 [data-preset] 是预设的判据） */
-  check('★1b 本机模版走 data-local，`[data-preset]` 里仍然只有静态预设（没被污染）',
+  /* ★1b：本机模版**不许污染静态预设清单**（tests 里 [data-preset] 是预设的判据）。
+     ⚠️ 2026-09-28 起预设菜单改成"五家全列"（已加过的标「已有」）⇒ 不能再拿"预设里没有 ollama"当判据，
+     该看的是：`[data-preset]` 里出现的 id 只来自 PRESETS —— 本机模版的模型名一个都不许混进去。 */
+  check('★1b 本机模版走 data-local，`[data-preset]` 里只有静态预设的 id（本机模版的模型名没混进去）；'
+    + '出厂那条 Ollama 在预设里标着「已有」',
     s1.presets.indexOf('deepseek') >= 0 && s1.presets.indexOf('custom') >= 0
-      && s1.presets.indexOf('qwen3:32b') < 0 && s1.presets.indexOf('ollama') < 0
+      && s1.presets.indexOf('qwen3:32b') < 0 && s1.presets.indexOf('bge-m3:latest') < 0
+      && s1.presets.every((pid) => ['ollama', 'deepseek', 'openai', 'siliconflow', 'custom'].indexOf(pid) >= 0)
+      && (s1.presetsHave.filter((r) => r.id === 'ollama')[0] || {}).have === 'ollama'
       && s1.locals.some((l) => l.text.indexOf('32.8B') >= 0),
-    { presets: s1.presets });
+    { presets: s1.presets, presetsHave: s1.presetsHave });
 
   /* ── ★2 点一行 ⇒ 加一家"模型已选好"的档案并切过去；没点保存就不落盘（草稿语义） ── */
   await clickLocal('qwen3:32b');

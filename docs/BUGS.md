@@ -68,6 +68,18 @@
   云端正例目前由哨兵套件 ★2/★3/★4 覆盖。
   ⚠️ 结论：**用户当前存的那把 DeepSeek key 已被端点判为 invalid**（他自己的云端 AI 现在应该也不通），已当场告知。
 
+### 后续（同日，用户实测当场报的）：「我没看到deepseek什么的诶」
+
+追查（只读 leveldb）：他清单里**本来就有** `deepseek`（`preset=deepseek`、`model=deepseek-flash`、`apiKey` 35 字符、`activeProvider=ollama`），
+而「＋ 添加供应商」菜单当时只列**还没加过的**预设（旧的 `taken` 过滤）⇒ **要给已经加过的那家换 Key 时，菜单里反而找不到它**。
+（顺带确认他跑的是新代码：进程 22:10:03 起、`app-dist/index.html` 22:09:10 构建。）
+修法：`src/ui/settings.ts` 的 `paintAddMenu()` 改成**五家预设全列**，已有主的那家（`id === preset.id` 优先，
+其次第一条同 `preset` 的 —— 本机模型模版的档案 `preset` 也是 `ollama`，不能因此整段消失）小字写
+「已有「X」· 点一下去改 Key / 换模型」，行上多一个 `data-have="<那家的 id>"`；点它走新的 `editPreset(id)` ——
+**不重复加**，只开那家的编辑卡（预设那家就是简化卡 ⇒ 改 Key 两步）。`taken` 那条分寸仍在，只是从"藏起来"改成"说出来"。
+守卫同步改判据：`settings-preset-quick.cjs` 新增 **★1b**（已加过的那家仍列在菜单里、标「已有」、点它不重复加、开的是"编辑"），
+`settings-model-picker.cjs` ★8 与 `settings-local-templates.cjs` ★1b 的"预设里没有 ollama"改写为"预设 id 只来自 PRESETS + ollama 标着已有"。
+
 ## 第六十五轮（2026-09-28）· 「已选过的词也会虚化显示」＝ 淡化判据没把「自己走过的路」摘出来
 
 **用户原话**：「**还有一件事，为什么已选过的词也会虚化显示**」（灵感触发器的联想画布）。

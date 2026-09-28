@@ -500,29 +500,34 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
     }
   }
 
-  /** 「添加供应商」菜单：预设里**还没有的**那几家（DSH CustomProviderCard 的 `taken` 那条分寸：
-   *  已经存在的路由不许被影子覆盖）+ 永远在的自定义。 */
+  /** 「添加供应商」菜单：**五家预设全列**（+ 永远在的自定义 + 下面那段本机模型）。
+   *  ⚠️ 2026-09-28 改：以前只列"还没加过的"（DSH `CustomProviderCard` 的 `taken` 分寸：已经存在的路由
+   *  不许被影子覆盖），结果**要给已经加过的那家换 Key 时，菜单里反而找不到它** —— 用户实测报的
+   *  （「我没看到deepseek什么的诶」，可他清单里早就有一条 DeepSeek）。现在已有的那家**照样列**、
+   *  小字写「已有 · 点一下去改 Key」，点它 = 开那家的编辑卡（**仍然不重复加**）：
+   *  `taken` 那条分寸从"把已有的藏起来"改成"把已有的说出来、点它去改"。
+   *  （本机模型那一堆模版是另一回事：同一个模型点两次也**不重复加**，见 `addLocalModel()`。） */
   function paintAddMenu(): void {
     if (!addMenu) return;
     addMenu.textContent = '';
-    const taken = s.providers.map((p) => p.preset);
-    const avail = PRESETS.filter((p) => p.id !== 'custom' && !taken.includes(p.id));
-    for (const p of avail) {
+    for (const p of PRESETS.filter((x) => x.id !== 'custom')) {
+      /* 已经有主的那家：优先认"预设自己那条"（id === preset.id），其次认第一条同 preset 的
+         （本机模型模版的档案 preset 也是 `ollama`，但它们各有各的 id —— 别因此把整段藏起来） */
+      const have = s.providers.find((q) => q.id === p.id) ?? s.providers.find((q) => q.preset === p.id);
       const row = el('button', 'display:flex;flex-direction:column;gap:1px;align-items:flex-start;background:transparent;border:1px solid transparent;border-radius:var(--radius-sm);padding:4px 6px;cursor:pointer;text-align:left;width:100%;');
       row.dataset.preset = p.id;
+      row.dataset.have = have ? have.id : '';
       row.append(
-        el('span', 'font-size:var(--text-xs);color:var(--fg);', p.name),
-        el('span', 'font-size:11px;color:var(--fg-2);', p.hint),
+        el('span', 'font-size:var(--text-xs);color:' + (have ? 'var(--fg-2)' : 'var(--fg)') + ';', p.name),
+        el('span', 'font-size:11px;color:var(--fg-2);', have ? '已有「' + have.name + '」· 点一下去改 Key / 换模型' : p.hint),
       );
-      row.addEventListener('click', () => addPreset(p.id));
+      row.addEventListener('click', () => (have ? editPreset(have.id) : addPreset(p.id)));
       addMenu.appendChild(row);
-    }
-    if (!avail.length) {
-      addMenu.appendChild(el('div', 'font-size:11px;color:var(--fg-2);padding:3px 6px;', '预设都加过了 —— 还剩「自定义供应商」'));
     }
     /* 「本机模型」那一段：一行一个探测到的本地模型（点一下＝一家，模型已选好）。
        行标 `data-local`、**不用 `data-preset`** —— `[data-preset]` 是"静态预设清单"的判据
-       （tools/e2e/settings-model-picker.cjs:87 与 ★8/★9 都按它断言），本机模版不是预设，别混进去。 */
+       （tools/e2e/settings-model-picker.cjs:87 与 ★8/★9、settings-local-templates.cjs 的 ★1b 都按它断言）。
+       2026-09-28 起那段清单是**五家预设全列**、已加过的也列（标 `data-have`）；本机模版仍走 `data-local`。 */
     const local = localCatalog;
     if (local && local.models.length) {
       addMenu.appendChild(el('div',
@@ -561,6 +566,15 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
     paintProviders();
     dirty('已添加「' + presetOf(presetId).name + '」—— 把 Key 粘进去、点「保存并启用」就完事');
     openEditor(presetId, 'create');
+  }
+  /** 点一行「已经有了」的预设：**不重复加**，直接开那家的编辑卡
+   *  （预设那家的卡就是简化卡：Key + 「保存并启用」，名字/端点折在「高级」里 ⇒ 换 Key 两步）。 */
+  function editPreset(id: string): void {
+    const p = byId(id);
+    if (!p) return;
+    hideAddMenu();
+    openEditor(p.id);
+    dirty('「' + p.name + '」已经在清单里 —— 改完 Key 点「保存并启用」');
   }
   function addCustom(): void {
     const p = customProvider(uid('pv'));
@@ -807,7 +821,7 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
       void refreshLocalCatalog();
     }
     showAddMenu(open);
-    if (addHint) addHint.textContent = open ? '选一家 —— 端点已经替你填好，粘上 Key 点「保存并启用」就能用' : '';
+    if (addHint) addHint.textContent = open ? '选一家 —— 端点已经替你填好，粘上 Key 点「保存并启用」就能用（标着「已有」的那家点一下是去改它的 Key）' : '';
   });
   const EDIT_FIELDS = [['#set-prov-name', 'name'], ['#set-prov-baseurl', 'baseUrl'], ['#set-prov-apikey', 'apiKey']] as const;
   for (const [sel, key] of EDIT_FIELDS) {
