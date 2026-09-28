@@ -495,8 +495,14 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
         if (n.id === focusedId) extra += ' is-focus';
         if (n.selected) extra += ' is-selected';
         if ((n as any)._staged) extra += ' is-staged';   /* 已暂存：橙边框标记，与选中绿区分 */
-        /* 视觉聚焦：非焦点路径的词淡化（不隐藏，保留多分支） */
-        if (focusedId !== null && focusedId !== undefined && n.id !== focusedId && !isOnFocusPath(n.id)) extra += ' is-dim';
+        /* 视觉聚焦：非焦点路径的词淡化（不隐藏，保留多分支）。
+           但**思维链上的词永不淡化**（用户 2026-09-28：「为什么已选过的词也会虚化显示」）：
+           `selected` 是点子词时置真、此后不清的"你自己走过的路"（见 onNodeClick），
+           而聚焦降噪的目的是压掉**没走的那些分支**的杂音，不该把你自己的路径一起抹掉 ——
+           `.is-dim` 的 `opacity: .25`（src/style.css:338）是乘性的，盖在 `.is-selected` 的绿底上
+           等于把"选过"这件事整个擦掉（旧构建：换一支后整串思维链集体变淡）。
+           掉出焦点路径的已选词保持满不透明度；跟它相连的线本来就不按节点淡化（drawEdges 一视同仁）。 */
+        if (focusedId !== null && focusedId !== undefined && n.id !== focusedId && !n.selected && !isOnFocusPath(n.id)) extra += ' is-dim';
         const hidden = vis.has(n.id) ? '' : ' style="display:none"';
         /* n.word 来自工具栏输入框与 LLM 输出（cleanWords 只校验长度，`<b>x</b>` 能通过）：
            直接拼进 innerHTML 会变成真标签、`"` 会逃出 title 属性 → 按注入对待。

@@ -15,7 +15,7 @@
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { uid } from '../store/ids';
-import { probeModels, readCatalog, type ModelCatalog } from './ai-models';
+import { probeModels, readCatalog, type ModelCatalog, type ProbeCfg } from './ai-models';
 import {
   KIND_LABEL,
   PRESETS,
@@ -413,6 +413,34 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
   }
   const btnCss = 'background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2);padding:3px 8px;font-size:11px;cursor:pointer;';
 
+  /* ── 本机模型模版（用户 2026-09-28：「**我本地的所有模型都做成模版放在设置里面**」）──
+     目的（用户选定）＝「换本地模型太麻烦」：原来换 `qwen3:32b` ↔ `qwen2.5:7b` 要走
+     「＋ 添加供应商 → 本地 Ollama → 打开编辑器 → 点模型 → 刷新探测 / 手填」一大圈。
+     形态（用户选定 A）＝「＋ 添加供应商」菜单里**每个本机模型一条**：点一下就多一家
+     「本地 Ollama · qwen3:32b」，模型已经选好 —— 之后切换就是点一行「使用」。
+     清单来源＝问**本机 Ollama**（`probeModels` → GET `/api/tags`，见 `src/ui/ai-models.ts`）：
+     先吃上次那份缓存（Ollama 没开也能选），打开菜单时再后台刷一次。 */
+  let localCatalog: ModelCatalog | null = null;
+  let localProbing = false;
+  /** 「本机 Ollama」的端点：已经有 ollama 档案就用它的（有人把 Ollama 挂在别的端口），否则用预设那条 */
+  function localCfg(): ProbeCfg {
+    const p = s.providers.find((x) => x.preset === 'ollama' && x.kind === 'ollama');
+    return { aiMode: 'ollama', baseUrl: (p?.baseUrl || presetOf('ollama').baseUrl || '').replace(/\/+$/, ''), apiKey: '' };
+  }
+  /** 本机这个模型是不是已经有主了（同一端点 + 同一模型名）—— 免得点两下加出两家一模一样的 */
+  function localOwner(modelId: string): ProviderProfile | undefined {
+    const base = localCfg().baseUrl;
+    return s.providers.find((p) => p.kind === 'ollama' && (p.baseUrl || '').replace(/\/+$/, '') === base && p.model === modelId);
+  }
+  async function refreshLocalCatalog(): Promise<void> {
+    if (localProbing) return;
+    localProbing = true;
+    const res = await probeModels(localCfg());
+    localProbing = false;
+    if (res.ok && res.catalog) localCatalog = res.catalog;
+    if (addMenu && addMenu.style.display === 'flex') paintAddMenu();   /* 菜单还开着就换上新清单 */
+  }
+
   /** 把供应商清单画出来（每次改动后重画 —— 行数是个位数，不值得做 diff）。 */
   function paintProviders(): void {
     if (!provList) return;
@@ -468,6 +496,31 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
     if (!avail.length) {
       addMenu.appendChild(el('div', 'font-size:11px;color:var(--fg-2);padding:3px 6px;', '预设都加过了 —— 还剩「自定义供应商」'));
     }
+    /* 「本机模型」那一段：一行一个探测到的本地模型（点一下＝一家，模型已选好）。
+       行标 `data-local`、**不用 `data-preset`** —— `[data-preset]` 是"静态预设清单"的判据
+       （tools/e2e/settings-model-picker.cjs:87 与 ★8/★9 都按它断言），本机模版不是预设，别混进去。 */
+    const local = localCatalog;
+    if (local && local.models.length) {
+      addMenu.appendChild(el('div',
+        'font-size:10px;color:var(--fg-2);padding:6px 6px 2px;margin-top:2px;border-top:1px solid var(--border);',
+        '本机模型（' + local.models.length + ' 个 · ' + hhmm(local.at) + ' 拉的）· 点一下＝加一家并切过去（模型已选好）'));
+      for (const m of local.models) {
+        const owner = localOwner(m.id);
+        const row = el('button', 'display:flex;flex-direction:column;gap:1px;align-items:flex-start;background:transparent;border:1px solid transparent;border-radius:var(--radius-sm);padding:4px 6px;cursor:pointer;text-align:left;width:100%;');
+        row.dataset.local = m.id;
+        row.append(
+          el('span', 'font-size:var(--text-xs);color:var(--fg);', '本地 Ollama · ' + m.id),
+          el('span', 'font-size:11px;color:var(--fg-2);',
+            owner ? '已有 · 点一下设为当前在用' : (m.meta ? m.meta + ' · 点一下加一家并切过去' : '点一下加一家并切过去（模型已选好）')),
+        );
+        row.addEventListener('click', () => addLocalModel(m.id));
+        addMenu.appendChild(row);
+      }
+    } else {
+      addMenu.appendChild(el('div',
+        'font-size:11px;color:var(--fg-2);padding:5px 6px 2px;margin-top:2px;border-top:1px solid var(--border);',
+        localProbing ? '正在问本机 Ollama 要模型清单…' : '没探测到本机模型（本机 Ollama 没开？）—— 下面照旧能自己加一家选模型'));
+    }
     const cus = el('button', 'display:flex;flex-direction:column;gap:1px;align-items:flex-start;background:transparent;border:1px solid transparent;border-radius:var(--radius-sm);padding:4px 6px;cursor:pointer;text-align:left;width:100%;border-top:1px solid var(--border);');
     cus.dataset.preset = 'custom';
     cus.append(
@@ -491,6 +544,36 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
     hideAddMenu();
     paintProviders();
     dirty('已添加自定义供应商 —— 填好端点、Key 和模型再点「保存设置」');
+    openEditor(p.id);
+  }
+  /** 点一行「本机模型」：已经有主的那条**不重复加**，直接切过去（点两下不该多出两家）。
+   *  新加的那家顺手设成「当前在用」—— 你要的就是"换这个模型"，再让你去点一次「使用」等于把省下的麻烦加回去
+   *  （行上的小字也照实写了"点一下加一家并切过去"）。落盘仍要点底部「保存设置」。 */
+  function addLocalModel(modelId: string): void {
+    const have = localOwner(modelId);
+    if (have) {
+      s.activeProvider = have.id;
+      hideAddMenu();
+      paintProviders();
+      dirty('「' + have.name + '」已经在清单里 —— 已设为当前在用，点「保存设置」生效');
+      openEditor(have.id);
+      return;
+    }
+    const cfg = localCfg();
+    const p: ProviderProfile = {
+      id: uid('pv'),
+      name: '本地 Ollama · ' + modelId,
+      preset: 'ollama',
+      kind: 'ollama',
+      baseUrl: cfg.baseUrl,
+      apiKey: '',
+      model: modelId,
+    };
+    s.providers.push(p);
+    s.activeProvider = p.id;
+    hideAddMenu();
+    paintProviders();
+    dirty('已添加「' + p.name + '」并设为当前在用 —— 点「保存设置」生效');
     openEditor(p.id);
   }
   function showAddMenu(open: boolean): void {
@@ -598,7 +681,12 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
 
   addBtn?.addEventListener('click', () => {
     const open = addMenu?.style.display !== 'flex';
-    if (open) paintAddMenu();
+    if (open) {
+      /* 本机模型那一段：先拿上次那份缓存画一次（Ollama 没开也照样能选），再在后台刷一次 */
+      localCatalog = localCatalog ?? readCatalog(localCfg());
+      paintAddMenu();
+      void refreshLocalCatalog();
+    }
     showAddMenu(open);
     if (addHint) addHint.textContent = open ? '预设只是帮你把端点填好，Key 和模型还得自己填' : '';
   });
