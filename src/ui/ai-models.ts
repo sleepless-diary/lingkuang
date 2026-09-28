@@ -86,6 +86,26 @@ function fromApi(data: any): ModelEntry[] {
   return out;
 }
 
+/** 从一份清单里**替人挑一个对话模型**（用户 2026-09-28：「直接选供应商再填 key，尽量简化」）。
+ *
+ *  为什么要挑：以前「加一家供应商」的顺路是「点刷新 → 在一长串模型名里挑一个」——
+ *  对云端端点那是几十上百行（还夹着一堆 embedding / tts / rerank）。挑的这一下不该由创作者来做。
+ *  规则（**偏好优先、猜错也还能用**，绝不是"写死一个模型"）：
+ *   ① `prefer`（预设给的偏好，如 DeepSeek 的 `deepseek-chat`）在清单里 ⇒ 就是它；
+ *   ② 否则从名字里挑一个像对话模型的（`chat` / `flash` / `instruct` / `turbo` / `gpt-4o`…），
+ *      并**先把明显不是对话模型的排掉**（embedding / rerank / tts / whisper / 图像）；
+ *   ③ 再没有就第一个。
+ *  挑错了怎么办：设置里那一行随时能改（模型选择器还是原来那个），所以这里"猜"是安全的。 */
+export function recommendModel(models: ModelEntry[], prefer = ''): string {
+  if (!models.length) return '';
+  if (prefer && models.some((m) => m.id === prefer)) return prefer;
+  const NOT_CHAT = /(embed|bge|rerank|tts|whisper|audio|speech|image|vision-only|dall|stable-diffusion|moderation|ocr)/i;
+  const chat = models.filter((m) => !NOT_CHAT.test(m.id));
+  const list = chat.length ? chat : models;
+  const likeChat = list.find((m) => /(chat|flash|instruct|turbo|gpt-4o|deepseek|qwen|sonnet|claude|glm|kimi|minimax)/i.test(m.id));
+  return (likeChat || list[0]).id;
+}
+
 /** 问端点要清单。**永远 resolve**（失败当结果返回，不 throw）—— 调用方只管画提示。 */
 export async function probeModels(cfg: ProbeCfg): Promise<{ ok: boolean; error: string; catalog: ModelCatalog | null }> {
   const base = (cfg.baseUrl || '').replace(/\/+$/, '');

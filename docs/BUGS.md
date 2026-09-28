@@ -15,6 +15,59 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第六十六轮（2026-09-28）· 「预设做一下吧」＝ 加一家云端供应商要填 5 个字段，压成「选一家 → 粘 Key → 保存并启用」
+
+**用户原话**：「**我们把预设做一下吧，到时候直接选供应商再填key，尽量简化**」。
+目的（先抓目的再谈实现）＝ 把「加一家供应商」从 **5 个字段 + 点刷新探测 + 挑模型 + 回列表点使用 + 点保存设置**
+压成 **选一家 → 粘 Key → 点一下**。
+
+### 做法（折叠 + 一键；预设仍然只产候选，不替人写死）
+
+- `src/ui/ai-providers.ts`：`ProviderPreset` 新增 **`defaultModel`**（只是"自动挑模型"的**偏好**，不是写死）：
+  ollama `qwen2.5:7b` / deepseek `deepseek-chat` / openai `gpt-4o-mini` / 硅基流动与自定义空串；
+  `providerFromPreset` 里仍是 `model: p.id === 'ollama' ? (p.defaultModel || 'qwen2.5:7b') : ''`
+  —— **非 ollama 加出来模型仍为空**（`settings-model-picker.cjs` ★9 的 `cur === '（还没选模型）'` 靠它）。
+- `src/ui/ai-models.ts`：新增 `recommendModel(models: ModelEntry[], prefer = ''): string` ——
+  ① `prefer` 在清单里就用它；② 先排掉明显不是对话模型的（`NOT_CHAT = /(embed|bge|rerank|tts|whisper|audio|speech|image|vision-only|dall|stable-diffusion|moderation|ocr)/i`），
+  再挑名字像对话模型的（`chat|flash|instruct|turbo|gpt-4o|deepseek|qwen|sonnet|claude|glm|kimi|minimax` 取第一个）；
+  ③ 都不像就第一个。
+- `src/ui/settings.ts`：编辑卡里**名字 / 协议 / Base URL 三块搬进「高级」**（`#set-prov-advbox` + `#set-prov-adv-toggle`，
+  值语义一字未改 —— 三处 e2e 按 `.value` 读它们，★3/★12/★14 照旧过）；预设那家的卡上只剩
+  **一行小字（名字 + 端点已替你填好）+ Key +「保存并启用」**；新增 `editorMode: 'create' | 'edit'`
+  （create 态：高级默认折叠、Key 自动聚焦、Key 框回车＝保存并启用）。
+  `saveAndEnable()` = 校验端点/Key → `probeModels(probeCfgOf(p))` → 模型为空才 `recommendModel()` 挑一个
+  → 设为当前在用 → **自己 `saveSettings()` + `dispatchEvent('lingkuang-settings')`**
+  （不逼用户再回底部点一次「保存设置」—— 按钮上写的就是"保存"）→ 提示「已启用「X · 模型」—— 现在就能用了」。
+  **失败绝不装成功**：端点/Key 有问题就 `dirty()` 写端点原话、自动展开高级（能改端点、能手填模型）、**不落盘**。
+  自定义供应商保持原语义（端点/协议本来就得自己填 ⇒ 高级默认展开、不显示「保存并启用」）。
+- 「＋ 添加供应商」的提示语从「预设只是帮你把端点填好，Key 和模型还得自己填」改成
+  「选一家 —— 端点已经替你填好，粘上 Key 点「保存并启用」就能用」。
+
+### 守卫与回归
+
+新增 `tools/e2e/settings-preset-quick.cjs` **12/12**（A/B 未做：这是新增路径，旧构建根本没有「保存并启用」）。
+首跑 11/12，★1 是我自己的判据写错 —— 我拿"添加菜单里已经没有 deepseek 了"当判据，
+但菜单是**打开时画一次**的（加完就收起、DOM 留着旧行），改成断言 `[data-preset]` 里没有 `ollama`（证 taken 过滤仍生效）。
+邻居：`settings-model-picker.cjs` **18/18**（⚠️ 它默认端口是 9346，同实例跑要 `$env:LK_CDP_PORT='9500'`）、
+`settings-local-templates.cjs` 10/10、`settings-panel.cjs` 12/12、`assoc-reasoning` 8/8、`assoc-pull` 6/6、
+`assoc-focus-dim` 7/7、`assoc-canvas` 11/11。
+⚠️ **`assoc-canvas.cjs` 本机有抖动**：曾 9/11（★5/★7 那两条带边缘推的 pan 断言），
+旧构建 stash 后同样 10/11 ⇒ 是套件自身的抖动，别误判成本次改动带坏的。
+
+### 真机实测（隔离实例；真 Ollama + 真云端）
+
+- **真 Ollama 正例**：点「本地 Ollama」预设 → 不填 Key → 「保存并启用」⇒ 真 `/api/tags` 列出 4 个
+  （`bge-m3:latest, qwen2.5:7b, qwen3:14b, qwen3:32b`）、自动挑中 `qwen2.5:7b`（`recommendModel` 把嵌入模型 `bge-m3` 排掉了）、
+  落盘 `active=ollama`，提示「已启用…现在就能用了」。再真发一次：
+  `window.lingkuangAPI.classifyWords(['雪原'], {mode:'ollama', baseUrl:'http://localhost:11434', model:'qwen2.5:7b', apiKey:''})`
+  ⇒ `{ok:true, map:{雪原:'自然意象'}}`。
+- **真云端失败路径**：从用户应用的 leveldb 只读取出他存的那把 key（**utf16 记录、35 字符、尾 `2551`**）
+  填进卡片 ⇒ 真端点回 `401` + `{"error":{"message":"Authentication Fails, Your api key: ****2551 is invalid …"}}`，
+  应用侧表现正确：提示「没连上 https://api.deepseek.com/v1：端点返回 http 401（API Key 不对？）」、高级自动展开、
+  **不落盘**、`window.__errs` 空。⇒ 顺带确认 **Bearer 确实发出去了**（401 报文回显了 key 尾），
+  云端正例目前由哨兵套件 ★2/★3/★4 覆盖。
+  ⚠️ 结论：**用户当前存的那把 DeepSeek key 已被端点判为 invalid**（他自己的云端 AI 现在应该也不通），已当场告知。
+
 ## 第六十五轮（2026-09-28）· 「已选过的词也会虚化显示」＝ 淡化判据没把「自己走过的路」摘出来
 
 **用户原话**：「**还有一件事，为什么已选过的词也会虚化显示**」（灵感触发器的联想画布）。

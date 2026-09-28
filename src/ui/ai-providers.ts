@@ -43,15 +43,21 @@ export interface ProviderPreset {
   hint: string;
   /** API Key 输入框的 placeholder（空串 = 不需要 Key） */
   keyHint: string;
+  /** **自动挑模型时的偏好**（用户 2026-09-28：「直接选供应商再填 key，尽量简化」）。
+   *  ⚠️ 只是一个偏好、**不是写死的模型**：清单里有它就挑它，没有就按名字里的
+   *  `chat`/`flash`/`instruct` 这类线索挑一个像对话模型的，再没有才拿第一个。
+   *  所以厂商改了模型名/加了新模型，最坏结果是挑到另一个能用的，而不是挑不到。
+   *  空串 = 没有偏好（自定义供应商：端点是自己填的，别人挑不如不挑）。 */
+  defaultModel: string;
 }
 
 /** 预设清单：本地一条 + 三家常见的 + 自定义。**顺序 = 面板上「添加供应商」菜单的顺序**。 */
 export const PRESETS: ProviderPreset[] = [
-  { id: 'ollama', name: '本地 Ollama', kind: 'ollama', baseUrl: 'http://localhost:11434', hint: '跑在自己电脑上，不花钱；要先起 ollama serve', keyHint: '' },
-  { id: 'deepseek', name: 'DeepSeek', kind: 'openai', baseUrl: 'https://api.deepseek.com/v1', hint: '官方 API，按量付费', keyHint: 'sk-…' },
-  { id: 'openai', name: 'OpenAI', kind: 'openai', baseUrl: 'https://api.openai.com/v1', hint: '官方 API，需要能连上它的网络', keyHint: 'sk-…' },
-  { id: 'siliconflow', name: '硅基流动', kind: 'openai', baseUrl: 'https://api.siliconflow.cn/v1', hint: '国内聚合端点，模型多、常有免费额度', keyHint: 'sk-…' },
-  { id: 'custom', name: '自定义供应商', kind: 'openai', baseUrl: '', hint: '任何 OpenAI 兼容端点（中转站 / 自建 / 局域网里的另一台机器）', keyHint: 'sk-…' },
+  { id: 'ollama', name: '本地 Ollama', kind: 'ollama', baseUrl: 'http://localhost:11434', hint: '跑在自己电脑上，不花钱；要先起 ollama serve', keyHint: '', defaultModel: 'qwen2.5:7b' },
+  { id: 'deepseek', name: 'DeepSeek', kind: 'openai', baseUrl: 'https://api.deepseek.com/v1', hint: '官方 API，按量付费', keyHint: 'sk-…', defaultModel: 'deepseek-chat' },
+  { id: 'openai', name: 'OpenAI', kind: 'openai', baseUrl: 'https://api.openai.com/v1', hint: '官方 API，需要能连上它的网络', keyHint: 'sk-…', defaultModel: 'gpt-4o-mini' },
+  { id: 'siliconflow', name: '硅基流动', kind: 'openai', baseUrl: 'https://api.siliconflow.cn/v1', hint: '国内聚合端点，模型多、常有免费额度', keyHint: 'sk-…', defaultModel: '' },
+  { id: 'custom', name: '自定义供应商', kind: 'openai', baseUrl: '', hint: '任何 OpenAI 兼容端点（中转站 / 自建 / 局域网里的另一台机器）', keyHint: 'sk-…', defaultModel: '' },
 ];
 
 export const KIND_LABEL: Record<ProviderKind, string> = {
@@ -78,7 +84,7 @@ export function providerFromPreset(presetId: string): ProviderProfile {
     kind: p.kind,
     baseUrl: p.baseUrl,
     apiKey: '',
-    model: p.id === 'ollama' ? 'qwen2.5:7b' : '',
+    model: p.id === 'ollama' ? (p.defaultModel || 'qwen2.5:7b') : '',
   };
 }
 

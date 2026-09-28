@@ -15,7 +15,7 @@
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { uid } from '../store/ids';
-import { probeModels, readCatalog, type ModelCatalog, type ProbeCfg } from './ai-models';
+import { probeModels, readCatalog, recommendModel, type ModelCatalog, type ProbeCfg } from './ai-models';
 import {
   KIND_LABEL,
   PRESETS,
@@ -222,24 +222,11 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
                 <div id="set-prov-title" style="font-size:var(--text-sm);font-weight:600;color:var(--fg);">编辑供应商</div>
                 <button id="set-prov-close" type="button" style="margin-left:auto;background:transparent;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2);padding:3px 8px;font-size:var(--text-xs);cursor:pointer;">收起</button>
               </div>
+              <!-- 一行小字：这家要连哪儿（预设的端点已经填好，别让人再看见一个要填的框） -->
+              <div id="set-prov-sum" style="${label}line-height:1.5;"></div>
               <div style="display:flex;flex-direction:column;gap:4px;">
-                <label style="${label}">名字</label>
-                <input id="set-prov-name" type="text" style="${input}"/>
-              </div>
-              <div style="display:flex;flex-direction:column;gap:4px;">
-                <label style="${label}">协议（决定请求怎么发、清单怎么问）</label>
-                <select id="set-prov-kind" style="${input}">
-                  <option value="ollama">${KIND_LABEL.ollama}（/api/chat + /api/tags）</option>
-                  <option value="openai">${KIND_LABEL.openai}（/chat/completions + /models）</option>
-                </select>
-              </div>
-              <div style="display:flex;flex-direction:column;gap:4px;">
-                <label style="${label}">Base URL</label>
-                <input id="set-prov-baseurl" type="text" placeholder="https://…/v1" style="${input}"/>
-              </div>
-              <div style="display:flex;flex-direction:column;gap:4px;">
-                <label style="${label}">API Key（本地 Ollama 可留空）</label>
-                <input id="set-prov-apikey" type="password" placeholder="sk-..." style="${input}"/>
+                <label style="${label}" id="set-prov-keylab">API Key（本地 Ollama 可留空）</label>
+                <input id="set-prov-apikey" type="password" placeholder="sk-..." autocomplete="off" style="${input}"/>
               </div>
               <div style="display:flex;flex-direction:column;gap:6px;">
                 <div style="display:flex;align-items:center;gap:6px;">
@@ -260,6 +247,30 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
                     <input id="set-model-manual" type="text" placeholder="或直接手填模型名" style="flex:1;min-width:0;${input}"/>
                     <button id="set-model-manual-ok" type="button" style="flex-shrink:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2);padding:4px 10px;font-size:var(--text-xs);cursor:pointer;">用这个</button>
                   </div>
+                </div>
+              </div>
+              <!-- 主按钮：一键 = 拿 Key 去问清单 → 自动挑模型 → 设为当前在用 → 立刻落盘
+                   （用户 2026-09-28：「直接选供应商再填 key，尽量简化」—— 所以它**不等底部那次「保存设置」**） -->
+              <div style="display:flex;gap:6px;align-items:center;">
+                <button id="set-prov-save-add" type="button" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:5px 12px;font-size:var(--text-xs);cursor:pointer;">保存并启用</button>
+                <button id="set-prov-adv-toggle" type="button" style="background:transparent;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2);padding:4px 10px;font-size:var(--text-xs);cursor:pointer;">高级（名字 / 端点 / 协议）</button>
+              </div>
+              <!-- 高级：预设用不到的那几个字段（自定义供应商默认展开） -->
+              <div id="set-prov-advbox" style="display:none;flex-direction:column;gap:8px;border-top:1px solid var(--border);padding-top:8px;">
+                <div style="display:flex;flex-direction:column;gap:4px;">
+                  <label style="${label}">名字</label>
+                  <input id="set-prov-name" type="text" style="${input}"/>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:4px;">
+                  <label style="${label}">协议（决定请求怎么发、清单怎么问）</label>
+                  <select id="set-prov-kind" style="${input}">
+                    <option value="ollama">${KIND_LABEL.ollama}（/api/chat + /api/tags）</option>
+                    <option value="openai">${KIND_LABEL.openai}（/chat/completions + /models）</option>
+                  </select>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:4px;">
+                  <label style="${label}">Base URL</label>
+                  <input id="set-prov-baseurl" type="text" placeholder="https://…/v1" style="${input}"/>
                 </div>
               </div>
               <div style="display:flex;gap:6px;align-items:center;">
@@ -393,9 +404,22 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
   const mRefresh = host.querySelector('#set-model-refresh') as HTMLButtonElement | null;
   const mManual = host.querySelector('#set-model-manual') as HTMLInputElement | null;
   const mManualOk = host.querySelector('#set-model-manual-ok') as HTMLButtonElement | null;
+  const pSum = host.querySelector('#set-prov-sum') as HTMLElement | null;
+  const pKeyLab = host.querySelector('#set-prov-keylab') as HTMLElement | null;
+  const pAdvBox = host.querySelector('#set-prov-advbox') as HTMLElement | null;
+  const pAdvBtn = host.querySelector('#set-prov-adv-toggle') as HTMLButtonElement | null;
+  const pSaveAdd = host.querySelector('#set-prov-save-add') as HTMLButtonElement | null;
 
   /** 正在编辑哪一家（null = 收起编辑卡） */
   let editing: string | null = null;
+  /* 编辑卡现在有两种来路（用户 2026-09-28：「直接选供应商再填 key，尽量简化」）：
+     · `create` = 刚从「＋ 添加供应商」里点了一家预设 ⇒ 只让人看见 **Key**（端点已填好、
+       协议不用选），主按钮是「保存并启用」；名字/协议/端点折在「高级」里。
+     · `edit`   = 点行上的「编辑」/ 自定义供应商 ⇒ 老样子，字段都在（自定义的那几个本来就是空的）。
+     ⚠️ 两态**共用同一张卡的同一批 id**（`#set-prov-name/kind/baseurl/apikey/...`），只是折叠显隐：
+     守卫（`tools/e2e/settings-model-picker.cjs` ★3/★9/★12/★14）按 `.value` 读，折叠不影响取值。 */
+  let editorMode: 'create' | 'edit' = 'edit';
+  let advOpen = false;
   let catalog: ModelCatalog | null = null;
   let probing = false;
   const byId = (id: string): ProviderProfile | undefined => s.providers.find((p) => p.id === id);
@@ -535,8 +559,8 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
     s.providers.push(providerFromPreset(presetId));
     hideAddMenu();
     paintProviders();
-    dirty('已添加「' + presetOf(presetId).name + '」—— 填好端点/Key 再点「保存设置」');
-    openEditor(presetId);
+    dirty('已添加「' + presetOf(presetId).name + '」—— 把 Key 粘进去、点「保存并启用」就完事');
+    openEditor(presetId, 'create');
   }
   function addCustom(): void {
     const p = customProvider(uid('pv'));
@@ -585,12 +609,40 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
     if (addHint) addHint.textContent = '';
   }
 
-  function openEditor(id: string): void {
+  /** 卡片外观按「是哪一家 + 什么来路」刷一遍：预设藏起名字/协议/端点、自定义展开、缺 Key 叫人填 Key。 */
+  function paintEditorChrome(): void {
+    const p = edited();
+    const preset = p ? presetOf(p.preset) : null;
+    const custom = !p || p.preset === 'custom';
+    if (pTitle) pTitle.textContent = (editorMode === 'create' ? '添加 · ' : '编辑供应商 · ') + (p?.name || '');
+    if (pSum) {
+      pSum.textContent = !p ? '' : custom
+        ? '端点是自己填的 —— 在下面「高级」里填 Base URL、协议和模型名。'
+        : '端点已经填好：' + p.baseUrl + '（' + (preset?.hint || '') + '）—— '
+          + (p.apiKey ? 'Key 已经存好了，换个模型直接点下面的「模型」。' : '把 Key 粘进去就行。');
+    }
+    if (pKeyLab) {
+      pKeyLab.textContent = !p ? 'API Key' : preset && !preset.keyHint
+        ? 'API Key（本地端点不用填，留空即可）'
+        : 'API Key' + (preset?.keyHint ? '（' + preset.keyHint + '）' : '');
+    }
+    if (pAdvBox) pAdvBox.style.display = advOpen ? 'flex' : 'none';
+    if (pAdvBtn) {
+      pAdvBtn.textContent = advOpen ? '收起高级' : '高级（名字 / 端点 / 协议）';
+      pAdvBtn.style.display = custom ? 'none' : '';
+    }
+    /* 一键那条只对"端点是现成的"有意义（预设）。自定义供应商本来就得自己填端点，按钮没意义 */
+    if (pSaveAdd) pSaveAdd.style.display = custom ? 'none' : '';
+  }
+
+  function openEditor(id: string, mode: 'create' | 'edit' = 'edit'): void {
     const p = byId(id);
     if (!p || !editor) return;
     editing = id;
+    editorMode = mode;
+    /* 自定义那家一上来就得看见端点输入框（不然"整张卡只有一个 Key"是荒唐的） */
+    advOpen = p.preset === 'custom';
     editor.style.display = 'flex';
-    if (pTitle) pTitle.textContent = '编辑供应商 · ' + p.name;
     if (pName) pName.value = p.name;
     if (pKind) pKind.value = p.kind;
     if (pBase) pBase.value = p.baseUrl;
@@ -602,10 +654,15 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
     showMenu(false);
     paintModelList();
     if (mHint) {
-      mHint.textContent = catalog
-        ? catalog.models.length + ' 个模型 · ' + hhmm(catalog.at) + ' 拉的'
-        : '点开可列出端点提供的模型';
+      mHint.textContent = mode === 'create'
+        ? '点「保存并启用」——电脑会问端点要一份清单、替你挑一个'
+        : catalog
+          ? catalog.models.length + ' 个模型 · ' + hhmm(catalog.at) + ' 拉的'
+          : '点开可列出端点提供的模型';
     }
+    paintEditorChrome();
+    /* 新加一家的主顺路是"粘 Key"⇒ 光标直接落在那儿（本地 Ollama 不用 Key，就别抢焦点） */
+    if (mode === 'create' && p.kind === 'openai') pKey?.focus();
     paintProviders();
   }
   function closeEditor(): void {
@@ -679,6 +736,68 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
     paintModelList();
   }
 
+  /** **一键：拿 Key 去问清单 → 自动挑一个模型 → 设为当前在用 → 立刻落盘并广播。**
+   *
+   *  用户 2026-09-28：「我们把预设做一下吧，到时候直接选供应商再填 key，尽量简化」。
+   *  以前这条顺路是：点预设 ⇒ 编辑卡里有 5 个字段要自己看 ⇒ 粘 Key ⇒ 点「刷新」⇒ 在几十行里挑模型
+   *  ⇒ 回列表点「使用」（或在这张卡里点）⇒ 到底部点「保存设置」。现在压成一下：
+   *  选一家 → 粘 Key → 「保存并启用」。
+   *
+   *  三点分寸：
+   *   · **落盘不等底部那次「保存设置」**：按钮就叫「保存并启用」，再让人回去点一次等于没简化。
+   *     于是这一下是"立刻存盘 + 广播"（与转场/演变那几项 `saveNow` 同一档语义）。其它供应商字段
+   *     （名字/端点/协议）改了仍然是草稿，要底部那次保存 —— 别把两种时机弄混。
+   *   · **挑模型是"偏好 + 猜"，不是写死**：清单里有预设偏好的那个就用它，否则挑一个像对话模型的
+   *     （见 `recommendModel`）；已经手选过模型（`p.model` 非空）就**不动它**。
+   *   · **没连上不装成功**：报端点原话、把 Key 留在框里、自动展开高级（去改端点或手填模型名），
+   *     并且**不落盘** —— 免得存下一家打不通的供应商，让创作者以为是灵框坏了。 */
+  async function saveAndEnable(): Promise<void> {
+    const p = edited();
+    if (!p) return;
+    if (!p.baseUrl) {
+      advOpen = true;
+      paintEditorChrome();
+      dirty('这家还没填端点 —— 在「高级」里填 Base URL');
+      pBase?.focus();
+      return;
+    }
+    if (p.kind === 'openai' && !p.apiKey) {
+      dirty('把 API Key 粘进去再点「保存并启用」');
+      pKey?.focus();
+      return;
+    }
+    if (probing) return;
+    probing = true;
+    if (pSaveAdd) pSaveAdd.disabled = true;
+    if (mHint) mHint.textContent = '正在拿这把 Key 问端点…';
+    const res = await probeModels(probeCfgOf(p));
+    probing = false;
+    if (pSaveAdd) pSaveAdd.disabled = false;
+    if (!res.ok || !res.catalog) {
+      advOpen = true;
+      paintEditorChrome();
+      if (mHint) mHint.textContent = '没问到模型清单：' + res.error;
+      showMenu(true);            /* 顺便把"手填模型名"那一行露出来 */
+      paintModelList();
+      dirty('没连上 ' + p.baseUrl + '：' + res.error);
+      return;
+    }
+    catalog = res.catalog;
+    const picked = p.model || recommendModel(catalog.models, presetOf(p.preset).defaultModel);
+    p.model = picked;
+    s.activeProvider = p.id;
+    saveSettings(s);
+    /* 供应商换过 ⇒ 广播一次：助手面板的 chip、联想窗口下次打开就是新的 */
+    window.dispatchEvent(new CustomEvent('lingkuang-settings'));
+    editorMode = 'edit';
+    showMenu(false);
+    paintModelList();
+    paintEditorChrome();
+    paintProviders();
+    if (mHint) mHint.textContent = catalog.models.length + ' 个模型 · ' + hhmm(catalog.at) + ' 拉的';
+    dirty('已启用「' + p.name + ' · ' + picked + '」—— 现在就能用了（不满意可点「模型」换）');
+  }
+
   addBtn?.addEventListener('click', () => {
     const open = addMenu?.style.display !== 'flex';
     if (open) {
@@ -688,7 +807,7 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
       void refreshLocalCatalog();
     }
     showAddMenu(open);
-    if (addHint) addHint.textContent = open ? '预设只是帮你把端点填好，Key 和模型还得自己填' : '';
+    if (addHint) addHint.textContent = open ? '选一家 —— 端点已经替你填好，粘上 Key 点「保存并启用」就能用' : '';
   });
   const EDIT_FIELDS = [['#set-prov-name', 'name'], ['#set-prov-baseurl', 'baseUrl'], ['#set-prov-apikey', 'apiKey']] as const;
   for (const [sel, key] of EDIT_FIELDS) {
@@ -698,7 +817,7 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
       if (key === 'name') p.name = v;
       else if (key === 'baseUrl') { p.baseUrl = v; markModelStale(); catalog = null; }
       else p.apiKey = v;
-      if (pTitle && key === 'name') pTitle.textContent = '编辑供应商 · ' + (v || '（没名字）');
+      paintEditorChrome();
       paintProviders();
     });
   }
@@ -708,6 +827,7 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
     p.kind = pKind.value === 'ollama' ? 'ollama' : 'openai';
     catalog = null;
     markModelStale();
+    paintEditorChrome();
     paintProviders();
   });
   pUse?.addEventListener('click', () => {
@@ -727,6 +847,10 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
     dirty('已删掉「' + (gone?.name || '') + '」—— 点「保存设置」生效');
   });
   pClose?.addEventListener('click', () => closeEditor());
+  pAdvBtn?.addEventListener('click', () => { advOpen = !advOpen; paintEditorChrome(); });
+  pSaveAdd?.addEventListener('click', () => void saveAndEnable());
+  /* Key 框里敲回车 = 点「保存并启用」（粘完 Key 顺手回车，这是"填 Key 就能用"最省的一下） */
+  pKey?.addEventListener('keydown', (e) => { if (e.key === 'Enter') void saveAndEnable(); });
   mBtn?.addEventListener('click', () => {
     const open = mMenu?.style.display !== 'flex';
     showMenu(open);
