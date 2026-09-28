@@ -4,6 +4,7 @@
  */
 import { activeProviderProfile } from './settings';
 import { probeCfgOf, providerProblem } from './ai-providers';
+import { aiChat, type ChatMsg } from './ai';
 import { escapeHtml } from './html';
 
 interface AssocNode {
@@ -513,7 +514,16 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
     });
     drawEdges();
   }
-  /* ── 联想调用（Ollama 双模式）── */
+  /* ── 联想调用（走 `src/ui/ai.ts` 的统一出口 `aiChat`，不自己拼 fetch）──
+     用户 2026-09-28：「为什么我灵感触发器的语义联想用不了了」——真因是这一段自己拼的旧写法：
+       · 写死 `max_tokens: 200`（OpenAI 线）/ `num_predict: 200`（Ollama 线）；
+       · 正文只认 `message.content`，不看思考字段。
+     推理模型（DeepSeek 的 `reasoning_content`）先吐一大段思考再吐正文，**200 个 token 全被思考吃掉**
+     ⇒ 实测 `finish_reason: "length"`、`content` 是空串 ⇒ `cleanWords('')` = 0 词 ⇒ 画布上一个新词都没有。
+     （同一个 key、同一个模型，把上限放到 2000 就有 7 个词；上限只在"调用方显式给了 numPredict"时才发，
+       这条纪律见 `src/ui/ai.ts` 的 aiChatStream。）
+     `aiChat` 还顺带兜住三件旧写法没有的事：正文空时拿思考当正文（`text || thinking`，ai.ts:146）、
+     供应商两种协议与 Key、连不上时点名端点（`连不上 <端点>：<原因>`）。 */
   async function callAssociate(id: number) {
     const node = assocGraph?.nodes[id];
     if (!node) return;
@@ -523,20 +533,10 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
       const p = activeProviderProfile();
       const bad = providerProblem(p);
       if (bad || !p) { assocStatus(bad || '还没配 AI 供应商（设置 → 模型）'); return; }
-      const messages = [{ role: 'user', content: '你是词义联想引擎。给定一个词，生成 5-7 个不同的发散联想词。\n规则：1. 后一个词由前一个词自然联想而来 2. 词要具体、有画面感，2-4字中文名词为主 3. 输出格式：每行一个词，不要序号解释\n\n输入词：\n' + node.word }];
-      if (p.kind === 'openai') {
-        /* 端点 / Key / 模型齐不齐由 providerProblem 在前面拦掉了 */
-        const r = await fetch(p.baseUrl.replace(/\/+$/, '') + '/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + p.apiKey }, body: JSON.stringify({ model: p.model, messages, temperature: 0.8, max_tokens: 200 }) });
-        if (!r.ok) throw new Error('api ' + r.status);
-        words = cleanWords((await r.json()).choices[0].message.content || '');
-      } else {
-        const r = await fetch(p.baseUrl.replace(/\/+$/, '') + '/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: p.model, messages, stream: false, options: { temperature: 0.8, num_predict: 200, think: false } }) });
-        if (!r.ok) throw new Error('ollama ' + r.status);
-        const msg = (await r.json()).message || {};
-        /* qwen3: think:false 后内容应在 content；若仍空则读 thinking（兜底） */
-        const text = msg.content || msg.thinking || '';
-        words = cleanWords(text);
-      }
+      const messages: ChatMsg[] = [{ role: 'user', content: '你是词义联想引擎。给定一个词，生成 5-7 个不同的发散联想词。\n规则：1. 后一个词由前一个词自然联想而来 2. 词要具体、有画面感，2-4字中文名词为主 3. 输出格式：每行一个词，不要序号解释\n\n输入词：\n' + node.word }];
+      /* 不传 numPredict：一次输出上限都不发（推理模型要留着预算给正文） */
+      const reply = await aiChat(messages, { temperature: 0.8 });
+      words = cleanWords(reply.text);
     } catch (err) {
       /* 联想失败：不清 expanded（否则已展开的词变收起、新词也不显示）——只提示，保留展开状态 */
       renderGraph();

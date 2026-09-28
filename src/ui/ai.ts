@@ -102,8 +102,10 @@ export async function aiChatStream(messages: ChatMsg[], opts: AiOpts = {}): Prom
       if (typeof piece === 'string' && piece) { text += piece; onDelta?.(piece); }
       else if (typeof ch?.message?.content === 'string' && !text) { text = ch.message.content; }   /* 整包兜底 */
       /* 思考的字段名各家不一（DeepSeek/OpenAI 兼容 = `reasoning_content`，也有只叫 `reasoning` 的；
-         有些中转还把它抬到 choices 外面）—— 都收，不挑。 */
-      const th = firstStr(ch?.delta?.reasoning_content, ch?.delta?.reasoning, o.reasoning_content, o.reasoning);
+         有些中转还把它抬到 choices 外面；端点不理会 stream、直接回一整包时它在 `message` 上而不是 `delta` 上）
+         —— 都收，不挑。`message.reasoning_content` 这一支是 2026-09-28 补的：只认 delta 的话，
+         「整包 + 正文空 + 思考里有答案」那种响应会解析出 0 个词（联想画布那边就栽在这个形状上）。 */
+      const th = firstStr(ch?.delta?.reasoning_content, ch?.delta?.reasoning, ch?.message?.reasoning_content, ch?.message?.reasoning, o.reasoning_content, o.reasoning);
       if (th) { thinking += th; onReasoning?.(th); }
       if (ch?.finish_reason === 'length') truncated = true;
     } else {
@@ -151,10 +153,13 @@ export async function aiChat(messages: ChatMsg[], opts?: AiOpts): Promise<AiRepl
   return aiChatStream(messages, opts);
 }
 
-/** 从触发的一个词生成 N 个联想词（联想专用，干净分隔） */
+/** 从触发的一个词生成 N 个联想词（联想专用，干净分隔）
+ *  ⚠️ **别在这儿加 `numPredict`**：推理模型（DeepSeek 的 `reasoning_content`）会先把预算花在思考上，
+ *  上限一小就只剩 `finish_reason: "length"` + 空正文（用户 2026-09-28 报的「语义联想用不了了」就是这个
+ *  形状 —— 当时 `src/ui/assoc.ts` 自己拼 fetch 写了 `max_tokens: 200`）。上限只在调用方真的要时再发。 */
 export async function aiAssociate(word: string, count = 7, opts?: { model?: string }): Promise<string[]> {
   const prompt = `你是词义联想引擎。给定一个词，生成 ${count} 个不同的发散联想词。\n规则：1. 后一个词由前一个词自然联想而来 2. 词要具体、有画面感，2-4字中文名词为主 3. 输出格式：每行一个词，不要序号解释\n\n输入词：\n${word}`;
-  const reply = await aiChat([{ role: 'user', content: prompt }], { model: opts?.model, temperature: 0.8, numPredict: 200 });
+  const reply = await aiChat([{ role: 'user', content: prompt }], { model: opts?.model, temperature: 0.8 });
   return cleanWords(reply.text);
 }
 

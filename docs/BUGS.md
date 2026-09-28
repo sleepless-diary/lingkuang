@@ -15,6 +15,60 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第六十四轮（2026-09-28）· 「语义联想用不了了」＝ 推理模型的思考把输出预算吃光了
+
+**用户原话**：「**为什么我灵感触发器的语义联想用不了了**」（当时在用 DeepSeek · `deepseek-flash`）。
+
+### 现象与真因（拿用户当前供应商打真请求实测，不是猜）
+
+`src/ui/assoc.ts` 的 `callAssociate()` 是**唯一一处还在自己拼 fetch 的 AI 调用**（其余全走 `src/ui/ai.ts`
+的统一出口）。它写死了输出上限、且正文只认 `message.content`：
+
+```js
+// 旧写法（OpenAI 线；Ollama 线是 options.num_predict = 200）
+body: JSON.stringify({ model: p.model, messages, temperature: 0.8, max_tokens: 200 })
+words = cleanWords((await r.json()).choices[0].message.content || '');
+```
+
+推理模型（DeepSeek 的 `reasoning_content`）**先吐一大段思考再吐正文**，200 个 token 全被思考吃掉
+⇒ `finish_reason: "length"`、`content` 是**空串** ⇒ `cleanWords('')` = `[]` ⇒ 状态行「联想 0 词」、
+画布上一个新词都不长。（同一个 key、同一个模型，实测矩阵：）
+
+| 请求参数 | finish_reason | content | reasoning | 能解析出的词 |
+| --- | --- | --- | --- | --- |
+| `max_tokens: 200`（旧写法） | `length` | 0 字 | 296 字 | **0 词** ← 用户看到的 |
+| `max_tokens: 2000` | `stop` | 20 字 | 1342 字 | 7 词 |
+| 不发上限 | `stop` | 20 字 | 2100 字 | 7 词 |
+| 不发上限 + `stream: true` | `stop` | 20 字 | 2694 字 | 7 词 |
+
+⇒ 不是网络坏、不是 key 坏、不是供应商没配（都验过：端点 200、key 有效），是**这条老路没跟上"推理模型"**。
+
+### 修法
+
+- `src/ui/assoc.ts`：联想改走统一出口 `aiChat(messages, { temperature: 0.8 })` —— **不传 `numPredict`**
+  ⇒ 一个输出上限都不发（这条纪律本来就写在 `src/ui/ai.ts` 的 `aiChatStream` 上：上限只在调用方真要时发）。
+  顺带白捡三件旧写法没有的事：正文空时拿思考兜底（`text || thinking`，`ai.ts` 的 `return`）、
+  两种协议 + Key、连不上点名端点（`连不上 <端点>：<原因>`）。
+- `src/ui/ai.ts`：① `aiAssociate()` 里的 `numPredict: 200` 拿掉（同一个陷阱，还没人调，别留着等人踩）；
+  ② `eat()` 收思考时补上 `ch?.message?.reasoning_content` / `ch?.message?.reasoning` —— 旧清单只有
+  `delta.*` 与 choices 外那两种，**端点不理会 `stream`、直接回一整包**（文件里本来就承诺吃得下）时
+  思考读不到，等于没有兜底。
+- ⚠️ 另记一条**同日发现、未修**的相邻隐患：渲染进程（`file://` 页面）直接 fetch 本机 Ollama 会被 CORS 拦
+  —— `Origin: null` 时 Ollama 0.34.4 回 **403 且没有 ACAO**（`http://localhost:5173` 与 `http://localhost`
+  则放行，各回 200/ACAO）。所以**切回「本地 Ollama」时，所有渲染进程直连的 AI 面（联想 / 工作台 /
+  角色扮演 / 酒馆 / 助手）都会连不上**；主进程那条路（`ai:classify` / `ai:associate`）没有 Origin 头，不受影响。
+  根治＝把 AI 调用统一收进主进程（`docs/ROADMAP.md` 里"把 aiChat 网关升级为统一服务"那条），本轮不动。
+
+### 守卫
+
+`tools/e2e/assoc-reasoning.cjs` **8 项**（真 Electron + CDP，`window.fetch` 换成**回放**：录请求体 +
+回一个"content 空 / reasoning 有词 / finish_reason length"的整包响应，就是真机抓到的形状）：
+★1 请求体里没有写死的 `max_tokens`、★2 带 `stream: true`（＝走统一出口）、★3 正文空而词在思考里时
+画布仍长出 7 个节点、★4 状态行报得出「联想 7 词」、★5 无未捕获异常。
+**A/B：旧构建 4/8**（★1 读到 `max_tokens: 200`、★2 无 stream、★3 节点 0 个、★4「联想 0 词」）→ **新构建 8/8**。
+另用真供应商做了一次端到端：真界面点「雪原」⇒ 状态行「联想 7 词」、画布 7 个子词（`冰湖/极光/星空/帐篷/篝火/热茶/木屋`）、无异常。
+`npx tsc --noEmit` / `npx vite build` 全绿。
+
 ## 第六十三轮（2026-09-26）· 「聊天/agent 在选中状态下也是荧光绿」＝ 选中态不该用颜色说
 
 **用户原话**：「聊天/agent在选中状态下也是荧光绿」（上一轮「这里面有三处荧光绿」整改完接着报的）。
