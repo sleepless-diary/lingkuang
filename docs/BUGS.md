@@ -15,6 +15,27 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第六十九轮（2026-10-10）· 「确认窗口在确认后不会消失，会随着AI的下一条回答出现」＝ 处理过的提议卡片被反复重画
+
+### 一、真因（一行代码，不是渲染坏了）
+- 挂卡片的地方是 `renderMsgs()`（`src/ui/agent.ts:342`）：`box.innerHTML = head + cardsHtml();` —— **每来一条消息都整块重画**（AI 页的 `renderLog()` 末尾同样调 `cardsHtml()`）。
+- 而 `cardsHtml()` 原本把 `cards[]` **全部**画出来，只给处理过的那张加个 `is-settled` 类（`cardHtml()` 里 `settled` 分支把按钮换成一句「已应用」/「已忽略」）。`agentCardClick()` 点「应用」时只写 `c.done = '已应用'`，**卡片留在数组里** ⇒ 之后每一轮回答都把它重新端上来一次。
+- 用户看到的正是这个：**点完确认它不消失，AI 下一条回答一来它又出现**（看着像"又问了一遍"）。
+
+### 二、修法：处理过的卡片不再画
+- `src/ui/agent.ts` 的 `cardsHtml()`：`cards.map((c, i) => ({ c, i })).filter((x) => !x.c.done && !x.c.ignored).map((x) => cardHtml(x.i, x.c))`。
+- ⚠️ **过滤必须保留原下标**（所以是先 `map` 成 `{c,i}` 再 `filter`）：`data-prop-ok="i"` 是 `cards` 的**数组下标**，两个入口（助手浮层 + AI 页）共用一份；直接 `filter` 再 `map` 会让剩下的卡片索引整体前移，点「应用」就落到**别的动作**上（★15 那条 `[data-prop-ok="2"]` 就是抓着这一点）。
+- 信息没丢：`apply()` 会 `pushHistory({ role:'user', content:'【动作结果：X】…' })`，落盘的结果照常以 `.lk-agent__tool` 回执显示（★8/★12 改判据后就是读它）。
+
+### 三、守卫（判据从"卡片留在原地标 is-settled"改成"卡片当场退场 + 计数回落"）
+- `tools/e2e/agent-tools.cjs`：★8（`card1b.length === 0` + 回执里有「测试新条目」）、★9（被忽略那张也退场：`card2.length === 1 → card2b.length === 0`）、★12/★13/★18（这三条原本数的是"含已处理的卡片总数"：`cards === 2/3` → `=== 0`）、★15（`keyed.length === 3 → 1`）、**★16 收口用户这条**（应用后再问一句「再看一眼她的发色」，断言 `cardsAfterApply === 0 && cardsAfterNext === 0` + 回执里 `发色=墨黑`）。
+- `tools/e2e/agent-fs.cjs` ★12（`applied.cards === cardsB`）、★19（`panelAfterGrant.cards === cardsD`）；`tools/e2e/agent-main-session.cjs` ★11（AI 页 `w2.cards === 0`）。
+- **A/B（`git archive HEAD` 到 `%TEMP%\lk-ab-old` + junction `node_modules` + 在那边 `npm run build`，**不动工作树**，只把**新断言**拷进旧构建跑）：旧构建 `agent-tools` **10/19**（★16 读到 `cardsAfterApply:3 / cardsAfterNext:3` —— 用户那条现象原样复现）、`agent-fs` **20/22** ⇒ 新构建 **19/19**、**22/22**。**
+- 邻居（各自干净实例）：`agent-panel` **21/21**、`agent-mode` **12/12**、`agent-main-session` **14/14**（要 `seed-agent-main-session.cjs`）、`agent-fs` 22/22、`tsc --noEmit` exit 0、`vite build` 绿。
+- ⚠️ `agent-batch.cjs` 这次 **4/6**：★2/★3 挂在 `waitVault()`（轮询 vault 里的 `.md`）超时——**盘上文件内容逐字正确**（`银发少女.md` 与 `批量第二条.md` 都是 `发色: 银白`、`批量事件甲/乙.md` 都在），且**上一轮在旧构建上同样 4/6、失败项逐条相同** ⇒ 是本机这条套件的既有抖动（测试窗口 `LINGKUANG_TEST_WINDOW_NOFOCUS=1` 时页面 hidden、定时器被节流，落 .md 的 debounce 迟到），与本轮改动无关。
+
+---
+
 ## 第六十八轮（2026-09-29）· 「这个AI还是无法读写灵框外内容」＝ 拦下来没给出路；顺带把联网搜索与拖文件进会话补上
 
 ### 一、为什么他说"还是不行"（真因，先记这一条）

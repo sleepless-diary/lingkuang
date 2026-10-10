@@ -267,14 +267,15 @@ async function main() {
   const applied = {
     exists: fs.existsSync(RO_WRITE),
     text: fs.existsSync(RO_WRITE) ? fs.readFileSync(RO_WRITE, 'utf8') : '',
-    settled: await ev(`(function () { const p = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__prop')]; return p.length ? p[p.length - 1].classList.contains('is-settled') : false; })()`),
-    cardNote: await ev(`(function () { const p = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__prop-note')]; return p.length ? p[p.length - 1].textContent : ''; })()`),
+    /* ⭐ 用户 2026-10-10：「确认窗口在确认后不会消失，会随着AI的下一条回答出现」⇒ 卡片点完就退场，
+       不再留在原地标 `is-settled`（判据 = 计数回到点它之前）。 */
+    cards: await cards(),
     note: await noteText(),
   };
-  check('★12 点「应用」之后才真落盘（内容逐字一致 + 卡片落定写「已应用」+ 回执说清写到哪儿）',
+  check('★12 点「应用」之后才真落盘（内容逐字一致 + 卡片当场退场 + 回执说清写到哪儿）',
     applied.exists === true && applied.text === '断桥的另一端是一座灯塔。' &&
-    applied.settled === true && applied.cardNote === '已应用' && applied.note.indexOf('已写入') >= 0,
-    applied);
+    applied.cards === cardsB && applied.note.indexOf('已写入') >= 0,
+    { ...applied, before: cardsB });
 
   /* ---------- ★14 灵框库**里面**的写按平常闸门走：直接执行 = 不点也落盘 ---------- */
   const cardsC = await cards();
@@ -340,13 +341,13 @@ async function main() {
   const panelAfterGrant = await ev(`({
     rows: document.querySelectorAll('#lk-agent-fs-list .lk-agent__fs-item').length,
     summary: (document.getElementById('lk-agent-fs-summary') || {}).textContent || '',
-    settled: (function () { const c = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__prop')].pop(); return c ? c.className : ''; })(),
+    cards: document.querySelectorAll('#lk-agent-msgs .lk-agent__prop').length,
   })`);
-  check('★19 ⭐ 点「应用」才真加进来，而且是**只读**（默认档）；面板的「文件夹」块跟着重画',
+  check('★19 ⭐ 点「应用」才真加进来，而且是**只读**（默认档）；面板的「文件夹」块跟着重画、卡片当场退场',
     !!granted && granted.write === false && granted.builtin !== true &&
     panelAfterGrant.rows === 2 && panelAfterGrant.summary.indexOf('2 个') >= 0 &&
-    String(panelAfterGrant.settled).indexOf('is-settled') >= 0,
-    { granted, ...panelAfterGrant });
+    panelAfterGrant.cards === cardsD,
+    { granted, ...panelAfterGrant, before: cardsD });
 
   /* ---------- ★20 已经交过的文件夹不再重复要（幂等，且**不出**卡片） ---------- */
   const cardsE = await cards();

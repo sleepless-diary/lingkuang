@@ -302,7 +302,8 @@ async function main() {
   const w2 = await ev(`(() => {
     const log = document.getElementById('ai-log');
     return {
-      settled: !!log.querySelector('.lk-agent__prop.is-settled'),
+      /* ⭐ 用户 2026-10-10：「确认窗口在确认后不会消失，会随着AI的下一条回答出现」⇒ 点完「应用」卡片就退场 */
+      cards: log.querySelectorAll('.lk-agent__prop').length,
       note: (document.getElementById('ai-note') || {}).textContent || '',
       receipt: [...log.querySelectorAll('[data-k="receipt"]')].map((x) => x.textContent).join(' | '),
     };
@@ -310,8 +311,8 @@ async function main() {
   const inVault = await waitVault('AI页建的条目');
   check('★11 从 AI 页发的**写动作**出同一张提议卡片，点「应用」真落 vault（界面说改了不算数）',
     !!w1 && w1.cards === 1 && w1.title.indexOf('AI页建的条目') >= 0 && w1.ok === true && w1.settled === false
-      && applied === true && !!w2 && w2.settled === true && w2.receipt.indexOf('create_entity') >= 0 && inVault === true,
-    { cards: w1 ? w1.cards : null, title: w1 ? w1.title : null, applied, settled: w2 ? w2.settled : null, note: w2 ? w2.note : null, inVault });
+      && applied === true && !!w2 && w2.cards === 0 && w2.receipt.indexOf('create_entity') >= 0 && inVault === true,
+    { cards: w1 ? w1.cards : null, title: w1 ? w1.title : null, applied, cardsAfter: w2 ? w2.cards : null, note: w2 ? w2.note : null, inVault });
 
   /* ── ⑨ 模式开关两个入口共享一份状态（在哪儿切都算数） ── */
   const dom12 = await ev(`(() => {

@@ -304,9 +304,20 @@ function cardHtml(i: number, c: { p: Proposal; done?: string; ignored?: boolean 
 }
 
 /** 提议卡片的 HTML —— **两个入口共用**（助手浮层的消息区、AI 页主会话的记录区都调它）。
- *  卡片索引就是 `cards` 的下标 ⇒ 两个入口画出来的 `data-prop-ok="i"` 指向同一张卡片。 */
+ *  卡片索引就是 `cards` 的下标 ⇒ 两个入口画出来的 `data-prop-ok="i"` 指向同一张卡片。
+ *
+ *  ⭐ 处理过的卡片**不再画**（用户 2026-10-10：「**确认窗口在确认后不会消失，会随着AI的下一条回答出现**」）：
+ *  点完「应用」/「忽略」它就退场。消息区**每来一条消息都会整体重画**（`renderMsgs()` → `box.innerHTML = head + cardsHtml()`），
+ *  以前那张卡只标个 `is-settled` 留在 `cards` 里 ⇒ 每轮回答都把它端上来一次，看起来像"又问了一遍"。
+ *  它做过什么没丢：`apply` 会 `pushHistory({ role:'user', content:'【动作结果：X】…' })`，那条消息照常显示。
+ *  ⚠️ 过滤时**保留原下标**（先 map 成 `{c,i}` 再 filter）—— `data-prop-ok="i"` 必须是 `cards` 的下标，
+ *  直接 `filter` 再 map 会让剩下的卡片索引整体前移，点「应用」就落到了别的动作上。 */
 export function cardsHtml(): string {
-  return cards.map((c, i) => cardHtml(i, c)).join('');
+  return cards
+    .map((c, i) => ({ c, i }))
+    .filter((x) => !x.c.done && !x.c.ignored)
+    .map((x) => cardHtml(x.i, x.c))
+    .join('');
 }
 
 /** 「用到动作：X」那一行 —— **AI 页主会话也要画它**（否则模型吐的动作 JSON 会被 mdToHtml

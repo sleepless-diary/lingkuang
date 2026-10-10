@@ -402,6 +402,13 @@
 - ⚠️ 「正在看：初稿 / 第 N 版」那行（`#cx-vnote`）必须在**换条目（`swapBody`）与换版本**时都刷新 ——
   它属于骨架 HTML，只在 `render()` 里生成的话，切到另一条实体会显示上一条的版本（实测踩到）。
 
+### 提议卡片（`src/ui/agent.ts` 的 `cards` / `cardsHtml()`）
+
+- 卡片住在**模块级 `cards[]`** 里：写入动作不直接落盘，先在里面等创作者点头。`data-prop-ok="i"` / `data-prop-no="i"` 的 `i` 是**数组下标**，助手浮层与 AI 页两个入口共用同一份（在哪边点都算数）。
+- ⭐ **处理过的卡片不再画**（用户 2026-10-10：「**确认窗口在确认后不会消失，会随着AI的下一条回答出现**」）：`cardsHtml()` = `cards.map((c,i) => ({c,i})).filter((x) => !x.c.done && !x.c.ignored).map((x) => cardHtml(x.i, x.c))`。消息区**每来一条消息都整体重画**（`renderMsgs()` 的 `box.innerHTML = head + cardsHtml()`；AI 页 `renderLog()` 末尾同理），不过滤就会把已处理的卡片反复端上来。
+- ⚠️ 过滤**必须保留原下标**（所以先 `map` 成 `{c,i}` 再 `filter`）：直接 `filter` 再 `map` 会让剩下的卡片索引整体前移，点「应用」就落到**别的动作**上。
+- 结果不丢：`apply()` 会 `pushHistory({ role:'user', content:'【动作结果：X】…' })`，落盘的结果以 `.lk-agent__tool` 回执显示（守卫 `tools/e2e/agent-tools.cjs` ★8/★12/★16 读的就是它）。
+
 ### 工具宿主（`src/tools/registry.ts` 的 `openTool`）
 - 工具栏工具都是**模块级大视图**：点击 → `openTool(id, moduleView, store)` → 各工具用动态 import 渲染
   （`register.ts` 里每个 `open` 都是 `import('../ui/xxx').then((m) => m.renderXxx(host, store))`）。

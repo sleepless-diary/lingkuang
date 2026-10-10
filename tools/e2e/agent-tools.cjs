@@ -111,6 +111,8 @@ async function main() {
   const callTexts = () => ev(`[...document.querySelectorAll('#lk-agent-msgs .lk-agent__call')].map((c) => c.textContent)`);
   const props = () => ev(`[...document.querySelectorAll('#lk-agent-msgs .lk-agent__prop')].map((p) => ({ settled: p.classList.contains('is-settled'), h: (p.querySelector('.lk-agent__prop-h') || {}).textContent || '', note: (p.querySelector('.lk-agent__prop-note') || {}).textContent || '' }))`);
   const noteText = () => ev(`(document.getElementById('lk-agent-note') || {}).textContent || ''`);
+  /* 动作结果那一块（回执）—— 卡片退场之后，落盘的结果就靠它认 */
+  const toolText = () => ev(`(function () { const t = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__tool')]; return t.length ? t[t.length - 1].textContent : ''; })()`);
   const lastBubble = () => ev(`(function () { const b = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__msg.is-ai .lk-agent__bubble')]; return b.length ? b[b.length - 1].textContent : ''; })()`);
 
   check('★1 面板开出来了（Ctrl+K）', (await ev(`!!document.getElementById('lk-agent-panel')`)) === true);
@@ -165,10 +167,11 @@ async function main() {
   await ev(`document.querySelector('#lk-agent-msgs [data-prop-ok="0"]').click(); true`);
   await sleep(800);
   const card1b = await props();
-  /* 卡片上只留一句短文案「已应用」：那句长说明下面已经有一块【动作结果】在显示了（2026-09-18 改） */
-  check('★8 点「应用」之后才真落盘（设定树里多了一行）',
-    (await rows()) === 2 && card1b[0].settled === true && card1b[0].note.indexOf('已应用') >= 0,
-    { rows: await rows(), card: card1b[0] });
+  /* ⭐ 用户 2026-10-10：「确认窗口在确认后不会消失，会随着 AI 的下一条回答出现」⇒ 点完「应用」卡片**当场退场**。
+     判据从"卡片留在原地标 is-settled"改成"卡片没了 + 落盘的结果进了回执（`.lk-agent__tool`）"。 */
+  check('★8 点「应用」之后才真落盘（设定树多一行 + 卡片当场退场 + 回执说清建了什么）',
+    (await rows()) === 2 && card1b.length === 0 && (await toolText()).indexOf('测试新条目') >= 0,
+    { rows: await rows(), cards: card1b.length, tool: await toolText() });
 
   /* ---------- ④「忽略」什么都不做 ---------- */
   await setMock(['{"tool":"create_entity","args":{"name":"测试被忽略","type":"角色"}}']);
@@ -177,9 +180,9 @@ async function main() {
   await ev(`document.querySelector('#lk-agent-msgs [data-prop-no="1"]').click(); true`);
   await sleep(500);
   const card2b = await props();
-  check('★9 点「忽略」= 什么都不做（树不动、卡片标已忽略）',
-    card2.length === 2 && (await rows()) === 2 && card2b[1].settled === true && card2b[1].note.indexOf('已忽略') >= 0,
-    { cards: card2.length, rows: await rows(), note: card2b[1].note });
+  check('★9 点「忽略」= 什么都不做（树不动 + 被忽略那张也当场退场）',
+    card2.length === 1 && (await rows()) === 2 && card2b.length === 0,
+    { before: card2.length, after: card2b.length, rows: await rows() });
 
   /* ---------- ⑤ 只读档：不给执行 ---------- */
   await setPerm('readonly', 'always');
@@ -188,7 +191,7 @@ async function main() {
   await ask('建一条叫「测试只读档」的。');
   const ro = { gate: gateRo, cards: (await props()).length, rows: await rows(), note: await noteText() };
   check('★10 只读档：不出卡片、不落盘、明白告诉你没执行',
-    ro.gate === 'deny' && ro.cards === 2 && ro.rows === 2 && ro.note.indexOf('只读') >= 0, ro);
+    ro.gate === 'deny' && ro.cards === 0 && ro.rows === 2 && ro.note.indexOf('只读') >= 0, ro);
 
   /* ---------- ⑥ 直接执行档：不问，直接落盘 ---------- */
   await setPerm('workspace', 'never');
@@ -201,7 +204,7 @@ async function main() {
     note: await noteText(),
   };
   check('★11 直接执行档（可写 + 不询问）：不用点，直接就落盘了（两旋钮也存进了设置）',
-    yolo.gate === 'allow' && yolo.cards === 2 && yolo.rows === 3 && yolo.stored === 'workspace+never' && yolo.note.indexOf('已新建设定') >= 0, yolo);
+    yolo.gate === 'allow' && yolo.cards === 0 && yolo.rows === 3 && yolo.stored === 'workspace+never' && yolo.note.indexOf('已新建设定') >= 0, yolo);
 
   /* ---------- ⑦ 认不出的裸 JSON ⇒ 回头纠正一次（不糊到创作者脸上）---------- */
   const callsBefore = await calls();
@@ -219,7 +222,7 @@ async function main() {
     last: await lastBubble(),
   };
   check('★12 认不出的裸 JSON：回头纠正一次，不冒卡片、不落盘、也不把 JSON 当回答画出来',
-    unknown.calls === callsBefore && unknown.cards === 2 && unknown.rows === 3 && unknown.dumped === false &&
+    unknown.calls === callsBefore && unknown.cards === 0 && unknown.rows === 3 && unknown.dumped === false &&
     unknown.seen.indexOf('【格式提醒】') >= 0 && unknown.last.indexOf('我在。') >= 0,
     unknown);
 
@@ -229,20 +232,24 @@ async function main() {
   await ask('把银发少女的发色改成墨黑。');
   const keyed = await props();
   check('★15 ⭐「工具名当键」的形状也认下来了（这次真的出卡片而不是一坨 JSON）',
-    keyed.length === 3 && keyed[2].h.indexOf('改字段：银发少女 · 发色') >= 0 && (await rows()) === 3,
-    { cards: keyed.length, card: keyed[2], note: await noteText() });
+    keyed.length === 1 && keyed[0].h.indexOf('改字段：银发少女 · 发色') >= 0 && (await rows()) === 3,
+    { cards: keyed.length, card: keyed[0], note: await noteText() });
 
+  /* 点它：`data-prop-ok="2"` 是 **cards 里的原下标**（前面两张已处理过、DOM 里已经没有了，
+     但下标不许重排 —— 这正是 ★16 顺带守的那条）。 */
   await ev(`document.querySelector('#lk-agent-msgs [data-prop-ok="2"]').click(); true`);
   await sleep(700);
-  const keyedDone = await props();
+  const keyedGone = await props();
   await setMock(['{"tool":"read_entity","args":{"name":"银发少女"}}', '好，我记住了。']);
   await ask('再看一眼她的发色。');
   const afterApply = {
-    note: keyedDone[2].note,
-    tool: await ev(`(function () { const t = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__tool')]; return t.length ? t[t.length - 1].textContent : ''; })()`),
+    cardsAfterApply: keyedGone.length,
+    /* ⭐ 用户 2026-10-10 报的那条：**AI 下一条回答来了之后**，处理过的卡片不许再被端上来 */
+    cardsAfterNext: (await props()).length,
+    tool: await toolText(),
   };
-  check('★16 应用之后字段真的变了（再读一次：发色=墨黑）',
-    keyedDone[2].settled === true && afterApply.note.indexOf('已应用') >= 0 && afterApply.tool.indexOf('发色=墨黑') >= 0,
+  check('★16 应用之后字段真的变了（再读一次：发色=墨黑）；⭐ 卡片当场退场，下一条回答来了也不再端上来（用户 2026-10-10：「确认窗口在确认后不会消失，会随着AI的下一条回答出现」）',
+    keyedGone.length === 0 && afterApply.cardsAfterNext === 0 && afterApply.tool.indexOf('发色=墨黑') >= 0,
     afterApply);
 
   /* ---------- ⑨ 参数写成裸值（{"search":"银发"}）也要认 ---------- */
@@ -268,7 +275,7 @@ async function main() {
   };
   check('★18 ⭐纠正一轮之后模型照办 ⇒ 只读动作照常跑起来（用户的场景本该这样自愈）',
     rescued.calls === c18 + 1 && rescued.lastCall.indexOf('list_nodes') >= 0 &&
-    rescued.cards === 3 && rescued.rows === 3 && rescued.last.indexOf('这条时间线我看过了') >= 0,
+    rescued.cards === 0 && rescued.rows === 3 && rescued.last.indexOf('这条时间线我看过了') >= 0,
     rescued);
 
   /* ---------- ⑪ 前面带正文的 JSON ⇒ 还是当聊天 ---------- */
@@ -281,7 +288,7 @@ async function main() {
     cards: (await props()).length, rows: await rows(), last: await lastBubble(),
   };
   check('★13 前面带散文的 JSON ⇒ 当聊天（免得举例被误当调用）',
-    prose.calls === c13 && prose.cards === 3 && prose.rows === 3 && prose.last.indexOf('你可以这样写') >= 0, prose);
+    prose.calls === c13 && prose.cards === 0 && prose.rows === 3 && prose.last.indexOf('你可以这样写') >= 0, prose);
 
   const errs = await ev(`window.__errs`);
   check('★14 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
