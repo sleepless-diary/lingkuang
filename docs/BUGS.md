@@ -15,6 +15,23 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第七十轮（2026-10-10）· 「工具打出来了但是无法调用，卡住了吗」＝ 一次吐一串动作解析不了；「非正文内容无法折叠」＝ 长回执是块死 `<div>`
+
+**用户原话（两条）**：「**有时候非正文内容无法折叠**」；「**有时候工具打出来了但是无法调用卡住了吗**」（附了一张真实会话截图：助手先报 `用到动作：read_file`，最后紧跟着 **4 个 JSON 连写**）。
+
+### ① 一次吐一串动作 = 一个都没跑（看起来就是卡住）
+- **真因**：`src/ui/agent-tools.ts` 的 `parseToolCall(raw)` 只认**一个** JSON 对象 —— 先 `JSON.parse(text)`，失败再 `JSON.parse(text.slice(0, lastIndexOf('}') + 1))`。模型把 4 个调用**连写**在一段回复里（中间连换行都没有）⇒ 两条路都抛错 ⇒ `parseToolCall` 返回 null；`looksLikeToolJson()`（要求整段能 `JSON.parse` 成一个对象）也是 false ⇒ 走进聊天那一支：**整坨 JSON 被当普通回答画到创作者脸上、一个动作都没执行**，这一轮就此结束 —— 他看到的正是"打出来了但不执行、卡住了"。旧构建复现（A/B）：`{"calls":0,"receipts":0,"last":"{\"tool\":\"list_files\",\"args\":{}}{\"tool\":\"list_nodes\",\"args\":{}}","dumped":1}`。
+- **修法**：新增 `parseToolCalls(raw): ToolCall[]`，内部 `splitJsonSpans(text)` 做**字符串感知**的大括号配平切段（参数里带 `{`/`}` —— `write_file` 的正文、`set_field` 的值 —— 按字符数大括号会当场切错）；分隔符认 空白 / 逗号 / 分号；**夹了散文就整段不认**（保持"宽进严出"）。老路仍是第一条：整段能 parse 成一个对象就走单调用（含"对象后面还挂着一句话"那档容错）⇒ ★13「前面带散文的 JSON 当聊天」的行为一分没变。`parseToolCall()` 收敛成 `parseToolCalls(raw)[0] ?? null`；`looksLikeToolJson()` 同步认一串（一串全认不出 ⇒ 仍走"回头纠正一次"）。
+- **执行**：`src/ui/agent.ts` 的 `runTurn()` 改 `const calls = parseToolCalls(r.text)`，一轮里按顺序落地 —— 读动作**全跑完**（结果逐条喂回下一轮）；**写动作第一张就收手**（等创作者点「应用」，后面几个留给下一轮）；**聊天模式仍然只做一个**（多做的那几个不丢，底部提示"还留着 N 个，切 Agent 模式我能连着做"）。「用到动作」那一行改由 `callLabelOf(m)` 生成（同名合并 `list_files ×3`、异名 ` + ` 相连）—— 只画第一个会让人以为只跑了一个；助手浮层的 `msgHtml()` 与 AI 页的 `agentCallRow()` 共用同一份。
+- **守卫**：`tools/e2e/agent-tools.cjs` 新增 **★19**（一次吐 `list_files` + `list_nodes` 两个连写 JSON ⇒ `receipts === 2`、两个 `【动作结果】`都进了 `__lkSeen` 末条、**裸 JSON 气泡增量 === 0**、卡片 0）。⚠️ 首跑假红：判"裸 JSON 有没有被画出来"最初扫**全部** AI 气泡，把 ★13 那条**故意**当聊天画的 JSON 例子也算进去了 ⇒ 改成判**增量**。
+
+### ② 非正文内容无法折叠 = 回执 / 卡片详情是死 `<div>`
+- **真因**：`.lk-agent__tool`（`src/ui/agent.ts` 的 `msgHtml()`）是 `<div>` + `<pre>`，多长都只能干看着它把整段对话顶走 —— 全项目只有「思考」块（`thinkBlockHtml()` 的 `details.lk-think`）有折叠。
+- **修法**：`FOLD_AT = 320` 字以上折起来：回执 → `<details class="lk-agent__tool"><summary>read_file · 434 字（点开看）</summary><pre>…</pre></details>`；提议卡片详情（`write_file` 的正文动辄几千字）同样处理，**两态都保留 `.lk-agent__prop-d` 这个类**（`agent-batch.cjs` / `agent-fs.cjs` 按它读文本）。**短的照旧原样摊开**（DOM 与从前一模一样 ⇒ 既有断言零风险）。AI 页主会话的回执（`src/ui/ai-workbench.ts` 的 `[data-k="receipt"]`）同一判据、同一件事；`src/style.css` 补 `details.lk-agent__tool { flex: 0 0 auto; }`（同 `.lk-think` 那次"弹性列里被压扁"的坑）+ ▸/▾ 标记 + `cursor: pointer`。
+- **守卫**：新增 **★20**（套件自己往 vault 写一个 434 字的文件再 `read_file` 它 ⇒ 最后一个回执是 `DETAILS`、`open === false`、summary 含「字（点开看）」、正文 >320 字，**而第一个短回执仍是 `DIV`**）与 **★21**（点 summary ⇒ `open === true`、正文逐字在内、**而且真的变高了** —— 折叠要真的省屏幕地方，不只是 DOM 上多个 `open`）。
+- **A/B**：`agent-tools.cjs` 19 → 22 项。旧构建 **19/22**（★19 读到 `receipts:0` / `dumped:1`、★20 读到 `tag:"DIV"`、★21 没 summary 可点）、新构建 **22/22**。⚠️ ★21 首版在旧构建上是**硬崩**（`TypeError: Cannot read properties of null (reading 'click')` ⇒ 整套 exit 2、后面的星一个都没跑）⇒ 改成先探 summary 在不在、优雅判假（套件"旧构建要能跑完并逐条报红"这条纪律）。
+- **邻居**（各自一份干净起点）：`agent-mode` 12/12、`agent-main-session` 14/14（需 `seed-agent-main-session.cjs`）、`agent-fs` 22/22、`agent-panel` 21/21（需 `seed-agent-chat.cjs`）、`agent-web` 10/10；`agent-stream` 首跑 12/14（★7/★8 思考落定那两条读到 `live:true`）⇒ **复跑 14/14、旧构建同起点也 14/14** ⇒ 是本机隐藏窗口定时器节流的老抖动（mock 9 片 × 260ms ≈ 2.34s，套件只等 2.6s，余量太薄），与本轮无关。`tsc --noEmit` exit 0、`npm run build` 绿。
+
 ## 第六十九轮（2026-10-10）· 「确认窗口在确认后不会消失，会随着AI的下一条回答出现」＝ 处理过的提议卡片被反复重画
 
 ### 一、真因（一行代码，不是渲染坏了）

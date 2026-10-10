@@ -214,35 +214,104 @@ export function normalizeCall(obj: unknown): ToolCall | null {
   return null;
 }
 
-/** 从模型回复里抠出工具调用；不是调用就返回 null（当普通聊天处理） */
-export function parseToolCall(raw: string): ToolCall | null {
-  const text = String(raw ?? '').replace(/```[a-zA-Z]*/g, '').trim();
-  /* 整段就是一个 JSON 才认 —— 免得回答里提到例子被误当成调用 */
-  if (!text.startsWith('{')) return null;
-  const end = text.lastIndexOf('}');
-  if (end < 0) return null;
-  let obj: unknown;
-  try {
-    obj = JSON.parse(text);
-  } catch {
-    try {
-      obj = JSON.parse(text.slice(0, end + 1)); /* 后面还挂着一句话，切到最后一个 } 再试 */
-    } catch {
-      return null;
+/** 把一段「连在一起的多个 JSON 对象」切成一个个对象文本；夹了散文就返回 null。
+ *  ⚠️ 必须**字符串感知**地数大括号：参数里带 `{` / `}`（`write_file` 的正文、`set_field` 的值）
+ *     时，按字符数大括号会当场切错。 */
+function splitJsonSpans(text: string): string[] | null {
+  const spans: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    while (i < text.length && /[\s,;]/.test(text[i])) i++; /* 分隔符：换行 / 逗号 / 分号 / 空格 */
+    if (i >= text.length) break;
+    if (text[i] !== '{') return null; /* 夹了散文 ⇒ 不当动作看 */
+    const start = i;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (; i < text.length; i++) {
+      const ch = text[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) { i++; break; } }
     }
+    if (depth !== 0) return null; /* 括号没配平 */
+    spans.push(text.slice(start, i));
   }
-  return normalizeCall(obj);
+  return spans.length ? spans : null;
 }
 
-/** 整条回复就是一个 JSON 对象、但没能映射到任何一个动作 —— 多半是格式写歪了 */
+/** 从模型回复里抠出**全部**工具调用；不是调用就返回空数组（当普通聊天处理）。
+ *
+ *  ⭐ 用户 2026-10-10 实测报的这个坑：「有时候工具打出来了但是无法调用，卡住了吗」——
+ *  模型把 **4 个 JSON 连写**在一段回复里（中间连换行都没有），老解析器 `JSON.parse` 整段直接抛错
+ *  ⇒ `parseToolCall` 与 `looksLikeToolJson` 双双 false ⇒ 整坨 JSON 被当聊天原文画到创作者脸上、
+ *  **一个动作都没跑**，这一轮就此结束（看起来就是"卡住了"）。现在这种连写按顺序全认。 */
+export function parseToolCalls(raw: string): ToolCall[] {
+  const text = String(raw ?? '').replace(/```[a-zA-Z]*/g, '').trim();
+  /* 整段就是一个 JSON 才认 —— 免得回答里提到例子被误当成调用 */
+  if (!text.startsWith('{')) return [];
+  let obj: unknown;
+  let parsed = false;
+  try {
+    obj = JSON.parse(text);
+    parsed = true;
+  } catch {
+    const end = text.lastIndexOf('}');
+    if (end >= 0) {
+      try {
+        obj = JSON.parse(text.slice(0, end + 1)); /* 后面还挂着一句话，切到最后一个 } 再试 */
+        parsed = true;
+      } catch { /* 落到下面「一串」那条路 */ }
+    }
+  }
+  if (parsed) {
+    const one = normalizeCall(obj);
+    return one ? [one] : [];
+  }
+  const spans = splitJsonSpans(text);
+  if (!spans) return [];
+  const out: ToolCall[] = [];
+  for (const s of spans) {
+    let o: unknown;
+    try {
+      o = JSON.parse(s);
+    } catch {
+      return [];
+    }
+    const call = normalizeCall(o);
+    if (!call) return []; /* 有一段认不出 ⇒ 整段当聊天（宁可不动，也不猜着执行） */
+    out.push(call);
+  }
+  return out;
+}
+
+/** 单个调用（渲染层画「用到动作」那一行、只读判定都用它） */
+export function parseToolCall(raw: string): ToolCall | null {
+  return parseToolCalls(raw)[0] ?? null;
+}
+
+/** 整条回复是一个（或**一串**）JSON 对象、但没能映射到动作 —— 多半是格式写歪了 */
 export function looksLikeToolJson(raw: string): boolean {
   const text = String(raw ?? '').replace(/```[a-zA-Z]*/g, '').trim();
   if (!text.startsWith('{') || !text.endsWith('}')) return false;
   try {
-    return isObj(JSON.parse(text));
-  } catch {
-    return false;
-  }
+    if (isObj(JSON.parse(text))) return true;
+  } catch { /* 可能是一串对象 */ }
+  const spans = splitJsonSpans(text);
+  if (!spans) return false;
+  return spans.every((s) => {
+    try {
+      return isObj(JSON.parse(s));
+    } catch {
+      return false;
+    }
+  });
 }
 
 /* ---------------- 小工具 ---------------- */

@@ -1307,6 +1307,21 @@ body {
   margin: 0; white-space: pre-wrap; word-break: break-word;
   font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-2);
 }
+/* 非正文块的折叠形态（长回执 / 长卡片详情）—— 与「思考」块同一套观感（▸ / ▾ 自己画）。
+   ⚠️ 用户 2026-10-10：「**有时候非正文内容无法折叠**」—— 这两块原来都是死 `<div>`+`<pre>`，
+   读回来的文件、搜出来的命中一多，只能干看着它把整段对话顶走。短的回执仍是原来的 div。 */
+details.lk-agent__tool { flex: 0 0 auto; }   /* 弹性列里不许被压扁（同 `.lk-think` 那次的坑） */
+details.lk-agent__tool > .lk-agent__tool-h,
+details.lk-agent__prop-d > summary { cursor: pointer; user-select: none; list-style: none; }
+details.lk-agent__tool > .lk-agent__tool-h::-webkit-details-marker,
+details.lk-agent__prop-d > summary::-webkit-details-marker { display: none; }
+details.lk-agent__tool > .lk-agent__tool-h::before,
+details.lk-agent__prop-d > summary::before {
+  content: '▸'; display: inline-block; width: 12px; color: var(--muted);
+}
+details.lk-agent__tool[open] > .lk-agent__tool-h::before,
+details.lk-agent__prop-d[open] > summary::before { content: '▾'; }
+.lk-agent__prop-d pre { margin: 4px 0 0; font-family: inherit; white-space: pre-wrap; word-break: break-word; }
 .lk-agent__prop {
   display: flex; flex-direction: column; gap: 6px;
   padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-md);

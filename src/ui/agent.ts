@@ -29,7 +29,7 @@ import {
 } from './agent-memory';
 import { MODE_HINT, MODE_LABEL, MODES, modePrompt, type AgentMode } from './agent-mode';
 import { ASKS, ASK_LABEL, SCOPES, SCOPE_LABEL, gateWrite, getAgentAsk, getAgentScope, permHint, permName, permissionPrompt, setAgentAsk, setAgentScope } from './agent-perm';
-import { isWriteTool, looksLikeToolJson, parseToolCall, planWrite, runReadTool, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
+import { isWriteTool, looksLikeToolJson, parseToolCalls, planWrite, runReadTool, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
 import { fsAddRoot, fsAvailable, fsRemoveRoot, fsRootsCached, fsSetRootWrite, refreshFsRoots, type FsRoot } from './agent-fs';
 import { motionReduced } from './motion';
 import { isImeEnter } from './keys';
@@ -246,26 +246,56 @@ function persist(): void {
 /* ── 渲染 ─────────────────────────────────────────────────────────── */
 /* 动作的调用与结果都是**对话的一部分**（要喂回模型），但显示上不能混成聊天气泡：
    调用显示成一行「用到动作」，结果显示成一小块说明。 */
+/** 非正文块超过这么多字就折起来（工具回执 / 卡片详情）—— 短的原样摊开，长的折成一行。
+ *  用户 2026-10-10：「**有时候非正文内容无法折叠**」（读回来的文件、搜出来的命中一多就顶满半屏）。 */
+export const FOLD_AT = 320;
+
 export const RESULT_RE = /^【动作结果：([^】]+)】/;
 
 function isCallMsg(m: ChatMsg): boolean {
   /* ⭐ 两个模式都把动作消息画成「用到动作」那一行（2026-09-26 用户改口：聊天模式也留内部工具）。
      旧版按 mode 短路是片 4 的规矩（那时 chat 零工具）；现在 chat 也会真执行动作，
      再短路就会把**已经执行过的**动作画成一段 JSON 文字 —— 创作者以为没发生，其实已经改完了。 */
-  return m.role === 'assistant' && parseToolCall(m.content) !== null;
+  return callLabelOf(m) !== null;
+}
+
+/** 这条 AI 消息里用到的动作名（按出现顺序；连着同名合成「list_files ×3」）；不是动作消息 ⇒ null。
+ *  ⭐ 一次回复里可能不止一个动作（`parseToolCalls` 认连写的 JSON）—— 只画第一个会让创作者
+ *  以为"只跑了一个"，第四个就在眼前被漏掉。 */
+function callLabelOf(m: ChatMsg): string | null {
+  if (m.role !== 'assistant') return null;
+  const cs = parseToolCalls(m.content);
+  if (!cs.length) return null;
+  const names: string[] = [];
+  const counts: number[] = [];
+  for (const c of cs) {
+    const i = names.indexOf(c.tool);
+    if (i < 0) { names.push(c.tool); counts.push(1); } else counts[i]++;
+  }
+  return names.map((n, i) => (counts[i] > 1 ? `${n} ×${counts[i]}` : n)).join(' + ');
 }
 
 function msgHtml(m: ChatMsg): string {
   if (isCallMsg(m)) {
-    const call = parseToolCall(m.content);
-    return `<div class="lk-agent__call">用到动作：${escapeHtml(call?.tool ?? '?')}</div>`;
+    return `<div class="lk-agent__call">用到动作：${escapeHtml(callLabelOf(m) ?? '?')}</div>`;
   }
   if (m.role === 'user') {
     const mm = RESULT_RE.exec(m.content);
     if (mm) {
+      const body = m.content.slice(mm[0].length).trim();
+      /* ⭐ 长回执折起来（用户 2026-10-10：「有时候非正文内容无法折叠」）：读回来的文件、搜出来的命中
+         一动就是几百上千字，原来是一块死 `<div>`+`<pre>`，只能干看着它把对话顶走。
+         短的照旧原样摊开（不做无谓的一层点击）—— DOM 形状与从前一模一样。 */
+      if (body.length <= FOLD_AT) {
+        return (
+          `<div class="lk-agent__tool"><div class="lk-agent__tool-h">${escapeHtml(mm[1])}</div>` +
+          `<pre>${escapeHtml(body)}</pre></div>`
+        );
+      }
       return (
-        `<div class="lk-agent__tool"><div class="lk-agent__tool-h">${escapeHtml(mm[1])}</div>` +
-        `<pre>${escapeHtml(m.content.slice(mm[0].length).trim())}</pre></div>`
+        `<details class="lk-agent__tool">` +
+        `<summary class="lk-agent__tool-h">${escapeHtml(mm[1])} · ${body.length} 字（点开看）</summary>` +
+        `<pre>${escapeHtml(body)}</pre></details>`
       );
     }
   }
@@ -280,6 +310,16 @@ function msgHtml(m: ChatMsg): string {
 }
 
 /* 提议卡片：写入动作不直接落盘，先在这里等创作者点头（`应用` / `忽略`） */
+/** 卡片详情：长了也折起来（`write_file` 的正文动辄几千字）—— 短的照旧原样。
+ *  ⚠️ 两态都是 `.lk-agent__prop-d`（`agent-batch.cjs` / `agent-fs.cjs` 按这个类读文本）。 */
+function detailHtml(detail: string): string {
+  if (detail.length <= FOLD_AT) return `<div class="lk-agent__prop-d">${escapeHtml(detail)}</div>`;
+  return (
+    `<details class="lk-agent__prop-d"><summary>详情 · ${detail.length} 字（点开看）</summary>` +
+    `<pre>${escapeHtml(detail)}</pre></details>`
+  );
+}
+
 function cardHtml(i: number, c: { p: Proposal; done?: string; ignored?: boolean }): string {
   const settled = c.done || c.ignored;
   const acts = settled
@@ -296,7 +336,7 @@ function cardHtml(i: number, c: { p: Proposal; done?: string; ignored?: boolean 
   return (
     `<div class="lk-agent__prop${settled ? ' is-settled' : ''}" data-prop="${i}">` +
       `<div class="lk-agent__prop-h">${escapeHtml(c.p.title)}</div>` +
-      `<div class="lk-agent__prop-d">${escapeHtml(c.p.detail)}</div>` +
+      detailHtml(c.p.detail) +
       acts +
       state +
     `</div>`
@@ -324,10 +364,10 @@ export function cardsHtml(): string {
  *  当成一段普通文字糊到创作者脸上，而动作其实已经执行了）。返回 null = 这条不是动作消息。 */
 export function agentCallRow(m: ChatMsg): string | null {
   if (!isCallMsg(m)) return null;
-  const call = parseToolCall(m.content);
+  const label = callLabelOf(m) ?? '?';
   return '<div data-k="call" style="max-width:78%;font-size:12px;color:var(--accent);background:var(--surface-2);' +
     'border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:5px 9px;">' +
-    '用到动作：' + escapeHtml(call?.tool ?? '?') + '</div>';
+    '用到动作：' + escapeHtml(label) + '</div>';
 }
 
 function renderMsgs(): void {
@@ -711,8 +751,8 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
       /* ⭐ 两个模式**都解析动作**（2026-09-26 用户改口：聊天模式也有灵框内部的动作）；
          差别只在能连着走几步 —— `roundMax` 已经按模式定好了。别再说"聊天模式不解析"，
          那会让模型吐的动作 JSON 被当聊天画到脸上、什么也不发生。 */
-      const call = parseToolCall(r.text);
-      if (!call && looksLikeToolJson(r.text)) {
+      const calls = parseToolCalls(r.text);
+      if (!calls.length && looksLikeToolJson(r.text)) {
         /* 想调动作、格式却写歪了（用户 2026-09-15 实测：`{"set_field":{…}}`）。
            纠正一次（进历史、不进气泡），还不行就不再把这坨 JSON 糊到创作者脸上。 */
         if (!fixed && round < roundMax) {
@@ -724,7 +764,7 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
         host.note('它两次都没按动作格式回话，这次先算了（可以再问一次，或换个模型）', true);
         break;
       }
-      if (!call) {
+      if (!calls.length) {
         push({ role: 'assistant', content: r.text || '（模型返回了空内容）', reasoning: r.reasoning });
         /* 被截断要如实说 —— 用户 2026-09-26 报「输出被截断了」时界面上什么都没有 */
         if (r.truncated) host.note('回复被模型的输出上限截断了（' + (r.model || '模型') + '）：说「接着说」可以续', true);
@@ -738,13 +778,31 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
         break;
       }
       push({ role: 'assistant', content: r.text, reasoning: r.reasoning });
-      if (isWriteTool(call.tool)) {
-        await handleWrite(call, host);
-        break;
+      /* ⭐ 一轮里可能不止一个动作（用户 2026-10-10 实测：模型把 **4 个 JSON 连写**在一段里，
+         中间连分隔符都没有 ⇒ 老解析器 `JSON.parse` 整段直接抛错 ⇒ 整坨被当聊天画到脸上、
+         **一个都没跑** —— 他看到的正是"工具打出来了但无法调用、卡住了"）。
+         现在解析器认这种连写，这里按顺序落地：读动作跑完；写动作**第一张就收手**等创作者点头。 */
+      let stop = false;
+      for (let k = 0; k < calls.length; k++) {
+        const c = calls[k];
+        if (isWriteTool(c.tool)) {
+          await handleWrite(c, host);
+          if (k < calls.length - 1) host.note('它一次提了好几个写入，这轮先按第一个走 —— 落定后再提下一个');
+          stop = true;
+          break;
+        }
+        const out = await runReadTool(c, host.store);
+        push({ role: 'user', content: `【动作结果：${c.tool}】\n${out}` });
+        /* 聊天模式一次只做一个动作（片 4 的规矩）—— 多做的那几个不丢，说清楚让创作者自己定 */
+        if (mode !== 'agent' && k < calls.length - 1) {
+          host.note(`一次提问只做一个动作（这次做了 1 个，还留着 ${calls.length - 1} 个）—— 切到 Agent 模式我能连着做`, true);
+          stop = true;
+          break;
+        }
       }
-      const out = await runReadTool(call, host.store);
-      push({ role: 'user', content: `【动作结果：${call.tool}】\n${out}` });
       host.rerender();
+      /* 写动作出卡片、聊天模式额度用完 ⇒ 这一轮就到这儿（与原来 `handleWrite` 之后 break 同义） */
+      if (stop) break;
       if (round === roundMax) {
         host.note(mode === 'agent' ? '动作调了几轮了，先停一下' : '聊天模式一次只做一个动作 —— 要我接着做就再说一声', true);
       }
