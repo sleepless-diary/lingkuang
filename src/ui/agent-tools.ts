@@ -340,21 +340,43 @@ function splitJsonSpansLoose(text: string): string[] | null {
   return sawProse ? null : spans; /* 单个动作 + 前置散文 ⇒ 仍然当聊天（★13） */
 }
 
-/** 一串对象文本 ⇒ 工具调用；**有一段认不出就整段作废**（宁可不动，也不猜着执行） */
-function callsFromSpans(spans: string[]): ToolCall[] {
-  const out: ToolCall[] = [];
+/** 模型偶尔会把键名**写重**一遍：真机 `#119` 的第 24 行就是
+ *  `{"tool":"tool":"read_file","args":{…}}`（2026-10-15 这一次「又被当成正文了」的元凶）。
+ *  能就地修的语法坏法先修一版，再交给 `JSON.parse`。 */
+function repairJsonText(s: string): string {
+  return s
+    /* `"tool":"tool":` / `"args":"args":` / `"path":"path":` —— 键名与它的值重了一遍 */
+    .replace(/"([A-Za-z_][A-Za-z0-9_]*)"\s*:\s*"\1"\s*:/g, '"$1":')
+    .trim();
+}
+
+/** 一串对象文本 ⇒ 工具调用。
+ *
+ *  ⭐ 用户 2026-10-15（原话还是「工具调用又被当成正文了」）：真机那一批是 **37 行** `read_file`，
+ *  其中**只有第 24 行**是坏的（`{"tool":"tool":"read_file",…}`）—— 老规矩「有一段认不出就
+ *  整段作废」把 **36 个好好的动作全扔了**，整坨 JSON 又被当正文画到创作者脸上。
+ *  ⇒ 现在的规矩：**坏的挑出来通报、好的照跑**，一行手滑绝不拖死一整批。
+ *  安全边界没动：认不出的那行只会被**跳过**，永远不会被猜着执行。 */
+function callsFromSpans(spans: string[]): { calls: ToolCall[]; bad: string[] } {
+  const calls: ToolCall[] = [];
+  const bad: string[] = [];
   for (const s of spans) {
     let o: unknown;
     try {
       o = JSON.parse(s);
     } catch {
-      return [];
+      try {
+        o = JSON.parse(repairJsonText(s));
+      } catch {
+        bad.push(s);
+        continue;
+      }
     }
     const call = normalizeCall(o);
-    if (!call) return [];
-    out.push(call);
+    if (!call) { bad.push(s); continue; }
+    calls.push(call);
   }
-  return out;
+  return { calls, bad };
 }
 
 /** 从模型回复里抠出**全部**工具调用；不是调用就返回空数组（当普通聊天处理）。
@@ -363,7 +385,15 @@ function callsFromSpans(spans: string[]): ToolCall[] {
  *  模型把 **4 个 JSON 连写**在一段回复里（中间连换行都没有），老解析器 `JSON.parse` 整段直接抛错
  *  ⇒ `parseToolCall` 与 `looksLikeToolJson` 双双 false ⇒ 整坨 JSON 被当聊天原文画到创作者脸上、
  *  **一个动作都没跑**，这一轮就此结束（看起来就是"卡住了"）。现在这种连写按顺序全认。 */
-export function parseToolCalls(raw: string): ToolCall[] {
+export interface ToolBatch {
+  /** 认下来、该跑的（顺序即模型写的顺序） */
+  calls: ToolCall[];
+  /** 同一批里**认不出**的原文（坏了 / 工具名不认识）—— 上层拿它通报一声，别静默吞掉 */
+  bad: string[];
+}
+
+export function parseToolBatch(raw: string): ToolBatch {
+  const none: ToolBatch = { calls: [], bad: [] };
   /* ⭐ 厂商噪音先剥（用户 2026-10-12：「不能兼容一次多个动作执行吗」）—— 剥完可能正好露出一条
      正经 JSON；不剥的话「警告 + 1 个 JSON」既不以 `{` 开头、也不满足"散文 + ≥2 个对象"，
      那个动作会被静默吃掉（他看到的正是"提示一次只能一个动作、然后什么都没发生"）。 */
@@ -371,13 +401,13 @@ export function parseToolCalls(raw: string): ToolCall[] {
   /* ① ⭐ DSML（DeepSeek 那一族的原生标记）先认一遍 —— 用户 2026-10-11：「又被当正文发出来了」 */
   if (looksLikeDsml(text)) {
     const dsml = parseDsmlCalls(text);
-    if (dsml.length) return dsml;
+    if (dsml.length) return { calls: dsml, bad: [] };
   }
   /* ② ⭐「先说一句话、再一行一个动作」（用户 2026-10-11：「工具也被吃了」）——
      不是以 `{` 开头的**不代表不是动作**：那一批 8 个 list_files 就是这么被吃掉的。 */
   if (!text.startsWith('{')) {
     const batch = splitJsonSpansLoose(text);
-    return batch ? callsFromSpans(batch) : [];
+    return batch ? callsFromSpans(batch) : none;
   }
   let obj: unknown;
   let parsed = false;
@@ -395,12 +425,16 @@ export function parseToolCalls(raw: string): ToolCall[] {
   }
   if (parsed) {
     const one = normalizeCall(obj);
-    return one ? [one] : [];
+    /* 整段就是一个对象、却认不出工具名 ⇒ 不报 `bad`（那条走「格式提醒」纠正一次的老路） */
+    return one ? { calls: [one], bad: [] } : none;
   }
   /* ⭐ 尾巴上挂着散文的那一批（用户 2026-10-13）走这条 —— `splitJsonSpans` 遇散文一律 null */
   const spans = splitJsonSpans(text) ?? splitJsonSpansLoose(text);
-  if (!spans) return [];
-  return callsFromSpans(spans);
+  return spans ? callsFromSpans(spans) : none;
+}
+
+export function parseToolCalls(raw: string): ToolCall[] {
+  return parseToolBatch(raw).calls;
 }
 
 /** 单个调用（渲染层画「用到动作」那一行、只读判定都用它） */

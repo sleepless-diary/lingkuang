@@ -15,6 +15,48 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第八十四轮（2026-10-15）· 一批 37 个动作里有 1 行坏掉，不再拖死整批（+ `parseToolBatch` 通报）
+
+**用户原话**：「**工具调用又被当成正文了，有没有现成的轮子可以用啊**」。
+
+**真因（真机取证，非猜）**：`%APPDATA%\lingkuang\agent\sessions.json` 主会话最后一条 `#119`
+（2788 字 / 37 行）**37 行全是 JSON**（一行一个 `read_file` / `list_files`）—— 其中**只有第 24 行**是坏的：
+
+    {"tool":"tool":"read_file","args":{"path":"D:/Desktop/世界观资料整理/设定/第一世界/文化/语言.md"}}
+
+模型把键名**写重**了一遍（`"tool":"tool":`）。而 `src/ui/agent-tools.ts` 的 `callsFromSpans()`
+老规矩是「**有一段认不出就整段作废**」（`catch { return [] }`）⇒ **36 个好动作被那一行拖死**、
+`parseToolCalls()` 返空 ⇒ `runTurn()` 里 `!calls.length` ⇒ 整坨 37 行 JSON 被当聊天正文画到创作者脸上、
+一个动作都没跑（他看到的正是第 N 次"工具调用又被当成正文"）。
+
+**取证方法（值得复用）**：把**真解析器**用 vite lib 模式打成 CJS，拿真机正文离线跑 ——
+项目根写一次性 `.mjs`：`import { build } from 'vite'` + `createRequire`，
+`build({ configFile:false, build:{ lib:{ entry:'src/ui/agent-tools.ts', formats:['cjs'], fileName:()=>'parser.cjs' }, target:'node18', minify:false } })`
+（vite 8.2.2 是 ESM-only，`require('vite')` 报 Cannot find module；`node_modules` 里也没有顶层 esbuild）。
+旧：`case-119 → calls=0`；新：`calls=37`。逐行 `JSON.parse` 一眼看出第 24 行是元凶。
+
+**修法**（`src/ui/agent-tools.ts` / `src/ui/agent.ts`）：
+① 新增 `repairJsonText()` —— 只修这种"键名与它的值重一遍"的写法
+（`/"([A-Za-z_]\w*)"\s*:\s*"\1"\s*:/g` → `"$1":`），修完仍走**严格** `JSON.parse`，修不好才算坏；
+② `callsFromSpans()` 改为返回 `{ calls, bad }`：**坏的挑出来、好的照跑**（取消旧的"整段作废"）——
+安全边界没动：认不出的那行只会被**跳过**，永远不会被猜着执行；
+③ 新增 `export function parseToolBatch(raw): { calls, bad }`，`parseToolCalls()` 收敛成 `parseToolBatch(raw).calls`；
+④ `runTurn()` 拿到 `bad` 就推一条
+`【动作结果：未执行】这一批里有 N 条我没认出来（原文）—— 其余 N 条照常做了。那几条要接着做，请重新写成一行一个纯 JSON。`
+（前缀沿用「【动作结果：」是故意的：`sentHistory()` 的 `isMachineMsg()` 靠它认机器消息，换前缀会被画成创作者自己的气泡）。
+
+**守卫**：`tools/e2e/agent-toolfold.cjs` 13 → **16 项**（★9 一批里只有一行坏了 ⇒ 其余照跑、键名写重的那行**就地修好也跑**；
+★9b 修不好的那行**跳过并通报**；★9c 坏行也没把整坨 JSON 顶进气泡）。**A/B 旧构建 13/16**
+（★9 `receipts:0`、★9b 没通报、★9c 气泡里就是那坨 JSON = 用户现象原样复现）**→ 新 16/16**。
+
+**附（回答用户"有没有现成的轮子"）**：这条路仍是**文本协议**（模型把动作写成文本、我们来解析）。
+现成轮子三类 —— ① **原生 function calling**（OpenAI 兼容线 `tools` + 响应 `tool_calls`，Ollama 线也支持；
+`src/ui/ai.ts` 的 `AiReply` 从第八十一轮起已经收 `toolCalls?: string[]` 的名字）＝真正的"结构化"轮子，
+代价是要改两条协议线 + `runTurn()` 的循环，且本地小模型的原生调用质量参差；
+② **JSON 修复小库**（`jsonrepair` / `partial-json` / `best-effort-json-parser`）＝只治"单个对象语法坏"，
+治不了"JSON 混在散文/回声里"（那部分一直是手写解析器在扛）；
+③ **继续硬化手写解析器**（本轮就是这一类）。当时决定：先用 ③ 止血，① 是否上马交给用户拍板。
+
 ## 第八十三轮（2026-10-14）· 「动作 — 中间一大段回声/散文 — 又是动作」也不许被当正文
 
 **用户原话**：「**还是被当成正文发出来了**」（贴回的真机会话原文 = 4 条 `list_files` JSON → 四条

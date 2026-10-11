@@ -279,8 +279,38 @@ async function main() {
       sample: r7.bubbleText.slice(-200),
     });
 
+  /* ---------- ⑦ ⭐ 真机第四次实测（用户 2026-10-15「工具调用又被当成正文了」）：
+     一批 37 行动作里**只有一行**是坏的（第 24 行写成 `{"tool":"tool":"read_file",…}`，键名重了
+     一遍）—— 老规矩「有一段认不出就整段作废」把 **36 个好动作全扔了**，整坨 JSON 又被当正文画到
+     脸上。现在的规矩：能修的（键名写重）就地修好照跑，修不好的**跳过并通报一声**。 */
+  const DUP = '{"tool":"tool":"read_file","args":{"path":' + JSON.stringify(files[1]) + '}}';
+  const BROKEN = '{"tool":"read_file","args":{"path":' + files[2] + '}}'; /* 值没引号 ⇒ 修不好 */
+  const text4 = [
+    JSON.stringify({ tool: 'read_file', args: { path: files[0] } }),
+    DUP,
+    BROKEN,
+    JSON.stringify({ tool: 'read_file', args: { path: files[2] } }),
+  ].join('\n');
+  await setMock([text4, '三份材料过了一遍。']);
+  const t9 = await toolCount();
+  await ask('把这几份连那行坏的也一起读。');
+  const r9 = {
+    receipts: (await toolCount()) - t9,
+    calls: await callTexts(),
+    bubbles: await jsonInBubbles(),
+    fed: await fed(),
+  };
+  /* 四条回执 = 三份真读到的材料（第 2 行是**修好**的那条）+ 一条「未执行」通报 */
+  check('★9 ⭐一批里只有一行坏了 ⇒ 其余照跑（键名写重的那行就地修好，也当成一个动作跑）',
+    r9.receipts === 4 && r9.calls.some((c) => c.indexOf('read_file ×3') >= 0),
+    { receipts: r9.receipts, calls: r9.calls });
+  check('★9b ⭐修不好的那行**跳过并通报**（既不静默吞掉，也不因此把整批丢掉）',
+    r9.fed.indexOf('未执行') >= 0 && r9.fed.indexOf('没认出来') >= 0 && r9.fed.indexOf(files[2]) >= 0,
+    { fed: r9.fed.slice(-300) });
+  check('★9c 坏行也没把整坨 JSON 顶进气泡', r9.bubbles.n === 0, r9.bubbles);
+
   const errs = await ev(`window.__errs`);
-  check('★8 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
+  check('★10 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 
   const pass = results.filter(Boolean).length;
   console.log(`==== ${pass}/${results.length} PASS ====`);

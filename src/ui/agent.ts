@@ -29,7 +29,7 @@ import {
 } from './agent-memory';
 import { AGENT_STEPS_HARD, DEFAULT_MODE, MODE_HINT, MODE_LABEL, MODES, STEP_OPTIONS, getAgentSteps, modePrompt, setAgentSteps, stepsLabel, type AgentMode } from './agent-mode';
 import { ASKS, ASK_LABEL, SCOPES, SCOPE_LABEL, gateWrite, getAgentAsk, getAgentScope, permHint, permName, permissionPrompt, setAgentAsk, setAgentScope } from './agent-perm';
-import { isWriteTool, looksLikeToolBatch, looksLikeToolJson, looksLikeToolMarkup, parseToolCalls, planWrite, runReadTool, toolProse, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
+import { isWriteTool, looksLikeToolBatch, looksLikeToolJson, looksLikeToolMarkup, parseToolBatch, parseToolCalls, planWrite, runReadTool, toolProse, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
 import { fsAddRoot, fsAvailable, fsRemoveRoot, fsRootsCached, fsSetRootWrite, refreshFsRoots, type FsRoot } from './agent-fs';
 import { motionReduced } from './motion';
 import { isImeEnter } from './keys';
@@ -1008,7 +1008,11 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
       /* ⭐ 两个模式**都解析动作**（2026-09-26 用户改口：聊天模式也有灵框内部的动作）；
          差别只在能连着走几步 —— `roundMax` 已经按模式定好了。别再说"聊天模式不解析"，
          那会让模型吐的动作 JSON 被当聊天画到脸上、什么也不发生。 */
-      const calls = parseToolCalls(r.text);
+      /* ⭐ 一批里可能**只有一行**是坏的（用户 2026-10-15：37 行动作里第 24 行写成
+         `{"tool":"tool":"read_file",…}`）——`parseToolBatch` 把坏的挑出来、好的照跑，
+         这里拿到 `bad` 就通报一声，别静默吞掉那几条。 */
+      const batch = parseToolBatch(r.text);
+      const calls = batch.calls;
       if (!calls.length && looksLikeToolJson(r.text)) {
         /* 想调动作、格式却写歪了（用户 2026-09-15 实测：`{"set_field":{…}}`）。
            纠正一次（进历史、不进气泡），还不行就不再把这坨 JSON 糊到创作者脸上。 */
@@ -1046,6 +1050,18 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
       }
       push({ role: 'assistant', content: r.text, reasoning: r.reasoning });
       reseatSupplements();
+      /* ⭐ 一批里认不出来的那几条**如实通报**（用户 2026-10-15 真机：37 行里第 24 行写成
+         `{"tool":"tool":"read_file",…}`）—— 只跳过那一条、其余照跑；不通报的话模型下一轮
+         不知道自己漏了一件，创作者也只会看到"它又不干活"。前缀用「【动作结果：」是故意的：
+         `sentHistory()` 的 `isMachineMsg()` 靠它认机器消息（换前缀会被画成创作者自己的气泡）。 */
+      if (batch.bad.length) {
+        const shown = batch.bad.map((s) => s.replace(/\s+/g, ' ').slice(0, 100)).join(' / ');
+        push({
+          role: 'user',
+          content: `【动作结果：未执行】这一批里有 ${batch.bad.length} 条我没认出来（${shown}）——`
+            + `其余 ${calls.length} 条照常做了。那几条要接着做，请重新写成一行一个纯 JSON。`,
+        });
+      }
       /* ⭐ 一轮里可能不止一个动作（用户 2026-10-10 实测：模型把 **4 个 JSON 连写**在一段里，
          中间连分隔符都没有 ⇒ 老解析器 `JSON.parse` 整段直接抛错 ⇒ 整坨被当聊天画到脸上、
          **一个都没跑** —— 他看到的正是"工具打出来了但无法调用、卡住了"）。
