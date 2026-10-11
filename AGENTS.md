@@ -8,11 +8,15 @@
 灵框 LingKuang：世界观创作工作台（Electron + Vite + TypeScript 模块化）。世界沙盘时间线 / 随机角色生成 / 词义联想图 / Markdown 编辑器 / AI 工作台。
 
 - 运行：`npm start`（= `vite build` + `electron .`）；开发 `npm run dev`（Vite）
-- **交付（2026-10-11 用户明确「以后不用打包了，只更新我这里和 github 就行」）**：每轮做完 =
-  文档/守卫齐了 → `git commit` → `git push origin master`（远端 `https://github.com/sleepless-diary/lingkuang.git`，
-  公开仓库）。**不要再主动跑 electron-builder 打包、不要再往桌面拷 .exe** —— 本机直接跑源码
-  （`npm start` / 已开着的实例关掉重开）就是最新版。打包脚本保留备用（见下），仅在用户当轮明确要成品时用。
-- 打包（备用，按需）：`npm run dist`（electron-builder，NSIS 安装版 + portable，输出 `dist/`；`dist/` 已 gitignore，不进仓库）
+- **交付（2026-10-11 用户明确）**：默认每轮做完 = 文档/守卫齐了 → `git commit` → `git push origin master`
+  （远端 `https://github.com/sleepless-diary/lingkuang.git`，公开仓库）+ 本机自己跑源码
+  （`npm start`，或把开着的实例关掉重开）就是最新版。
+  ⚠️ 用户当时那句「以后不用打包了，只更新我这里和 github 就行」指的是**"朋友现在没找我要，就不用打给他"**，
+  **不是"以后都不打包"** —— 别把打包能力当成废掉。
+- 打包（要成品时照旧，只是不必每轮都打）：`npm run dist`（electron-builder，NSIS 安装版 + portable，输出 `dist/`；
+  `dist/` 已 gitignore，不进仓库）→ 两份 `.exe` 可按需拷真桌面 `D:\Desktop\`。**打包前先抬 `package.json` 的 version**
+  （免得新老朋友分不清同名文件）；给朋友的交代见提交历史里的 3.0.x 那几轮（未签名 SmartScreen、别在本机装 installer、
+  包里不含用户数据/Key、词库 CC BY-NC-SA 勿商用）。
 - 数据：`%APPDATA%\lingkuang\`（不写项目目录；测试用 `LINGKUANG_TEST_DATA` 覆盖）
 - 语法/类型：TS 走 `tsc --noEmit`（strict + noUnusedLocals）；JS 走 `node --check`
 
