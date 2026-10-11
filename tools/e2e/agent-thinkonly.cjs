@@ -14,7 +14,9 @@
  *   ① 那段思考**一个字都不许进 AI 气泡**，但要在思考块里（折叠，翻得回来）；
  *   ② 助手要**自动催一次**（模型下一轮就正常了），催的话写进喂回去的消息里；
  *   ③ 「只想了没答」最多催一次，不许无限来回；
- *   ④ 模型走厂商原生 `tool_calls`（我们收不到那套）时，催的话换成「格式提醒」。
+ *   ④ 模型走厂商原生 `tool_calls`、但那条调用**认不出**（名字不认识 / 参数坏）时，催的话换成「格式提醒」。
+ *      ⚠️ 2026-10-15 起原生调用本身是**能收下就跑**的（`AiReply.calls` → `callsFromNative()`），
+ *      只有"用不上"的那些才走纠正那条路 —— 语义改动见 `docs/BUGS.md` 第八十五轮。
  *
  * 前置（同一 pwsh 调用里做，再重启实例）：
  *   $env:LINGKUANG_TEST_DATA=<root>\worldbuilding.json; $env:LINGKUANG_VAULT=<root>\vault
@@ -207,17 +209,21 @@ async function main() {
   check('★8 两轮的思考都没进气泡（D 那份也在思考块里）',
     b.inBubble.n === 0, b.inBubble);
 
-  /* ---------- ③ 厂商原生 tool_calls：动作丢了 ⇒ 催的话换成「格式提醒」 ---------- */
-  await setFix([{ reasoning: SENT_B, toolName: 'read_file' }, { content: ANSWER_B }]);
+  /* ---------- ③ 厂商原生 tool_calls、但那条调用**认不出**（名字不认识）⇒ 催的话换成「格式提醒」 ----------
+     ⚠️ 2026-10-15（第八十五轮，用户选定「上原生 function calling」）改了语义：
+     原生调用**本身能收下就跑**（`AiReply.calls` → `callsFromNative()`），所以这里用一个**不认识的**
+     工具名，测的才是"用不上的原生调用不许静默吞、要纠正一次"这条老规矩。 */
+  await setFix([{ reasoning: SENT_B, toolName: 'fly_to_moon' }, { content: ANSWER_B }]);
   await ask('把三个角色文件都读了。');
   const c = {
     reqs: await reqs(),
-    lastFed: (await lastFed()).slice(0, 140),
+    lastFed: await lastFed(),
     inBubble: await sentInBubbles('思考哨兵-B'),
     last: (await lastBubble()).slice(0, 80),
   };
-  check('★9 ⭐模型走厂商原生 tool_calls（我们收不到）时，催的话是「格式提醒」（叫它写成一行一个 JSON）',
-    c.reqs === 2 && c.lastFed.indexOf('格式提醒') >= 0, { reqs: c.reqs, lastFed: c.lastFed });
+  check('★9 ⭐厂商原生 tool_calls **认不出**时，催的话是「格式提醒」（叫它写成一行一个 JSON）',
+    c.reqs === 2 && c.lastFed.indexOf('格式提醒') >= 0,
+    { reqs: c.reqs, lastFed: c.lastFed.slice(0, 140) });
   check('★10 那一轮的思考同样没进气泡，第二轮正文照常显示',
     c.inBubble.n === 0 && c.last.indexOf('改成一行一个 JSON') >= 0, { inBubble: c.inBubble, last: c.last });
 

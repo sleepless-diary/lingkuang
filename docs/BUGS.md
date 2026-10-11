@@ -15,6 +15,54 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第八十五轮（2026-10-15）· 助手接入**厂商原生 function calling**（用户问的「现成的轮子」）
+
+**用户原话**：「**工具调用又被当成正文了，有没有现成的轮子可以用啊**」。问过之后（ask_user_question 三选一）
+用户选定：**上原生 function calling**（不是"再加个 JSON 修复小库"，也不是"继续硬化手写解析器"）。
+
+**为什么是它**：到这一轮为止助手一直靠**文本协议**（模型把动作写成一行一个 JSON、我们解析），
+历轮修的全是"解析器认不认得出"（DSML / 厂商警告 / 散文穿插 / 回声 / 一行坏掉…）。
+原生 function calling 把动作搬进**结构化字段**（`tools` 进请求、`tool_calls` 出回复），
+动作**根本不进正文** —— "被当正文"这一类坑从根上没了；文本协议**保留为兜底**
+（本地小模型 / 不认 tools 的端点照样能用）。
+
+**改动**：
+- `src/ui/ai.ts`：`AiOpts.tools?: unknown[]` ⇒ 两条线都把清单塞进请求体（OpenAI `tools` / Ollama `tools`）；
+  `AiReply.calls?: AiToolCall[]`（`{ id?, name, args }`，`args` 统一成 JSON 字符串）。
+  累加器 `feedCall(t, index, complete)`：OpenAI 兼容线是**流式分片**（`delta.tool_calls[].index` 定位、
+  `arguments` 一片一段、`id` 只在第一片），Ollama 线是**整包**（`message.tool_calls`，`arguments` 甚至可能是
+  **对象**）⇒ `complete=true` 覆盖、否则按 index 往后拼；`calls` 非空时**不算 `thinkingOnly`**
+  （否则"整轮只有原生调用、正文空"会被当成"它只顾着想"）。
+- ⭐ **端点不认 tools 就自动退**：`if (!r.ok && payload.tools) { delete payload.tools; 重试一次 }` ——
+  本地老模型/中转常见 400；宁可退回文本协议，也不能因为"我们主动要了工具"把整轮 AI 调用打死。
+- `src/ui/agent-tools.ts`：`nativeTools()`（与 `toolsPrompt()` **同一张表**、同一套 `needsFs`/`needsWeb` 过滤；
+  schema 一律**宽松** —— `additionalProperties: true`、只从 `args` 那串人话里抠参数名、不写类型：
+  严格 schema 会因为少给一个键被端点 400，而参数校验本来就是 `planWrite()` 在做）与
+  `callsFromNative(list)`（参数原文按 JSON 解析、能修的先修；工具名不认识 ⇒ 进 `bad`）。
+- `src/ui/agent.ts` 的 `runTurn()`：`agentAsk(msgs, { tools: nativeTools(), … })`；原生调用**优先**
+  （`callsFromNative` 换算成内部 `ToolCall`，之后走的还是原来那条"执行 → 结果喂回下一轮"），
+  **历史里仍按文本协议存**（把原生调用序列化成"一行一个纯 JSON"落进历史）⇒ `sessions.json` 的格式、
+  渲染、折叠、回执、下一轮请求的形状**一个字都没改**。原生调用一条都认不出时：推一条
+  `【动作结果：未执行】…（原文）` + 一次「格式提醒」纠正（不静默吞）。
+- `src/ui/agent-model.ts`：`AskOpts.tools`（透传给 `aiChatStream`；假引擎那条路一个字都不碰它）。
+
+**守卫** 新增 `tools/e2e/agent-native.cjs` **13 项**（`window.fetch` 回放；夹具只写 **OpenAI 形状**，
+页面里按**请求 URL** 翻译成该线的形状 —— 两种形状混着喂会互相污染：`message.tool_calls` 是整包、
+`delta.tool_calls` 是分片，一起喂会把参数拼成乱码）：★2 分片 + 两个 `index` 真跑、**★2e 分片拼出来的
+`arguments` 真读到文件正文**、★2b 请求体里真有 26 个 tools、★2c 历史仍是文本协议、★2d 动作不进气泡、
+★3 Ollama 整包形态也跑、★4 端点 400 ⇒ 去掉 tools 重试、★4b 退回文本协议照样跑、
+★5 名字认不出 ⇒ 通报 + 纠正一次、★5b 不出卡片、★6 无异常。
+**A/B 旧构建 4/13 → 新 13/13**（旧构建 `tools:0`、原生调用一个都不执行、气泡里是"（模型返回了空内容）"）。
+
+**邻居**：`agent-thinkonly` 的 ★9 语义改写（第八十一轮钉的是"原生调用我们收不到 ⇒ 催格式提醒"，
+现在原生调用**能收下就跑**了 ⇒ 换成一个**不认识的**工具名，测"用不上的原生调用不许静默吞"）；
+改动后各自干净实例全绿：agent-thinkonly 12/12、agent-toolfold 16/16、agent-tools 26/26、
+agent-dsml 10/10、agent-vendor 12/12、agent-supplement 12/12。
+
+⚠️ **教训（写守卫时自己踩的）**：夹具里的 Windows 路径**必须**用 `JSON.stringify(路径)` 拼进 JSON 文本 ——
+直接 `'{"path":"' + p + '"}'` 拼出来的是**非法 JSON**（`\U` 不是合法转义），页面里 `JSON.parse` 会静默落到 `{}`，
+动作照跑但读不到文件；首版 ★2 只数回执条数，于是**假绿**，加了 ★2e（回执里必须有文件正文）才逮住。
+
 ## 第八十四轮（2026-10-15）· 一批 37 个动作里有 1 行坏掉，不再拖死整批（+ `parseToolBatch` 通报）
 
 **用户原话**：「**工具调用又被当成正文了，有没有现成的轮子可以用啊**」。

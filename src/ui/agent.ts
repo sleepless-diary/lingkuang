@@ -29,7 +29,7 @@ import {
 } from './agent-memory';
 import { AGENT_STEPS_HARD, DEFAULT_MODE, MODE_HINT, MODE_LABEL, MODES, STEP_OPTIONS, getAgentSteps, modePrompt, setAgentSteps, stepsLabel, type AgentMode } from './agent-mode';
 import { ASKS, ASK_LABEL, SCOPES, SCOPE_LABEL, gateWrite, getAgentAsk, getAgentScope, permHint, permName, permissionPrompt, setAgentAsk, setAgentScope } from './agent-perm';
-import { isWriteTool, looksLikeToolBatch, looksLikeToolJson, looksLikeToolMarkup, parseToolBatch, parseToolCalls, planWrite, runReadTool, toolProse, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
+import { callsFromNative, isWriteTool, looksLikeToolBatch, looksLikeToolJson, looksLikeToolMarkup, nativeTools, parseToolBatch, parseToolCalls, planWrite, runReadTool, toolProse, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
 import { fsAddRoot, fsAvailable, fsRemoveRoot, fsRootsCached, fsSetRootWrite, refreshFsRoots, type FsRoot } from './agent-fs';
 import { motionReduced } from './motion';
 import { isImeEnter } from './keys';
@@ -963,6 +963,10 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
       let suppressed = false;
       const r = await agentAsk(msgs, {
         ...cfg,
+        /* ⭐ 2026-10-15（用户选定「上原生 function calling」）：把工具清单**结构化**地发给模型 ——
+           它可以直接用它自己那套函数调用回话（`AiReply.calls`），动作不进正文；
+           不认 `tools` 的端点由 `src/ui/ai.ts` 自动去掉清单重试一次（退回文本协议）。 */
+        tools: nativeTools(),
         onReasoning: (d: string) => { sawThink = true; think?.push(d); },
         onDelta: (d: string) => {
           acc += d;
@@ -978,6 +982,9 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
          ⭐ 2026-10-12（用户：「思考又被当成正文了」）：`thinkingOnly` 时 `r.text` 里装的是**思考**、
          正文一个字都没有 ⇒ 那不是"说完了"，气泡直接摘掉（下面按 thinkingOnly 另走一路）。 */
       if (r.thinkingOnly) live?.remove();
+      /* ⭐ 原生函数调用那一轮常常**正文一个字都没有**（动作全在 `calls` 里）——
+         空气泡不该留在屏幕上（它马上会被画成「用到动作」那一行）。 */
+      else if (r.calls?.length && !r.text.trim()) live?.remove();
       else if (!suppressed && !looksLikeToolMarkup(r.text) && !looksLikeToolJson(r.text)) live?.finish(r.text);
       /* 思考落定即折叠（正文才是主角；想回看点开它，历史里那份也还在）。
          真值以 `r.reasoning` 为准 —— 与下面落进历史的那一份对齐；空的话整块摘掉。
@@ -986,10 +993,15 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
       const thinkText = r.thinkingOnly ? r.text : r.reasoning;
       if (thinkText) sawThink = true;
       think?.finish(thinkText);
+      /* ⭐ 2026-10-15（用户选定「上原生 function calling」）：厂商**原生结构化调用**优先 ——
+         动作根本不进正文。历史里仍按**文本协议**存（下面序列化成"一行一个纯 JSON"），
+         所以渲染 / 折叠 / 回执 / 下一轮请求的形状一个字都不用改。 */
+      const nativeList = r.calls ?? [];
+      const nativeBatch = nativeList.length ? callsFromNative(nativeList) : { calls: [] as ToolCall[], bad: [] as string[] };
       /* ⭐ 2026-10-12（用户：「思考又被当成正文了」）：这一轮**只有思考、没有正文**。
          别把这坨思考当回答（那正是他看到的），也别拿它去解析动作（思考里常抄着 JSON 例子）——
          折进思考块（上一行已经 finish 了），留一条实话的助手消息，再让它重说一次（只催一次）。 */
-      if (r.thinkingOnly) {
+      if (r.thinkingOnly && !nativeList.length) {
         const native = (r.toolCalls || []).length > 0;
         push({ role: 'assistant', content: THINK_ONLY_ECHO, reasoning: thinkText });
         reseatSupplements();
@@ -1011,8 +1023,34 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
       /* ⭐ 一批里可能**只有一行**是坏的（用户 2026-10-15：37 行动作里第 24 行写成
          `{"tool":"tool":"read_file",…}`）——`parseToolBatch` 把坏的挑出来、好的照跑，
          这里拿到 `bad` 就通报一声，别静默吞掉那几条。 */
-      const batch = parseToolBatch(r.text);
+      const batch = nativeBatch.calls.length ? nativeBatch : parseToolBatch(r.text);
       const calls = batch.calls;
+      /* 落进历史的那条助手消息：原生调用 ⇒ 散文（若有）+ 一行一个纯 JSON；
+         文本协议 ⇒ 原样（那本来就是模型写的）。 */
+      const textForHistory = nativeList.length
+        ? [(r.thinkingOnly ? '' : r.text.trim()), ...nativeBatch.calls.map((c) => JSON.stringify({ tool: c.tool, args: c.args }))]
+          .filter(Boolean).join('\n')
+        : r.text;
+      /* 原生调用**一条都认不出**（工具名写错之类）⇒ 通报 + 走"纠正一次"，绝不静默吞掉 */
+      if (nativeList.length && !calls.length) {
+        push({ role: 'assistant', content: textForHistory || THINK_ONLY_ECHO, reasoning: thinkText });
+        reseatSupplements();
+        const shown = (nativeBatch.bad.length ? nativeBatch.bad : nativeList.map((c) => c.name))
+          .map((s) => String(s).replace(/\s+/g, ' ').slice(0, 100)).join(' / ');
+        push({
+          role: 'user',
+          content: `【动作结果：未执行】这一批里有 ${Math.max(nativeList.length, nativeBatch.bad.length)} 条我没认出来（${shown}）`
+            + '—— 请改成一行一个纯 JSON 重说一次。',
+        });
+        if (!fixed && round < roundMax) {
+          fixed = true;
+          push({ role: 'user', content: FIX_NOTE });
+          host.note('它走了厂商的原生函数调用、可那几个名字我认不出来，我让它改成 JSON 行重说一次…');
+          continue;
+        }
+        host.note('它的原生函数调用我认不出来（' + shown + '），这次先算了（可以再问一次，或换个模型）', true);
+        break;
+      }
       if (!calls.length && looksLikeToolJson(r.text)) {
         /* 想调动作、格式却写歪了（用户 2026-09-15 实测：`{"set_field":{…}}`）。
            纠正一次（进历史、不进气泡），还不行就不再把这坨 JSON 糊到创作者脸上。 */
@@ -1048,7 +1086,7 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
         }
         break;
       }
-      push({ role: 'assistant', content: r.text, reasoning: r.reasoning });
+      push({ role: 'assistant', content: textForHistory, reasoning: thinkText });
       reseatSupplements();
       /* ⭐ 一批里认不出来的那几条**如实通报**（用户 2026-10-15 真机：37 行里第 24 行写成
          `{"tool":"tool":"read_file",…}`）—— 只跳过那一条、其余照跑；不通报的话模型下一轮

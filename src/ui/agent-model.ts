@@ -26,6 +26,9 @@ export interface AskOpts {
   onDelta?: (delta: string) => void;
   /** 思考增量回调（模型吐 `reasoning_content`/`thinking` 时一块一次） */
   onReasoning?: (delta: string) => void;
+  /** ⭐ 2026-10-15：厂商原生工具清单（透传给 `aiChatStream` 的 `tools`）——
+   *  给了模型就能用结构化函数调用回话（`AiReply.calls`）；假引擎这条路一个字都不碰它。 */
+  tools?: unknown[];
 }
 
 type MockReply = string | string[] | ((msgs: ChatMsg[]) => string | Promise<string>) | { chunks: unknown[]; reasoning?: unknown[]; gap?: number; truncated?: boolean };

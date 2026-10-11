@@ -157,6 +157,86 @@ export function toolsPrompt(mode: AgentMode = 'agent'): string {
   ].join('\n');
 }
 
+/* ---------------- 原生 function calling（2026-10-15，用户选定「上原生 function calling」）----------------
+ *
+ *  背景：到这一轮为止，助手一直靠**文本协议**（模型把动作写成一行一个 JSON、我们解析）。
+ *  历轮修的全是"解析器认不认得出"（DSML / 厂商警告 / 散文穿插 / 回声 / 一行坏掉…），
+ *  用户 2026-10-15 第四次报「工具调用又被当成正文了」并问「有没有现成的轮子可以用啊」——
+ *  选定的答案就是**厂商原生 function calling**：请求里带 `tools`（JSON Schema），
+ *  模型用它自己那套结构化调用回话（`AiReply.calls`），动作**根本不进正文**，
+ *  我们那套文本解析器从此只是**兜底**（本地小模型/不支持 tools 的端点还靠它）。
+ *
+ *  ⚠️ 两件事刻意不做：
+ *   ① 历史仍按**文本协议**存（`src/ui/agent.ts` 把原生调用再序列化成"一行一个 JSON"落进历史）——
+ *      `sessions.json` 的格式、渲染、折叠、回执、下一轮请求的形状因此一个字都不用改；
+ *   ② schema 一律**宽松**（`additionalProperties: true`、只列参数名不写类型）——
+ *      严格 schema 会让模型少给一个键就被端点 400，而参数校验本来就是 `planWrite()` 在做。 */
+
+/** 厂商原生调用（`src/ui/ai.ts` 的 `AiReply.calls` 的形状 —— 结构兼容，不 import 以免绕圈） */
+export interface NativeCall { id?: string; name: string; args: string }
+export interface NativeTool {
+  type: 'function';
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+}
+
+/** 从 `args` 那串人话里抠出参数名（`{ type?: 类型名 }` → `type`；`{ q: 关键词, path?: … }` → `q`/`path`） */
+function propNames(argsText: string): string[] {
+  const out: string[] = [];
+  const re = /([A-Za-z_][A-Za-z0-9_]*)\s*[?:]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(argsText))) if (!out.includes(m[1])) out.push(m[1]);
+  return out;
+}
+
+/** 厂商原生工具清单（与 `toolsPrompt()` 同一张表、同一套 `needsFs`/`needsWeb` 过滤）。 */
+export function nativeTools(): NativeTool[] {
+  const live = (t: ToolSpec): boolean => (!t.needsFs || fsAvailable()) && (!t.needsWeb || webAvailable());
+  const all = READ_TOOLS.concat(WRITE_TOOLS).filter(live);
+  return all.map((t) => {
+    const props: Record<string, unknown> = {};
+    for (const k of propNames(t.args)) props[k] = {};
+    const primary = PRIMARY[t.name];
+    if (primary && !props[primary]) props[primary] = {};
+    const write = isWriteTool(t.name);
+    return {
+      type: 'function' as const,
+      function: {
+        name: t.name,
+        description: `${t.desc}。参数：${t.args}`
+          + (write ? '（写入类：不会直接生效，会先变成一张要创作者点「应用」的提议卡片）' : ''),
+        parameters: { type: 'object', properties: props, additionalProperties: true },
+      },
+    };
+  });
+}
+
+/** 原生调用 ⇒ 内部 `ToolCall`（参数原文按 JSON 解析，能修的先修；工具名不认识 ⇒ 进 `bad`） */
+export function callsFromNative(list: NativeCall[]): { calls: ToolCall[]; bad: string[] } {
+  const calls: ToolCall[] = [];
+  const bad: string[] = [];
+  for (const c of list) {
+    const name = str(c.name);
+    if (!findTool(name)) { bad.push(JSON.stringify({ tool: name, args: c.args })); continue; }
+    const raw: unknown = c.args;
+    if (isObj(raw)) { calls.push({ tool: name, args: raw as ToolArgs }); continue; }
+    const text = str(raw);
+    if (!text) { calls.push({ tool: name, args: {} }); continue; }
+    let o: unknown;
+    try {
+      o = JSON.parse(text);
+    } catch {
+      try {
+        o = JSON.parse(repairJsonText(text));
+      } catch {
+        bad.push(JSON.stringify({ tool: name, args: text }));
+        continue;
+      }
+    }
+    calls.push({ tool: name, args: toArgs(name, o) });
+  }
+  return { calls, bad };
+}
+
 /* ---------------- 解析模型回复 ---------------- */
 
 /* ⭐ 各家的模型写法五花八门（用户 2026-09-15 实测：模型把动作写成了

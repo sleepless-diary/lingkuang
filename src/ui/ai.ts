@@ -40,9 +40,23 @@ export interface AiReply {
    *  ⚠️ 这时 `text` 里塞的是**思考**（见文件尾那条兜底，那是给"只要一段字"的调用方如联想/起名用的），
    *  但**它不是模型说的话** —— 要画给创作者看的界面必须判这一位，别把思考当正文端出去。 */
   thinkingOnly?: boolean;
-  /** 厂商**原生函数调用**的名字（非空 = 模型走了厂商那套 tool_calls）。我们这套协议收不到它，
-   *  所以它非空时这一轮的动作是**丢了**的 —— 界面要据此走「纠正一次」，别当无事发生。 */
+  /** 厂商**原生函数调用**的名字（非空 = 模型走了厂商那套 tool_calls）。
+   *  ⭐ 2026-10-15 起：走原生这条路**不再等于"动作丢了"** —— 结构化结果在 `calls` 里，
+   *  这里只留名字（界面提示词/诊断用）。 */
   toolCalls?: string[];
+  /** ⭐ 2026-10-15（用户选定「上原生 function calling」）：厂商原生函数调用的**结构化**结果。
+   *  我们请求里带了 `tools` 时才会发生；`src/ui/agent-tools.ts` 的 `callsFromNative()` 把它
+   *  换算成内部 `ToolCall`，之后走的还是原来那条"执行 → 结果喂回下一轮"的路。 */
+  calls?: AiToolCall[];
+}
+
+/** 一次厂商原生函数调用（OpenAI 兼容线 / Ollama 原生线两条都归一到这里） */
+export interface AiToolCall {
+  /** OpenAI 兼容线会给（`call_…`）；Ollama 线没有 */
+  id?: string;
+  name: string;
+  /** 参数的**原文**（JSON 字符串） */
+  args: string;
 }
 export interface AiOpts {
   /** 覆盖当前供应商选中的模型（留空 = 用这一家选中的那个） */
@@ -54,6 +68,11 @@ export interface AiOpts {
   onDelta?: (delta: string) => void;
   /** 思考增量回调：模型吐 `reasoning_content` / `thinking` 时一块一次（不思考的模型不会被调） */
   onReasoning?: (delta: string) => void;
+  /** ⭐ 2026-10-15：厂商**原生工具清单**（JSON Schema 数组，见 `src/ui/agent-tools.ts` 的
+   *  `nativeTools()`）。给了就发 `tools`（OpenAI 兼容线与 Ollama 线都认）—— 模型可以直接
+   *  用它那套结构化函数调用回话（`AiReply.calls`），不用把动作写成文本 JSON；
+   *  不给就一个字都不发（联想 / 起名这类调用方完全不受影响）。 */
+  tools?: unknown[];
 }
 
 /** 取第一个非空字符串（思考的字段名各家不一，见 `eat()`） */
@@ -86,15 +105,26 @@ export async function aiChatStream(messages: ChatMsg[], opts: AiOpts = {}): Prom
     ? { model, messages: wire(messages), temperature, stream: true }
     : { model, messages: wire(messages), stream: true, options: { temperature, num_predict: numPredict ?? -1 } };
   if (openai && numPredict) payload.max_tokens = numPredict;
+  /* ⭐ 原生工具清单：两条线都只是把同一个数组塞进请求体（OpenAI `tools` / Ollama `tools`）。 */
+  const tools = opts.tools;
+  if (Array.isArray(tools) && tools.length) payload.tools = tools;
 
   const url = base + (openai ? '/chat/completions' : '/api/chat');
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (openai) headers.Authorization = 'Bearer ' + p.apiKey;
-  let r: Response;
-  try {
-    r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
-  } catch (err) {
-    throw new Error('连不上 ' + p.baseUrl + '：' + (err instanceof Error ? err.message : String(err)));
+  const post = async (): Promise<Response> => {
+    try {
+      return await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+    } catch (err) {
+      throw new Error('连不上 ' + p.baseUrl + '：' + (err instanceof Error ? err.message : String(err)));
+    }
+  };
+  let r = await post();
+  /* ⭐ 2026-10-15：端点/模型**不认 `tools`** 时（本地老模型常见 400）—— 去掉工具清单**重试一次**。
+     宁可退回文本协议，也不能因为"我们主动要了工具"就把整轮 AI 调用打死。 */
+  if (!r.ok && payload.tools) {
+    delete payload.tools;
+    r = await post();
   }
   if (!r.ok) throw new Error((openai ? 'api' : 'ollama') + ' http ' + r.status + '（' + p.baseUrl + '）');
 
@@ -102,6 +132,27 @@ export async function aiChatStream(messages: ChatMsg[], opts: AiOpts = {}): Prom
   let thinking = '';
   let truncated = false;
   const toolCalls: string[] = [];
+  /* ⭐ 2026-10-15 原生函数调用（用户选定「上原生 function calling」）：
+     OpenAI 兼容线是**流式分片**（`delta.tool_calls[].index` 攒名字与参数片段，`id` 只在第一片里），
+     Ollama 线一次给整包（`function.arguments` 甚至是**对象**而不是字符串）—— 两条都收。
+     `complete = true` 表示"这一份是完整调用"（整包/非流式），直接覆盖；否则按 `index` 往后拼。 */
+  const callSlots = new Map<number, AiToolCall>();
+  const feedCall = (t: unknown, index: number, complete: boolean): void => {
+    if (!t || typeof t !== 'object') return;
+    const o = t as { id?: unknown; function?: { name?: unknown; arguments?: unknown } };
+    const name = typeof o.function?.name === 'string' ? o.function.name : '';
+    const argRaw = o.function?.arguments;
+    const argText = typeof argRaw === 'string' ? argRaw : argRaw && typeof argRaw === 'object' ? JSON.stringify(argRaw) : '';
+    const id = typeof o.id === 'string' && o.id ? o.id : undefined;
+    if (complete) { callSlots.set(index, { id, name, args: argText }); return; }
+    const cur = callSlots.get(index) ?? { name: '', args: '' };
+    if (id) cur.id = id;
+    if (name) cur.name = name;
+    if (argText) cur.args += argText;
+    callSlots.set(index, cur);
+  };
+  const callsOf = (): AiToolCall[] => [...callSlots.entries()].sort((a, b) => a[0] - b[0])
+    .map(([, c]) => c).filter((c) => !!c.name);
   const eat = (obj: unknown): void => {
     if (!obj || typeof obj !== 'object') return;
     const o = obj as Record<string, any>;
@@ -116,11 +167,17 @@ export async function aiChatStream(messages: ChatMsg[], opts: AiOpts = {}): Prom
          「整包 + 正文空 + 思考里有答案」那种响应会解析出 0 个词（联想画布那边就栽在这个形状上）。 */
       const th = firstStr(ch?.delta?.reasoning_content, ch?.delta?.reasoning, ch?.message?.reasoning_content, ch?.message?.reasoning, o.reasoning_content, o.reasoning);
       if (th) { thinking += th; onReasoning?.(th); }
-      /* 厂商原生函数调用（`tool_calls`）：我们这套"一行一个 JSON"的协议收不到它 ——
-         但**必须知道它发生过**，否则模型那一轮正文为空、动作也没了，界面看着就是"卡住"
-         （用户 2026-10-11「工具也被吃了」/ 2026-10-12「思考又被当成正文了」都撞在这附近）。 */
-      const tc = Array.isArray(ch?.delta?.tool_calls) ? ch.delta.tool_calls
-        : Array.isArray(ch?.message?.tool_calls) ? ch.message.tool_calls : null;
+      /* 厂商原生函数调用（`tool_calls`）：⭐ 2026-10-15 起**我们主动要它**（请求里带了 `tools`）——
+         流式是分片来的（`delta.tool_calls[].index` 定位、`arguments` 一片一段），
+         整包形态（端点不理会 stream）是 `message.tool_calls` 里一份完整的。两条都收。 */
+      const deltaTc = Array.isArray(ch?.delta?.tool_calls) ? ch.delta.tool_calls : null;
+      const msgTc = Array.isArray(ch?.message?.tool_calls) ? ch.message.tool_calls : null;
+      if (deltaTc) deltaTc.forEach((t: unknown, i: number) => {
+        const idx = typeof (t as { index?: unknown })?.index === 'number' ? (t as { index: number }).index : i;
+        feedCall(t, idx, false);
+      });
+      if (msgTc) msgTc.forEach((t: unknown, i: number) => feedCall(t, i, true));
+      const tc = deltaTc ?? msgTc;
       if (tc) for (const t of tc) {
         const n = (t as { function?: { name?: unknown } })?.function?.name;
         if (typeof n === 'string' && n && !toolCalls.includes(n)) toolCalls.push(n);
@@ -131,7 +188,9 @@ export async function aiChatStream(messages: ChatMsg[], opts: AiOpts = {}): Prom
       if (typeof m.content === 'string' && m.content) { text += m.content; onDelta?.(m.content); }
       const th = firstStr(m.thinking, m.reasoning_content, m.reasoning, o.thinking);
       if (th) { thinking += th; onReasoning?.(th); }
-      /* 原生函数调用（Ollama 原生线也有一套）—— 同上：**收不到，但得知道它发生过** */
+      /* 原生函数调用（Ollama 原生线也有一套）—— ⭐ 2026-10-15 起我们主动要它（带了 `tools`），
+         整包形态：`function.arguments` 是**对象**（不是字符串）⇒ `complete = true` 直接收下。 */
+      if (Array.isArray(m.tool_calls)) m.tool_calls.forEach((t: unknown, i: number) => feedCall(t, i, true));
       if (Array.isArray(m.tool_calls)) for (const t of m.tool_calls) {
         const n = (t as { function?: { name?: unknown } })?.function?.name;
         if (typeof n === 'string' && n && !toolCalls.includes(n)) toolCalls.push(n);
@@ -174,7 +233,11 @@ export async function aiChatStream(messages: ChatMsg[], opts: AiOpts = {}): Prom
      兜底照旧（联想/起名/分类那几个"只要一段字"的调用方靠它），但把 `thinkingOnly` 一起交出去 ——
      要画给创作者看的界面用 `splitReply()` 拆，别把思考当正文。 */
   const thinkingOnly = !text && !!thinking;
-  return { text: text || thinking, model, truncated, reasoning: text ? thinking : '', thinkingOnly, toolCalls };
+  /* ⭐ 2026-10-15：原生调用来了 ⇒ **不是** thinkingOnly（哪怕正文一个字都没有 ——
+     那一轮的动作全在 `calls` 里，界面要走"执行动作"那条路，别当"它只顾着想"）。 */
+  const calls = callsOf();
+  if (calls.length) return { text, model, truncated, reasoning: thinking, thinkingOnly: false, toolCalls, calls };
+  return { text: text || thinking, model, truncated, reasoning: text ? thinking : '', thinkingOnly, toolCalls, calls };
 }
 
 /** 一次性调用（不关心增量时用它；内部就是 `aiChatStream` 不传 `onDelta`） */
