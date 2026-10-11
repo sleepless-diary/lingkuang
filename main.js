@@ -1411,7 +1411,11 @@ const fsErr = (msg) => ({ ok: false, error: msg });
 ipcMain.handle('fs:roots', () => ({ ok: true, roots: fsRootsPublic() }));
 
 ipcMain.handle('fs:add-root', async (e, payload) => {
-  let p = payload && typeof payload.path === 'string' ? payload.path : '';
+  /* ⭐ 容错：`{path}` 是渲染层的正规形状（`src/ui/agent-fs.ts` 的 `fsAddRoot`），**裸字符串也认** ——
+     手工/自动化调 `lingkuangAPI.fs.addRoot('C:/x')` 时不会掉进下面"不给 path 就弹系统对话框"那条分支
+     （隐藏窗口里那个对话框会一直挂着，调用方永远等不到回话；2026-10-11 的 DSML 套件就是这么吊死的）。 */
+  let p = typeof payload === 'string' ? payload
+    : (payload && typeof payload.path === 'string' ? payload.path : '');
   if (!p) {
     const opts = { title: '选一个助手能看的文件夹', properties: ['openDirectory', 'createDirectory'] };
     /* 有主窗口就以它为父（对话框居中在窗口上）；没有就退成不带父窗口的调用 */

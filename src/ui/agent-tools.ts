@@ -127,6 +127,7 @@ export function toolsPrompt(mode: AgentMode = 'agent'): string {
     '{"tool":"read_entity","args":{"name":"安德希亚城"}}',
     '{"tool":"set_field","args":{"entity":"霜精灵","field":"描述","value":"霜精灵是生活在北境冻原的种族。"}}',
     '⚠️ 不要写成 {"动作名":{…}}（例如 {"set_field":{…}}），也不要写成 {"name":…,"arguments":…} —— 那样我认不出来。',
+    '⚠️ 也别用你自己那套原生函数调用标记（`＜…invoke name="…"＞` 那种带 DSML 字样的）—— 我认得出、也跑得动，但上面那行纯 JSON 最稳，你的对话历史里也更干净。',
     '要放开权限（切到「自动」档、把权限改宽）时，那张卡片**永远**要创作者点「应用」才会生效 —— 别催他。',
     mode === 'agent'
       ? '不需要用动作时就用平常的话回答。**一次提问里可以连着提多个动作**（我最多放你走 8 步）；批量活（一次建好几个事件、给一批设定加同一个字段）**一次规划好再动手**：`set_field{entities:[…]}` 与 `create_node{nodes:[…]}` 两种批量形态只有在这个（「自动」）档里认。'
@@ -254,7 +255,12 @@ function splitJsonSpans(text: string): string[] | null {
  *  **一个动作都没跑**，这一轮就此结束（看起来就是"卡住了"）。现在这种连写按顺序全认。 */
 export function parseToolCalls(raw: string): ToolCall[] {
   const text = String(raw ?? '').replace(/```[a-zA-Z]*/g, '').trim();
-  /* 整段就是一个 JSON 才认 —— 免得回答里提到例子被误当成调用 */
+  /* ① ⭐ DSML（DeepSeek 那一族的原生标记）先认一遍 —— 用户 2026-10-11：「又被当正文发出来了」 */
+  if (looksLikeDsml(text)) {
+    const dsml = parseDsmlCalls(text);
+    if (dsml.length) return dsml;
+  }
+  /* ② 整段就是一个 JSON 才认 —— 免得回答里提到例子被误当成调用 */
   if (!text.startsWith('{')) return [];
   let obj: unknown;
   let parsed = false;
@@ -299,6 +305,9 @@ export function parseToolCall(raw: string): ToolCall | null {
 /** 整条回复是一个（或**一串**）JSON 对象、但没能映射到动作 —— 多半是格式写歪了 */
 export function looksLikeToolJson(raw: string): boolean {
   const text = String(raw ?? '').replace(/```[a-zA-Z]*/g, '').trim();
+  /* ⭐ 认不出的 DSML 标记也算「像动作、格式写歪了」—— 好让上层回头纠正它一次，
+     而不是把这一坨标记当聊天画到创作者脸上（用户 2026-10-11：「又被当正文发出来了」） */
+  if (looksLikeDsml(text)) return parseDsmlCalls(text).length === 0;
   if (!text.startsWith('{') || !text.endsWith('}')) return false;
   try {
     if (isObj(JSON.parse(text))) return true;
@@ -312,6 +321,89 @@ export function looksLikeToolJson(raw: string): boolean {
       return false;
     }
   });
+}
+
+/* ---------- DSML：DeepSeek 那一族的**原生**函数调用标记 ----------
+ *
+ *  ⭐ 用户 2026-10-11 实测报的坑（原话：「又被当正文发出来了」）：
+ *  云端 `deepseek-flash` 压根不理会我们那套「整条回复只写一行 JSON」的协议，按它训练时的
+ *  格式吐了一坨（下面这些竖线是**全角 U+FF5C**，是从他真实会话文件
+ *  `%APPDATA%\lingkuang\agent\sessions.json` 里抓到的原样）：
+
+      ＜｜｜DSML｜｜ calls＞
+      ＜｜｜DSML｜｜ invoke name="read_file"＞
+      ＜｜｜DSML｜｜ parameter name="args" string="false"＞{"path":"D:\\…\\总览.md"}＜/｜｜DSML｜｜ parameter＞
+      ＜/｜｜DSML｜｜ invoke＞
+      ……（★一次能连吐好几个 invoke）
+
+ *  老解析器只认 `{…}` ⇒ **一个动作都没跑**，整坨标记还被当正文画到创作者脸上（他看到的
+ *  就是"AI 把工具调用当话说了"）。这里把标记认下来：`invoke name=` 取动作名、里面每个
+ *  `parameter name=` 取参数。
+ *
+ *  ⚠️ 别去枚举那些符号：真机是全角 `｜｜DSML｜｜`，别家版本可能是 ASCII `||DSML||`、也可能
+ *     干脆没前缀 —— 只按「`<` + 任意非 `>` + `invoke` / `parameter` + 属性」这个宽松形状匹配。 */
+
+/** 参数取值：能当 JSON 解析就当对象（`{"path":"…"}`），否则去实体、当普通字符串 */
+function dsmlValue(raw: string): unknown {
+  const s = String(raw ?? '').replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/, '$1').trim();
+  const txt = s
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+  if (txt.startsWith('{') || txt.startsWith('[')) {
+    try {
+      return JSON.parse(txt);
+    } catch { /* 不是合法 JSON 就当普通字符串用 */ }
+  }
+  return txt;
+}
+
+/** 回复里像不像 DSML 标记（**严格**判据，给"要不要解析 / 要不要纠正"用）：
+ *  ① 有 `<…invoke…>` / `<…parameter…>` 这种标签；② 或带 DSML 字样**且**提到 calls/invoke/parameter。 */
+export function looksLikeDsml(raw: string): boolean {
+  const text = String(raw ?? '');
+  if (/<\s*\/?\s*[^>]*?\b(?:invoke|parameter)\b[^>]*>/i.test(text)) return true;
+  return /DSML/i.test(text) && /\b(?:calls|invoke|parameter)\b/i.test(text);
+}
+
+/** 流式用（**宽松**判据）：`<` 后面到 `>` 之前出现 `DSML` 就算 —— 真机第一片增量只到
+ *  `＜｜｜DSML｜｜ cal`（`invoke` 还没写完），严格判据那一刻认不出，标记会先闪进气泡。
+ *  刻意宁可少画一屏文本，也不把这一坨标记糊到创作者脸上（用户 2026-10-11「又被当正文发出来了」）。 */
+export function looksLikeToolMarkup(raw: string): boolean {
+  const text = String(raw ?? '');
+  if (/<[^>]*DSML/i.test(text)) return true;
+  return looksLikeDsml(text);
+}
+
+/** 从 DSML 标记里抠出全部调用；一个都认不出 ⇒ 空数组（交给"回头纠正一次"那条路） */
+function parseDsmlCalls(raw: string): ToolCall[] {
+  const text = String(raw ?? '');
+  if (!looksLikeDsml(text)) return [];
+  const out: ToolCall[] = [];
+  /* ⚠️ `(?!\/)`：开头不能是 `/`，否则收尾标签会被当成开标签再认一次 */
+  const openRe = /<\s*(?!\/)[^>]*?\binvoke\s+name\s*=\s*"([^"]+)"[^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = openRe.exec(text))) {
+    const rest = text.slice(m.index + m[0].length);
+    const closeAt = rest.search(/<\s*\/\s*[^>]*?\binvoke\b[^>]*>/i);
+    const inner = closeAt >= 0 ? rest.slice(0, closeAt) : rest;
+    const params: ToolArgs = {};
+    let count = 0;
+    const pRe = /<\s*(?!\/)[^>]*?\bparameter\s+name\s*=\s*"([^"]+)"[^>]*>([\s\S]*?)(?:<\s*\/\s*[^>]*?\bparameter\b[^>]*>|$)/gi;
+    let p: RegExpExecArray | null;
+    while ((p = pRe.exec(inner))) {
+      params[p[1]] = dsmlValue(p[2]);
+      count++;
+    }
+    /* 参数写成「一个 args / arguments 键装着一整个对象」时掰开；摊平的（`name="path"`）直接用 */
+    const keys = Object.keys(params);
+    const bag = count === 1 && ARG_KEYS.includes(keys[0]) ? toArgs(m[1], params[keys[0]]) : params;
+    const call = normalizeCall({ tool: m[1], args: bag });
+    /* 有一个 invoke 认不出 ⇒ 整段不当动作（和 JSON 那条路同一个规矩：宁可不动，也不猜着执行） */
+    if (!call) return [];
+    out.push(call);
+  }
+  return out;
 }
 
 /* ---------------- 小工具 ---------------- */

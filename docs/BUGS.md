@@ -15,6 +15,37 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第七十三轮（2026-10-11）· 「又被当正文发出来了」＝ 厂商模型的原生函数调用标记（DSML）也得认，且流式途中不许闪
+
+**用户原话**：贴了一坨灵框助手吐出来的文本 + 一句「**又被当正文发出来了**」。贴的就是 DeepSeek 那一族的原生标记（`＜｜｜DSML｜｜` 里的竖线是**全角 U+FF5C**）：
+
+```
+＜｜｜DSML｜｜ calls＞
+＜｜｜DSML｜｜ invoke name="read_file"＞
+＜｜｜DSML｜｜ parameter name="args" string="false"＞{"path":"…"}＜/｜｜DSML｜｜ parameter＞
+＜/｜｜DSML｜｜ invoke＞            ……（一次连吐 8 个 invoke）
+```
+
+**真因（两条路都没认它）**：
+1. `src/ui/agent-tools.ts` 的 `parseToolCalls(raw)`（第七十轮加的）只认 `{…}` —— 整段 `JSON.parse` 或 `splitJsonSpans()` 切连写对象；DSML 既不以 `{` 开头、`looksLikeToolJson()` 也 false ⇒ 走聊天分支：**一个动作都没跑，整坨标记被当正文画到创作者脸上**（真机证据：他真实会话 `%APPDATA%\lingkuang\agent\sessions.json` 里 assistant 的 content 就是这坨，47567 B、`DSML` 34 处、`invoke` 16 处）。
+2. `src/ui/agent.ts` 的流式遮罩只判 `acc.trimStart().startsWith('{')` ⇒ 标记**边流边画**；收尾 `live?.finish(r.text)` 同样没拦。
+
+**修法**：
+- `src/ui/agent-tools.ts`：新增 `looksLikeDsml(raw)`（**严格**判据：有 `<…invoke…>` / `<…parameter…>` 标签，或带 `DSML` 字样**且**提到 `calls/invoke/parameter` —— 决定"要不要解析、要不要走回头纠正"）与 `looksLikeToolMarkup(raw)`（**流式宽松**判据：`<` 到 `>` 之间出现 `DSML` 就算 —— 真机第一片增量只到 `＜｜｜DSML｜｜ cal`，严格判据那一刻认不出）；内部 `parseDsmlCalls(raw)`：`invoke name="…"` 取动作名、`parameter name="…"` 取参数（**写成单个 `args` 对象用 `toArgs()` 掰开、摊平成 `name="path"` 直接用**，两种形状都实测过），**有一个 invoke 认不出就整段返回 `[]`**（与 JSON 那条路同一个规矩：宁可不动，也不猜着执行）；`parseToolCalls()` 先试 DSML 再走 JSON；`looksLikeToolJson()` 开头加 `if (looksLikeDsml(text)) return parseDsmlCalls(text).length === 0;`（认不出的标记 ⇒ 仍是"回头纠正一次"）；`toolsPrompt()` 的协议里补一句劝它别用原生标记。
+- `src/ui/agent.ts`：流式遮罩改 `if (acc.trimStart().startsWith('{') || looksLikeToolMarkup(acc))`；气泡收尾改 `if (!suppressed && !looksLikeToolMarkup(r.text) && !looksLikeToolJson(r.text)) live?.finish(r.text);`。历史里那条标记照旧由 `callLabelOf()` / `msgHtml()` 画成「用到动作：read_file ×3」一行。
+- `main.js`（**顺带堵的一个真坑**，与 DSML 无关但在写守卫时踩到）：`fs:add-root` 只认 `{path}` 形状，渲染层递**裸字符串**时 `payload.path` 是 `undefined` ⇒ 被当成"没给路径"⇒ `dialog.showOpenDialog()` 在隐藏窗口里永远挂着、`invoke` **永不落定**（套件里那个 `await` 被 15s eval 超时逮住才现形）。现在裸字符串也认（正规形状 `{path}` 不变；"不给路径 = 弹对话框"那条 UI 正路也不变）。
+
+**守卫 `tools/e2e/agent-dsml.cjs` 8 项**（新文件，PORT 默认 9500；夹具用 `BAR = '\uFF5C\uFF5CDSML\uFF5C\uFF5C'` 拼全角竖线，`dsmlBlock()` = 每个 invoke 里一个 `parameter name="args"`，`dsmlFlat()` = 摊平）：★0 前置 / ★1 `Ctrl+K` / **★2 三个 `read_file` 全跑**（两种参数形状混着给 ⇒ `用到动作：read_file ×3`、不出卡片）/ ★2b 标记一个字都没进气泡 / ★3 三个回执都喂回下一轮 / **★4 流式途中一次都没闪出来**（70ms 一张快照共 148 张，断言含 `DSML/invoke/parameter` 的**0 张**）/ ★5 DSML 形态的写照样是卡片（点前磁盘没有）/ ★5b 点「应用」才落盘（灵框库外）/ ★6 认不出的工具名走「格式提醒」纠正一次 / ★7 无未捕获异常。
+
+**A/B**（`git stash push -- src/ui/agent-tools.ts src/ui/agent.ts` → `npm run build` → 跑 → `git stash pop` → 重建）：旧构建 **5 项里 2 过 3 挂**（★2 `receipts:0, calls:[]` 一个动作都没跑、★2b `n:1` 整坨标记躺在气泡里、★3/★4 `leaks:74` 连历史气泡都带着整坨、★5 `props:[]`），随后在点 `[data-prop-ok="0"]` 时**当场崩**（卡片根本不存在 ⇒ `Cannot read properties of null`，exit 2）⇒ 新构建 **8/8**。
+
+**邻居**（各自一份干净起点）：`agent-tools.cjs` **23/23**、`agent-fs.cjs` **22/22**、`agent-stream.cjs` **14/14**、`agent-panel.cjs` **21/21**；`tsc --noEmit` exit 0、`npm run build` 绿、`node --check main.js` 绿。
+
+**踩过并写进套件注释的坑**：
+1. ⭐ **改完 `src/` 只跑 `tsc` 不跑 `vite build` ⇒ 测试实例仍加载旧 `app-dist`**（本轮第二次踩）：★4 首跑红、`leaks:1`，快照上写着 `live:true` 而标记分明会被拦 —— 一查 `app-dist/assets/index-*.js`（189758 B，13:33:44 构建）比 `src/ui/agent.ts`（13:34:13）**早 30 秒**，`/<[^>]*DSML/i` 这个字面量根本不在包里（只有解析器那半）。重建后同一份套件 10/10（当轮含两条正在修的新项）。
+2. ⭐ ★6 拿底部那行提示当判据是**假红**：纠正那一轮的 `host.note('…格式不对…')` 会被**紧接着**的收尾 `host.note(r.model === 'mock' ? '' : …)` 冲成空串 ⇒ 改读**喂回去的那条** `【格式提醒】`（它进历史、进下一轮 messages，是耐用凭据）。
+3. ★5/★5b 原来是靠"点得到那张卡片"往下走 ⇒ 旧构建上直接崩掉整套（exit 2）。断言要先探元素在不在（本套件 ★5 已把 `props.length === 1` 作为前置，崩点在 ★5b 的点击 —— 保留原样当"旧构建的真实现象"，不为了好看去包一层 try）。
+
 ## 第七十二轮（2026-10-11）· 「使用工具时能不能直接切到 agent 模式（聊天模式真的有必要吗）」＝ 两档能力早就一样，差的是步子；默认自动 + 模式落盘
 
 **用户原话**：「**还有使用工具时能不能直接切换到 agent 模式（话说聊天模式真的有必要吗）**」。

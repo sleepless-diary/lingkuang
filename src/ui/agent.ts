@@ -29,7 +29,7 @@ import {
 } from './agent-memory';
 import { DEFAULT_MODE, MODE_HINT, MODE_LABEL, MODES, modePrompt, type AgentMode } from './agent-mode';
 import { ASKS, ASK_LABEL, SCOPES, SCOPE_LABEL, gateWrite, getAgentAsk, getAgentScope, permHint, permName, permissionPrompt, setAgentAsk, setAgentScope } from './agent-perm';
-import { isWriteTool, looksLikeToolJson, parseToolCalls, planWrite, runReadTool, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
+import { isWriteTool, looksLikeToolJson, looksLikeToolMarkup, parseToolCalls, planWrite, runReadTool, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
 import { fsAddRoot, fsAvailable, fsRemoveRoot, fsRootsCached, fsSetRootWrite, refreshFsRoots, type FsRoot } from './agent-fs';
 import { motionReduced } from './motion';
 import { isImeEnter } from './keys';
@@ -738,8 +738,9 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
       /* 分割线之上的对话**不发给模型**（系统提示词、记忆、工作区现状都在 sys 里，照旧每次现拼） */
       const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...sentHistory(hist())];
       /* 流式（用户 2026-09-26：「我想要流式输出」）：先挂一个空气泡，增量到了就往里写。
-         ⚠️ 两个模式下这一段都可能在吐动作 JSON —— 那种东西不给创作者看：从第一个 `{` 起就改说
-         「正在整理成动作…」，这一轮走完再由 renderMsgs() 画成「用到动作」那一行。 */
+         ⚠️ 两个模式下这一段都可能在吐动作调用 —— 那种东西不给创作者看：从第一个 `{`、或者
+         第一段 DSML 标记（`＜…invoke…＞`，DeepSeek 那一族的原生格式，用户 2026-10-11 实测）起
+         就改说「正在整理成动作…」，这一轮走完再由 renderMsgs() 画成「用到动作」那一行。 */
       live?.remove();
       think?.remove();
       /* ⚠️ **先挂思考块、再挂气泡**：DOM 的追加顺序就是屏幕上的上下顺序 —— 反过来写，
@@ -760,12 +761,13 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
           /* 自动化要看的「中间态」：测试先建好 window.__lkStreamLog，这里只往里记，正式运行零成本 */
           const log = (window as any).__lkStreamLog;
           if (Array.isArray(log)) log.push({ len: acc.length, t: Date.now() });
-          if (acc.trimStart().startsWith('{')) { suppressed = true; live?.placeholder('正在整理成动作…'); return; }
+          if (acc.trimStart().startsWith('{') || looksLikeToolMarkup(acc)) { suppressed = true; live?.placeholder('正在整理成动作…'); return; }
           live?.push(d);
         },
       });
-      /* 气泡收尾：正常说完就落定；在吐动作 JSON 就保持"正在整理成动作…"（不给 JSON 闪一下的机会） */
-      if (!suppressed && !looksLikeToolJson(r.text)) live?.finish(r.text);
+      /* 气泡收尾：正常说完就落定；在吐动作调用（JSON 或 DSML 标记）就保持"正在整理成动作…"
+         —— 不给那坨东西闪一下的机会（用户 2026-10-11：「又被当正文发出来了」） */
+      if (!suppressed && !looksLikeToolMarkup(r.text) && !looksLikeToolJson(r.text)) live?.finish(r.text);
       /* 思考落定即折叠（正文才是主角；想回看点开它，历史里那份也还在）。
          真值以 `r.reasoning` 为准 —— 与下面落进历史的那一份对齐；空的话整块摘掉。 */
       if (r.reasoning) sawThink = true;
