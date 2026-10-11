@@ -137,11 +137,18 @@ export function toolsPrompt(mode: AgentMode = 'agent'): string {
     ...rows,
     fsPrompt(),
     webPrompt(),
-    '要动用某个动作时，**整条回复只写一行 JSON**，别夹散文、别加解释。两个键的名字必须是 tool 和 args：',
+    '要动用某个动作时，回复里**只写 JSON**（别夹解释）。两个键的名字必须是 tool 和 args：',
     '{"tool":"read_entity","args":{"name":"安德希亚城"}}',
     '{"tool":"set_field","args":{"entity":"霜精灵","field":"描述","value":"霜精灵是生活在北境冻原的种族。"}}',
     '⚠️ 不要写成 {"动作名":{…}}（例如 {"set_field":{…}}），也不要写成 {"name":…,"arguments":…} —— 那样我认不出来。',
-    '⚠️ 也别用你自己那套原生函数调用标记（`＜…invoke name="…"＞` 那种带 DSML 字样的）—— 我认得出、也跑得动，但上面那行纯 JSON 最稳，你的对话历史里也更干净。',
+    /* ⭐ 用户 2026-10-12：「不能兼容一次多个动作执行吗」—— 真机会话里模型自己纠结过
+       「只写一行 JSON」与「可以连着提多个动作」是不是矛盾（reasoning 原话："only one action per reply?"），
+       于是老老实实一次只提一个，最后想批量时改走厂商原生调用，被接口拒掉、还把警告当正文发了出来。
+       这里把话说明白：多动作 = 一行一个 JSON，不是"一次只能一个"。 */
+    '⭐ **「一次多个动作」的正规写法就是一行一个 JSON**（要连着做几件事就写几行，我按顺序全跑）—— 别理解成"一次只能一个"：',
+    '{"tool":"list_files","args":{"path":"D:/Desktop/世界观资料整理/设定/第一世界"}}',
+    '{"tool":"list_files","args":{"path":"D:/Desktop/世界观资料整理/设定/第二世界"}}',
+    '⚠️ **别用你厂商那套原生函数调用**（`＜…invoke name="…"＞`／DSML 那种形状，或在后台自行发起"调用"）：那套一次只允许一个，你多写几个会被**厂商接口**当场拒绝，并把一段 `<system_warning>…</system_warning>` 塞进你的回复里 —— 那是噪音，我只会丢掉它，创作者一个字都看不到。多动作一律用上面那种"一行一个纯 JSON"。',
     '要放开权限（切到「自动」档、把权限改宽）时，那张卡片**永远**要创作者点「应用」才会生效 —— 别催他。',
     '⚠️ 删除类动作（delete_entity / delete_node / delete_timeline / delete_world / delete_file）**只有创作者明说要删时才用**：别自己判断"这条重复了、那个没用了"就动手。它们都会进回收站（灵框库里 → vault 回收站，灵框库外的文件 → Windows 回收站），但那是给创作者捞回误删的，不是给你试错的。',
     mode === 'agent'
@@ -342,7 +349,10 @@ function callsFromSpans(spans: string[]): ToolCall[] {
  *  ⇒ `parseToolCall` 与 `looksLikeToolJson` 双双 false ⇒ 整坨 JSON 被当聊天原文画到创作者脸上、
  *  **一个动作都没跑**，这一轮就此结束（看起来就是"卡住了"）。现在这种连写按顺序全认。 */
 export function parseToolCalls(raw: string): ToolCall[] {
-  const text = String(raw ?? '').replace(/```[a-zA-Z]*/g, '').trim();
+  /* ⭐ 厂商噪音先剥（用户 2026-10-12：「不能兼容一次多个动作执行吗」）—— 剥完可能正好露出一条
+     正经 JSON；不剥的话「警告 + 1 个 JSON」既不以 `{` 开头、也不满足"散文 + ≥2 个对象"，
+     那个动作会被静默吃掉（他看到的正是"提示一次只能一个动作、然后什么都没发生"）。 */
+  const text = stripVendorNoise(String(raw ?? '').replace(/```[a-zA-Z]*/g, '').trim());
   /* ① ⭐ DSML（DeepSeek 那一族的原生标记）先认一遍 —— 用户 2026-10-11：「又被当正文发出来了」 */
   if (looksLikeDsml(text)) {
     const dsml = parseDsmlCalls(text);
@@ -388,6 +398,9 @@ export function looksLikeToolJson(raw: string): boolean {
   /* ⭐ 认不出的 DSML 标记也算「像动作、格式写歪了」—— 好让上层回头纠正它一次，
      而不是把这一坨标记当聊天画到创作者脸上（用户 2026-10-11：「又被当正文发出来了」） */
   if (looksLikeDsml(text)) return parseDsmlCalls(text).length === 0;
+  /* ⭐ 厂商警告同理（用户 2026-10-12）：只剩警告、没有可跑动作 ⇒ 当"像动作、格式被搅了"，
+     让上层回头纠正它一次 —— 绝不把那段 `<system_warning>…</system_warning>` 当正文画出来。 */
+  if (looksLikeVendorNoise(text)) return parseToolCalls(text).length === 0;
   /* ⭐「先说一句话、再一行一个动作」的形状同理：认得出动作就正常跑（那条走 `parseToolCalls`），
      认不出（工具名写歪了）也该回头纠正一次，而不是当聊天糊在脸上。 */
   if (!text.startsWith('{') && splitJsonSpansAfterProse(text)) return true;
@@ -415,13 +428,52 @@ export function looksLikeToolBatch(raw: string): boolean {
   return /(^|\n)[ \t]*(?:[-*+•]|\d+[.)])?[ \t]*\{/.test(String(raw ?? ''));
 }
 
+/* ---------- 厂商噪音：模型的原生多调用被接口拒掉时塞回来的那段 ----------
+ *
+ *  ⭐ 用户 2026-10-12 实测（原话：「不能兼容一次多个动作执行吗」，贴的就是这一坨）：
+ *
+ *      <system_warning>工具调用被拒绝：一次只能输出一个动作。</system_warning>
+ *
+ *      {"tool":"list_files","args":{"path":"D:\\…\\角色"}}
+ *
+ *  真相：**这句话不是灵框写的**（全仓 grep `system_warning` 零命中）—— 云端 `deepseek-flash`
+ *  在"想一次提多个动作"时走了它自己那套**原生**函数调用，厂商接口一次只放一个 ⇒ 当场拒掉、
+ *  把这段警告塞进 `message.content`。它既不是动作、也不是创作者要看的话：
+ *  旧代码里这段会被 `toolProse()` 当正文画进气泡，而它后面**那一条正经 JSON 反而没被认**
+ *  （`splitJsonSpansAfterProse()` 要求"散文 + ≥2 个对象"，只有一个对象 ⇒ 当聊天，
+ *  动作被静默吃掉 —— 创作者看到的就是"提示一次只能一个动作、然后什么也没发生"）。
+ *
+ *  处理：**先剥噪音再解析**（剥完是纯 JSON 就照常跑，`警告 + 1 个 JSON` 与 `警告 + N 个 JSON` 都认）；
+ *  只剩警告、没有动作的，走「格式提醒」纠正一次，绝不画到创作者脸上。 */
+
+/** 有厂商塞进来的警告块吗（`<system_warning …>…</system_warning>`，或只吐了一半的单边标记） */
+export function looksLikeVendorNoise(raw: string): boolean {
+  const text = String(raw ?? '');
+  /* 宽松：`<system_warning>` 只吐到一半（`<system_warn`）时也算 —— 流式遮罩靠它别闪 */
+  return /<\s*\/?\s*system_warn/i.test(text);
+}
+
+/** 抠掉厂商警告块（配对与没配对的都抠），其余原样返回 */
+export function stripVendorNoise(raw: string): string {
+  return String(raw ?? '')
+    .replace(/<\s*system_warning\b[^>]*>[\s\S]*?<\s*\/\s*system_warning\s*>/gi, '')
+    .replace(/<\s*\/?\s*system_warning\b[^>]*>/gi, '')
+    /* 只吐了一半、`>` 都没到的尾巴（`<system_warn`）也一并清掉 */
+    .replace(/<\s*\/?\s*system_warn[a-z_]*\s*$/i, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /** 动作消息里那截**散文**（模型先写的那句话 —— 用户 2026-10-11 实测的
  *  「好，这是个大工程 —— 我先把整个库的结构扫完，再分批读内容建条目。」）。
  *  这条消息不是「动作 + 散文」的形状就返回 ''：宁可什么都不显示，也绝不把 JSON 画到创作者脸上。 */
 export function toolProse(raw: string): string {
   const rawText = String(raw ?? '');
   if (looksLikeDsml(rawText)) return ''; /* DSML 形态没有正文可留 */
-  const text = rawText.replace(/```[a-zA-Z]*/g, '').trim();
+  /* ⭐ 厂商警告不是正文（用户 2026-10-12）—— 先剥掉它；「一句话 + 一批动作」里那句真散文照留 */
+  const text = stripVendorNoise(rawText.replace(/```[a-zA-Z]*/g, '').trim());
+  if (!text) return '';
   const spans = splitJsonSpans(text) ?? splitJsonSpansAfterProse(text);
   if (!spans) return ''; /* 抠不干净（比如「{…}后面还挂一句话」）⇒ 一个字都不留 */
   let rest = text;
@@ -477,6 +529,8 @@ export function looksLikeDsml(raw: string): boolean {
  *  刻意宁可少画一屏文本，也不把这一坨标记糊到创作者脸上（用户 2026-10-11「又被当正文发出来了」）。 */
 export function looksLikeToolMarkup(raw: string): boolean {
   const text = String(raw ?? '');
+  /* ⭐ 厂商警告块也别闪进气泡（用户 2026-10-12：`<system_warning>工具调用被拒绝…` 被当正文画出来了） */
+  if (looksLikeVendorNoise(text)) return true;
   if (/<[^>]*DSML/i.test(text)) return true;
   return looksLikeDsml(text);
 }
