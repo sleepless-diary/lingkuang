@@ -15,6 +15,29 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第七十六轮（2026-10-11）· 流式输出时的**滚动纪律** + 「这一轮的提问不许丢」
+
+**用户三句话**（同一轮连着报的）：「**输出的时候划不动对话列表**」「**流式输出的时候只能看到最顶部，底下的新内容被截断了**」「**部分思考内容被当成正文了**」。前两条在渲染层（`src/ui/chat-live.ts`），第三条在**发送窗口**（`src/ui/agent.ts` 的 `sentHistory()`）—— 三条各是各的病，都不是"模型抽了"。
+
+### ① 划不动对话列表（`src/ui/chat-live.ts` 的 `liveBubble`/`liveThink`）
+病根：`paint()` 每来一片增量都写 `scroller.scrollTop = scroller.scrollHeight` ⇒ 创作者**往回翻的每一帧都被立刻拽回底部**，列表等于划不动（A/B 实测：手动 `scrollTop = 0` 之后两帧就回到底部 900 → 814）。
+
+### ② 只看得见思考的最顶部
+病根：思考块自己那个 `max-height:240px; overflow-y:auto` 的滚动盒（`.lk-think__body`，`src/style.css:1130`）**从来没被滚过** —— `paint()` 滚的是外面那层消息列 ⇒ 思考一超过 240px，屏幕上就只剩它的头一屏，新长出来的全在裁剪区外（真机那条思考 3155 / 3149 / 4000 字，A/B 实测该盒 `scrollHeight 1416 / clientHeight 240 / scrollTop 0`）。
+
+**①② 一起修**：新增 `nearBottom(el)`（`scrollHeight - scrollTop - clientHeight <= 24`）与 `stick(el, keep)`，规矩是「**贴底才跟**」——动手改 DOM **之前**先量他在不在底部，已经往上翻着读的就不打扰他；`liveThink` 则**内外一起跟**（外层消息列 + 它自己的 `.lk-think__body`）。同一条纪律落到另外两处整块重画：`src/ui/agent.ts` 的 `renderMsgs()`（原 `box.scrollTop = box.scrollHeight`）与 `src/ui/ai-workbench.ts` 的 `renderLog()`。
+⚠️ **量必须在改 `innerHTML` 之前**：整块重建已经把新高度算进去了，那时再量永远"不在底部"⇒ 永远不滚（`renderLog()` 第一版就写错了位置，挪到函数开头才对）。
+
+### ③ 「部分思考内容被当成正文了」—— 真因是**发送窗口里一条人话都没有**
+- 只读取证：`%APPDATA%\lingkuang\agent\sessions.json`（153599 B，主会话 120 条 = 顶到 `HIST_MAX`）里 `#119` 那条 assistant 的 `content` = **812 字**、`reasoning` = **0 字**，正文逐字就是用户贴的那段「我需要理解创作者想干什么。但他还没有提出具体请求……」。更早几条 `#103/#106/#109` 的 `reasoning` 是 3155 / 3149 / 4000 字（英文草稿）、`content` 是动作 JSON —— 也就是说**这一轮模型压根没收到提问**，它面对一屏"我自己的动作"只能猜"创作者想干什么"，于是把这段猜测过程当正文答了出来。
+- 病根：工具循环每跑一个动作都往历史里推一条 `user` 角色的【动作结果】（真机 `#94`~`#118` 全是），而 `sentHistory()` 只取最后 `HISTORY_SEND = 16` 条 ⇒ 窗口尾部可以是清一色的机器消息。
+- 修法（两道）：① `sentHistory()` 先认机器消息（`isMachineMsg()`：`role === 'user'` 且 `/^【(动作结果|格式提醒)/`）—— 窗口里**一条创作者的话都没有**时，用 `lastRealQuestion()` 把最近那句提问补回**最前面**（顺序不变，只是把被挤掉的那句捞回来）；② `runTurn()` 里再兜一层：真机那会话已顶到 `HIST_MAX = 120`，提问有可能连历史都被裁掉 ⇒ 窗口里没有人话时直接 `win.unshift({ role: 'user', content: text })`（这一轮的原文最保险）。
+
+### 守卫 `tools/e2e/agent-scroll.cjs`（8 项，新文件）
+流式那一半用分片假引擎（`{ reasoning: 40 片 ≈1270 字, chunks: 40 片 ≈1110 字, gap: 40 }`）+ **每 100ms 采样 DOM**（`#lk-agent-msgs` 与 `.lk-think__body` 各自的 `scrollTop/scrollHeight/clientHeight`、活气泡正文长度），正文长到把消息列撑溢出之后**手动 `scrollTop = 0`**（＝用户那个"往回划"的动作）再接着采样两帧。★2 思考盒贴自己的底（旧构建恒为 0）、★4 回滚后仍停在 0（旧构建被拽回 900）、★6 连跑 15 轮工具之后末次 `messages` 里提问仍在 `index 1`（旧构建 = -1）。
+**A/B：旧构建 5/8（★2 / ★4 / ★6 红）→ 新构建 8/8**（★1 思考真的溢出 240px、★3 回滚前本来就贴底、★5 落定后折叠 + 正文完整、★7 无异常 —— 都是前置与不回归项）。
+邻居（各自干净起点，本轮全绿，**没有一套被带坏**）：`agent-stream.cjs` 14/14、`agent-main-session.cjs` 14/14（需 `seed-agent-main-session.cjs`）、`agent-tools.cjs` 26/26、`agent-panel.cjs` 21/21（需 `seed-agent-chat.cjs`）、`agent-mode.cjs` 17/17、`agent-dsml.cjs` 10/10、`ai-sessions.cjs` 10/10、`agent-memory.cjs` 15/15。⚠️ 套件**必须各自一个干净实例**（`%TEMP%\lk76-run.ps1` 一次一套：杀残留 → 清目录 → 起 9s 建 `worldbuilding.json` → 杀 → `reset-entity-vault.cjs` + `seed-node.cjs` + 各自 seed → 再起 8s → `LK_CDP_PORT=9500` 跑 → 杀）。
+
 ## 第七十五轮（2026-10-11）· 搬库：一次建一批设定（一张卡片）+ 步数**不限**（并给一个「停」）
 
 **用户的下一句**（紧接第七十四轮「工具也被吃了」）：「**我在测试灵框能不能吃下我的所有世界观信息，你都补进来吧**」—— 他要的是**把一整个外部资料库搬进灵框**。修完解析，**读**这一侧能整批跑了（一句话 + 8 个 `list_files` 全跑、8 份内容都喂得回来）；但**写**这一侧一次只出一张卡片：`src/ui/agent.ts` 的 `runTurn()` 里 `isWriteTool` 命中就 `handleWrite()` 完 `stop = true` ⇒ 一轮只为**一个**写动作出卡，搬 100 条设定 = 100 轮点击。另外他问「**不能设置无上限吗**」（当时一次提问最多连着走 `AGENT_ROUNDS = 8` 步）。

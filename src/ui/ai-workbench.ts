@@ -151,6 +151,9 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
 
   const renderLog = (): void => {
     const s = activeSession();
+    /* ⭐ 贴底才跟（同 `src/ui/chat-live.ts` 的滚动纪律）：正往上翻着读时，别被一次重画拽回底部。
+       ⚠️ 必须在改 innerHTML **之前**量 —— 整块重建已经把新的高度算进去了，那时再量永远"不在底部"。 */
+    const keepBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight <= 24;
     if (!s || !s.history.length) {
       logEl.innerHTML = '<div style="font-size:12px;color:var(--fg-2);line-height:1.9;">还没有对话。<br>直接说点什么，或者先给这个会话写一段「角色设定」。</div>';
       return;
@@ -212,7 +215,7 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     /* ⭐ 2C：主会话的提议卡片画在这一格末尾 —— 与助手浮层是**同一份** `cards`
        （下标相同 ⇒ 在哪边点「应用」都算数，`agentCardClick` 也只有一个实现）。 */
     if (s.role === 'main') logEl.innerHTML += cardsHtml();
-    logEl.scrollTop = logEl.scrollHeight;
+    if (keepBottom) logEl.scrollTop = logEl.scrollHeight;
   };
 
   const renderList = (): void => {

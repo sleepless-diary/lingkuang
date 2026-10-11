@@ -188,9 +188,32 @@ export function cutIndex(list: ChatMsg[]): number {
   return at;
 }
 
-/** 真正发给模型的历史：分割线之上只留在文件里给人看。系统提示词与长期记忆不受影响（每次现拼）。 */
+/** 机器塞进去的那种 `user` 消息（**不是创作者说的话**）：动作回执与格式提醒都算。
+ *  ⭐ 为什么要单独认它（用户 2026-10-11：「部分思考内容被当成正文了」）：工具循环里每跑一个动作
+ *  都会往历史里推一条 `user` 角色的【动作结果】，连着跑几轮就能把创作者那句提问挤出 `max` 条的
+ *  发送窗口 —— 实测真机会话里窗口尾部 16 条**全是**动作结果，模型面对一屏"我自己的动作"
+ *  只能猜"创作者到底想干什么"，于是把这段自言自语当成正文答了出来（`%APPDATA%\lingkuang\
+ *  agent\sessions.json` 里那条 812 字的 content 就是它）。 */
+function isMachineMsg(m: ChatMsg): boolean {
+  return m.role === 'user' && /^【(动作结果|格式提醒)/.test(String(m.content || ''));
+}
+
+function lastRealQuestion(list: ChatMsg[], before: number): ChatMsg | null {
+  for (let i = before - 1; i >= 0; i--) {
+    if (list[i].role === 'user' && !isMachineMsg(list[i])) return list[i];
+  }
+  return null;
+}
+
+/** 真正发给模型的历史：分割线之上只留在文件里给人看。系统提示词与长期记忆不受影响（每次现拼）。
+ *  ⭐ 窗口里**一条创作者的话都没有**时，把最近那句提问补回最前面 —— 否则模型只看得见自己的动作
+ *  （见 `isMachineMsg` 的说明）。补在最前面＝顺序不变，只是把被挤掉的那句捞回来。 */
 export function sentHistory(list: ChatMsg[], max = HISTORY_SEND): ChatMsg[] {
-  return list.slice(cutIndex(list)).slice(-max);
+  const all = list.slice(cutIndex(list));
+  const tail = all.slice(-max);
+  if (tail.some((m) => m.role === 'user' && !isMachineMsg(m))) return tail;
+  const q = lastRealQuestion(all, all.length - tail.length);
+  return q ? [q, ...tail] : tail;
 }
 
 /** 分割 / 重新接上（按钮在面板头上；「重新接上」在分割线本身上 —— 鼠标移上去才出现那个叉） */
@@ -443,8 +466,11 @@ function renderMsgs(): void {
         })
         .join('')
     : '<div class="lk-agent__empty">问点什么吧。比如「这条时间线的冲突还缺什么」「帮我把正在编的那条设定写细一点」。</div>';
+  /* ⭐ 贴底才跟（同 `src/ui/chat-live.ts` 的滚动纪律）：他正往上翻着读，就别被一次重画拽回底部。
+     ⚠️ 必须在改 innerHTML **之前**量。 */
+  const keepBottom = box.scrollHeight - box.scrollTop - box.clientHeight <= 24;
   box.innerHTML = head + cardsHtml();
-  box.scrollTop = box.scrollHeight;
+  if (keepBottom) box.scrollTop = box.scrollHeight;
   /* 分割按钮的文案在这里同步；**接线只接一次** —— 挂在面板根上做事件委托，
      逐个按钮绑会在整块重画时重复接（一次点击跑两遍 = 分割当场被自己撤销）。 */
   const btn = openEl?.querySelector('#lk-agent-split') as HTMLButtonElement | null;
@@ -779,7 +805,13 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
         break;
       }
       /* 分割线之上的对话**不发给模型**（系统提示词、记忆、工作区现状都在 sys 里，照旧每次现拼） */
-      const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...sentHistory(hist())];
+      const win = sentHistory(hist());
+      /* ⭐ **这一轮的提问必须在窗口里**（用户 2026-10-11：「部分思考内容被当成正文了」）：
+         工具循环每跑一个动作都往历史里推一条 `user` 角色的【动作结果】，窗口尾部因此可能一条
+         人话都没有 —— `sentHistory()` 会去历史里把它捞回来，但真机那会话已经顶到 `HIST_MAX = 120`，
+         提问有可能连历史都被裁掉了。那一层丢了就用**这一轮的原文**补，最保险。 */
+      if (!win.some((m) => m.role === 'user' && !isMachineMsg(m))) win.unshift({ role: 'user', content: text });
+      const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...win];
       /* 流式（用户 2026-09-26：「我想要流式输出」）：先挂一个空气泡，增量到了就往里写。
          ⚠️ 两个模式下这一段都可能在吐动作调用 —— 那种东西不给创作者看：从第一个 `{`、第一段 DSML
          标记（`＜…invoke…＞`，DeepSeek 那一族的原生格式，用户 2026-10-11 实测）、或者**一句话之后

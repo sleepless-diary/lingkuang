@@ -46,6 +46,21 @@ export interface LiveBubble {
 
 const CARET = '<span class="lk-md__caret"></span>';
 
+/* ── 滚动纪律（用户 2026-10-11：「输出的时候划不动对话列表」「流式输出的时候只能看到最顶部」）──
+   旧写法每来一片增量就 `scrollTop = scrollHeight`，两条毛病：
+     ① 创作者往回翻的**每一帧**都被拽回底部 ⇒ 列表"划不动"（想看上面那几句根本停不住）；
+     ② 思考块**自己**那个 240px 的滚动盒（`.lk-think__body`）从来没被滚过 ⇒ 思考一超过 240px
+        就只能看见最顶部那一屏，底下新长出来的全在裁剪区外（＝"新内容被截断了"）。
+   现在两条规矩：**贴底才跟**（动手前先看他本来在不在底部，已经往上翻了就不打扰他）、
+   思考块**内外一起跟**。`24px` 是"算不算在底部"的容差（和浏览器滚动条的取整误差同量级）。 */
+function nearBottom(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
+}
+function stick(el: HTMLElement | null, keep: boolean): void {
+  if (el && keep) el.scrollTop = el.scrollHeight;
+}
+
 export function liveBubble(parent: HTMLElement, o: LiveBubbleOpts = {}): LiveBubble {
   const wrap = document.createElement('div');
   if (o.wrapClass) wrap.className = o.wrapClass;
@@ -65,28 +80,29 @@ export function liveBubble(parent: HTMLElement, o: LiveBubbleOpts = {}): LiveBub
   let done = false;
   const scroller = o.scroll === undefined ? parent : o.scroll;
 
-  const paint = (html: string): void => {
+  const paint = (html: string, keepBottom: boolean): void => {
     body.innerHTML = html;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    stick(scroller, keepBottom);
   };
 
   return {
     root: wrap,
     push(delta: string): void {
       if (done || !delta) return;
+      const keep = nearBottom(scroller);   /* ⚠️ 必须在改 innerHTML **之前**量 */
       acc += delta;
-      paint(mdToHtml(acc) + CARET);
+      paint(mdToHtml(acc) + CARET, keep);
     },
     placeholder(text: string): void {
       if (done) return;
-      paint('<div class="lk-md__wait">' + mdToHtml(text) + '</div>' + CARET);
+      paint('<div class="lk-md__wait">' + mdToHtml(text) + '</div>' + CARET, nearBottom(scroller));
     },
     finish(text?: string): void {
       if (done) return;
       done = true;
       if (typeof text === 'string') acc = text;
       body.classList.remove('is-live');
-      paint(mdToHtml(acc));
+      paint(mdToHtml(acc), nearBottom(scroller));
     },
     remove(): void {
       done = true;
@@ -148,19 +164,24 @@ export function liveThink(parent: HTMLElement, o: LiveThinkOpts = {}): LiveThink
 
   let acc = '';
   let done = false;
-  const paint = (): void => {
+  /* ⭐ 内外一起跟（见文件头「滚动纪律」）：`outer` = 消息列表，`inner` = 思考块自己那个
+     `max-height:240px; overflow-y:auto` 的滚动盒 —— 它是"思考的视口"，不跟就只能看最顶部。 */
+  const paint = (outerKeep: boolean, innerKeep: boolean): void => {
     body.textContent = acc;
     sum.textContent = label + (acc ? ' · ' + acc.length + ' 字' : '');
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    stick(scroller, outerKeep);
+    stick(body, innerKeep);
   };
-  paint();
+  paint(nearBottom(scroller), true);
 
   return {
     root: det,
     push(delta: string): void {
       if (done || !delta) return;
+      const ko = nearBottom(scroller);
+      const ki = nearBottom(body);
       acc += delta;
-      paint();
+      paint(ko, ki);
     },
     finish(text?: string): void {
       if (done) return;
@@ -168,7 +189,7 @@ export function liveThink(parent: HTMLElement, o: LiveThinkOpts = {}): LiveThink
       if (typeof text === 'string') acc = text;
       /* 一句思考都没有（模型不思考 / 这次没吐）⇒ 整块摘掉，别留一个空的「思考」标题 */
       if (!acc) { det.remove(); return; }
-      paint();
+      paint(nearBottom(scroller), nearBottom(body));
       det.classList.remove('is-live');
       det.open = false;
     },
