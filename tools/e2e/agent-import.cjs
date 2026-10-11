@@ -276,16 +276,29 @@ async function main() {
   ]);
   const t8 = await toolCount();
   await ask('读进来之后立刻把里面的设定建条目。', 3200);
-  /* ⚠️ 判据读 **DOM 里最后那条回执**，不读 `__lkSeen` 末条：写入动作之后这一轮就收手了
-     （`handleWrite` → 落盘 → break），**没有下一次模型调用** ⇒ 那条【动作结果】还没进发送窗口
-     （第七十七轮踩过同一个坑：拿喂回去的消息当判据，读到的是创作者那句原话）。 */
+  /* ⚠️ 判据读 **DOM 里最后那条回执**，不读底部提示（第七十七轮踩过：拿喂回去的消息当判据，
+     读到的是创作者那句原话）。⭐ 第八十八轮起落盘之后**会**再叫一轮，那条【动作结果】确实进了
+     发送窗口 —— 但判据留在 DOM 上更稳：它不随"这一轮跑了几次请求"变化。 */
   const t8last = (await lastTool()) || {};
   const r8 = { receipts: (await toolCount()) - t8, body: t8last.body || '' };
   let onDisk = false;
   for (let i = 0; i < 20 && !onDisk; i++) { onDisk = findVaultFile(NAME_A + '.md') && findVaultFile(NAME_B + '.md'); if (!onDisk) await sleep(200); }
+  /* ⭐ 第八十八轮（用户 2026-10-16：「有时候会断」）：写动作**不再结束整轮** —— 从前这里写完
+     `create_entity` 就收手（整轮结束、模型再没被叫过），于是"读完一批立刻建条目"这种循环
+     每一步都要创作者再催一句；真机会话就是停在一条 `【动作结果：create_timeline】` 上。
+     ⇒ 旧构建这条只有 2 次请求（第 3 条回复白排在队列里没人取）。 */
+  const r8b = {
+    seen: await ev(`(window.__lkSeen || []).length`),
+    fed: await fed(),
+    last: await ev(`(function () { const b = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__msg.is-ai .lk-agent__bubble')]; return b.length ? b[b.length - 1].textContent : ''; })()`),
+  };
   check('★8 ⭐「读一批 → 立刻建一批」走通了：条目真落进设定库（这是用户要的结果）',
     r8.receipts >= 2 && r8.body.indexOf('已新建') >= 0 && onDisk === true,
     { receipts: r8.receipts, disk: onDisk, hasNote: r8.body.indexOf('已新建') >= 0, tail: r8.body.slice(-80) });
+  /* ⭐ 落盘之后**接着跑**：模型被再叫了一轮，且那一轮真的读到了【动作结果：create_entity】 */
+  check('★8b ⭐写完接着跑（不再等他催）：落盘那一步的回执真喂回了**下一轮**，模型的下一句也照常显示',
+    r8b.seen >= 3 && r8b.fed.indexOf('【动作结果：create_entity】') >= 0 && r8b.last.indexOf('这两条条目建好了') >= 0,
+    { seen: r8b.seen, hasReceipt: r8b.fed.indexOf('【动作结果：create_entity】') >= 0, last: r8b.last.slice(0, 40) });
 
   /* ---------- ★9 import_status 动作也走通 ---------- */
   await setMock([JSON.stringify({ tool: 'import_status', args: { dir: LIB } }), '进度看过了。']);
@@ -294,6 +307,19 @@ async function main() {
   const r9 = { receipts: (await toolCount()) - t9, body: ((await lastTool()) || {}).body || '' };
   check('★9 助手真调 import_status，回执报出进度',
     r9.receipts >= 1 && r9.body.indexOf('导入进度') >= 0, { receipts: r9.receipts, head: r9.body.slice(0, 80) });
+
+  /* ---------- ★5b ⭐「正在导入的那个文件夹」会粘住（第八十八轮，用户 2026-10-16：「有时候会断」）----------
+     真机取证：他给助手加了 `D:\Desktop` 之后，**不给 dir 的 read_many** 把整个桌面的文本都算进范围
+     （144 → 199），连高数作业和分数表都当成素材读了进来。范围该跟着"他正在搬的那个库"走。
+     ⚠️ 这条**故意放在最后**：旧构建下它会把 LIB2 也读进已读清单，连带把前面的 ★6/★6c 带红
+     （第一版放在 ★5 后面就是 19/23，多出来的 2 条是连带红，不是真的坏了）。 */
+  const bareStatus = await status({});
+  const bareMany = await many({});
+  const scopeNow = String((bareStatus && bareStatus.scope) || '').toLowerCase();
+  check('★5b ⭐不给 dir 也留在"正在导入的那个文件夹"里（不会把整个桌面都算进范围）',
+    st.ok === true && bareStatus.ok === true && bareStatus.total === st.total &&
+    scopeNow.indexOf('library') >= 0 && scopeNow.indexOf('library2') < 0 && (bareMany.files || []).length === 0,
+    { scope: bareStatus.scope, bareTotal: bareStatus.total, libTotal: st.total, bareFiles: (bareMany.files || []).length });
 
   /* ---------- ★10 无异常 ---------- */
   const errs = await ev(`window.__errs || []`);

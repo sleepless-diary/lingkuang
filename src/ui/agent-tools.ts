@@ -162,9 +162,9 @@ export function toolsPrompt(mode: AgentMode = 'agent'): string {
        这里把正规打法钉死（有批量通道时才说 —— 旧版主进程没有 read_many）。 */
     ...(fsBatchAvailable() ? [
       '⭐ **搬资料库（把一个文件夹的素材变成灵框里的条目）的正规打法**，就这三步循环做：',
-      '   ① `read_many`（不给参数）= 读下一批**还没读过**的文件（一次最多 12 个 / 约 12000 字）；',
+      '   ① `read_many`（不给参数）= 读**同一次导入里**下一批还没读过的文件（一次最多 12 个 / 约 12000 字）—— 第一次先给 `dir`（那个资料库文件夹），范围就记住了：之后不给 `dir` 也只在这个文件夹里读，**不会跑到别的授权文件夹去**（创作者可能把整个桌面都交给了你）；',
       '   ② **读完这一批就立刻建条目**：`create_entity{entities:[{name,type?,fields?},…]}` 一次建一批；事件用 `create_node{nodes:[…]}`，正文用 `append_doc`；',
-      '   ③ 建完再 `read_many` 读下一批；想知道还剩多少就问 `import_status`。',
+      '   ③ 建完再 `read_many` 读下一批；想知道还剩多少就问 `import_status`。**建完条目接着往下走，别停下来等创作者催**（「自动」档会自己进下一轮）。',
       '⚠️ **绝不要"先把整个库读完、再一次性建"**：你只看得见最近十几条消息，读多了前面的就从你眼前消失了（历次实测：那样会无限重读、一个条目都建不出来）。**读一批、建一批**是唯一走得通的做法。',
       '⚠️ `create_node`（事件）要有当前时间线；这个世界还没有时间线就先 `create_timeline`（设定条目 `create_entity` 不依赖时间线）。',
     ] : []),
@@ -870,7 +870,8 @@ async function runFileRead(call: ToolCall): Promise<string> {
     const head = `【批量读取】这一批 ${d.files.length} 个文件（共 ${charsGot} 字）· 范围内 ${d.total} 个文本文件，已读 ${d.read}，还剩 ${d.remaining}`;
     const body = d.files.map((f) =>
       `---- ${f.rel}（${fmtSize(f.size)}${f.truncated ? ` · 全文 ${f.chars} 字，这里只给了前 ${f.text.length} 字` : ''}）----\n${f.text || '（空文件）'}`).join('\n\n');
-    const tail = '⭐ **就着这一批立刻建条目**：`create_entity{entities:[{name,type?,fields?},…]}` 一次建一批（事件用 `create_node{nodes:[…]}`，没有时间线就先 `create_timeline`），建完再 `read_many` 读下一批 —— 别攒着"全读完再建"。';
+    const tail = '⭐ **就着这一批立刻建条目**：`create_entity{entities:[{name,type?,fields?},…]}` 一次建一批（事件用 `create_node{nodes:[…]}`，没有时间线就先 `create_timeline`），建完再 `read_many` 读下一批 —— 别攒着"全读完再建"。'
+      + '（`read_many` 不给 `dir` 就是**同一个文件夹**的下一批：范围跟着上次那个文件夹走，不会跑到别的授权文件夹去。）';
     return head + leftover + '\n' + body + '\n' + tail + (d.stopped ? '\n（这一批是字数到顶提前停的，下一批接着读）' : '');
   }
   /* ⭐ 片 4：导入进度 —— 让模型**看得见**还剩多少，不靠记忆猜（"还有多少没读"是无限重读的根源） */
@@ -883,12 +884,12 @@ async function runFileRead(call: ToolCall): Promise<string> {
     if (!d.total) return '这些文件夹里没找到可读的文本文件（.md/.txt/.json 这些）。先 list_files 看一眼里面到底有什么。';
     return [
       `【导入进度】范围内 ${d.total} 个文本文件：已读 ${d.read}，还剩 ${d.remaining}。`,
-      d.roots.length ? `范围：${d.roots.join('、')}` : '',
+      d.roots.length ? `范围：${d.roots.join('、')}${d.scope ? '' : '（还没指定资料库 —— 建议先给一个 dir）'}` : '',
       d.remaining
         ? `下一批（还没读的，最多列 5 个）：\n${d.next.map((x) => '  ' + x).join('\n')}`
         : '（全读完了 —— 接下来只该建条目，别再读了）',
       d.remaining
-        ? '⭐ 直接 `read_many`（不给参数）就读下一批；**读完一批立刻建条目**，别攒到最后。'
+        ? '⭐ 直接 `read_many`（不给参数）就读**同一个文件夹**的下一批；**读完一批立刻建条目**，别攒到最后。'
         : '⭐ 把手上这些内容用 `create_entity{entities:[…]}`（事件 `create_node{nodes:[…]}`）落进灵框。',
     ].filter(Boolean).join('\n');
   }

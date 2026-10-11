@@ -1633,13 +1633,20 @@ const FS_BATCH_FILE_CAP = 6000; /* 单个文件最多给多少字（和 read_fil
 function fsImportedLoad() {
   try {
     const j = JSON.parse(fs.readFileSync(FS_IMPORT_FILE(), 'utf8'));
-    return new Set(Array.isArray(j && j.read) ? j.read.map((x) => fsNorm(String(x))) : []);
-  } catch (e) { return new Set(); }
+    return {
+      read: new Set(Array.isArray(j && j.read) ? j.read.map((x) => fsNorm(String(x))) : []),
+      /* ⭐ 2026-10-16（第八十八轮，用户：「有时候会断」+ 真机会话取证）：记住**正在导入哪个文件夹** ——
+         不给 `dir` 的 `read_many` / `import_status` 接着用它。真机实测：他给助手加了 `D:\Desktop`
+         之后，"读下一批"把**整个桌面**的文本都算进范围（144 → 199），连高数作业和分数表都当成
+         素材读进来了。范围该跟着"他正在搬的那个库"走，不是"所有授权文件夹一起排队"。 */
+      scope: typeof (j && j.scope) === 'string' ? j.scope : '',
+    };
+  } catch (e) { return { read: new Set(), scope: '' }; }
 }
-function fsImportedSave(set) {
+function fsImportedSave(state) {
   try {
     fs.mkdirSync(path.dirname(FS_IMPORT_FILE()), { recursive: true });
-    fs.writeFileSync(FS_IMPORT_FILE(), JSON.stringify({ read: [...set] }, null, 2), 'utf8');
+    fs.writeFileSync(FS_IMPORT_FILE(), JSON.stringify({ read: [...state.read], scope: state.scope || '' }, null, 2), 'utf8');
   } catch (e) { /* 清单存不下不该拦住读文件 —— 顶多下一轮重读一遍 */ }
 }
 /** 这些 root 里所有能当"素材"的文本文件（跳过点文件 / 依赖目录 / 超大文件），按路径排序 */
@@ -1671,27 +1678,38 @@ function fsTextFiles(roots) {
   out.sort((a, b) => a.localeCompare(b, 'zh'));
   return out;
 }
-/** 批量读取的范围：给了 dir 就只在那一个文件夹里（也得过白名单），否则全部根 */
-function fsBatchRoots(dir) {
-  if (!dir) return { ok: true, roots: fsRootsList() };
-  if (!fsMatchRoot(dir, false)) {
-    return { ok: false, error: '这个文件夹不在助手能看的文件夹里：' + dir + '（要让助手读它，得先把这个文件夹交给它：面板「助手 → 文件夹 → ＋ 添加文件夹」，或者提一个 allow_folder 动作让创作者点一下「应用」）' };
+/** 批量读取的范围：给了 dir 就只在那一个文件夹里（也得过白名单）；**没给就用 `scope`**
+ *  （上一次指定过的那个文件夹）；两者都没有才退化成"全部根"。
+ *  ⭐ 第八十八轮：`scope` 是"我正在搬的这个库"—— 没有它的话，创作者一旦把桌面交给助手，
+ *  "读下一批"就会把整个桌面的文本一起读进来（真机实测：144 → 199，读到高数作业）。 */
+function fsBatchRoots(dir, scope) {
+  const want = dir || scope || '';
+  if (!want) return { ok: true, roots: fsRootsList(), scope: '' };
+  if (!fsMatchRoot(want, false)) {
+    /* 记着的那个文件夹没了 / 不再授权 ⇒ **退回全部根**（不能因为一条过期记忆就报错挡住读取） */
+    if (!dir && scope) return { ok: true, roots: fsRootsList(), scope: '' };
+    return { ok: false, error: '这个文件夹不在助手能看的文件夹里：' + want + '（要让助手读它，得先把这个文件夹交给它：面板「助手 → 文件夹 → ＋ 添加文件夹」，或者提一个 allow_folder 动作让创作者点一下「应用」）' };
   }
   let isDir = false;
-  try { isDir = fs.statSync(dir).isDirectory(); } catch (e) { return { ok: false, error: '没有这个文件夹：' + dir }; }
-  if (!isDir) return { ok: false, error: '这不是文件夹（读单个文件用 read_file）：' + dir };
-  return { ok: true, roots: [{ path: path.resolve(dir), label: path.basename(dir) || dir, write: !!fsMatchRoot(dir, true) }] };
+  try { isDir = fs.statSync(want).isDirectory(); } catch (e) { return { ok: false, error: '没有这个文件夹：' + want }; }
+  if (!isDir) return { ok: false, error: '这不是文件夹（读单个文件用 read_file）：' + want };
+  return {
+    ok: true,
+    roots: [{ path: path.resolve(want), label: path.basename(want) || want, write: !!fsMatchRoot(want, true) }],
+    scope: fsNorm(want),
+  };
 }
 
 ipcMain.handle('fs:import-status', (e, payload) => {
   /* 容错：`{path}` 是渲染层的正规形状；**裸字符串也认**（与 `fs:add-root` 同一条规矩 ——
      手工/自动化调 `lingkuangAPI.fs.importStatus('C:/x')` 时不会静悄悄退化成"扫全部根"）。 */
   const dir = typeof payload === 'string' ? payload : ((payload && payload.path) ? String(payload.path) : '');
-  const r = fsBatchRoots(dir);
+  const state = fsImportedLoad();
+  const r = fsBatchRoots(dir, state.scope);
   if (!r.ok) return fsErr(r.error);
-  const imported = fsImportedLoad();
+  if (r.scope && r.scope !== state.scope) { state.scope = r.scope; fsImportedSave(state); }
   const all = fsTextFiles(r.roots);
-  const unread = all.filter((p) => !imported.has(fsNorm(p)));
+  const unread = all.filter((p) => !state.read.has(fsNorm(p)));
   return {
     ok: true,
     total: all.length,
@@ -1699,6 +1717,7 @@ ipcMain.handle('fs:import-status', (e, payload) => {
     remaining: unread.length,
     next: unread.slice(0, 5),
     roots: r.roots.map((x) => x.path),
+    scope: r.scope,
   };
 });
 
@@ -1707,12 +1726,16 @@ ipcMain.handle('fs:read-many', (e, payload) => {
   const again = a.again === true || a.again === 'true';
   /* 裸字符串 = 「就读这个文件夹」(与 import-status / add-root 一致) */
   const dir = typeof payload === 'string' ? payload : (a.dir ? String(a.dir) : (a.path ? String(a.path) : ''));
-  const r = fsBatchRoots(dir);
+  const state = fsImportedLoad();
+  const r = fsBatchRoots(dir, state.scope);
   if (!r.ok) return fsErr(r.error);
   const roots = r.roots;
+  /* ⭐ 第八十八轮：这次要是明确给了文件夹，就把它记成"正在导入的那个" —— 之后不给 dir 的
+     `read_many` / `import_status` 都接着在这个文件夹里数、读。 */
+  if (r.scope && r.scope !== state.scope) { state.scope = r.scope; fsImportedSave(state); }
   const limit = Math.max(1, Math.min(Number(a.limit) || FS_BATCH_FILES, 40));
   const budget = Math.max(2000, Math.min(Number(a.chars) || FS_BATCH_CHARS, 40000));
-  const imported = fsImportedLoad();
+  const imported = state.read;
   const all = fsTextFiles(roots);
 
   const outside = [];
@@ -1761,7 +1784,7 @@ ipcMain.handle('fs:read-many', (e, payload) => {
     used += body.length;
     if (!again) imported.add(fsNorm(p));
   }
-  if (!again && files.length) fsImportedSave(imported);
+  if (!again && files.length) fsImportedSave(state);
 
   const unread = all.filter((p) => !imported.has(fsNorm(p)));
   return {
@@ -1772,6 +1795,7 @@ ipcMain.handle('fs:read-many', (e, payload) => {
     already: already.slice(0, 20),
     stopped: stopForBudget,
     roots: roots.map((x) => ({ path: x.path, label: x.label, write: x.write })),
+    scope: r.scope,
     total: all.length,
     read: all.length - unread.length,
     remaining: unread.length,

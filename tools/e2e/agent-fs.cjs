@@ -219,9 +219,11 @@ async function main() {
   const cardsA = await cards();
   await setMock([`{"tool":"write_file","args":{"path":${json(RO_WRITE)},"text":"助手想往里写"}}`, '那我先不写。']);
   await ask('把这段记到 readonly 里。');
-  const denied = { note: await noteText(), cards: await cards(), exists: fs.existsSync(RO_WRITE) };
-  check('★10 写只读文件夹被拒（提示里说「只读」）、不出版卡片、磁盘上什么都没多',
-    denied.note.indexOf('只读') >= 0 && denied.cards === cardsA && denied.exists === false,
+  /* ⚠️ 判据读**回执**（`.lk-agent__tool`）不读底部提示：第八十八轮起写动作被拒之后不再结束整轮
+     （写完整批接着跑），底部那行会被下一轮的收尾提示顶掉 —— 回执才是留在消息区里的实话。 */
+  const denied = { receipt: await lastTool(), note: await noteText(), cards: await cards(), exists: fs.existsSync(RO_WRITE) };
+  check('★10 写只读文件夹被拒（回执里说「只读」）、不出版卡片、磁盘上什么都没多',
+    denied.receipt.indexOf('只读') >= 0 && denied.cards === cardsA && denied.exists === false,
     { ...denied, before: cardsA });
 
   /* ---------- ★11 面板上把它点成「可写」（UI 那条路） ---------- */
@@ -353,7 +355,9 @@ async function main() {
   const cardsE = await cards();
   await setMock([`{"tool":"allow_folder","args":{"path":${json(OUT)}}}`, '哦对，它已经在了。']);
   await ask('再把 outside 交给我。');
-  const againNote = await noteText();
+  /* ⚠️ 判据读**回执**不读底部提示：第八十八轮起写动作被拒之后整轮**继续**（后面还有活儿就接着走），
+     底部那行会被下一轮的收尾提示顶掉（第一版就是这么红的：`note: ""`）。 */
+  const againNote = await lastTool();
   const rootsAgain = await api('roots()');
   check('★20 已经交给助手的文件夹不会再要一张卡片（提示里说清"早就交给你了"）',
     (await cards()) === cardsE && againNote.indexOf('早就交给你了') >= 0 && (rootsAgain.roots || []).length === 2,

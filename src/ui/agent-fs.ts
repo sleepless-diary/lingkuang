@@ -66,8 +66,12 @@ export interface FsBatchData {
   remaining: number;
   /** 还没读的下一批（最多 5 个） */
   next: string[];
+  /** ⭐ 第八十八轮：主进程记着的「正在导入的那个文件夹」（不给 `dir` 时用的就是它） */
+  scope?: string;
 }
-export interface FsImportData { total: number; read: number; remaining: number; next: string[]; roots: string[] }
+/** ⭐ `scope`（第八十八轮）：主进程记着的「正在导入的那个文件夹」——
+ *  不给 `dir` 的 `read_many` / `import_status` 接着在它里面数、读（免得把整个桌面都算进范围）。 */
+export interface FsImportData { total: number; read: number; remaining: number; next: string[]; roots: string[]; scope?: string }
 export interface FsBatchOpts { paths?: string[]; dir?: string; limit?: number; chars?: number; again?: boolean }
 
 export interface FsOk<T> { ok: true; data: T }

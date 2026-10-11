@@ -924,9 +924,13 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
   let sawThink = false;
   try {
     /* 一次提问 = 最多 `roundMax` 轮：模型要么说话（结束），要么要求一个只读动作
-       （执行完把结果喂回去，让它接着说）。写入动作一轮就结束 —— 要么落盘要么等点击。 */
+       （执行完把结果喂回去，让它接着说）。写入动作：出了卡片就停（等创作者点「应用」），
+       ⭐ 第八十八轮起**落盘之后接着走下一轮**（「一轮」档除外 —— 那个档一次只做一个动作）。 */
     let fixed = false; /* ⭐ 格式纠错只做一次，免得跟模型来回拉锯 */
     let thinkRetried = false; /* ⭐ 「只想了没答」也只催一次（2026-10-12） */
+    /* ⭐ 第八十八轮：这一问里**已经做过的写动作**（签名 = 工具名 + 参数）。写动作从这一轮起
+       **不再结束整轮**（见下面那段说明），防绕圈就靠这本账：同一个签名做过一遍就不再重复做。 */
+    const doneWrites = new Set<string>();
     const roundMax = mode === 'agent' ? agentRounds() : CHAT_ROUNDS;
     for (let round = 0; round <= roundMax; round++) {
       /* ⭐「停」（发送键在跑时变「停下」）：每一轮开头看一次 —— 不打断正在飞的那一次请求，
@@ -1105,10 +1109,14 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
          **一个都没跑** —— 他看到的正是"工具打出来了但无法调用、卡住了"）。
          现在解析器认这种连写，这里按顺序落地：读动作跑完；写动作**第一张就收手**等创作者点头。 */
       let stop = false;
-      /* 这一批里出现过写入 ⇒ **整批跑完就收手**（片 3 的老规矩：写动作一轮就结束）。
-         为什么不是"被拒了就接着走到下一轮"：那会让模型在同一轮里反复重试同一个被拒的动作
-         （最多 200 轮，每一轮都是一次真 API 调用），而且底部那句提示会被下一轮的空回复冲掉
-         —— `agent-tools` ★10/★11 与 `agent-fs` ★10/★20 就是这么红的。 */
+      /* ⭐ 第八十八轮（用户 2026-10-16：「**有时候会断**，你看一眼」）：**写动作不再结束这一轮**。
+         真机会话取证（`%APPDATA%\lingkuang\agent\sessions.json` 主会话 120 条）：最后两条是
+         `【动作结果：read_many】` 与 `【动作结果：create_timeline】`，而模型在那之前的一句是
+         「先读第一批素材，同时为「维斯莱特」建一条主线时间线……读完一批立刻建条目」——
+         **写完这一步整轮就结束了**，它自己宣布的"建条目"一步都没走到，创作者得再催一句才动。
+         搬库这种活儿必须能连着干（同一件事的第五次报告，前四次都是"被当正文"）。
+         ⚠️ 片 3 之所以让写动作结束整轮，是为了防它**反复重试被拒的动作**（最多 200 轮真 API 调用）
+         —— 那个目的改由 `doneWrites` 记账达成：同一个写动作（工具名 + 参数一模一样）做过就不再重复。 */
       let wrote = false;
       /* 没轮到的动作要**留痕**（用户 2026-10-11：「怎么卡住了」）—— 只写在底部那行提示里，
          创作者翻回去就找不到了，模型下一轮也不知道自己还有活儿没干。 */
@@ -1117,6 +1125,18 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
       for (let k = 0; k < calls.length; k++) {
         const c = calls[k];
         if (isWriteTool(c.tool)) {
+          const sig = c.tool + '|' + JSON.stringify(c.args ?? {});
+          if (doneWrites.has(sig)) {
+            push({
+              role: 'user',
+              content: `【动作结果：${c.tool}】这一步刚才已经做过一遍（同样的参数），我没有重复做`
+                + ` —— 换个做法、换个目标，或者把卡在哪儿直接讲给创作者听。`,
+            });
+            host.note('同一个写入做了两遍：我停下来，免得它一直在原地绕', true);
+            stop = true;
+            break;
+          }
+          doneWrites.add(sig);
           const st = await handleWrite(c, host);
           wrote = true;
           /* ⭐ 只有"出了一张卡片"才必须**立刻**收手（那一步还在等创作者点「应用」，数据没变，
@@ -1149,8 +1169,11 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
         });
       }
       host.rerender();
-      /* 写动作出卡片 / 有写入 / 聊天模式额度用完 ⇒ 这一轮就到这儿 */
-      if (stop || wrote) break;
+      /* 出卡片（等创作者点「应用」）或「一轮」档额度用完 ⇒ 这一轮就到这儿。
+         ⭐ 第八十八轮：写动作**落盘之后接着往下走** —— 「一轮」档仍然一次只做一个动作
+         （那是这个档名字里的承诺），「自动」档则直接进下一轮：模型下一轮会读到刚才那条
+         【动作结果】，自己接着干（搬库要的就是这个）。绕圈由 `doneWrites` 记账挡住。 */
+      if (stop || (wrote && mode !== 'agent')) break;
       if (round === roundMax) {
         host.note(mode === 'agent'
           ? (stepsFree()

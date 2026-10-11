@@ -379,11 +379,16 @@ async function main() {
   const grow18b = all18b.length - before18b;
   const seenN18b = await ev(`(window.__lkSeen || []).length`);
   const last18b = all18b[all18b.length - 1] || '';
-  check('★18b ⭐同批里被拒的写**不吞掉后面的读**（两个回执都在、读真跑出结果、不报「未执行」；写动作照旧"一轮就结束"）',
+  /* ⭐ 第八十八轮：写动作**不再结束整轮**（「自动」档落盘/被拒之后接着走下一轮）——
+     所以这里从前那句 `seenN18b === 1`（"写动作照旧一轮就结束"）改成"接着走了下一轮，
+     而且**两条回执都喂回了那一轮**"（这才是"拒绝不吞掉后面的读"真正要的：模型下一轮看得到）。 */
+  const fed18b = await ev(`(function () { const s = window.__lkSeen || []; const m = s[s.length - 1] || []; return m.map((x) => String(x.content || '')).join('\\n'); })()`);
+  check('★18b ⭐同批里被拒的写**不吞掉后面的读**（两个回执都在、读真跑出结果、不报「未执行」）＋被拒之后接着走下一轮、两条回执都喂回去了',
     worlds.length === 1 && grow18b === 2 && all18b.some((t) => t.indexOf('唯一') >= 0) &&
     last18b.indexOf('list_nodes') >= 0 && last18b.indexOf('时间线') >= 0 &&
-    all18b.every((t) => t.indexOf('未执行') < 0) && seenN18b === 1,
-    { grow18b, rounds: seenN18b, tail: all18b.slice(-2) });
+    all18b.every((t) => t.indexOf('未执行') < 0) &&
+    seenN18b === 2 && fed18b.indexOf('【动作结果：delete_world】') >= 0 && fed18b.indexOf('【动作结果：list_nodes】') >= 0,
+    { grow18b, rounds: seenN18b, fedBoth: fed18b.indexOf('【动作结果：delete_world】') >= 0 && fed18b.indexOf('【动作结果：list_nodes】') >= 0, tail: all18b.slice(-2) });
 
   /* ⭐ 18c 真出了一张卡片时才必须收手（那一步还在等创作者点「应用」，数据没变，
      后面的动作等于建在沙上）—— 但要**留痕**，不是静默：一条「未执行」回执说清还剩哪几个动作，

@@ -192,9 +192,11 @@ async function main() {
   const gateRo = await ev(`document.getElementById('lk-agent-panel').dataset.gate`);
   await setMock(['{"tool":"create_entity","args":{"name":"测试只读档","type":"角色"}}']);
   await ask('建一条叫「测试只读档」的。');
-  const ro = { gate: gateRo, cards: (await props()).length, rows: await rows(), note: await noteText() };
+  /* ⚠️ 判据读**回执**（`.lk-agent__tool`）不读底部提示：第八十八轮起"写动作不再结束整轮"
+     （写完接着往下做），底部那行会被下一轮的收尾提示顶掉 —— 留在消息区里的回执才是实话。 */
+  const ro = { gate: gateRo, cards: (await props()).length, rows: await rows(), receipt: await toolText(), note: await noteText() };
   check('★10 只读档：不出卡片、不落盘、明白告诉你没执行',
-    ro.gate === 'deny' && ro.cards === 0 && ro.rows === 2 && ro.note.indexOf('只读') >= 0, ro);
+    ro.gate === 'deny' && ro.cards === 0 && ro.rows === 2 && ro.receipt.indexOf('只读') >= 0, ro);
 
   /* ---------- ⑥ 直接执行档：不问，直接落盘 ---------- */
   await setPerm('workspace', 'never');
@@ -204,10 +206,18 @@ async function main() {
   const yolo = {
     gate: gateYolo, cards: (await props()).length, rows: await rows(),
     stored: await ev(`(function () { const s = JSON.parse(localStorage.getItem('lingkuang-settings') || '{}'); return String(s.agentScope || '') + '+' + String(s.agentAsk || ''); })()`),
+    receipt: await toolText(),
     note: await noteText(),
+    seen: await ev(`(window.__lkSeen || []).length`),
   };
   check('★11 直接执行档（可写 + 不询问）：不用点，直接就落盘了（两旋钮也存进了设置）',
-    yolo.gate === 'allow' && yolo.cards === 0 && yolo.rows === 3 && yolo.stored === 'workspace+never' && yolo.note.indexOf('已新建设定') >= 0, yolo);
+    yolo.gate === 'allow' && yolo.cards === 0 && yolo.rows === 3 && yolo.stored === 'workspace+never' && yolo.receipt.indexOf('已新建设定') >= 0, yolo);
+  /* ⭐ 第八十八轮（用户 2026-10-16：「**有时候会断**」）：写动作**不再结束整轮** ——
+     真机会话取证：最后两条就是【动作结果：read_many】+【动作结果：create_timeline】，
+     模型自己说要"读完一批立刻建条目"，可写完这一步整轮就结束了，创作者得再催一句才动。
+     ⇒ 现在「自动」档写完接着跑下一轮（模型下一轮会读到刚才那条回执）。旧构建这里只有 1 次请求。 */
+  check('★11b ⭐写完之后**接着跑**（不再停在落盘那一步等创作者催）：模型被再叫了一轮',
+    yolo.seen >= 2, { seen: yolo.seen });
 
   /* ---------- ⑦ 认不出的裸 JSON ⇒ 回头纠正一次（不糊到创作者脸上）---------- */
   const callsBefore = await calls();
@@ -509,6 +519,25 @@ async function main() {
     applied24.rows === r24 + 3 && applied24.cards === 0 &&
     applied24.tool.indexOf('批量甲') >= 0 && applied24.tool.indexOf('批量丙') >= 0,
     { ...applied24, before: r24 });
+
+  /* ---------- ★11c ⭐同一个写入做两遍：第二遍被"记账"拦住（第八十八轮） ----------
+     防绕圈从"写完就收手"改成"按签名记账"（工具名 + 参数一模一样 ⇒ 做过就不再重复做）。
+     ⚠️ 故意放在**最后**：这一条会真建一条设定（树多一行），而前面几处是按绝对行数断言的
+     （`rows === 3`）—— 第一版放在 ★11 后面，直接把 ★12/★13/★15/★16/★18/★19/★23/★24 全带红了。 */
+  await setPerm('workspace', 'never');
+  const DUP2 = JSON.stringify({ tool: 'create_entity', args: { name: '测试重复' } });
+  await setMock([DUP2 + '\n' + DUP2, '好了。']);
+  const dupBefore = await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__tool').length`);
+  const dupRows = await rows();
+  await ask('建一条叫「测试重复」的。');
+  await sleep(600);
+  const dup = {
+    receipts: (await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__tool').length`)) - dupBefore,
+    receipt: await toolText(),
+    rows: await rows(),
+  };
+  check('★11c ⭐同一个写入在一轮里做两遍 ⇒ 第二遍被记账拦住（写明"已经做过一遍"），只落一次盘',
+    dup.receipts === 2 && dup.receipt.indexOf('已经做过一遍') >= 0 && dup.rows === dupRows + 1, dup);
 
   const errs = await ev(`window.__errs`);
   check('★14 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
