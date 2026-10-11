@@ -16,11 +16,11 @@
  * id 走单调时钟），不自己手写 id、不直接改 `data`。
  */
 
-import { addEntity, addNode } from '../store/actions';
+import { addEntity, addNode, addTimeline, addWorld, removeEntity, removeNode, removeTimeline, removeWorld } from '../store/actions';
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
-import type { Entity, PropValue, TimelineNode, Worldset } from '../store/types';
-import { fsAddRoot, fsAvailable, fsDefaultPath, fsList, fsPrompt, fsRead, fsRootOf, fsRootsCached, fsSearch, fsSetRootWrite, fsWrite } from './agent-fs';
+import type { Entity, PropValue, Timeline, TimelineNode, Worldset } from '../store/types';
+import { fsAddRoot, fsAvailable, fsDefaultPath, fsDelete, fsList, fsPrompt, fsRead, fsRootOf, fsRootsCached, fsSearch, fsSetRootWrite, fsWrite } from './agent-fs';
 import { webAvailable, webFetch, webPrompt, webSearch } from './agent-web';
 import { setAgentAsk, setAgentScope } from './agent-perm';
 import { stepsPrompt, type AgentMode } from './agent-mode';
@@ -97,6 +97,20 @@ const WRITE_TOOLS: ToolSpec[] = [
   /* ⭐ 2026-09-29：创作者让你看/写一个还没交给你的文件夹时，**别直接说做不到** —— 提这个动作，
      他会看到一张「把某文件夹交给助手」的卡片（默认只读；要写就 write:true）。永远要人点头（needsConfirm）。 */
   { name: 'allow_folder', title: '要一个文件夹', desc: '请创作者把一个文件夹交给助手（他点「应用」才生效；默认只读，write:true 才可写）', args: '{ path: 文件夹绝对路径, write?: true }', needsFs: true },
+  /* ⭐ 片 3 的另一半：**新建世界 / 时间线**（用户那天问的原话是「删除和创建」）。
+     原有的创建工具只管灵框**里面一条条的内容**（create_entity / create_node / write_file / append_file），
+     而「世界」「时间线」这两层一直没有入口 —— `src/store/actions.ts` 的 addWorld / addTimeline 早就有。 */
+  { name: 'create_world', title: '新建世界', desc: '新建一个世界观（同名会自动加序号；建完会切到它，里面是空的）', args: '{ name: 世界名字 }' },
+  { name: 'create_timeline', title: '新建时间线', desc: '在当前世界里新建一条时间线（空的，之后可以往里建事件）', args: '{ name: 时间线名字 }' },
+  /* ⭐ 片 3（2026-10-12）：**删除**。用户当天问「你没给AI配置删除和创建的工具吗」——
+     创建早有（create_entity / create_node / write_file / append_file），删除一条都没有。
+     全部走回收站：灵框库里那三个由 `src/store/actions.ts` 的 removeXxx 把 .md 移进 `vault/.trash/`，
+     灵框外的 delete_file 由主进程 `shell.trashItem()` 移进 **Windows 回收站**。 */
+  { name: 'delete_entity', title: '删设定', desc: '删掉一条设定（它的 .md 一起移进 vault 回收站，可恢复）', args: '{ name: 名字 }' },
+  { name: 'delete_node', title: '删事件', desc: '删掉当前时间线上的一个事件（.md 一起移进回收站，可恢复；同名多个要再给 year）', args: '{ title: 标题, year?: 年份 }' },
+  { name: 'delete_timeline', title: '删时间线', desc: '删掉整条时间线（连同它上面的事件目录一起移进回收站，可恢复）', args: '{ name: 时间线名字 }' },
+  { name: 'delete_world', title: '删世界', desc: '删掉整个世界（连同它的时间线与设定一起移进回收站，可恢复）', args: '{ name: 世界名字 }' },
+  { name: 'delete_file', title: '删文件', desc: '把灵框库外的一个文件移进 Windows 回收站（只删文件、不删目录；不能删灵框库里的文件）', args: '{ path: 文件绝对路径 }', needsFs: true },
 ];
 
 export function findTool(name: string): ToolSpec | undefined {
@@ -129,6 +143,7 @@ export function toolsPrompt(mode: AgentMode = 'agent'): string {
     '⚠️ 不要写成 {"动作名":{…}}（例如 {"set_field":{…}}），也不要写成 {"name":…,"arguments":…} —— 那样我认不出来。',
     '⚠️ 也别用你自己那套原生函数调用标记（`＜…invoke name="…"＞` 那种带 DSML 字样的）—— 我认得出、也跑得动，但上面那行纯 JSON 最稳，你的对话历史里也更干净。',
     '要放开权限（切到「自动」档、把权限改宽）时，那张卡片**永远**要创作者点「应用」才会生效 —— 别催他。',
+    '⚠️ 删除类动作（delete_entity / delete_node / delete_timeline / delete_world / delete_file）**只有创作者明说要删时才用**：别自己判断"这条重复了、那个没用了"就动手。它们都会进回收站（灵框库里 → vault 回收站，灵框库外的文件 → Windows 回收站），但那是给创作者捞回误删的，不是给你试错的。',
     mode === 'agent'
       ? '不需要用动作时就用平常的话回答。**一次提问里可以连着提多个动作**（' + stepsPrompt() + '）；批量活（一次建好几个事件、给一批设定加同一个字段、**把一整个资料库搬进来**）**一次规划好再动手**：`set_field{entities:[…]}`、`create_node{nodes:[…]}` 与 `create_entity{entities:[…]}` 三种批量形态只有在这个（「自动」）档里认。'
       : '不需要用动作时就用平常的话回答。**一次提问只提一个动作**（这是「一轮」档的规矩），做完把结果说给他、等他决定下一步；**也不要用批量形态**（`entities`/`nodes` 两个键这个档不认，要用得先切到「自动」）。',
@@ -152,6 +167,8 @@ const PRIMARY: Record<string, string> = {
   set_field: 'value',
   append_doc: 'text',
   create_node: 'title',
+  create_world: 'name',
+  create_timeline: 'name',
   rename_entity: 'name',
   set_setting: 'value',
   set_mode: 'mode',
@@ -160,6 +177,11 @@ const PRIMARY: Record<string, string> = {
   search_files: 'q',
   write_file: 'text',
   append_file: 'text',
+  delete_entity: 'name',
+  delete_node: 'title',
+  delete_timeline: 'name',
+  delete_world: 'name',
+  delete_file: 'path',
   allow_folder: 'path',
   web_search: 'q',
   web_fetch: 'url',
@@ -1039,6 +1061,193 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
               if (!w.ok) return { ok: true, note: `已经把「${label}」（只读）交给助手了，但改成可写那步没成：${w.error}` };
             }
             return { ok: true, note: `已经把「${label}」交给助手了（${want ? '可写' : '只读'}）—— 现在可以让我看${want ? '、写' : ''}那个文件夹里的文件了` };
+          },
+        },
+      };
+    }
+    /* ⭐ 新建世界 / 时间线（片 3 的另一半：「删除和创建」）。两层都用 `src/store/actions.ts` 的
+       `addWorld` / `addTimeline` —— id 由 `uid('tl')` 生成、字段由 actions 补齐，这里不自己拼。 */
+    case 'create_world': {
+      const name = str(a.name);
+      if (!name) return { ok: false, note: '新世界叫什么？（args.name）' };
+      const exists = Object.prototype.hasOwnProperty.call(store.data.worldsets ?? {}, name);
+      return {
+        ok: true,
+        proposal: {
+          tool: call.tool,
+          title: `新建世界：${name}${exists ? '（重名，会自动加序号）' : ''}`,
+          detail: '会切到新世界。它是空的（还没有时间线）—— 接着可以 `create_timeline` 建一条，再往里建事件',
+          apply: () => {
+            const got = addWorld(store, name);
+            return { ok: true, note: `已新建世界「${got}」${got === name ? '' : `（「${name}」重名了，实际叫这个）`}，现在就在这个世界里` };
+          },
+        },
+      };
+    }
+    case 'create_timeline': {
+      const name = str(a.name);
+      if (!name) return { ok: false, note: '新时间线叫什么？（args.name）' };
+      if (!ws) return { ok: false, note: '当前没有打开的世界 —— 先 `create_world` 建一个。' };
+      const dup = (ws.order ?? []).map((id) => ws.timelines?.[id]).some((t) => !!t && t.name === name);
+      return {
+        ok: true,
+        proposal: {
+          tool: call.tool,
+          title: `新建时间线：${name}${dup ? '（同名，会并存两条）' : ''}`,
+          detail: `建在世界「${store.activeWorld}」上，是空的（还没有事件）`,
+          apply: () => {
+            addTimeline(store, name);
+            return { ok: true, note: `已在世界「${store.activeWorld}」里新建时间线「${name}」（空的）` };
+          },
+        },
+      };
+    }
+    /* ⭐ 删除（片 3，2026-10-12 用户原话：「你没给AI配置删除和创建的工具吗」—— 创建早有、删除一条都没有）。
+       四条纪律：
+       ① **一律走 `src/store/actions.ts`**（`removeEntity` / `removeNode` / `removeTimeline` / `removeWorld`）——
+          那四个函数已经在做「store 移除 + vault 里的 .md 移进回收站」两件事。灵框是"文件为源"，
+          只删内存不清文件的话，下次启动扫描会把东西**读回来**（删除等于没生效）。
+       ② 找不到目标就**别动手**：把人话 + 候选名单写回去（模型下一轮能改对名字），不出卡片。
+       ③ 创作者 2026-10-12 亲口选的安全档 = **「直接执行」档下删除直接生效**（不走 `needsConfirm`）；
+          所以提示词里另加了一句纪律：只有他明说要删才删（见 `toolsPrompt()` 末段）。
+       ④ 两条**兜底护栏**（不靠权限档，永远生效）：最后一个世界 / 最后一条时间线不删 ——
+          删了灵框就空了，而 `removeWorld()` 还会顺手补一个空世界 ⇒ 创作者看到的是"数据全没了、界面却还是原样"。 */
+    case 'delete_entity': {
+      const name = str(a.name);
+      if (!name) return { ok: false, note: '要删哪条设定？（args.name）' };
+      const e = findEntity(ws, name);
+      if (!e) {
+        const names = Object.values(ws?.entities ?? {}).map((x) => x.name);
+        return { ok: false, note: `没找到叫「${name}」的设定，**什么都没删**。${names.length ? '这个世界里有：' + names.slice(0, 20).join('、') + (names.length > 20 ? `…（共 ${names.length} 条）` : '') : '这个世界还没有设定条目。'}` };
+      }
+      const tn = typeName(ws, e);
+      const id = e.id;
+      return {
+        ok: true,
+        proposal: {
+          tool: call.tool,
+          title: `删除设定：${e.name}（${tn}）`,
+          detail: `${fieldsLine(e, 6)}\n（它的 .md 会移进 vault 回收站 —— 「备份管理 → 回收站」里能恢复）`,
+          apply: () => {
+            removeEntity(store, id);
+            return { ok: true, note: `已删除设定「${e.name}」（${tn}）—— .md 已移进 vault 回收站，能从「备份管理 → 回收站」恢复` };
+          },
+        },
+      };
+    }
+    case 'delete_node': {
+      const want = str(a.title);
+      if (!want) return { ok: false, note: '要删哪个事件？（args.title；同名多个再给 args.year）' };
+      const tl = ws?.timelines?.[store.activeTimeline];
+      if (!tl) return { ok: false, note: '当前没有打开的时间线 —— 先在沙盘里选一条，我才知道删哪条线上的事件。' };
+      /* ⚠️ 年份**没给**时不许当成 0 去过滤（`num('')` 恰好返回 0 —— 首跑就是被这个咬的：
+         模型只说标题、不给年份 ⇒ `n.year === 0` 一条都对不上 ⇒ 明明有这个事件却说"没有叫…"）。
+         判据看**原始字符串**：没写就 null（＝不过滤），写了才解析。 */
+      const rawYear = str(a.year);
+      const year = rawYear === '' ? null : num(a.year);
+      const hits = tl.nodes
+        .filter((n) => n.title === want || (want.length > 1 && n.title.includes(want)))
+        .filter((n) => (year === null ? true : n.year === year));
+      if (!hits.length) {
+        const cands = tl.nodes.slice(0, 20).map((n) => `${n.year} ${n.title}`);
+        return { ok: false, note: `时间线「${tl.name}」上没有叫「${want}」的事件，**什么都没删**。${cands.length ? '它上面有：' + cands.join('、') + (tl.nodes.length > 20 ? `…（共 ${tl.nodes.length} 个）` : '') : '它上面还没有事件。'}` };
+      }
+      if (hits.length > 1) {
+        return { ok: false, note: `「${want}」在「${tl.name}」上能对上 ${hits.length} 个事件：${hits.map((n) => `${n.year} ${n.title}`).join('、')}。给我 args.year 指定删哪一个，我再动手。` };
+      }
+      const node = hits[0];
+      const tlId = tl.id;
+      const nodeId = node.id;
+      return {
+        ok: true,
+        proposal: {
+          tool: call.tool,
+          title: `删除事件：${node.year} ${node.title}`,
+          detail: `${node.kind ? node.kind + ' · ' : ''}${clip(node.desc ?? '', 120) || '（没有简述）'}\n（它的 .md 会移进 vault 回收站 —— 「备份管理 → 回收站」里能恢复）`,
+          apply: () => {
+            removeNode(store, tlId, nodeId);
+            return { ok: true, note: `已删除事件「${node.title}」（${node.year} 年，在「${tl.name}」上）—— .md 已移进 vault 回收站，可恢复` };
+          },
+        },
+      };
+    }
+    case 'delete_timeline':
+    case 'delete_world': {
+      const wholeWorld = call.tool === 'delete_world';
+      const want = str(a.name);
+      if (!want) return { ok: false, note: `要删${wholeWorld ? '哪个世界' : '哪条时间线'}？（args.name）` };
+      if (wholeWorld) {
+        const all = Object.keys(store.data.worldsets ?? {});
+        const name = all.find((n) => n === want) ?? all.find((n) => n.toLowerCase() === want.toLowerCase());
+        if (!name) return { ok: false, note: `没找到叫「${want}」的世界，**什么都没删**。${all.length ? '现有的世界：' + all.join('、') : ''}` };
+        if (all.length <= 1) {
+          return { ok: false, note: `「${name}」是**唯一**的世界 —— 删了灵框就空了，这条我不做。真要清空请创作者自己在世界栏里删（那里会先问他一次）。` };
+        }
+        const tlCount = Object.keys(store.data.worldsets[name]?.timelines ?? {}).length;
+        return {
+          ok: true,
+          proposal: {
+            tool: call.tool,
+            title: `删除世界：${name}`,
+            detail: `整个世界（${tlCount} 条时间线 + 全部设定）的目录一起移进 vault 回收站 —— 「备份管理 → 回收站」里能恢复`,
+            apply: () => {
+              removeWorld(store, name);
+              return { ok: true, note: `已删除世界「${name}」（连同 ${tlCount} 条时间线）—— 目录已移进 vault 回收站，可恢复` };
+            },
+          },
+        };
+      }
+      const list = (ws?.order ?? []).map((id) => ws?.timelines?.[id]).filter((t): t is Timeline => !!t);
+      const tl = list.find((t) => t.name === want) ?? list.find((t) => t.name.toLowerCase() === want.toLowerCase());
+      if (!tl) return { ok: false, note: `这个世界里没有叫「${want}」的时间线，**什么都没删**。${list.length ? '它有的时间线：' + list.map((t) => t.name).join('、') : '这个世界还没有时间线。'}` };
+      if (list.length <= 1) {
+        return { ok: false, note: `「${tl.name}」是这个世界**唯一**的时间线 —— 删了沙盘就空了，这条我不做。真要删请创作者自己在世界栏里删（那里会先问他一次）。` };
+      }
+      const tlId = tl.id;
+      const nodeCount = tl.nodes.length;
+      const loopCount = (tl.loops ?? []).length;
+      return {
+        ok: true,
+        proposal: {
+          tool: call.tool,
+          title: `删除时间线：${tl.name}`,
+          detail: `${nodeCount} 个事件${loopCount ? ` · ${loopCount} 个循环` : ''} —— 目录一起移进 vault 回收站（「备份管理 → 回收站」里能恢复）`,
+          apply: () => {
+            removeTimeline(store, tlId);
+            return { ok: true, note: `已删除时间线「${tl.name}」（${nodeCount} 个事件）—— 目录已移进 vault 回收站，可恢复` };
+          },
+        },
+      };
+    }
+    /* 灵框**外**的文件删（片 3）：走主进程 `shell.trashItem()` ⇒ Windows 回收站。
+       三条前门：① 不在白名单里 ⇒ 拒绝 + 给出 allow_folder 那条出路；② 灵框库（vault）里 ⇒ 拒绝，
+       让他改用 delete_entity / delete_node（那里 store 与 .md 一起动）；③ 只读目录 ⇒ 拒绝。 */
+    case 'delete_file': {
+      const p = str(a.path);
+      if (!p) return { ok: false, note: '要删哪个文件？给我完整绝对路径（args.path）。' };
+      const root = fsRootOf(p);
+      if (!root) {
+        const allowed = fsRootsCached().map((r) => r.path).join('、') || '（还没接过文件夹）';
+        const dir = p.replace(/[\\/][^\\/]*$/, '') || p;
+        return { ok: false, note: `「${p}」不在助手能碰的文件夹里（能碰的只有：${allowed}）。要删它得先提一个 allow_folder 动作（{"tool":"allow_folder","args":{"path":"${dir}","write":true}}）让创作者点一下把这个文件夹交给我 —— **不要**反复试同一个路径。` };
+      }
+      if (root.builtin) {
+        return { ok: false, note: '灵框库（vault）里的文件**不能**用 delete_file 删 —— 那里"文件为源"，只删文件会让世界数据和文件对不上。要删设定用 delete_entity、删事件用 delete_node（它们会把 .md 移进 vault 回收站）。' };
+      }
+      if (!root.write) {
+        return { ok: false, note: `「${root.label}」是**只读**的，删不了里面的东西。要删就提一个 allow_folder 动作（{"tool":"allow_folder","args":{"path":"${root.path}","write":true}}）让创作者点一下放开成可写。` };
+      }
+      return {
+        ok: true,
+        proposal: {
+          tool: call.tool,
+          title: `删除文件：${baseName(p)}`,
+          detail: `路径：${p}\n（**灵框库外** —— ${root.label} · 可写；删掉是移进 **Windows 回收站**，能从那儿捞回来）`,
+          apply: async () => {
+            const r = await fsDelete(p);
+            return r.ok
+              ? { ok: true, note: `已把 ${r.data.path} 移进系统回收站（${fmtSize(r.data.bytes)}，可恢复）` }
+              : { ok: false, note: `没删成：${r.error}` };
           },
         },
       };

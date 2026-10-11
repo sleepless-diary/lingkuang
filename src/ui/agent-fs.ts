@@ -32,6 +32,7 @@ export interface FsListData { path: string; root: { label: string; write: boolea
 export interface FsSearchData { path: string; q: string; hits: FsHit[]; scanned: number }
 export interface FsReadData { path: string; size: number; text: string }
 export interface FsWriteData { path: string; bytes: number; mode: string }
+export interface FsDeleteData { path: string; bytes: number; label: string }
 export interface FsRootsData { roots: FsRoot[]; existed?: boolean }
 
 export interface FsOk<T> { ok: true; data: T }
@@ -47,6 +48,7 @@ interface RawFsApi {
   read(p: string): Promise<Record<string, unknown>>;
   search(p: string, q: string): Promise<Record<string, unknown>>;
   write(p: string, text: string, mode: 'overwrite' | 'append'): Promise<Record<string, unknown>>;
+  remove(p: string): Promise<Record<string, unknown>>;
 }
 
 function api(): RawFsApi | null {
@@ -142,6 +144,11 @@ export function fsSearch(p: string, q: string): Promise<FsResult<FsSearchData>> 
 
 export function fsWrite(p: string, text: string, mode: 'overwrite' | 'append'): Promise<FsResult<FsWriteData>> {
   return call<FsWriteData>((a) => a.write(p, text, mode));
+}
+
+/** 删一个文件（⭐ 主进程走**系统回收站**，不是真删）。只认可写白名单里的文件；目录在那边被拒。 */
+export function fsDelete(p: string): Promise<FsResult<FsDeleteData>> {
+  return call<FsDeleteData>((a) => a.remove(p));
 }
 
 /** 路径 → 小写正斜杠（**纯字符串**，不做 realpath —— 这里只是给卡片判"是不是灵框库外"） */

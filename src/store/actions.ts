@@ -212,6 +212,11 @@ export function addWorld(store: Store, name: string): string {
     d.worldsets[finalName] = { name: finalName, timelines: {}, order: [], docs: {} };
   });
   store.setActiveWorld(finalName);
+  /* ⭐ 2026-10-12：**在 vault 里把这个世界的目录建出来**。`src/main.ts` 的 `vaultToWorldData()`
+     按扫描结果遍历世界 ⇒ 没有目录的世界下一次回扫就从 store 里消失（紧接着被自动落盘永久写没）。
+     与 `removeWorld()` 把目录搬进回收站正好对称（那一步在 `vault:delete-world`）。 */
+  const api = (window as unknown as { lingkuangAPI?: { vaultEnsureWorld?: (n: string) => Promise<unknown> } }).lingkuangAPI;
+  void api?.vaultEnsureWorld?.(finalName)?.catch(() => { /* 建目录失败不该挡住 UI */ });
   return finalName;
 }
 

@@ -1112,6 +1112,23 @@ ipcMain.handle('vault:delete-world', (e, { wsName }) => {
   } catch (err) { return { ok: false, error: String(err) }; }
 });
 
+/* 建一个世界观目录（`<vault>/<世界名>/`，名字走 `safeName()` —— 与 delete-world 同一套规则，
+   所以「建出来的目录」一定能被后面的「删/回收站」按同一个名字找回来）。
+   ⭐ 为什么删世界有 `vault:delete-world`、建世界就必须有这一条：
+   `src/main.ts` 的 `vaultToWorldData()` 是**按扫描结果遍历世界**的（`for (const [wsName, tls] of Object.entries(worlds))`），
+   一个在 vault 里没有目录的世界，下一次 `vault-changed` 回扫（任何 .md 外部改动、甚至助手自己的一次删除写盘）
+   就会从 store 里消失，紧接着被自动落盘永久写没 —— 实测：助手 `create_world` 建出来的世界活不过一轮。
+   （**空的时间线**不用管：`vaultToWorldData()` 里有专门一条"base 里 0 节点的时间线保留"的例外。） */
+ipcMain.handle('vault:ensure-world', (e, payload) => {
+  const name = String((payload && payload.name) || '').trim();
+  if (!name) return { ok: false, error: '要建哪个世界的目录？（name）' };
+  try {
+    const dir = path.join(VAULT_DIR(), safeName(name));
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    return { ok: true, path: dir };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+
 /* ── IPC: 回收站列表 = 索引登记项 + 孤儿项 ── */
 ipcMain.handle('vault:trash-list', () => {
   try {
@@ -1568,6 +1585,31 @@ ipcMain.handle('fs:write', (e, payload) => {
     if (mode === 'append') fs.appendFileSync(full, text, 'utf8');
     else fs.writeFileSync(full, text, 'utf8');
     return { ok: true, path: full, bytes: Buffer.byteLength(text, 'utf8'), mode };
+  } catch (err) { return fsErr(String(err.message || err)); }
+});
+
+/* 删一个文件（片 3，2026-10-12 用户：「你没给AI配置删除和创建的工具吗」）。
+   ⭐ 不走 `fs.unlinkSync`，走 `shell.trashItem()` —— 进 **Windows 回收站**，创作者自己能捞回来。
+   （灵框库里的删除另有一条路：`vault:delete-*` 把 .md 移进 `vault/.trash/` + index.json 登记，
+   渲染层的 `delete_entity` / `delete_node` 走那条 —— 因为灵框是"文件为源"，只删文件不同步 store 会复活。）
+   三道门：① 必须落在一个**可写**的白名单文件夹里（删除是写操作）；② 只删**文件** —— 目录一律拒
+   （递归删一棵树太容易出事，真要删目录请创作者自己在资源管理器里删）；③ 删之前 `statSync` 确认它真在。 */
+ipcMain.handle('fs:delete', async (e, payload) => {
+  const p = (payload && payload.path) ? String(payload.path) : '';
+  if (!p) return fsErr('要删哪个文件？（path）');
+  const root = fsMatchRoot(p, true);
+  if (!root) {
+    const ro = fsMatchRoot(p, false);
+    return fsErr(ro
+      ? '「' + ro.label + '」是只读的 —— 要删里面的文件，得先在助手面板的「文件夹」里把它改成可写'
+      : '这个路径不在助手能碰的文件夹里：' + p + '（要删它，得先把这个文件夹交给助手：面板「助手 → 文件夹 → ＋ 添加文件夹」再点成「可写」，或者提一个 allow_folder 动作让他点一下「应用」）');
+  }
+  try {
+    const full = path.resolve(p);
+    const st = fs.statSync(full);
+    if (st.isDirectory()) return fsErr('这是个文件夹 —— 助手只删文件，不整棵删。要清空目录请创作者自己在资源管理器里删：' + p);
+    await shell.trashItem(full);
+    return { ok: true, path: full, bytes: st.size, label: root.label };
   } catch (err) { return fsErr(String(err.message || err)); }
 });
 

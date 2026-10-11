@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
   /* 删除整条时间线 / 整个世界观：目录整体移进回收站 */
   vaultDeleteTimeline: (wsName, tlName) => ipcRenderer.invoke('vault:delete-timeline', { wsName, tlName }),
   vaultDeleteWorld: (wsName) => ipcRenderer.invoke('vault:delete-world', { wsName }),
+  /* 建世界时**把 vault 目录一起建出来**（否则下一次 vault 回扫这个世界就没了，见 main.js 那条注释） */
+  vaultEnsureWorld: (name) => ipcRenderer.invoke('vault:ensure-world', { name }),
   /* 回收站（vault/.trash + index.json）：列表 / 恢复 / 彻底删除 */
   trashList: () => ipcRenderer.invoke('vault:trash-list'),
   trashRestore: (items) => ipcRenderer.invoke('vault:trash-restore', { items }),
@@ -60,7 +62,9 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
     list: (p) => ipcRenderer.invoke('fs:list', { path: p }),
     read: (p) => ipcRenderer.invoke('fs:read', { path: p }),
     search: (p, q) => ipcRenderer.invoke('fs:search', { path: p, q }),
-    write: (p, text, mode) => ipcRenderer.invoke('fs:write', { path: p, text, mode })
+    write: (p, text, mode) => ipcRenderer.invoke('fs:write', { path: p, text, mode }),
+    /* 删一个文件 —— 主进程走系统回收站（`shell.trashItem`），只认可写白名单里的**文件** */
+    remove: (p) => ipcRenderer.invoke('fs:delete', { path: p })
   },
   /* 灵框助手的「联网手」：搜索 + 抓网页（片 2，2026-09-29）。
      ⭐ 只有主进程能出手（渲染进程直连第三方会被 CORS 拦），且由主进程把关"只认 http/https、不碰本机内网"。 */
