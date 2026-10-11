@@ -8,7 +8,11 @@
 灵框 LingKuang：世界观创作工作台（Electron + Vite + TypeScript 模块化）。世界沙盘时间线 / 随机角色生成 / 词义联想图 / Markdown 编辑器 / AI 工作台。
 
 - 运行：`npm start`（= `vite build` + `electron .`）；开发 `npm run dev`（Vite）
-- 打包：`npm run dist`（electron-builder，NSIS 安装版 + portable，输出 dist/）
+- **交付（2026-10-11 用户明确「以后不用打包了，只更新我这里和 github 就行」）**：每轮做完 =
+  文档/守卫齐了 → `git commit` → `git push origin master`（远端 `https://github.com/sleepless-diary/lingkuang.git`，
+  公开仓库）。**不要再主动跑 electron-builder 打包、不要再往桌面拷 .exe** —— 本机直接跑源码
+  （`npm start` / 已开着的实例关掉重开）就是最新版。打包脚本保留备用（见下），仅在用户当轮明确要成品时用。
+- 打包（备用，按需）：`npm run dist`（electron-builder，NSIS 安装版 + portable，输出 `dist/`；`dist/` 已 gitignore，不进仓库）
 - 数据：`%APPDATA%\lingkuang\`（不写项目目录；测试用 `LINGKUANG_TEST_DATA` 覆盖）
 - 语法/类型：TS 走 `tsc --noEmit`（strict + noUnusedLocals）；JS 走 `node --check`
 
