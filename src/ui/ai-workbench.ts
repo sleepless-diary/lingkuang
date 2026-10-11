@@ -24,7 +24,7 @@ import { renderTavern } from './tavern';
 /* ⭐ 2C：主会话与 Ctrl+K 的助手是**同一格会话、同一套能力** ⇒ 这一页直接用助手那一套：
    `runTurn()`（一次提问的共用实现）+ `cardsHtml()` / `agentCardClick`（提议卡片）
    + `getAgentMode()` / `setAgentMode()`（模式开关，两个入口共享一份状态）。 */
-import { FOLD_AT, RESULT_RE, agentCallRow, agentCardClick, cardsHtml, getAgentMode, isAgentRunning, runTurn, setAgentMode } from './agent';
+import { FOLD_ALWAYS, FOLD_AT, RESULT_RE, agentCallRow, agentCardClick, cardsHtml, getAgentMode, isAgentRunning, receiptSummary, runTurn, setAgentMode } from './agent';
 import {
   AI_SESSION_FRAME, adoptSessions, clearHistory, createSession, ensureSessionsLoaded, listSessions, linkSummary,
   markAutoNamed, pushMsg, removeSession, renameSession, sessionPrompt, setActiveSession, setSessionPersona,
@@ -173,10 +173,12 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
             'border:1px dashed var(--border-strong);border-radius:var(--radius-sm);padding:6px 9px;';
           const bodyStyle = 'margin:3px 0 0;white-space:pre-wrap;font-family:inherit;';
           /* 长回执折起来 —— 与助手浮层 `msgHtml()` 同一判据、同一件事（用户 2026-10-10：
-             「有时候非正文内容无法折叠」：读回来的文件一多就把主会话顶走）。 */
-          if (body.length > FOLD_AT) {
+             「有时候非正文内容无法折叠」：读回来的文件一多就把主会话顶走）。
+             ⭐ 清单类（`list_files` / `search_files`）**不管多短都折**（用户 2026-10-11：
+             「listfile没有折叠」）—— 判据与文案都取 `agent.ts` 那一份，两个入口不许各写一套。 */
+          if (body.length > FOLD_AT || FOLD_ALWAYS.has(receipt[1])) {
             return '<details data-k="receipt" style="' + wrapStyle + '">' +
-              '<summary style="font-weight:600;cursor:pointer;">' + esc(receipt[1]) + ' · ' + body.length + ' 字（点开看）</summary>' +
+              '<summary style="font-weight:600;cursor:pointer;">' + esc(receiptSummary(receipt[1], body)) + '</summary>' +
               '<pre style="' + bodyStyle + '">' + esc(body) + '</pre></details>';
           }
           return '<div data-k="receipt" style="' + wrapStyle + '">' +

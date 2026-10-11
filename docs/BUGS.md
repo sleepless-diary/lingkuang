@@ -15,6 +15,25 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第七十一轮（2026-10-11）· 「listfile没有折叠」＝ 判据只看字数，清单类回执"有时折有时不折"
+
+**用户原话**：「**listfile没有折叠**」。
+
+**真因（读他真实会话坐实的，不是猜）**：`%APPDATA%\lingkuang\agent\sessions.json` **是裸数组**（`[{id, name, role, personaId, links, history, at, autoNamed}]`，**没有** `sessions` 字段 —— 按 `d.sessions` 读会得到空列表，白排查一轮）里主会话 76 条消息、13 条工具回执，回执正文长度分别是：`list_files` = **90 / 93 / 106 / 108 / 108 / 124 / 2086**，`read_file` = **352 / 608**。
+上一轮（第七十轮）的折叠判据只有 `body.length > FOLD_AT (320)` ⇒ **352/608 字的 `read_file` 折了、2086 字的 `list_files` 也折了，可紧接着那三条 108~124 字的目录清单全摊在对话里** —— 同一件事"有时折有时不折"，看起来就是"list_files 没有折叠"。
+（先排除了"他还在跑旧代码"：进程 10/11 12:30:02 起，`app-dist/index.html` 与 `assets/*.js` 是 10/10 22:37:48 构建 —— 比 `f89b8a0` 早 52 秒，正是提交前那次 `npm run build`；`app-dist/assets/index-*.js`、`ai-workbench-*.js` 里 `grep 点开看` 都命中 ⇒ 折叠代码在他手上跑着。）
+
+**修法**（`src/ui/agent.ts`）：
+1. `export const FOLD_ALWAYS = new Set(['list_files', 'search_files'])` —— **清单类回执不管多短都折**。理由：目录清单 / 搜索命中天生是**参考资料**（创作者要的是"它列过哪儿、列了几项"那一行的存在感），而且它天然随目录长大（今天 4 行、明天 400 行），只按字数判必然继续"怪"。
+2. `export function receiptSummary(tool, body)` —— 折起来那一行**拿正文首行当标题**：`list_files · 「D:\Desktop」（Desktop · 只读）里 96 项（点开看）`（首行超过 56 字截断加 `…`），其余回执仍写 `${tool} · ${body.length} 字（点开看）`。
+3. 判据与文案都从 `agent.ts` 导出：`msgHtml()`（助手浮层）与 `src/ui/ai-workbench.ts` 的 `[data-k="receipt"]`（AI 页主会话）**共用一份**，不许各写一套（原来两处各写了一行 `body.length > FOLD_AT`）。
+
+**守卫**：`tools/e2e/agent-tools.cjs` 22 → **23 项**。新增 **★22**：套件先往 vault 里写 `lk-e2e-one/lk-e2e-only.md`（只有一个文件的目录）⇒ 让助手 `list_files` 它 ⇒ 回执 **113 字**，断言 `tag === 'DETAILS'`、`open === false`、summary 含 `list_files` 与「点开看」、`bodyLen ≤ 320`；同一份里还断言 ★19 那条 **27 字**的**非清单**回执（`list_nodes`）仍是 `DIV` —— "短的照旧摊开"这条不许被顺手改掉。★20 里原来那句「**而第一个短回执仍是 `DIV`**」**删掉**了（它正是这条 bug 的另一面：第一个短回执就是 ★19 的 `list_files`），改由 ★22 精确断言。
+**A/B：旧构建 22/23**（★22 读到 `tag:"DIV"`、`hasSum:false`、`bodyLen:113`、**高 71px 摊着**）→ 新构建 **23/23**。
+
+**邻居**（各自一份干净起点）：`agent-fs` 22/22、`agent-mode` 12/12、`agent-main-session` 14/14（需 `seed-agent-main-session.cjs`）、`agent-panel` 21/21（需 `seed-agent-chat.cjs`）。`tsc --noEmit` exit 0、`vite build` 绿。
+（邻居为什么没被带坏：所有套件读回执都用 `textContent`，而**闭合的 `<details>` 的 `textContent` 照样含正文**；只有 `agent-tools` 自己按 `tagName` 断言折叠形态。）
+
 ## 第七十轮（2026-10-10）· 「工具打出来了但是无法调用，卡住了吗」＝ 一次吐一串动作解析不了；「非正文内容无法折叠」＝ 长回执是块死 `<div>`
 
 **用户原话（两条）**：「**有时候非正文内容无法折叠**」；「**有时候工具打出来了但是无法调用卡住了吗**」（附了一张真实会话截图：助手先报 `用到动作：read_file`，最后紧跟着 **4 个 JSON 连写**）。

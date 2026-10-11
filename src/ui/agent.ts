@@ -250,6 +250,23 @@ function persist(): void {
  *  用户 2026-10-10：「**有时候非正文内容无法折叠**」（读回来的文件、搜出来的命中一多就顶满半屏）。 */
 export const FOLD_AT = 320;
 
+/** ⭐ 清单类回执**一律折起来**，多短都折（用户 2026-10-11：「listfile没有折叠」）。
+ *  理由：目录清单 / 搜索命中是**参考资料** —— 创作者要的是"它列过哪儿、列了几项"那一行的
+ *  存在感，不是把四行目录摊在对话里；而且它天然随目录长大（今天 4 行、明天 400 行）。
+ *  只按字数判会出现"同一件事有时折有时不折"的怪相：上一版 608 字的 `read_file` 折了、
+ *  108 字的 `list_files` 摊着，看起来就是"list_files 没折叠"。 */
+export const FOLD_ALWAYS = new Set(['list_files', 'search_files']);
+
+/** 折起来那一行的文案：清单类拿正文**首行**当标题（「D:\Desktop」（Desktop · 只读）里 96 项：），
+ *  比"2104 字"有用得多；其余回执仍用字数。 */
+export function receiptSummary(tool: string, body: string): string {
+  if (FOLD_ALWAYS.has(tool)) {
+    const head = body.split('\n', 1)[0].trim();
+    if (head) return `${tool} · ${head.length > 56 ? head.slice(0, 56) + '…' : head}（点开看）`;
+  }
+  return `${tool} · ${body.length} 字（点开看）`;
+}
+
 export const RESULT_RE = /^【动作结果：([^】]+)】/;
 
 function isCallMsg(m: ChatMsg): boolean {
@@ -285,8 +302,9 @@ function msgHtml(m: ChatMsg): string {
       const body = m.content.slice(mm[0].length).trim();
       /* ⭐ 长回执折起来（用户 2026-10-10：「有时候非正文内容无法折叠」）：读回来的文件、搜出来的命中
          一动就是几百上千字，原来是一块死 `<div>`+`<pre>`，只能干看着它把对话顶走。
-         短的照旧原样摊开（不做无谓的一层点击）—— DOM 形状与从前一模一样。 */
-      if (body.length <= FOLD_AT) {
+         ⭐ 清单类（`list_files` / `search_files`）**不管多短都折** —— 见 `FOLD_ALWAYS`。
+         其余短的照旧原样摊开（不做无谓的一层点击）—— DOM 形状与从前一模一样。 */
+      if (body.length <= FOLD_AT && !FOLD_ALWAYS.has(mm[1])) {
         return (
           `<div class="lk-agent__tool"><div class="lk-agent__tool-h">${escapeHtml(mm[1])}</div>` +
           `<pre>${escapeHtml(body)}</pre></div>`
@@ -294,7 +312,7 @@ function msgHtml(m: ChatMsg): string {
       }
       return (
         `<details class="lk-agent__tool">` +
-        `<summary class="lk-agent__tool-h">${escapeHtml(mm[1])} · ${body.length} 字（点开看）</summary>` +
+        `<summary class="lk-agent__tool-h">${escapeHtml(receiptSummary(mm[1], body))}</summary>` +
         `<pre>${escapeHtml(body)}</pre></details>`
       );
     }

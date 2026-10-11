@@ -354,10 +354,10 @@ async function main() {
       firstTag: first ? first.tagName : '',
     };
   })()`);
-  check('★20 ⭐长回执（>320 字）折成一行（不是摊满屏）、短的照旧摊开（用户 2026-10-10：「有时候非正文内容无法折叠」）',
+  check('★20 ⭐长回执（>320 字）折成一行（不是摊满屏）—— 折起来那行写清字数（用户 2026-10-10：「有时候非正文内容无法折叠」）',
     fold.tag === 'DETAILS' && fold.open === false && fold.hasSum === true &&
     fold.sumText.indexOf('字') >= 0 && fold.sumText.indexOf('点开看') >= 0 &&
-    fold.bodyLen > 320 && fold.firstTag === 'DIV', { ...fold, file: longFile });
+    fold.bodyLen > 320, { ...fold, file: longFile });
 
   /* ⚠️ 旧构建上这里没有 summary ⇒ 必须优雅失败（首跑直接 TypeError 把整套崩了、后面的星一个都没跑） */
   const clicked = await ev(`(function () { const t = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__tool')]; const last = t[t.length - 1]; const s = last && last.querySelector('summary'); if (!s) return false; s.click(); return true; })()`);
@@ -370,6 +370,45 @@ async function main() {
   })()`);
   /* ⭐ 折叠要真的省屏幕地方（不只是 DOM 上多个 `open`）：摊平后一定比折着高 */
   check('★21 点一下真的摊平（open=true、正文逐字在内、而且真的变高了）', clicked === true && opened.open === true && opened.has === true && opened.h > fold.h, { clicked: clicked, ...opened, foldedH: fold.h });
+
+  /* ---------- ⑭ ⭐清单类回执**再短也折**（用户 2026-10-11：「listfile没有折叠」）----------
+     真因：判据只看字数（`body.length > FOLD_AT`）⇒ 96 项的目录清单 2104 字折了、4 行的目录清单
+     108 字摊着 —— 同一件事"有时折有时不折"，创作者看到的就是"list_files 没折叠"（他真实会话里
+     `list_files` 回执正是 90~124 字、`read_file` 是 352/608 字：折的折、摊的摊）。
+     现在 `FOLD_ALWAYS`（list_files / search_files）里的一律折，折起来那行拿正文**首行**当标题。 */
+  const oneFile = await ev(`(async function () {
+    const rs = ((await window.lingkuangAPI.fs.roots()) || {}).roots || [];
+    const v = rs.find((r) => r.builtin) || rs[0];
+    if (!v) return { err: '没有可写根' };
+    const base = String(v.path).replace(/[\\\\/]+$/, '');
+    const w = await window.lingkuangAPI.fs.write(base + '/lk-e2e-one/lk-e2e-only.md', '只有这一行。', 'overwrite');
+    return { dir: (base + '/lk-e2e-one').replace(/\\\\/g, '/'), w: JSON.stringify(w).slice(0, 120) };
+  })()`);
+  await setMock([JSON.stringify({ tool: 'list_files', args: { path: oneFile.dir } }), '就一个文件。']);
+  await ask('那个目录里有什么？');
+  const shortList = await ev(`(function () {
+    const t = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__tool')];
+    const last = t[t.length - 1];
+    const other = t[${t19 + 1}];
+    if (!last) return { none: true };
+    const sum = last.querySelector('summary');
+    const pre = last.querySelector('pre');
+    const oPre = other ? other.querySelector('pre') : null;
+    return {
+      tag: last.tagName, open: last.open === true, hasSum: !!sum,
+      sumText: sum ? sum.textContent : '',
+      bodyLen: pre && pre.textContent ? pre.textContent.length : 0,
+      h: last.offsetHeight,
+      otherTag: other ? other.tagName : '',
+      otherLen: oPre && oPre.textContent ? oPre.textContent.length : 0,
+    };
+  })()`);
+  check('★22 ⭐list_files 的清单**再短也折**（不再"有时折有时不折"），折起来那行拿正文首行当标题；短的**非清单**回执仍按字数摊开（用户 2026-10-11：「listfile没有折叠」）',
+    shortList.tag === 'DETAILS' && shortList.open === false && shortList.hasSum === true &&
+    shortList.bodyLen <= 320 && shortList.sumText.indexOf('list_files') >= 0 &&
+    shortList.sumText.indexOf('点开看') >= 0 &&
+    (shortList.otherTag === 'DIV' || shortList.otherLen > 320),
+    { ...shortList, dir: oneFile });
 
   const errs = await ev(`window.__errs`);
   check('★14 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
