@@ -15,6 +15,42 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第八十九轮（2026-10-17）· 搬库搬到最后被「同一个写入做了两遍」拦停 + 同名「主线」被重复新建（游标悬空）
+
+**用户**：「**继续吧**」+ 贴回灵框里整段导入流水（10 多批 `read_many` → `create_entity` → `create_node` / `append_doc`
+逐批都在成、范围已锁到「世界观资料整理」144 个文件），**最后一条是「同一个写入做了两遍：我停下来，免得它一直在原地绕」**。
+
+只读取证（`%APPDATA%\lingkuang\agent\sessions.json` 主会话最后 16 条 + `%APPDATA%\lingkuang\worldbuilding.json`）：
+- `#105`/`#107`/`#108`… 一批批建条目（回执 `create_entity` ×10、`create_node` ×4、`create_timeline` ×2），
+  盘上 `entities` **105 条**、`timelines` **2 条、两条都叫「主线」**（`tl-主线` 有 3 个节点、`tl1791733002845` 是空的）。
+- `#110` `【动作结果：create_node】当前没有打开的时间线（这个世界连一条时间线都还没有）…` —— 世界里**明明有**（回执在撒谎）。
+- `#112` 助手「时间线似乎丢了（回执说当前没有打开的时间线），我先重建「主线」」+ `create_timeline` → `#114` 建成了 →
+  `#115` **`create_node` 又报同一句**。
+- `#117` 助手「上一批的事件节点因为当时时间线还没落地而没建上，这次一并补上」+ **参数一个字没改**的 `create_node` →
+  `#119` 「这一步刚才已经做过一遍（同样的参数）」+ 底部「同一个写入做了两遍：我停下来」 ⇒ **整轮终结**。
+
+四条真因（各自独立，都已修）：
+1. **`create_timeline` 不切游标**：`src/store/actions.ts:7 addTimeline()` 只往 `ws.timelines` 加一条（`store.update()`
+   按规矩不碰 `activeTimeline`）⇒ 紧随其后的 `create_node` 直取 `ws.timelines[store.activeTimeline]` 取不到。
+   修：`src/ui/agent-tools.ts` 的 `create_timeline` 分支建完 `store.setActiveTimeline(id)`（回执写「并切了过去」）。
+2. **游标悬空没人落位**：`src/main.ts:509` 的 vault 回扫是**整份替换** `worldsets`（`store.update((d) => { d.worldsets = newData.worldsets; })`），
+   而 `update()` 不碰游标；刚建好、还没有目录的空时间线在重建里可能落不到 ⇒ `store.activeTimeline` 悬空。
+   沙盘 / 工作台各自有兜底所以 UI 上看不出来，但助手那几条时间线动作是**直取**的。
+   修：`src/store/store.ts` 把内部的 `reseatSelection()` 暴露到 `Store` 接口，回扫之后 `store.reseatSelection()`；
+   另给 `src/ui/agent-tools.ts` 加 `timelineOf(store, ws)`（取不到游标就退到这个世界的第一条，4 处直取改成它），
+   拒绝语也不再撒谎（写明是哪个世界，并说明 `create_timeline` 建完会自动切过去）。
+3. **同名时间线重开**：`create_timeline` 现在**先找同名** —— 有就直接切过去（回执「已经有一条叫「主线」的时间线了，
+   我直接切到它（没有再建一条…）」），没有才建。
+4. **「做过两遍」一刀切拦停了合法重试**（`src/ui/agent.ts`）：`doneWrites` 从 `Set` 换成记账
+   `Map<sig, { ok, landedAt }>` + 全局 `landed` 计数 —— ① 上一次**真落盘**（`ok > 0`）⇒ 这才是重复
+   （同一批里连写两遍、参数一模一样），挡住；② 上一次**被拒**（`ok === 0`）⇒ 只有「此后没有任何写动作落盘」
+   （`landed <= prev.landedAt`）时才挡住（那才是片 3 要防的原地绕圈）；中间世界变过 ⇒ **允许再试一次**
+   （真机那一步：`create_node` 被拒 → `create_timeline` 落盘 → 同参数 `create_node` 重试，前提已经被补上了）。
+
+守卫 `tools/e2e/agent-tools.cjs` 28 → **30 项**：★25（真机那一串：`create_world` 建一个没有时间线的新世界 →
+`create_node` + `create_timeline` → **同参数**的 `create_node` 第二次 ⇒ 真建上「LK首事件」、回执里没有「已经做过一遍」、
+模型被叫了 ≥4 轮）、★25b（换一轮再要一条同名「LK主线」⇒ 复用切过去、不再新建）。**A/B 旧构建 28/30 → 新 30/30**。
+
 ## 第八十八轮（2026-10-16）· 「有时候会断」= 写动作一落盘整轮就结束；顺带把导入范围钉在"正在搬的那个库"
 
 **用户**：「**有时候会断，你看一眼**」。先用 ask_user_question 定清是哪一种（三问：哪种断 / 要不要

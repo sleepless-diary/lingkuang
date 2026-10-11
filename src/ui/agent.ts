@@ -929,8 +929,11 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
     let fixed = false; /* ⭐ 格式纠错只做一次，免得跟模型来回拉锯 */
     let thinkRetried = false; /* ⭐ 「只想了没答」也只催一次（2026-10-12） */
     /* ⭐ 第八十八轮：这一问里**已经做过的写动作**（签名 = 工具名 + 参数）。写动作从这一轮起
-       **不再结束整轮**（见下面那段说明），防绕圈就靠这本账：同一个签名做过一遍就不再重复做。 */
-    const doneWrites = new Set<string>();
+       **不再结束整轮**（见下面那段说明），防绕圈就靠这本账。第八十九轮把它从 Set 换成记账
+       （`ok` = 真落盘过几次、`landedAt` = 落盘那一刻的全局计数）—— 因为"做过两遍"有两种，
+       一刀切会把**合法重试**也拦掉（真机：搬库搬到最后被拦停）。见下面守卫那一段。 */
+    const doneWrites = new Map<string, { ok: number; landedAt: number }>();
+    let landed = 0; /* 这一问里**真正落盘**的写动作数（被拒的不算） */
     const roundMax = mode === 'agent' ? agentRounds() : CHAT_ROUNDS;
     for (let round = 0; round <= roundMax; round++) {
       /* ⭐「停」（发送键在跑时变「停下」）：每一轮开头看一次 —— 不打断正在飞的那一次请求，
@@ -1116,7 +1119,8 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
          **写完这一步整轮就结束了**，它自己宣布的"建条目"一步都没走到，创作者得再催一句才动。
          搬库这种活儿必须能连着干（同一件事的第五次报告，前四次都是"被当正文"）。
          ⚠️ 片 3 之所以让写动作结束整轮，是为了防它**反复重试被拒的动作**（最多 200 轮真 API 调用）
-         —— 那个目的改由 `doneWrites` 记账达成：同一个写动作（工具名 + 参数一模一样）做过就不再重复。 */
+         —— 那个目的改由 `doneWrites` 记账达成（第八十九轮细分：真落盘过的重复 ⇒ 挡住；
+         被拒过的重复 ⇒ 只有"中间世界变过"才允许再试，否则挡 —— 见下面那一段）。 */
       let wrote = false;
       /* 没轮到的动作要**留痕**（用户 2026-10-11：「怎么卡住了」）—— 只写在底部那行提示里，
          创作者翻回去就找不到了，模型下一轮也不知道自己还有活儿没干。 */
@@ -1126,18 +1130,40 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
         const c = calls[k];
         if (isWriteTool(c.tool)) {
           const sig = c.tool + '|' + JSON.stringify(c.args ?? {});
-          if (doneWrites.has(sig)) {
-            push({
-              role: 'user',
-              content: `【动作结果：${c.tool}】这一步刚才已经做过一遍（同样的参数），我没有重复做`
-                + ` —— 换个做法、换个目标，或者把卡在哪儿直接讲给创作者听。`,
-            });
-            host.note('同一个写入做了两遍：我停下来，免得它一直在原地绕', true);
-            stop = true;
-            break;
+          const prev = doneWrites.get(sig);
+          /* ⭐ 第八十九轮（用户 2026-10-17 实测：搬库搬到最后「同一个写入做了两遍：我停下来」——
+             而那一段是**合法导入**）："做过两遍"分两种，判据必须分开 ——
+             ① 上一次**真落了盘** ⇒ 这才是重复（同一批里连写两遍、参数一模一样，再建一条就是脏数据），挡住；
+             ② 上一次**被拒**（比如"没有打开的时间线"）⇒ 只有"中间世界变过"时才允许再试一遍：
+                真机那一步的顺序是 `create_node`（被拒）→ `create_timeline`（落盘）→ `create_node`
+                （参数一个字没改）—— 前置条件已经补上了，重试是对的；旧规矩一刀切拦停。
+                中间什么都没变还重试 ⇒ 结果必然一样，那才是片 3 要防的绕圈。 */
+          if (prev) {
+            if (prev.ok > 0) {
+              push({
+                role: 'user',
+                content: `【动作结果：${c.tool}】这一步刚才已经做过一遍（同样的参数），我没有重复做`
+                  + ` —— 换个做法、换个目标，或者把卡在哪儿直接讲给创作者听。`,
+              });
+              host.note('同一个写入做了两遍：我停下来，免得它一直在原地绕', true);
+              stop = true;
+              break;
+            }
+            if (landed <= prev.landedAt) {
+              push({
+                role: 'user',
+                content: `【动作结果：${c.tool}】这一步刚被拒过一次，中间世界没有任何变化`
+                  + ` —— 同样的参数再做一遍结果也一样，我没有重复做。先把挡路的那件事解决掉。`,
+              });
+              host.note('同一个写入被拒之后又原地试了一遍：我停下来', true);
+              stop = true;
+              break;
+            }
           }
-          doneWrites.add(sig);
+          const rec = prev ?? { ok: 0, landedAt: 0 };
+          doneWrites.set(sig, rec);
           const st = await handleWrite(c, host);
+          if (st === 'executed') { rec.ok += 1; landed += 1; rec.landedAt = landed; }
           wrote = true;
           /* ⭐ 只有"出了一张卡片"才必须**立刻**收手（那一步还在等创作者点「应用」，数据没变，
              后面的动作等于建在沙上）。被护栏拒掉（`refused`）与已经落盘（`executed`）

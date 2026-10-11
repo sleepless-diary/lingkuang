@@ -507,6 +507,13 @@ async function main() {
                否则撤销/重做自己触发的 vault 写盘会在 400ms 后把重做栈清掉，
                「重做」就永远按不出来。 */
             store.update((d) => { d.worldsets = newData.worldsets; }, { undo: false, keepRedo: true });
+            /* ⭐ 第八十九轮：这一句是**整份替换** worldsets，而 `update()` 按规矩不碰游标
+               （`src/store/store.ts:20-24`）。刚建好、还没有目录的空时间线在重建里可能落不到，
+               游标于是悬空 —— 沙盘与工作台各有兜底看不出来，但灵框助手那几条时间线动作是
+               **直取** `store.activeTimeline` 的：真机实测（用户搬库）它因此报「当前没有打开
+               的时间线（这个世界连一条时间线都还没有）」，然后**又建了一条同名「主线」**。
+               回扫之后立刻把游标落回仍然存在的项上。 */
+            store.reseatSelection();
           } finally {
             /* 必须 finally：store.update 先改数据、后通知，任何订阅者抛异常都会穿出来；
                漏掉这一句 suppressWrite 就永久卡在 true → 此后**整个会话不再自动落盘**（静默丢数据）。 */

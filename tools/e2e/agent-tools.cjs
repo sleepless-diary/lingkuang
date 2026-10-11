@@ -539,6 +539,52 @@ async function main() {
   check('★11c ⭐同一个写入在一轮里做两遍 ⇒ 第二遍被记账拦住（写明"已经做过一遍"），只落一次盘',
     dup.receipts === 2 && dup.receipt.indexOf('已经做过一遍') >= 0 && dup.rows === dupRows + 1, dup);
 
+  /* ---------- ★25 ⭐被拒之后"中间世界变过"就该允许重试（第八十九轮） ----------
+     真机取证（用户搬库，`%APPDATA%\lingkuang\agent\sessions.json` 主会话）那一串是：
+       `create_node`（被拒：「当前没有打开的时间线」）→ `create_timeline`「主线」（落盘）
+       → **参数一个字没改**的 `create_node`（要补建那批事件）——第八十八轮按签名一刀切拦停，
+     一段合法导入就此终结（用户原话：「同一个写入做了两遍：我停下来」）。
+     配套的两条：`create_timeline` 只往 JSON 里加、**不切游标** ⇒ 紧随其后的 `create_node`
+     还是"没有时间线"，模型于是又建了一条同名「主线」（用户盘上现在真躺着两条）。
+     ⚠️ 同 ★11c 一样放最后：这一条会长出一个新世界。 */
+  const WNEW = 'LK时间线世界';
+  const NODES25 = JSON.stringify({ tool: 'create_node', args: { nodes: [{ title: 'LK首事件', year: 80 }] } });
+  await setMock([
+    JSON.stringify({ tool: 'create_world', args: { name: WNEW } }),
+    NODES25 + '\n' + JSON.stringify({ tool: 'create_timeline', args: { name: 'LK主线' } }),
+    NODES25,
+    '好了。',
+  ]);
+  const t25Before = await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__tool').length`);
+  await ask('把这个新世界的时间线补上。');
+  await sleep(3000);
+  const t25 = await ev(`({
+    all: [...document.querySelectorAll('#lk-agent-msgs .lk-agent__tool')].map((x) => x.textContent),
+    seen: (window.__lkSeen || []).length,
+  })`);
+  const rc25 = t25.all.slice(t25Before);
+  const r25 = rc25.join('\n====\n');
+  check('★25 ⭐被拒过的写动作「中间世界变过」之后允许重试：同参数 create_node 再试一次真建上了事件（不再一刀切拦停）',
+    r25.indexOf('当前没有打开的时间线') >= 0 &&
+    r25.indexOf('已在「LK主线」上新建 1 个事件：LK首事件') >= 0 &&
+    r25.indexOf('已经做过一遍') < 0 &&
+    t25.seen >= 4,
+    { seen: t25.seen, receipts: rc25 });
+  /* 同名时间线**不再重开**：换个提问（= 新的一轮，签名账本重置）再要一条「LK主线」，
+     应该是「已经有一条…我直接切到它」，而不是又加一条。 */
+  const t25bBefore = await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__tool').length`);
+  await setMock([JSON.stringify({ tool: 'create_timeline', args: { name: 'LK主线' } }), '好了。']);
+  await ask('再给我建一条 LK主线。');
+  await sleep(1800);
+  const t25b = await ev(`({
+    all: [...document.querySelectorAll('#lk-agent-msgs .lk-agent__tool')].map((x) => x.textContent),
+  })`);
+  const rc25b = t25b.all.slice(t25bBefore);
+  const made25 = rc25b.filter((s) => s.indexOf('新建时间线「LK主线」并切了过去') >= 0).length;
+  const reuse25 = rc25b.filter((s) => s.indexOf('已经有一条叫「LK主线」的时间线了') >= 0).length;
+  check('★25b ⭐同名时间线不再重开：第二次只要同一条 ⇒ 复用（切过去）+ 不再新建一条',
+    reuse25 === 1 && made25 === 0, { made: made25, reuse: reuse25, receipts: rc25b });
+
   const errs = await ev(`window.__errs`);
   check('★14 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 

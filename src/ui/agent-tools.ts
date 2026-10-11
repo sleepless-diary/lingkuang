@@ -956,7 +956,7 @@ export async function runReadTool(call: ToolCall, store: Store): Promise<string>
       return [`${e.name}（${typeName(ws, e)}）`, `字段：${fieldsLine(e)}`, doc ? `正文：${clip(doc, 600)}` : '正文：（空）'].join('\n');
     }
     case 'list_nodes': {
-      const tl = ws?.timelines?.[store.activeTimeline];
+      const tl = timelineOf(store, ws);
       if (!tl) return '当前没有打开的时间线。';
       if (!tl.nodes.length) return `时间线「${tl.name}」上还没有事件。`;
       const rows = [...tl.nodes].sort((x, y) => x.year - y.year).slice(0, 20);
@@ -997,6 +997,22 @@ export async function runReadTool(call: ToolCall, store: Store): Promise<string>
 /** 失败时返回一段人话错误（给模型看，让它改参数重试）。
  *  ⭐ `mode` 只用来卡**批量形态**（`set_field{entities}` / `create_node{nodes}`）——
  *  用户 2026-09-26 拍板：那种"一次动一批"的活只在「自动」档放行，「一轮」档一次只做一个动作。 */
+/* ⭐ 第八十九轮：**时间线游标可能悬空** —— `src/main.ts` 的 vault 回扫（`vaultToWorldData`）
+   整份替换 `worldsets`，而 `store.update()` 按规矩不碰游标（`src/store/store.ts` 那条注释说的
+   是同一个坑）。真机实测（用户搬库）：`create_node` 因此报「当前没有打开的时间线（这个世界
+   连一条时间线都还没有）」—— **那是假的**，世界里明明有；模型信了这句，于是又建了一条同名
+   「主线」（现在盘上两条 `主线`，一条 3 个节点、一条空）。所以这里不再直取游标：取不到就退到
+   这个世界的第一条，回执照旧报它落到了哪条线上；真的连一条都没有，才走原来的拒绝语。 */
+function timelineOf(store: Store, ws: Worldset | undefined): Timeline | undefined {
+  const cur = ws?.timelines?.[store.activeTimeline];
+  if (cur) return cur;
+  for (const id of [...(ws?.order ?? []), ...Object.keys(ws?.timelines ?? {})]) {
+    const t = ws?.timelines?.[id];
+    if (t) return t;
+  }
+  return undefined;
+}
+
 export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent'): { ok: true; proposal: Proposal } | { ok: false; note: string } {
   const ws = currentWorld(store);
   const a = call.args;
@@ -1149,7 +1165,7 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
           },
         };
       }
-      const tl = ws?.timelines?.[store.activeTimeline];
+      const tl = timelineOf(store, ws);
       const node = tl?.nodes.find((n) => n.title === name) ?? tl?.nodes.find((n) => n.title.includes(name) && name.length > 0);
       if (!tl || !node) return { ok: false, note: `当前时间线上没找到事件「${name}」。` };
       const tlId = tl.id;
@@ -1177,8 +1193,8 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
       const manyNodes = Array.isArray(a.nodes) ? (a.nodes as unknown[]) : null;
       if (manyNodes) {
         if (mode !== 'agent') return { ok: false, note: '「一轮」档一次只建一个 —— 要批量建请先切到「自动」档，或者一个一个说。' };
-        const tl0 = ws?.timelines?.[store.activeTimeline];
-        if (!tl0) return { ok: false, note: '当前没有打开的时间线（这个世界连一条时间线都还没有）—— 先把时间线建出来：{"tool":"create_timeline","args":{"name":"<时间线名字>"}}，建完再往它上面建事件。设定条目（create_entity）不受影响，可以先建。' };
+        const tl0 = timelineOf(store, ws);
+        if (!tl0) return { ok: false, note: `当前没有打开的时间线，这个世界（「${ws?.name || store.activeWorld}」）里一条时间线都还没有 —— 先把时间线建出来：{"tool":"create_timeline","args":{"name":"<时间线名字>"}}，建完它会自动切过去，再往它上面建事件。设定条目（create_entity）不受影响，可以先建。` };
         const items = manyNodes
           .map((o) => (isObj(o) ? o : ({ title: o } as ToolArgs)))
           .map((o) => ({ title: str(o.title), year: num(o.year) ?? 0, kind: str(o.kind), desc: str(o.desc) }))
@@ -1206,7 +1222,7 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
       }
       const title = str(a.title);
       if (!title) return { ok: false, note: '新建事件要给我标题（args.title）。' };
-      const tl = ws?.timelines?.[store.activeTimeline];
+      const tl = timelineOf(store, ws);
       if (!tl) return { ok: false, note: '当前没有打开的时间线（这个世界连一条时间线都还没有）—— 先把时间线建出来：{"tool":"create_timeline","args":{"name":"<时间线名字>"}}，建完再往它上面建事件。' };
       const year = num(a.year) ?? 0;
       const kind = str(a.kind);
@@ -1398,16 +1414,37 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
       const name = str(a.name);
       if (!name) return { ok: false, note: '新时间线叫什么？（args.name）' };
       if (!ws) return { ok: false, note: '当前没有打开的世界 —— 先 `create_world` 建一个。' };
-      const dup = (ws.order ?? []).map((id) => ws.timelines?.[id]).some((t) => !!t && t.name === name);
+      /* ⭐ 第八十九轮两条（都来自"搬库搬到最后被拦停"那次真机取证）：
+         ① **同名不重开**，直接切过去 —— 助手当时连建两条「主线」（现在盘上就是两条：一条 3 个
+            节点、一条空），它并不是想再要一条，它只是想"把那条时间线拿回来"；
+         ② **建完就切过去** —— `addTimeline` 只往 JSON 里加一条、不碰游标，于是紧随其后的
+            `create_node` 报「当前没有打开的时间线」（真机那一步就是这么卡住的）。 */
+      const same = (ws.order ?? []).map((id) => ws.timelines?.[id]).find((t) => !!t && t.name === name);
+      if (same) {
+        const sameId = same.id;
+        return {
+          ok: true,
+          proposal: {
+            tool: call.tool,
+            title: `切到已有时间线：${name}`,
+            detail: `世界「${store.activeWorld}」里已经有一条叫「${name}」的时间线（${(same.nodes ?? []).length} 个事件）—— 不再建第二条，直接切过去`,
+            apply: () => {
+              store.setActiveTimeline(sameId);
+              return { ok: true, note: `已经有一条叫「${name}」的时间线了，我直接切到它（没有再建一条，现在就能往它上面建事件）` };
+            },
+          },
+        };
+      }
       return {
         ok: true,
         proposal: {
           tool: call.tool,
-          title: `新建时间线：${name}${dup ? '（同名，会并存两条）' : ''}`,
-          detail: `建在世界「${store.activeWorld}」上，是空的（还没有事件）`,
+          title: `新建时间线：${name}`,
+          detail: `建在世界「${store.activeWorld}」上，是空的（还没有事件）—— 建完会切到它，接着就能往里建事件`,
           apply: () => {
-            addTimeline(store, name);
-            return { ok: true, note: `已在世界「${store.activeWorld}」里新建时间线「${name}」（空的）` };
+            const id = addTimeline(store, name);
+            store.setActiveTimeline(id);
+            return { ok: true, note: `已在世界「${store.activeWorld}」里新建时间线「${name}」并切了过去（空的）` };
           },
         },
       };
@@ -1448,7 +1485,7 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
     case 'delete_node': {
       const want = str(a.title);
       if (!want) return { ok: false, note: '要删哪个事件？（args.title；同名多个再给 args.year）' };
-      const tl = ws?.timelines?.[store.activeTimeline];
+      const tl = timelineOf(store, ws);
       if (!tl) return { ok: false, note: '当前没有打开的时间线 —— 先在沙盘里选一条，我才知道删哪条线上的事件。' };
       /* ⚠️ 年份**没给**时不许当成 0 去过滤（`num('')` 恰好返回 0 —— 首跑就是被这个咬的：
          模型只说标题、不给年份 ⇒ `n.year === 0` 一条都对不上 ⇒ 明明有这个事件却说"没有叫…"）。

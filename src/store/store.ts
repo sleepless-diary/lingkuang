@@ -13,6 +13,11 @@ export interface Store {
   redo(): void;
   canUndo(): boolean;
   canRedo(): boolean;
+  /** ⭐ 第八十九轮：把两个游标按"仍然存在"重新落位。给**整份替换 `worldsets`** 的调用方用
+   *  （`src/main.ts` 的 vault 回扫）—— `update()` 按规矩不碰游标，替换之后 activeWorld /
+   *  activeTimeline 可能悬空，而助手那几条时间线动作是**直取游标**的（沙盘与工作台各有兜底，
+   *  所以 UI 上看不出来）。不 notify：调用方随后自己会通知/已经在通知里了。 */
+  reseatSelection(): void;
 }
 
 /** 时间线游标落位规则（建店时 / 换世界时 / 撤销重做后三处共用）：
@@ -116,6 +121,7 @@ function createStore(initial: WorldData): Store {
     },
     canUndo() { return undoStack.length > 0; },
     canRedo() { return redoStack.length > 0; },
+    reseatSelection() { reseatSelection(); },
   };
   return store;
 }
