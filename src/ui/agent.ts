@@ -630,37 +630,45 @@ function setNote(text: string, isErr = false): void {
   el.classList.toggle('is-err', isErr);
 }
 
+/** 写入动作的落地结果（`handleWrite()` 的返回值）—— `runTurn()` 靠它决定"排在后面的动作还跑不跑"。
+ *  ⭐ 用户 2026-10-11 实测：一批里 `delete_world` 被「唯一世界」护栏拒掉，同批的 `list_files` / `read_file`
+ *  被一起吞了 —— 界面上一点动静都没有，他问"怎么卡住了"。**拒绝 ≠ 等创作者点头**。 */
+type WriteOutcome = 'card' | 'executed' | 'refused';
+
 /* 写入动作：三档权限决定它怎么落地 ——
    只读 = 不执行（把意图讲给创作者）；逐项确认 = 出一张提议卡片等点「应用」；
-   YOLO = 直接执行。三条路都往历史里塞一条「动作结果」，模型下一轮才知道发生了什么。 */
-function handleWrite(call: ToolCall, host: AgentRunHost): Promise<void> {
+   YOLO = 直接执行。三条路都往历史里塞一条「动作结果」，模型下一轮才知道发生了什么。
+   ⭐ 返回值是给 `runTurn()` 用的：只有 `'card'` 才必须让这一轮收手（那一步还等创作者点「应用」），
+   `'refused'`（护栏拒 / 只读档）与 `'executed'`（已落盘）都接着跑同一批里排在后面的动作。 */
+function handleWrite(call: ToolCall, host: AgentRunHost): Promise<WriteOutcome> {
   const gate = gateWrite();
   if (gate === 'deny') {
     host.push({ role: 'user', content: `【动作结果：${call.tool}】现在是「只读」档，没有执行。把你的意图写成创作者能照着改的话。` });
     host.note('只读档：这次写入没有执行', true);
-    return Promise.resolve();
+    return Promise.resolve('refused');
   }
   const plan = planWrite(call, host.store, mode);
   if (!plan.ok) {
     host.push({ role: 'user', content: `【动作结果：${call.tool}】${plan.note}` });
     host.note(plan.note, true);
-    return Promise.resolve();
+    return Promise.resolve('refused');
   }
   /* ⭐ `needsConfirm`（自我提权 / 灵框外的文件写）**无视**"直接执行"档：那一档是创作者授权了平常的写入，
      不等于授权助手自己把权限往宽里调、或往灵框外的磁盘上写 —— 这两步必须他亲手点「应用」。 */
   if (gate === 'allow' && !plan.proposal.needsConfirm) {
     agentActing();
     /* ⭐ `apply()` 可能是 async（文件写要走主进程 IPC）—— 这里必须 await，否则回执先于落盘 */
-    return Promise.resolve(plan.proposal.apply()).then((r) => {
+    return Promise.resolve(plan.proposal.apply()).then((r): WriteOutcome => {
       host.push({ role: 'user', content: `【动作结果：${call.tool}】${r.note}（系统回执，界面已单独显示这块，不必复述）` });
       host.note(r.note);
+      return 'executed';
     });
   }
   cards.push({ p: plan.proposal });
   host.note(plan.proposal.needsConfirm && gate === 'allow'
     ? '这一步会放开更大的权限 —— 只有你点「应用」才会生效'
     : '写了一张提议卡片，点「应用」才落盘');
-  return Promise.resolve();
+  return Promise.resolve('card');
 }
 
 /** 卡片状态变了：**两个入口都要跟着重画**（助手浮层直接重画；AI 页听 `lingkuang-agent-cards`） */
@@ -883,26 +891,52 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
          **一个都没跑** —— 他看到的正是"工具打出来了但无法调用、卡住了"）。
          现在解析器认这种连写，这里按顺序落地：读动作跑完；写动作**第一张就收手**等创作者点头。 */
       let stop = false;
+      /* 这一批里出现过写入 ⇒ **整批跑完就收手**（片 3 的老规矩：写动作一轮就结束）。
+         为什么不是"被拒了就接着走到下一轮"：那会让模型在同一轮里反复重试同一个被拒的动作
+         （最多 200 轮，每一轮都是一次真 API 调用），而且底部那句提示会被下一轮的空回复冲掉
+         —— `agent-tools` ★10/★11 与 `agent-fs` ★10/★20 就是这么红的。 */
+      let wrote = false;
+      /* 没轮到的动作要**留痕**（用户 2026-10-11：「怎么卡住了」）—— 只写在底部那行提示里，
+         创作者翻回去就找不到了，模型下一轮也不知道自己还有活儿没干。 */
+      let left: ToolCall[] = [];
+      let why: '' | 'card' | 'quota' = '';
       for (let k = 0; k < calls.length; k++) {
         const c = calls[k];
         if (isWriteTool(c.tool)) {
-          await handleWrite(c, host);
-          if (k < calls.length - 1) host.note('它一次提了好几个写入，这轮先按第一个走 —— 落定后再提下一个');
-          stop = true;
-          break;
+          const st = await handleWrite(c, host);
+          wrote = true;
+          /* ⭐ 只有"出了一张卡片"才必须**立刻**收手（那一步还在等创作者点「应用」，数据没变，
+             后面的动作等于建在沙上）。被护栏拒掉（`refused`）与已经落盘（`executed`）
+             都接着做后面的 —— **拒绝不该吞掉同一批里的读**：`delete_world` 被「唯一世界」
+             护栏挡下时，同批的 `list_files` / `read_file` 从前会被静默丢掉。 */
+          if (st === 'card') { left = calls.slice(k + 1); why = 'card'; stop = true; break; }
+        } else {
+          const out = await runReadTool(c, host.store);
+          push({ role: 'user', content: `【动作结果：${c.tool}】\n${out}` });
         }
-        const out = await runReadTool(c, host.store);
-        push({ role: 'user', content: `【动作结果：${c.tool}】\n${out}` });
         /* 「一轮」档一次只做一个动作 —— 多做的那几个不丢，说清楚让创作者自己定 */
         if (mode !== 'agent' && k < calls.length - 1) {
-          host.note(`一次提问只做一个动作（这次做了 1 个，还留着 ${calls.length - 1} 个）—— 切到「自动」我能连着做`, true);
+          left = calls.slice(k + 1);
+          why = 'quota';
+          host.note(`一次提问只做一个动作（这次做了 1 个，还留着 ${left.length} 个）—— 切到「自动」我能连着做`, true);
           stop = true;
           break;
         }
       }
+      if (left.length) {
+        /* 进历史**也**进消息区：前缀沿用 `【动作结果：…】`（`sentHistory()` 的 `isMachineMsg()`
+           按它认机器消息 —— 换个前缀会被当成"创作者说的话"画成用户气泡）。 */
+        push({
+          role: 'user',
+          content: `【动作结果：未执行】这一轮还剩 ${left.length} 个动作没做：${left.map((x) => x.tool).join('、')}。`
+            + (why === 'card'
+              ? '它们排在一条要创作者点「应用」的写入后面 —— 那一步落定之后再说一声就行。'
+              : '「一轮」档一次只做一个动作，切到「自动」我能连着做完。'),
+        });
+      }
       host.rerender();
-      /* 写动作出卡片、聊天模式额度用完 ⇒ 这一轮就到这儿（与原来 `handleWrite` 之后 break 同义） */
-      if (stop) break;
+      /* 写动作出卡片 / 有写入 / 聊天模式额度用完 ⇒ 这一轮就到这儿 */
+      if (stop || wrote) break;
       if (round === roundMax) {
         host.note(mode === 'agent'
           ? (stepsFree()

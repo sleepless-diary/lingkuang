@@ -15,6 +15,28 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第七十八轮（2026-10-12）· 被护栏拒掉的那个动作，不许顺手吞掉同一批里别的动作
+
+**用户原话**：「**怎么卡住了**」（转发的真机会话：助手一批提了 `delete_world` + `list_files` + `read_file`，`delete_world` 被上一轮刚加的「唯一世界」护栏拒掉，**同批的两个读没轮到**；助手自己把这解释成"整批跟着停在那里"，然后回去问创作者"新世界叫什么"——看起来就像坏了）。
+
+**真因**（`src/ui/agent.ts` 的 `runTurn()` 批量循环）：`if (isWriteTool(c.tool)) { await handleWrite(c, host); … stop = true; break; }` —— 写动作**无论哪种结果**都一律 break。可三种结果的语义根本不同：
+- **出卡片**（`proposal` 已 push、等创作者点「应用」）⇒ 数据还没变，后面的动作等于建在沙上，**必须停**；
+- **被拒**（`planWrite` 返回 `ok:false`：唯一世界/唯一时间线护栏、白名单外、找不到目标、只读档）⇒ **什么都没发生**，凭什么吞掉后面的读；
+- **已落盘**（「直接执行」档）⇒ 状态是真的，后面的动作照做才对。
+
+`handleWrite()` 原来的返回类型是 `Promise<void>`，调用方**分不清这三种** —— 这就是它只能一律 break 的原因。
+
+**修法**：
+① `src/ui/agent.ts` 新增 `type WriteOutcome = 'card' | 'executed' | 'refused'`，`handleWrite()` 改成 `Promise<WriteOutcome>`（三条 return 各自标明）；批量循环改成 `if (st === 'card') { left = calls.slice(k + 1); why = 'card'; stop = true; break; }`，`refused` / `executed` **接着跑同一批里后面的动作**；整批跑完仍是 `if (stop || wrote) break;` —— **写动作依旧"一轮就结束"**（`wrote` 旗子）。后半句是我第一版漏掉的：第一版让被拒的写接着走到下一轮，结果 (a) 模型会在同一轮里反复重试同一个被拒的动作（最多 200 轮，每轮一次真 API 调用）、(b) 底部那句提示会被下一轮的空回复冲掉 —— `agent-tools` ★10/★11 与 `agent-fs` ★10/★20 当场红，正好把这条钉住（「一轮」档"一次只做一个"的规矩也不变）。
+② **没轮到的动作要留痕**（"卡住了"的观感就是这里来的）：循环结束后若有 `left`，`push()` 一条 `【动作结果：未执行】这一轮还剩 N 个动作没做：list_nodes。…`（出卡片时写"它们排在一条要创作者点「应用」的写入后面"，额度用完时写"切到「自动」我能连着做完"）。前缀沿用 `【动作结果：…】` —— `sentHistory()` 的 `isMachineMsg()` 与消息区都按它认机器消息，换个前缀会被当成"创作者说的话"画成用户气泡。
+③ 拒绝文案按片 1.1 的不变量给**出路**（`src/ui/agent-tools.ts`）：`delete_world` 的「唯一世界」拒绝里补 `{"tool":"create_world","args":{"name":"<新世界名>"}}`（有了第二个它就不是唯一了，那时删得掉），`delete_timeline` 补 `create_timeline` —— 真机那次助手是自己猜出这条路才绕开的，不能靠运气。
+
+**守卫** `tools/e2e/agent-delete.cjs` 20 → **23 项**：
+- **★18b**：一批 `delete_world`（唯一世界，被拒）+ `list_nodes` ⇒ 两个回执**都在**（`.lk-agent__tool` 增 2：一条含「唯一」、最后那条是 `list_nodes` **真结果**），**不出现**「未执行」（因为一个都没剩）、`__lkSeen` 仍是 **1 轮**（＝写动作照旧"一轮就结束"，不给它反复重试的机会）；
+- **★18c**：逐次确认档下 `create_entity` + `list_nodes` ⇒ 只出**一张卡片**、`list_nodes` 没跑（`ran18c === false`），但多出一条「未执行」回执、正文点名 `list_nodes`；
+- **★18d**：「唯一世界 / 唯一时间线」的拒绝里带着 `create_world` / `create_timeline`（照抄得出来）。
+**A/B：旧构建 20/23**（★18b `grow18b:1`、`rounds:1` —— 用户看到的现象原样复现；★18c 无「未执行」；★18d 拒绝文案里没有那个 JSON）→ 新构建 **23/23**。邻居 `agent-tools` 26/26、`agent-fs` 22/22、`agent-mode` 17/17、`agent-panel` 21/21；`tsc --noEmit` exit 0、`npm run build` 绿。
+
 ## 第七十七轮（2026-10-12）· 助手终于有「删除手」，也能建世界 / 时间线
 
 **用户一句话**：「**你没给AI配置删除和创建的工具吗**」。查证（`src/ui/agent-tools.ts` grep `delete|remove|删除|trash`）：**创建早有**（`create_entity` / `create_node` / `write_file` / `append_file`），**删除一条都没有**；而且「世界」「时间线」这两层连创建入口都没有（只有"一条条内容"那个层级）。用 ask_user_question 定案：三类删除全要（设定/事件、整条时间线/整个世界、灵框库外的文件），安全档他选**「直接执行」档下删除直接生效**。

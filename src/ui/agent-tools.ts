@@ -1181,7 +1181,11 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
         const name = all.find((n) => n === want) ?? all.find((n) => n.toLowerCase() === want.toLowerCase());
         if (!name) return { ok: false, note: `没找到叫「${want}」的世界，**什么都没删**。${all.length ? '现有的世界：' + all.join('、') : ''}` };
         if (all.length <= 1) {
-          return { ok: false, note: `「${name}」是**唯一**的世界 —— 删了灵框就空了，这条我不做。真要清空请创作者自己在世界栏里删（那里会先问他一次）。` };
+          /* ⭐ 拦下来必须给一条**出路**（同片 1.1 的不变量）：只说"我不做"，模型就会回去跟创作者说
+             "请自己删"，绕一圈什么也没干。这里把下一步动作直接写成能照抄的 JSON。 */
+          return { ok: false, note: `「${name}」是**唯一**的世界 —— 删了灵框就空了，这条我不做。`
+            + `要真删它，先 {"tool":"create_world","args":{"name":"<新世界名>"}} 建一个新世界（有了第二个，它就不是唯一了，那时删得掉）；`
+            + `或者请创作者自己在世界栏里删（那里会先问他一次）。` };
         }
         const tlCount = Object.keys(store.data.worldsets[name]?.timelines ?? {}).length;
         return {
@@ -1201,7 +1205,9 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
       const tl = list.find((t) => t.name === want) ?? list.find((t) => t.name.toLowerCase() === want.toLowerCase());
       if (!tl) return { ok: false, note: `这个世界里没有叫「${want}」的时间线，**什么都没删**。${list.length ? '它有的时间线：' + list.map((t) => t.name).join('、') : '这个世界还没有时间线。'}` };
       if (list.length <= 1) {
-        return { ok: false, note: `「${tl.name}」是这个世界**唯一**的时间线 —— 删了沙盘就空了，这条我不做。真要删请创作者自己在世界栏里删（那里会先问他一次）。` };
+        return { ok: false, note: `「${tl.name}」是这个世界**唯一**的时间线 —— 删了沙盘就空了，这条我不做。`
+          + `要真删它，先 {"tool":"create_timeline","args":{"name":"<新时间线名>"}} 再建一条（有了第二条，它就删得掉）；`
+          + `或者请创作者自己在世界栏里删（那里会先问他一次）。` };
       }
       const tlId = tl.id;
       const nodeCount = tl.nodes.length;

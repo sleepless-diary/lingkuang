@@ -361,6 +361,46 @@ async function main() {
     worlds.length === 1 && (await cards()) === cardsW && guardW.indexOf('唯一') >= 0,
     { worlds, fed: guardW, cards: await cards(), before: cardsW });
 
+  /* ⭐ 18d 拦下来必须给一条**出路**（片 1.1 的不变量）：光说"这条我不做"，模型下一轮只会回去跟创作者
+     说"请你自己删" —— 拒绝的理由里得带着**照抄得出来**的下一步动作。
+     （真机那次它自己猜出了"先建新世界再删"，但那是运气；现在这条 JSON 就写在回执里。） */
+  check('★18d 「唯一世界 / 唯一时间线」的拒绝里带着出路（照抄得出来的 create_world / create_timeline）',
+    guardW.indexOf('create_world') >= 0 && guardT.indexOf('create_timeline') >= 0,
+    { world: guardW.slice(-90), tl: guardT.slice(-90) });
+
+  /* ⭐ 18b **同一批里被护栏拒掉的写，不许吞掉后面的读** —— 用户 2026-10-11 实测的「怎么卡住了」：
+     他一批提了 `delete_world`（唯一世界 ⇒ 被拒）+ `list_files` + `read_file`，同批的读从前被静默丢掉，
+     界面上一点动静都没有；模型自己也把它解释成"整批跟着停"。 */
+  const receipts = () => ev(`[...document.querySelectorAll('#lk-agent-msgs .lk-agent__tool')].map((b) => b.textContent)`);
+  const before18b = (await receipts()).length;
+  await setMock([`{"tool":"delete_world","args":{"name":${json(worlds[0])}}}\n{"tool":"list_nodes","args":{}}`, '好。']);
+  await ask('把这个世界删掉，然后把事件列一遍。');
+  const all18b = await receipts();
+  const grow18b = all18b.length - before18b;
+  const seenN18b = await ev(`(window.__lkSeen || []).length`);
+  const last18b = all18b[all18b.length - 1] || '';
+  check('★18b ⭐同批里被拒的写**不吞掉后面的读**（两个回执都在、读真跑出结果、不报「未执行」；写动作照旧"一轮就结束"）',
+    worlds.length === 1 && grow18b === 2 && all18b.some((t) => t.indexOf('唯一') >= 0) &&
+    last18b.indexOf('list_nodes') >= 0 && last18b.indexOf('时间线') >= 0 &&
+    all18b.every((t) => t.indexOf('未执行') < 0) && seenN18b === 1,
+    { grow18b, rounds: seenN18b, tail: all18b.slice(-2) });
+
+  /* ⭐ 18c 真出了一张卡片时才必须收手（那一步还在等创作者点「应用」，数据没变，
+     后面的动作等于建在沙上）—— 但要**留痕**，不是静默：一条「未执行」回执说清还剩哪几个动作，
+     它进消息区也进历史（模型下一轮才知道自己还有活儿没干）。 */
+  await setGate('workspace', 'always');   /* 逐次确认档：写动作一律先出卡片 */
+  const cards18c = await cards();
+  const before18c = (await receipts()).length;
+  await setMock([`{"tool":"create_entity","args":{"name":"lk-e2e-未执行"}}\n{"tool":"list_nodes","args":{}}`, '好。']);
+  await ask('建一条设定 lk-e2e-未执行，再把事件列一遍。');
+  const all18c = await receipts();
+  const trace18c = all18c[all18c.length - 1] || '';
+  const ran18c = all18c.slice(before18c).some((t) => t.indexOf('list_nodes') >= 0 && t.indexOf('未执行') < 0);
+  check('★18c 出卡片时后面的动作**不跑**（数据还没变），但留一条「未执行」回执说清还剩哪几个',
+    (await cards()) === cards18c + 1 && all18c.length === before18c + 1 &&
+    trace18c.indexOf('未执行') >= 0 && trace18c.indexOf('list_nodes') >= 0 && ran18c === false,
+    { before: before18c, after: all18c.length, trace: trace18c, cards: await cards() });
+
   /* ---------- ★19 收尾 ---------- */
   const errs = await ev(`window.__errs`);
   check('★19 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
