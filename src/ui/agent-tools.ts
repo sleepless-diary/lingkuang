@@ -23,7 +23,7 @@ import type { Entity, PropValue, TimelineNode, Worldset } from '../store/types';
 import { fsAddRoot, fsAvailable, fsDefaultPath, fsList, fsPrompt, fsRead, fsRootOf, fsRootsCached, fsSearch, fsSetRootWrite, fsWrite } from './agent-fs';
 import { webAvailable, webFetch, webPrompt, webSearch } from './agent-web';
 import { setAgentAsk, setAgentScope } from './agent-perm';
-import type { AgentMode } from './agent-mode';
+import { stepsPrompt, type AgentMode } from './agent-mode';
 import type { AgentAsk, AgentScope } from './settings';
 
 export type ToolArgs = Record<string, unknown>;
@@ -81,7 +81,7 @@ const READ_TOOLS: ToolSpec[] = [
 /* ---------------- 写入动作 ---------------- */
 
 const WRITE_TOOLS: ToolSpec[] = [
-  { name: 'create_entity', title: '新建设定', desc: '新建一条设定条目（会给它补上该类型的空字段）', args: '{ name: 名字, type?: 类型名, fields?: { 字段: 值 } }' },
+  { name: 'create_entity', title: '新建设定', desc: '新建一条设定条目（会给它补上该类型的空字段）；也可以一次建一批（仅「自动」档 —— 搬资料库用这个）', args: '{ name: 名字, type?: 类型名, fields?: { 字段: 值 } } 或 { entities: [{ name, type?, fields? }…] }' },
   { name: 'set_field', title: '改字段', desc: '改某条设定的一个字段值；也可以一次改一批（同一个字段、同一个值，仅「自动」档）', args: '{ entity: 名字, field: 字段名, value: 值 } 或 { entities: [名字…], field, value }' },
   { name: 'append_doc', title: '续写正文', desc: '在某条设定或某个事件的正文末尾追加一段', args: '{ target: "entity"|"node", name: 名字, text: 正文 }' },
   { name: 'create_node', title: '新建事件', desc: '在当前时间线上建一个事件节点；也可以一次建一批（仅「自动」档）', args: '{ title: 标题, year: 年份, kind?: 种类, desc?: 一句简述 } 或 { nodes: [{ title, year, kind?, desc? }…] }' },
@@ -130,7 +130,7 @@ export function toolsPrompt(mode: AgentMode = 'agent'): string {
     '⚠️ 也别用你自己那套原生函数调用标记（`＜…invoke name="…"＞` 那种带 DSML 字样的）—— 我认得出、也跑得动，但上面那行纯 JSON 最稳，你的对话历史里也更干净。',
     '要放开权限（切到「自动」档、把权限改宽）时，那张卡片**永远**要创作者点「应用」才会生效 —— 别催他。',
     mode === 'agent'
-      ? '不需要用动作时就用平常的话回答。**一次提问里可以连着提多个动作**（我最多放你走 8 步）；批量活（一次建好几个事件、给一批设定加同一个字段）**一次规划好再动手**：`set_field{entities:[…]}` 与 `create_node{nodes:[…]}` 两种批量形态只有在这个（「自动」）档里认。'
+      ? '不需要用动作时就用平常的话回答。**一次提问里可以连着提多个动作**（' + stepsPrompt() + '）；批量活（一次建好几个事件、给一批设定加同一个字段、**把一整个资料库搬进来**）**一次规划好再动手**：`set_field{entities:[…]}`、`create_node{nodes:[…]}` 与 `create_entity{entities:[…]}` 三种批量形态只有在这个（「自动」）档里认。'
       : '不需要用动作时就用平常的话回答。**一次提问只提一个动作**（这是「一轮」档的规矩），做完把结果说给他、等他决定下一步；**也不要用批量形态**（`entities`/`nodes` 两个键这个档不认，要用得先切到「自动」）。',
   ].join('\n');
 }
@@ -670,6 +670,44 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
   const a = call.args;
   switch (call.tool) {
     case 'create_entity': {
+      /* ⭐ 批量形态（2026-10-11，用户：「**我在测试灵框能不能吃下我的所有世界观信息，你都补进来吧**」）：
+         `entities: [{ name, type?, fields? }…]` —— **一次搬一整个库**：一张卡片建一批，
+         创作者点一次「应用」就落一整批（原来一条一张卡片 ⇒ 搬 100 条要点 100 次）。
+         只在「自动」档放行；没写 name 的项直接丢掉（不因为一条写错就整批不动）；
+         **已经存在的名字跳过**（搬库时模型常把同一批重发一次，重复建会把树搞乱）。 */
+      const manyEnt = Array.isArray(a.entities) ? (a.entities as unknown[]) : null;
+      if (manyEnt) {
+        if (mode !== 'agent') return { ok: false, note: '「一轮」档一次只建一个 —— 要批量建请先切到「自动」档，或者一个一个说。' };
+        const types0 = Object.values(ws?.entityTypes ?? {});
+        if (!types0.length) return { ok: false, note: '这个世界还没有类型模板，先在结构体管理里建一个。' };
+        const items = manyEnt
+          .map((o) => (isObj(o) ? o : ({ name: o } as ToolArgs))) /* 也认 `["名字", …]` 这种最省的写法 */
+          .map((o) => {
+            const want = str(o.type);
+            const t = types0.find((x) => x.name === want || x.id === want) ?? types0[0];
+            const f = (o.fields && typeof o.fields === 'object' ? o.fields : {}) as unknown as Record<string, PropValue>;
+            return { name: str(o.name), typeId: t.id, typeName: t.name, fields: f };
+          })
+          .filter((it) => it.name);
+        if (!items.length) return { ok: false, note: '批量建设定要给我 entities: [{ name: 名字, fields?: {…} }, …]（每一项都得有 name）。' };
+        const dup = items.filter((it) => findEntity(ws, it.name)).map((it) => it.name);
+        const fresh = items.filter((it) => !findEntity(ws, it.name));
+        if (!fresh.length) return { ok: false, note: `这些设定都已经有了，没有要新建的：${dup.join('、')}。要改它们就用 set_field。` };
+        return {
+          ok: true,
+          proposal: {
+            tool: call.tool,
+            title: `新建设定：${fresh.length} 条`,
+            detail:
+              fresh.map((it) => `${it.name}（${it.typeName}）${Object.keys(it.fields).length ? ' · ' + Object.keys(it.fields).length + ' 个字段' : ''}`).join('\n') +
+              (dup.length ? `\n（已经有、跳过：${dup.join('、')}）` : ''),
+            apply: () => {
+              for (const it of fresh) addEntity(store, { name: it.name, typeId: it.typeId, properties: it.fields });
+              return { ok: true, note: `已新建 ${fresh.length} 条设定：${fresh.map((it) => it.name).join('、')}` };
+            },
+          },
+        };
+      }
       const name = str(a.name);
       if (!name) return { ok: false, note: '新建设定要给我名字（args.name）。' };
       const types = Object.values(ws?.entityTypes ?? {});

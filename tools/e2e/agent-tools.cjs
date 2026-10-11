@@ -463,6 +463,53 @@ async function main() {
     batch.fedDirs === 8,
     { ...batch, dirs: (b23dirs.dirs || []).length });
 
+  /* ---------- ⑯ ⭐一次建一批设定（用户 2026-10-11：「我在测试灵框能不能吃下我的所有世界观信息，
+     你都补进来吧」）----------
+     `create_entity{entities:[…]}` —— 搬一整个库时"一条一张卡片"要点上百次；现在一张卡片建一批。
+     判据：已存在的名字**跳过**、裸名字（`["批量丙"]`）也认、**点「应用」之前树一行不动**。 */
+  const p24 = (await props()).length;   /* ⚠️ 卡片数走 `props()`（`.lk-agent__prop` 行），不是 `calls()`（那是「用到动作」行） */
+  const r24 = await rows();
+  await setMock([
+    JSON.stringify({ tool: 'create_entity', args: { entities: [
+      { name: '批量甲', type: '角色', fields: { 发色: '银白' } },
+      { name: '批量乙', type: '角色' },
+      { name: '银发少女' },
+      '批量丙',
+    ] } }),
+    '搬完了。',
+  ]);
+  await ask('把这批设定一次建出来。');
+  await sleep(1000);
+  const batchEnt = await ev(`(function () {
+    const p = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__prop')];
+    const last = p[p.length - 1];
+    const btn = last && last.querySelector('[data-prop-ok]');
+    return {
+      cards: p.length, idx: btn ? btn.dataset.propOk : null,
+      title: last ? ((last.querySelector('.lk-agent__prop-h') || {}).textContent || '') : '',
+      detail: last ? ((last.querySelector('.lk-agent__prop-d') || {}).textContent || '') : '',
+      rows: document.querySelectorAll('#cx-list [data-cx-id]').length,
+    };
+  })()`);
+  check('★24 ⭐一次建一批设定：一张卡片写清「3 条」（已存在的名字跳过、裸名字 `["批量丙"]` 也认），点「应用」之前树一行不动',
+    batchEnt.cards === p24 + 1 && batchEnt.idx !== null && batchEnt.title.indexOf('3 条') >= 0 &&
+    batchEnt.detail.indexOf('批量甲') >= 0 && batchEnt.detail.indexOf('批量丙') >= 0 &&
+    batchEnt.detail.indexOf('已经有、跳过') >= 0 && batchEnt.detail.indexOf('银发少女') >= 0 &&
+    batchEnt.rows === r24,
+    batchEnt);
+  /* 点「应用」⇒ 三条**一起**落盘（`data-prop-ok` 是 cards 数组下标，不是 DOM 序号 —— 只能从属性里读） */
+  if (batchEnt.idx !== null) await ev(`document.querySelector('#lk-agent-msgs [data-prop-ok="${batchEnt.idx}"]').click()`);
+  await sleep(900);
+  const applied24 = await ev(`({
+    rows: document.querySelectorAll('#cx-list [data-cx-id]').length,
+    cards: document.querySelectorAll('#lk-agent-msgs .lk-agent__prop').length,
+    tool: (function () { const t = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__tool')]; return t.length ? t[t.length - 1].textContent : ''; })(),
+  })`);
+  check('★24b 点一下「应用」三条一起落盘（树多 3 行、卡片当场退场、回执点名三条）',
+    applied24.rows === r24 + 3 && applied24.cards === 0 &&
+    applied24.tool.indexOf('批量甲') >= 0 && applied24.tool.indexOf('批量丙') >= 0,
+    { ...applied24, before: r24 });
+
   const errs = await ev(`window.__errs`);
   check('★14 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 

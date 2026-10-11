@@ -24,7 +24,7 @@ import { renderTavern } from './tavern';
 /* ⭐ 2C：主会话与 Ctrl+K 的助手是**同一格会话、同一套能力** ⇒ 这一页直接用助手那一套：
    `runTurn()`（一次提问的共用实现）+ `cardsHtml()` / `agentCardClick`（提议卡片）
    + `getAgentMode()` / `setAgentMode()`（模式开关，两个入口共享一份状态）。 */
-import { FOLD_ALWAYS, FOLD_AT, RESULT_RE, agentCallRow, agentCardClick, cardsHtml, getAgentMode, isAgentRunning, receiptSummary, runTurn, setAgentMode } from './agent';
+import { FOLD_ALWAYS, FOLD_AT, RESULT_RE, agentCallRow, agentCardClick, cardsHtml, getAgentMode, isAgentRunning, receiptSummary, requestAgentStop, runTurn, setAgentMode } from './agent';
 import { toolProse } from './agent-tools';
 import { MODE_HINT, MODE_LABEL, MODES } from './agent-mode';
 import {
@@ -71,6 +71,7 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
         '<div class="lk-agent__attach" id="ai-attach" style="padding:0 14px;"></div>' +
         '<div style="padding:8px 14px 12px;display:flex;gap:6px;">' +
           `<textarea id="ai-input" rows="2" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）" style="flex:1;min-width:0;resize:none;${INPUT}"></textarea>` +
+          `<button id="ai-stop" style="${BTN}color:var(--danger);border-color:var(--danger);display:none;">停</button>` +
           `<button id="ai-send" style="${BTN}color:var(--accent);border-color:var(--accent);">发送</button>` +
         '</div>' +
       '</div>' +
@@ -78,6 +79,7 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
 
   const listEl = host.querySelector('#ai-sess') as HTMLElement;
   const logEl = host.querySelector('#ai-log') as HTMLElement;
+  const stopEl = host.querySelector('#ai-stop') as HTMLElement;
   const headEl = host.querySelector('#ai-head') as HTMLElement;
   const noteEl = host.querySelector('#ai-note') as HTMLElement;
   const inputEl = host.querySelector('#ai-input') as HTMLTextAreaElement;
@@ -302,7 +304,10 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
      流式气泡全在一处。非主会话（角色 / 视角 / 主控）照旧：它们只演，不动手。 */
   const send = async (): Promise<void> => {
     const s = activeSession();
-    /* 两个入口共用"正在跑"的标志：同一格会话不能在浮层和这一页同时跑两轮 */
+    /* 两个入口共用"正在跑"的标志：同一格会话不能在浮层和这一页同时跑两轮。
+       ⚠️ 发送键**只管发送**（跑的时候点它是空点，不打断）—— 打断走旁边那个「停」按钮。
+       2026-10-11 一开始写成"跑起来发送键变「停下」"，所有盲点 `#ai-send` / `#lk-agent-send`
+       的 e2e 套件当场连挂（上一轮没跑完时那一下从"提问"变成了"打断"）。 */
     if (!s || busy || isAgentRunning()) return;
     const raw = inputEl.value.trim();
     /* ⭐ 有拖进来的材料时，"没打字"也算有话可说（材料本身就是这一问的上下文） */
@@ -313,6 +318,7 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     attachClear();
     attachChipsRender();
     busy = true;
+    stopEl.style.display = 'inline-block';
     const id = s.id;
     const isMain = s.role === 'main';
     const BUBBLE = 'max-width:78%;word-break:break-word;background:var(--surface-2);color:var(--fg);border-radius:var(--radius-sm);padding:7px 10px;font-size:13px;line-height:1.7;';
@@ -368,12 +374,18 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       setNote('出错了：' + (e instanceof Error ? e.message : String(e)), true);
     }
     busy = false;
+    stopEl.style.display = 'none';
     if (activeSession()?.id === id) { renderLog(); renderHead(); }
     /* 聊完这一轮看看要不要按内容起个名（设置里默认关；要发一次模型请求，所以只做一次） */
     void autoName(s);
   };
 
   host.querySelector('#ai-send')?.addEventListener('click', () => { void send(); });
+  /* 「停」（步数默认不限 ⇒ 主会话也可能连着走很久）：跑起来才显形，点它让这一步做完就收手 */
+  host.querySelector('#ai-stop')?.addEventListener('click', () => {
+    requestAgentStop();
+    setNote('好，这一步做完就停');
+  });
   /* 提议卡片的「应用」/「忽略」：与助手浮层**同一个**处理函数（事件委托，卡片跟着记录区重画） */
   logEl.addEventListener('click', agentCardClick);
   inputEl.addEventListener('keydown', (e) => {

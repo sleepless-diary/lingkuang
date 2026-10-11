@@ -27,7 +27,7 @@ import {
   addMemory, adoptFromDisk, getMemory, memoryPrompt, removeMemory,
   setMemorySink, summarizePrefs, updateMemory,
 } from './agent-memory';
-import { DEFAULT_MODE, MODE_HINT, MODE_LABEL, MODES, modePrompt, type AgentMode } from './agent-mode';
+import { AGENT_STEPS_HARD, DEFAULT_MODE, MODE_HINT, MODE_LABEL, MODES, STEP_OPTIONS, getAgentSteps, modePrompt, setAgentSteps, stepsLabel, type AgentMode } from './agent-mode';
 import { ASKS, ASK_LABEL, SCOPES, SCOPE_LABEL, gateWrite, getAgentAsk, getAgentScope, permHint, permName, permissionPrompt, setAgentAsk, setAgentScope } from './agent-perm';
 import { isWriteTool, looksLikeToolBatch, looksLikeToolJson, looksLikeToolMarkup, parseToolCalls, planWrite, runReadTool, toolProse, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
 import { fsAddRoot, fsAvailable, fsRemoveRoot, fsRootsCached, fsSetRootWrite, refreshFsRoots, type FsRoot } from './agent-fs';
@@ -111,6 +111,9 @@ let noThinkHinted = false;
  *  ⚠️ **2026-10-11 起落盘**（`lingkuang-settings.agentMode`，用户选了「记着」）：默认档 = 自动，
  *  关掉面板不再回落 —— 收窄到「一轮」是创作者明确的克制选择，关一次就忘掉才是错的。 */
 let mode: AgentMode = loadSettings().agentMode || DEFAULT_MODE;
+/* ⭐ 步数（2026-10-11，用户「不能设置无上限吗」）：开机把设置里的值灌进 `agent-mode.ts`
+   （那边是运行时唯一真源 —— 系统提示与轮数上限都读它），改动时再写回设置。 */
+setAgentSteps(loadSettings().agentSteps);
 /* AI 的 `set_mode` 动作（`src/ui/agent-tools.ts` 的 planWrite）不能直接改这个模块变量
    （会成 import 环），它广播事件、这里收 —— 与 `lingkuang-agent-perm` / `lingkuang-sessions`
    同一套做法。面板开着就顺手重画那两段按钮与说明。 */
@@ -128,9 +131,33 @@ let draft = false;
    防它在「列设定 → 再看一条 → 再列」里打转。
    ⭐ 2026-09-26 用户拍板：两个模式的差别就在这儿 —— 聊天**一次只做一个动作**
    （1 轮动作 + 1 轮答话），Agent 可以连着走多步。
+   ⭐ 2026-10-11 用户问「**不能设置无上限吗**」⇒ 步数改成**可设**且**默认不限**
+   （`src/ui/agent-mode.ts` 的 `getAgentSteps()` / `AGENT_STEPS_FREE` / `AGENT_STEPS_HARD`）：
+   有限档按他设的数字走，不限档按兜底天花板走（只为防模型绕圈）。
    `cards` = 这次会话里还没处理的提议卡片。 */
 const CHAT_ROUNDS = 1;
-const AGENT_ROUNDS = 8;
+/** 「自动」档这一次最多走几步 */
+function agentRounds(): number {
+  const n = getAgentSteps();
+  return n > 0 ? n : AGENT_STEPS_HARD;
+}
+/** 不限档？（停下来的提示语与提示词都要按这个分岔） */
+function stepsFree(): boolean { return getAgentSteps() <= 0; }
+/* ⭐「停」：跑的时候才有得点 —— 每一轮开头看一次这面旗子（≤1 步的延迟）。
+   为什么要有它：步数默认**不限**，得给创作者一个随时能掐的地方。
+   ⚠️ 它是**单独一个按钮**（`#lk-agent-stop`，跑的时候才显形），**不占用发送键** ——
+   最初写成"发送键在跑时变「停下」"（同一个键两种意思），结果所有 e2e 套件的 `ask()` 都是
+   盲点 `#lk-agent-send`：上一轮还没跑完时那一下就从"提问"变成了"打断"，问题根本没发出去
+   （`agent-dsml` ★4/★5 当场连挂、`agent-stream` 跟着崩）。发送键就让它一辈子只干发送。 */
+let stopAsked = false;
+export function requestAgentStop(): void {
+  if (busy) stopAsked = true;
+}
+/** 跑起来时把「停」亮出来、跑完收回去（发送键的文案与语义**不动**） */
+function setRunUi(): void {
+  const b = openEl?.querySelector<HTMLElement>('#lk-agent-stop');
+  if (b) b.hidden = !busy;
+}
 /* 模型把动作格式写歪时，用它回头纠正一次（只一次） */
 const FIX_NOTE =
   '【格式提醒】你上一条不是合法的动作调用（我认不出来）。要动用动作，请整条回复只写一行：' +
@@ -704,10 +731,12 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
   /* ⚠️ `busy` 必须在 `await` **之前**占位：`ensureLoaded()` 会让出这一帧，两次点击就都能挤进来
      （老代码 busy=true 是同步设的，这个顺序不能变） */
   busy = true;
+  setRunUi(); /* 跑起来 ⇒「停」显形（发送键不动） */
   try {
     await ensureLoaded();
   } catch (e) {
     busy = false;
+    setRunUi();
     host.note('出错：' + (e instanceof Error ? e.message : String(e)), true);
     return;
   }
@@ -740,8 +769,15 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
     /* 一次提问 = 最多 `roundMax` 轮：模型要么说话（结束），要么要求一个只读动作
        （执行完把结果喂回去，让它接着说）。写入动作一轮就结束 —— 要么落盘要么等点击。 */
     let fixed = false; /* ⭐ 格式纠错只做一次，免得跟模型来回拉锯 */
-    const roundMax = mode === 'agent' ? AGENT_ROUNDS : CHAT_ROUNDS;
+    const roundMax = mode === 'agent' ? agentRounds() : CHAT_ROUNDS;
     for (let round = 0; round <= roundMax; round++) {
+      /* ⭐「停」（发送键在跑时变「停下」）：每一轮开头看一次 —— 不打断正在飞的那一次请求，
+         这一步的结果照样落，只是不再往下走。 */
+      if (stopAsked) {
+        stopAsked = false;
+        host.note('已停下 —— 说「继续」我就接着做');
+        break;
+      }
       /* 分割线之上的对话**不发给模型**（系统提示词、记忆、工作区现状都在 sys 里，照旧每次现拼） */
       const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...sentHistory(hist())];
       /* 流式（用户 2026-09-26：「我想要流式输出」）：先挂一个空气泡，增量到了就往里写。
@@ -836,7 +872,11 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
       /* 写动作出卡片、聊天模式额度用完 ⇒ 这一轮就到这儿（与原来 `handleWrite` 之后 break 同义） */
       if (stop) break;
       if (round === roundMax) {
-        host.note(mode === 'agent' ? '动作调了几轮了，先停一下' : '「一轮」档一次只做一个动作 —— 要我接着做就再说一声（或切「自动」）', true);
+        host.note(mode === 'agent'
+          ? (stepsFree()
+            ? `已经连着走了 ${roundMax} 步，我先停下（怕它绕圈）—— 说「继续」我接着做`
+            : '动作调了几轮了，先停一下')
+          : '「一轮」档一次只做一个动作 —— 要我接着做就再说一声（或切「自动」）', true);
       }
     }
   } catch (e) {
@@ -846,6 +886,8 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
     host.note('出错：' + (e instanceof Error ? e.message : String(e)) + '（检查设置里的 AI 模式与模型）', true);
   }
   busy = false;
+  stopAsked = false;
+  setRunUi(); /*「停」收回 */
   host.rerender();
   /* ⭐ 2C：跑的过程中 `busy` 是 true ⇒ **另一个入口**的 `lingkuang-sessions` 监听会主动跳过重画
      （那是为了不打断流式气泡，见 `openAgentPanel` 的 onSessions）。跑完必须补一次广播，
@@ -926,6 +968,11 @@ export function openAgentPanel(s: Store): () => void {
       '<div class="lk-agent__seg" id="lk-agent-mode">' +
         MODES.map((m) => `<button class="lk-agent__seg-btn${m === mode ? ' is-on' : ''}" id="lk-agent-mode-${m}" data-mode="${m}">${MODE_LABEL[m]}</button>`).join('') +
       '</div>' +
+      /* 步数（2026-10-11，用户：「不能设置无上限吗」）：与「模式」同一排 —— 它俩管的是同一件事
+         （这一次要多自主）。0 = 不限（默认）；跑的时候发送键会变「停下」，随时能掐。 */
+      '<select class="lk-agent__perm-sel" id="lk-agent-steps" title="一次提问里它最多连着走几步">' +
+        STEP_OPTIONS.map((n) => `<option value="${n}"${n === getAgentSteps() ? ' selected' : ''}>${stepsLabel(n)}</option>`).join('') +
+      '</select>' +
       '<span class="lk-agent__mode-hint" id="lk-agent-mode-hint"></span>' +
     '</div>' +
     '<div class="lk-agent__perm">' +
@@ -963,7 +1010,11 @@ export function openAgentPanel(s: Store): () => void {
     '<div class="lk-agent__input">' +
       '<div class="lk-agent__attach" id="lk-agent-attach"></div>' +
       '<textarea id="lk-agent-input" rows="3" placeholder="问点什么…（Enter 发送，Shift+Enter 换行）"></textarea>' +
-      '<button class="lk-agent__send" id="lk-agent-send">发送</button>' +
+      /* 「停」与发送并排（跑起来才显形）—— 步数默认不限，得有地方随时能掐；发送键永远只管发送 */
+      '<div class="lk-agent__acts">' +
+        '<button class="lk-agent__stop" id="lk-agent-stop" hidden>停</button>' +
+        '<button class="lk-agent__send" id="lk-agent-send">发送</button>' +
+      '</div>' +
     '</div>';
   document.body.appendChild(el);
   openEl = el;
@@ -1004,7 +1055,21 @@ export function openAgentPanel(s: Store): () => void {
   };
 
   el.querySelector('#lk-agent-close')?.addEventListener('click', () => closeAgentPanel());
+  /* 发送键只干发送（跑的时候点它是**空点**，不打断 —— 这是老语义，别改：
+     套件的 `ask()` 都是盲点它）。要打断点旁边那个「停」（跑起来才显形）。 */
   el.querySelector('#lk-agent-send')?.addEventListener('click', () => { void send(); });
+  el.querySelector('#lk-agent-stop')?.addEventListener('click', () => {
+    requestAgentStop();
+    setNote('好，这一步做完就停');
+  });
+  el.querySelector<HTMLSelectElement>('#lk-agent-steps')?.addEventListener('change', (e) => {
+    const v = Number((e.target as HTMLSelectElement).value);
+    setAgentSteps(v);
+    try { saveSettings({ ...loadSettings(), agentSteps: getAgentSteps() }); } catch { /* 存不下只在本次运行里生效 */ }
+    setNote(getAgentSteps() > 0
+      ? `好，一次提问里最多连着走 ${getAgentSteps()} 步`
+      : '步数不限：它会把这件事做完再停（跑的时候发送键变「停下」，随时能掐）');
+  });
   /* 拖进会话的附件（片 4）：材料跟这一问一起交出去。`attachChipsRender()` 在 `attachBind()` 里已经调过。 */
   const attachZone = el.querySelector<HTMLElement>('#lk-agent-attach');
   if (attachZone) offAttach = attachBind(attachZone, attachZone, setNote);

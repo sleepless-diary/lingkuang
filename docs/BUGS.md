@@ -15,6 +15,55 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第七十五轮（2026-10-11）· 搬库：一次建一批设定（一张卡片）+ 步数**不限**（并给一个「停」）
+
+**用户的下一句**（紧接第七十四轮「工具也被吃了」）：「**我在测试灵框能不能吃下我的所有世界观信息，你都补进来吧**」—— 他要的是**把一整个外部资料库搬进灵框**。修完解析，**读**这一侧能整批跑了（一句话 + 8 个 `list_files` 全跑、8 份内容都喂得回来）；但**写**这一侧一次只出一张卡片：`src/ui/agent.ts` 的 `runTurn()` 里 `isWriteTool` 命中就 `handleWrite()` 完 `stop = true` ⇒ 一轮只为**一个**写动作出卡，搬 100 条设定 = 100 轮点击。另外他问「**不能设置无上限吗**」（当时一次提问最多连着走 `AGENT_ROUNDS = 8` 步）。
+
+**两问定案（ask_user_question）**：① 形态 = **补批量建设定**（一张卡片建一批）；② 步数 = **无上限**。
+
+**① 批量建设定（`src/ui/agent-tools.ts`）**
+- `create_entity` 新增批量形态 **`{ entities: [{ name, type?, fields? }, …] }`**（也认最省的 `["名字", …]` 写法）。规矩与既有两个批量形态（`set_field{entities}` / `create_node{nodes}`）**完全一致**：**只在「自动」档放行**（「一轮」档回一句"要批量建请先切到「自动」档"）、没写 `name` 的项直接丢掉（不因为一条写错整批不动）、**已经存在的名字跳过**（搬库时模型常把同一批重发一次，重复建会把设定树搞乱）。
+- 出一张卡片：标题 `新建设定：N 条`、详情一行一条（`名字（类型） · K 个字段`），末尾附 `（已经有、跳过：…）`；`apply()` 对每一项走一次 `addEntity()`（id 与模板字段照旧由 `src/store/actions.ts` 负责，`Proposal.apply` 那条"写入只有一条路"的不变量没破）。
+- 动作表那条 spec 的 `desc` / `args` 同步补上批量形态；系统提示里那份批量清单加上 `create_entity{entities:[…]}`，并把「把一整个外部资料库搬进来」写进鼓励批量的例子里。
+
+**② 步数不限 + 「停」（`src/ui/agent-mode.ts` / `src/ui/agent.ts` / `src/ui/settings.ts`）**
+- `agent-mode.ts` 新起一套：`AGENT_STEPS_FREE = 0`（**默认**）、`AGENT_STEPS_HARD = 200`（不限档的**兜底天花板** —— 真"无上限"地放它转，一个绕圈的模型能把这一格会话转到天荒地老，每轮可都是一次真模型调用；200 步远大于任何正常任务，它只是保险丝，正常永远碰不到）、`STEP_OPTIONS = [0, 8, 20, 50]`、`getAgentSteps()` / `setAgentSteps(n)` / `stepsLabel(n)` / **`stepsPrompt()`**（有限档给「我最多放你连着走 N 步」，不限档给「步数不限」）。
+  ⚠️ **不限档绝不许再写「我最多放你走 8 步」** —— 那样模型会自己提前收手，正好把"不限"这件事废掉（用户要的就是"一次把活干完"）。`modePrompt('agent')` 与 `toolsPrompt()` 两处因此都改成读 `stepsPrompt()`，不再写死数字。
+- **运行时值住 `agent-mode.ts`**，落盘字段是 `lingkuang-settings.agentSteps`：`src/ui/settings.ts` 的 `Settings` / `DEFAULTS` / `loadSettings()`（负数、NaN、手改怪值一律回默认）负责存，`src/ui/agent.ts` 开机 `setAgentSteps(loadSettings().agentSteps)` 灌进来、面板上改时写回去。为什么值不直接放 settings：`settings.ts` 反过来要 import 本模块（`DEFAULT_MODE` / `AgentMode`），本模块再 import 它就成环。
+- 面板「模式」那一排多一个 select **`#lk-agent-steps`**（`步数不限 / 连着走 8 步 / 20 步 / 50 步`）—— 它和模式管的是同一件事（这一次要多自主），所以并排，且改了就落盘。
+- **「停」**：`export function requestAgentStop()` + 模块旗子 `stopAsked`，`runTurn()` **每一轮开头**看一次（不打断正在飞的那次请求：这一步的结果照样落盘、照样喂回，只是不再往下走）。入口是**单独一个按钮 `#lk-agent-stop`**（发送键右边、跑起来才显形：`setRunUi()` 切 `hidden`；AI 页主会话同款 `#ai-stop`）—— 样式 `.lk-agent__stop` 用 `--surface-2`/`--danger` 两个 token（不用 emoji、不新增颜色）。
+  ⚠️ **为什么不是"发送键在跑时变「停下」"**（我第一版就是这么写的，当场被 e2e 抓回来）：那样发送键就有两种意思了，而**所有套件的 `ask()` 都是盲点 `#lk-agent-send`** —— 上一轮还没跑完时那一下就从"提问"变成了"打断"，问题根本没发出去。实测 `agent-dsml` ★4/★5 连挂（`receipts:0` / `props:[]`）并在 ★5b 崩掉（卡片不存在）、`agent-stream` 跟着 9/14。**发送键一辈子只干发送**（跑的时候点它是空点，与从前语义一致），要打断点旁边那个「停」。
+  ⚠️ 为什么要给它配一个「停」：步数默认**不限**了，"它绕圈怎么办"必须有个随时能掐的地方 —— 否则创作者只能关掉应用。
+- 跑到兜底天花板时底部提示换口径：「已经连着走了 200 步，我先停下（怕它绕圈）—— 说「继续」我接着做」（有限档仍是原来那句「动作调了几轮了，先停一下」）。
+
+**守卫**：
+- `tools/e2e/agent-tools.cjs` **24 → 26 项**：**★24** —— 一条 `create_entity{entities:[…]}` 里塞 3 条新（含一条带 `fields`、一条裸名字 `"批量丙"`）+ 1 条**已存在**（`银发少女`）⇒ 出一张卡片、标题写「3 条」、详情点名三条且写着「已经有、跳过」、**点「应用」之前设定树一行不动**；**★24b** 点一次「应用」⇒ 树**多 3 行**、卡片当场退场、回执点名三条。⚠️ 卡片下标只能从 `[data-prop-ok]` 属性里读（它是 `cards` 数组下标，不是 DOM 序号 —— 本套件跑到现在早就不是 0 了）。
+- `tools/e2e/agent-mode.cjs` **14 → 17 项**：**★15** 面板上有 `#lk-agent-steps`、值 `0`、选项 `0,8,20,50`、标签含「不限」，且**系统提示里是「步数不限」而不是「最多 8 步」**（`sysOf()` 多两条判据 `stepsFree` / `stepsEight`）；**★15b** 改成 8 ⇒ 提示词当场改口（「我最多放你连着走 8 步」）**且** `localStorage.lingkuang-settings.agentSteps === 8`；**★16** ⭐「停」的真机形状 —— 假引擎每 400ms 吐一个只读动作（不限档 200 步封顶，它自己不会停）⇒ 跑起来时 `#lk-agent-stop` **才显形**（`hidden === false`）、点一下之后：它收回（`hidden === true`）、底部写「**已停下**」（跑到封顶写的是另一句 ⇒ 只有"停"这条路会写这句，判据不共用）、`__lkSeen` 的长度**不再增长**，并且**发送键文案始终是「发送」**（不许兼职打断 —— 这条正是第一版设计被套件抓回来的那条）。
+  ⚠️ 卡片的 `data-prop-ok`、`#lk-agent-call` 与 `#lk-agent-prop` 是**两套**计数（"用到动作"行 vs 卡片行）—— 本轮 ★24 首跑就把它俩弄混了一次（拿卡片数去比「用到动作」行数 +1），改成 `props()` 前后对比才对。
+
+**③ ⭐ 顺带挖出的真凶：测试实例的定时器被 Chromium 节流到约 1 秒（历轮那些"本机抖动"就是它）**
+写守卫时 `agent-dsml` ★4/★5 与 `agent-stream` ★3/★4/★6~★9 一批批地红（`snaps: 8`、`receipts: 0`、`live: true`），而**同一个工作树的旧构建**跑 `agent-dsml` 却是 10/10 —— 看着像新代码的回归。直接量了一把当前实例（一次性脚本 `%TEMP%\lk75-throttle.cjs`，跑在测试实例里）：
+```
+interval(70ms, 2s)  => {"ticks":3,"ms":2401,"perTick":800}     // 期望 ~28 次
+timeout-chain(150ms, 2s) => {"steps":3,"ms":3001,"perStep":1000}
+visibility => {"hidden":true,"state":"hidden","focused":false}
+```
+测试窗口是 `showInactive`（还可能落在屏幕外的 `1920,0`）⇒ 文档 `visibilityState` 就是 **`hidden`** ⇒ 渲染进程被当成"后台页"节流：**70ms 的 interval 实际 800ms 一次、150ms 的 setTimeout 实际 1000ms 一次**。于是所有"流式 / 分片 / 轮询落盘"的套件都变成赌博：mock 每片隔 150ms、套件等 1~2.6s，节流一开每片变 1s ⇒ 这一轮压根没跑完就断言（`agent-stream` 的 `live:true`、`agent-batch` 的 `waitVault()` 超时、`agent-dsml` 的 `receipts:0` ——**历轮记的"本机既有抖动"全是同一个原因**）。
+**修法**（`main.js` 顶部，只在测试 env 存在时加，正式运行一个字不变）：
+```js
+if (process.env.LINGKUANG_TEST_USERDATA) {
+  app.commandLine.appendSwitch('disable-background-timer-throttling');
+  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+  app.commandLine.appendSwitch('disable-renderer-backgrounding');
+}
+```
+重测同一把尺子：`interval(70ms) => 72ms 一次`、`timeout-chain => 156ms`、`visibilityState: visible`（窗口仍在屏幕外）。
+⭐ 教训：**"旧构建同起点也红"不等于"与你无关"** —— 那次旧构建绿/新构建红的对比只说明"当时那一刻的节流状态不同"，不是代码差异；量一次真实的定时器精度比再跑十遍套件都快。
+
+**A/B**（`git stash push -- src/ui/agent-mode.ts src/ui/agent-tools.ts src/ui/agent.ts src/ui/ai-workbench.ts src/ui/settings.ts src/style.css` → `npm run build` → 跑**新**套件 → `git stash pop` → 重建）：旧构建 `agent-tools` **24/26**（★24 `cards:0`/★24b 回执是「新建设定要给我名字（args.name）。」—— 批量形态不认）、`agent-mode` **★15 红**（`sel.exists:false`，系统提示里还是「最多放你走 8 步」）并在 ★15b 当场崩（`Cannot set properties of null`，exit 2）⇒ 新构建 **26/26** / **17/17**。
+
+**邻居**（各自一份干净实例；**在 ③ 修掉节流之后**跑）：`agent-dsml.cjs` **10/10**、`agent-stream.cjs` **14/14**、`agent-fs.cjs` **22/22**、`agent-panel.cjs` **21/21**（需 `seed-agent-chat.cjs`）、`agent-main-session.cjs` **14/14**（需 `seed-agent-main-session.cjs`）、`agent-batch.cjs` **4/6**（★2/★3 挂在 `waitVault()` 轮询上 —— 但**盘上内容逐字正确**（`\测试世界观\_设定\角色\银发少女.md` 里 `发色: 银白`、`批量事件甲/乙.md` 都在）、DOM 与回执断言全过，且**历轮同分数同星**（第七十/七十二轮就是这么记的）⇒ 既有抖动，与本轮无关）；`tsc --noEmit` exit 0、`npm run build` 绿、`node --check main.js` 绿。
+
 ## 第七十四轮（2026-10-11）· 「工具也被吃了」＝ 先说一句话、再一行一个动作（8 个 `list_files`），老解析器把整条当聊天吃了
 
 **用户原话**：「**我在测试灵框能不能吃下我的所有世界观信息，你都补进来吧**」；他随后把助手那**一条**回复原样贴回来（先一句「好，这是个大工程 —— 我先把整个库的结构扫完，再分批读内容建条目。」，紧跟 **8 行** `{"tool":"list_files","args":{"path":"D:\\Desktop\\世界观资料整理\\设定\\第一世界\\…"}}` —— 基础设施 / 科技 / 生命魔法 / 文化 / 物品 / 星魂 / 组织 / 整理）+ 一句「**工具也被吃了**」。

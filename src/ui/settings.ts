@@ -29,7 +29,7 @@ import {
   type ProviderProfile,
 } from './ai-providers';
 /* 助手的模式（自动 / 一轮）也存在这儿 —— 只取类型与默认值，不 import `agent.ts`（那会成环） */
-import { DEFAULT_MODE, type AgentMode } from './agent-mode';
+import { AGENT_STEPS_FREE, DEFAULT_MODE, type AgentMode } from './agent-mode';
 
 /** 演变（设定库的版本历史）的三种模式，用户 2026-09-13 选「都做，把模式放到设置里面」 */
 export type EvolveMode = 'manual' | 'auto' | 'locked';
@@ -68,6 +68,10 @@ interface Settings {
   /* 助手的**自主程度**（2026-10-11 起落盘，用户选「记着」）：'agent' = 自动档（默认，需要时连着走多步）
      / 'chat' = 一轮档（一次只做一个动作）。见 `src/ui/agent-mode.ts` 顶部。 */
   agentMode: AgentMode;
+  /* 一次提问最多放它连着走几步（2026-10-11，用户：「**不能设置无上限吗**」）：
+     0 = **不限**（默认）—— 由它自己决定什么时候做完，不再逼创作者每 8 步打一次「继续」。
+     运行时值住 `src/ui/agent-mode.ts`（面板上的 select 改它），这里只负责**落盘**。 */
+  agentSteps: number;
 }
 
 const DEFAULTS: Settings = {
@@ -90,6 +94,9 @@ const DEFAULTS: Settings = {
   /* 默认档 = **自动**（2026-10-11）：用户「使用工具时能不能直接切换到 agent 模式」⇒ 不必先猜档位，
      该用工具就用工具、需要时连着走多步；"一轮"是他明确的克制选择，选了会被记住。 */
   agentMode: DEFAULT_MODE,
+  /* 默认**不限步数**（用户 2026-10-11 原话：「不能设置无上限吗」）—— 0 = 不限，
+     兜底天花板在 `agent-mode.ts` 的 `AGENT_STEPS_HARD`（防它绕圈，正常碰不到）。 */
+  agentSteps: AGENT_STEPS_FREE,
 };
 
 /** 老的单档权限（片 2~4 的 `agentPerm`）→ 两个旋钮的迁移表。
@@ -166,6 +173,9 @@ export function loadSettings(): Settings {
   if (s.agentAsk !== 'always' && s.agentAsk !== 'never') s.agentAsk = DEFAULTS.agentAsk;
   /* 模式同理（老版本没有这个键 ⇒ 拿到默认档「自动」；手改成怪值也回落） */
   if (s.agentMode !== 'chat' && s.agentMode !== 'agent') s.agentMode = DEFAULTS.agentMode;
+  /* 步数（0 = 不限；负数 / NaN / 手改怪值一律回默认，`agent-mode.ts` 的 `setAgentSteps()` 里还会再兜一次） */
+  const st = Math.floor(Number(s.agentSteps));
+  s.agentSteps = Number.isFinite(st) && st > 0 ? st : AGENT_STEPS_FREE;
   return s;
 }
 export function saveSettings(s: Settings) {

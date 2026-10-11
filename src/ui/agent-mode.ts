@@ -8,7 +8,8 @@
  *    "灵框外"那条分界线后来也被填平了（片 1/片 2 把文件与联网加进两个模式）。差别只剩**自主程度**，
  *    所以 2026-10-11 按创作者的话把它们改叫「自动」/「一轮」：
  *     · `agent` = **自动**（**默认档**）：该用工具就用工具，需要时**连着走多步**
- *       （`src/ui/agent.ts` 的 `AGENT_ROUNDS = 8`）、批量活一次规划好。
+ *       （步数见下面的 `AGENT_STEPS_FREE` / `setAgentSteps()` —— **2026-10-11 起默认不限**）、
+ *       批量活一次规划好。
  *       用户 2026-10-11：「**还有使用工具时能不能直接切换到 agent 模式（话说聊天模式真的有必要吗）**」
  *       —— "这一问该拨哪个档"本来就不该由创作者猜，所以默认就是它。
  *     · `chat` = **一轮**：一次提问**只做一个动作**，做完把结果说给创作者、等他决定下一步 —— 看得住。
@@ -25,6 +26,29 @@
 export type AgentMode = 'chat' | 'agent';
 
 export const MODES: AgentMode[] = ['chat', 'agent'];
+
+/* ── 一次提问最多放它连着走几步（2026-10-11 用户问「**不能设置无上限吗**」）────────────
+ *  0 = **不限**（默认）：由模型自己决定什么时候做完，不再逼创作者每 8 步打一次「继续」。
+ *  运行时值住在**本模块**，落盘字段是 `lingkuang-settings.agentSteps`（`src/ui/agent.ts`
+ *  开机读盘灌进来、面板上改时写回去）—— 为什么住这儿：`settings.ts` 反过来要 import 本模块
+ *  （`DEFAULT_MODE` / `AgentMode`），本模块再 import 它就成环了。 */
+export const AGENT_STEPS_FREE = 0;
+/** 不限档的**兜底天花板**：真"无上限"地放它转，一个绕圈的模型能把这一格会话转到天荒地老
+ *  （每轮都是一次真模型调用）。200 步远大于任何正常任务 —— 它只是保险丝，正常永远碰不到。 */
+export const AGENT_STEPS_HARD = 200;
+/** 面板那个 select 的选项（0 = 不限） */
+export const STEP_OPTIONS = [0, 8, 20, 50];
+let steps = AGENT_STEPS_FREE;
+export function getAgentSteps(): number { return steps; }
+export function setAgentSteps(n: number): void {
+  const v = Number(n);
+  steps = Number.isFinite(v) && v > 0 ? Math.floor(v) : AGENT_STEPS_FREE;
+}
+/** 面板上的文案 */
+export function stepsLabel(n: number): string { return n > 0 ? `连着走 ${n} 步` : '步数不限'; }
+/** 拼进系统提示的那半句 —— ⚠️ 不限档**不许**写「我最多放你走 8 步」：那样模型会自己提前收手，
+ *  正好把"不限"这件事废掉（用户要的就是"一次把活干完"）。 */
+export function stepsPrompt(): string { return steps > 0 ? `我最多放你连着走 ${steps} 步` : '步数不限'; }
 
 /** 默认档 = 自动（用户 2026-10-11 选）：用不用多步由"这一问要不要用工具"决定，不让他先猜档位 */
 export const DEFAULT_MODE: AgentMode = 'agent';
@@ -44,8 +68,8 @@ export function modePrompt(mode: AgentMode): string {
   if (mode === 'agent') {
     return [
       '【你现在是「自动」模式】该用工具就用工具：需要的话**连着做多步**（一次提问里先查、再改、',
-      '看结果、继续做，直到事情办完 —— 我最多放你连着走 8 步）。批量活（一次建好几个事件、',
-      '给一批设定加同一个字段）先把整批规划好再一次做完，别一条一条来回问。做完给一句总结。',
+      '看结果、继续做，直到事情办完 —— ' + stepsPrompt() + '）。批量活（一次建好几个事件、',
+      '一批设定加同一个字段、把一整个外部资料库搬进来）先把整批规划好再一次做完，别一条一条来回问。做完给一句总结。',
     ].join('');
   }
   return [

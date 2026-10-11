@@ -21,6 +21,19 @@ try {
   if (process.env.LINGKUANG_TEST_USERDATA) app.setPath('userData', process.env.LINGKUANG_TEST_USERDATA);
 } catch (e) { /* 拿不到就退回正式目录，测试脚本会因脏起点而失败（可见，不会静默） */ }
 
+/* ⭐ 测试实例**关掉 Chromium 的定时器节流**（2026-10-11 实测量到的真凶）：
+   测试窗口是 `showInactive`（还可能落在屏幕外的 1920,0），文档 `visibilityState` 就是 `hidden` ⇒
+   渲染进程被当成"后台页"节流：`setInterval(70ms)` 实际 **800ms 一次**、`setTimeout(150ms)` 实际
+   **1000ms 一次**（`%TEMP%\lk75-throttle.cjs` 现场量出来的）。
+   后果是所有"流式 / 分片 / 轮询落盘"的 e2e 全变成赌博：mock 每片隔 150ms、套件等 1~2.6s，
+   节流一开就是每片 1s ⇒ 这一轮还没跑完就断言，红得毫无道理（历轮 `agent-stream` / `agent-dsml` /
+   `agent-batch` 的"本机抖动"都是它）。只在测试 env 存在时加，正式运行一个字都不变。 */
+if (process.env.LINGKUANG_TEST_USERDATA) {
+  app.commandLine.appendSwitch('disable-background-timer-throttling');
+  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+  app.commandLine.appendSwitch('disable-renderer-backgrounding');
+}
+
 /* remove the application menu entirely — Alt must NOT summon a menu bar */
 Menu.setApplicationMenu(null);
 

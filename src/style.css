@@ -1155,12 +1155,23 @@ body {
 }
 .lk-agent__input textarea:focus { border-color: var(--accent); }
 .lk-agent__send {
-  align-self: flex-end; padding: 5px 18px;
+  padding: 5px 18px;
   border: 1px solid var(--accent); border-radius: var(--radius-sm);
   background: var(--accent); color: var(--accent-on);
   font-size: var(--text-sm); font-family: var(--font-body); cursor: pointer;
 }
 .lk-agent__send:hover { background: var(--accent-hover); }
+/* ⭐ 「停」与发送并排（跑起来才显形，`src/ui/agent.ts` 的 `setRunUi()`）：步数默认**不限**，
+   得有个随时能掐的地方。发送键永远只管发送（跑的时候点它是空点、不打断）——
+   一开始写成"跑时发送键变停下"，所有盲点它的 e2e 套件当场连挂（见 `BUGS.md` 第七十五轮）。 */
+.lk-agent__acts { display: flex; align-items: center; gap: 6px; align-self: flex-end; }
+.lk-agent__stop {
+  padding: 5px 14px;
+  border: 1px solid var(--danger); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--danger);
+  font-size: var(--text-sm); font-family: var(--font-body); cursor: pointer;
+}
+.lk-agent__stop:hover { background: var(--surface); }
 /* 权限三档（片 2）：只读 / 逐项确认 / YOLO。档位本身存在设置里，这里只是选它 */
 .lk-agent__perm { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: var(--text-xs); }
 .lk-agent__perm-lbl { color: var(--fg-2); }

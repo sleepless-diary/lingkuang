@@ -142,6 +142,8 @@ async function main() {
       hasAgentNote: s.indexOf('【你现在是「自动」模式】') >= 0,
       oneStep: s.indexOf('一次提问只提一个动作') >= 0,
       multiStep: s.indexOf('可以连着提多个动作') >= 0,
+      stepsFree: s.indexOf('步数不限') >= 0,
+      stepsEight: s.indexOf('我最多放你连着走 8 步') >= 0,
       hasCtx: s.indexOf('【工作区现状】') >= 0,
       hasHead: s.indexOf('你是「灵框」里的创作助手') >= 0,
       last: (m[m.length - 1] && m[m.length - 1].content) || '',
@@ -294,6 +296,68 @@ async function main() {
     reopened.exists === true && reopened.mode === 'agent' && reopened.agentClass === true
       && reopened.segs.join(',') === 'chat:off,agent:on' && reopened.permDisabled === false && kept >= 4,
     { mode: reopened.mode, segs: reopened.segs, msgs: kept, permDisabled: reopened.permDisabled });
+
+  /* ---------- ⑦ 步数可设、默认**不限**（用户 2026-10-11：「**不能设置无上限吗**」）----------
+     不限 ⇒ 不再每 8 步打断一次；提示词里也**不许**再写「我最多放你走 8 步」（写了模型会自己收手，
+     正好把"不限"废掉）。 */
+  const stepSel = await ev(`(function () {
+    const s = document.getElementById('lk-agent-steps');
+    return s ? { exists: true, value: s.value, opts: [...s.options].map((o) => o.value), label: s.options[s.selectedIndex].textContent } : { exists: false };
+  })()`);
+  await setMock(['明白了。']);
+  await ask('步数这条问一句。');
+  const sysFree = await sysOf();
+  check('★15 ⭐步数默认**不限**：面板上有这个旋钮（值是 0、选项 0/8/20/50），系统提示里写「步数不限」而不是「最多 8 步」（用户 2026-10-11：「不能设置无上限吗」）',
+    stepSel.exists === true && stepSel.value === '0' && stepSel.opts.join(',') === '0,8,20,50' &&
+    stepSel.label.indexOf('不限') >= 0 && sysFree.stepsFree === true && sysFree.stepsEight === false,
+    { sel: stepSel, free: sysFree.stepsFree, eight: sysFree.stepsEight });
+
+  /* 改成 8 ⇒ 当场生效（提示词改口）+ 落盘（关掉重开还是它）。⚠️ 元素不在就优雅判假（旧构建上要能跑完剩下的星） */
+  await ev(`(function () { const s = document.getElementById('lk-agent-steps'); if (!s) return false; s.value = '8'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  await sleep(300);
+  const stored8 = await ev(`JSON.parse(localStorage.getItem('lingkuang-settings') || '{}').agentSteps`);
+  await setMock(['好。']);
+  await ask('再问一句。');
+  const sys8 = await sysOf();
+  check('★15b 改成 8 步：提示词当场改口，而且写进了 `localStorage.lingkuang-settings.agentSteps`',
+    stored8 === 8 && sys8.stepsEight === true && sys8.stepsFree === false,
+    { stored: stored8, eight: sys8.stepsEight, free: sys8.stepsFree });
+
+  /* ---------- ⑧ ⭐「停」：跑起来「停」按钮显形，点一下这一步做完就收手 ----------
+     步数默认不限 ⇒ 必须有个随时能掐的地方。假引擎每 400ms 吐一个只读动作（不限档 200 步封顶），
+     点「停」之后**只有**停这条路会写「已停下」（跑到封顶写的是另一句）—— 所以这里拿它当判据。
+     ⚠️ 发送键**不许**兼职当"停"：套件的 `ask()` 都是盲点它，兼职会让"提问"变成"打断"
+     （`agent-dsml` ★4/★5 当场连挂就是这么来的）—— 所以这里同时断言发送键文案始终是「发送」。 */
+  const stopBtn = () => ev(`(function () {
+    const s = document.getElementById('lk-agent-stop');
+    const g = document.getElementById('lk-agent-send');
+    return { has: !!s, hidden: !s || s.hidden === true, send: g ? g.textContent : '' };
+  })()`);
+  const stopIdle = await stopBtn();
+  await ev(`(function () { const s = document.getElementById('lk-agent-steps'); if (!s) return false; s.value = '0'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  await ev(`window.__lkSeen = []; window.__lkAgentMock = (m) => new Promise((r) => setTimeout(() => { window.__lkSeen.push(m); r('{"tool":"list_entities","args":{}}'); }, 400)); true`);
+  await ev(`(function () { const t = document.getElementById('lk-agent-input'); t.value = '让它转起来。'; document.getElementById('lk-agent-send').click(); return true; })()`);
+  await sleep(1400);
+  const running = await stopBtn();
+  await ev(`(function () { const s = document.getElementById('lk-agent-stop'); if (s) s.click(); return true; })()`);
+  await sleep(1600);
+  const afterStop = await ev(`(function () {
+    const s = document.getElementById('lk-agent-stop');
+    const g = document.getElementById('lk-agent-send');
+    return {
+      hidden: !s || s.hidden === true, send: g ? g.textContent : '',
+      calls: window.__lkSeen.length,
+      note: (document.getElementById('lk-agent-note') || {}).textContent || '',
+    };
+  })()`);
+  await sleep(1300);
+  const later = await ev(`window.__lkSeen.length`);
+  check('★16 ⭐步数不限时有「停」：跑起来它才显形、点一下这一步做完就收手（步数不再增长、它收回、底部写「已停下」）；发送键始终只写「发送」（不兼职打断）',
+    stopIdle.has === true && stopIdle.hidden === true &&
+    running.hidden === false && running.send === '发送' &&
+    afterStop.hidden === true && afterStop.send === '发送' &&
+    afterStop.note.indexOf('已停下') >= 0 && later === afterStop.calls,
+    { idle: stopIdle, running: running, after: afterStop, later: later });
 
   /* ---------- ⑥b ⭐落盘是真的：把 localStorage 写成 chat ⇒ 重载后开局就是「一轮」 ---------- */
   await ev(`(function () {
