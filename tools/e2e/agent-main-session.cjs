@@ -234,20 +234,20 @@ async function main() {
       msgs: last ? last.messages.map((m) => ({ role: m.role, len: String(m.content).length })) : null,
       sysLen: last ? String(last.messages[0].content).length : 0,
       sysHasCtx: last ? String(last.messages[0].content).indexOf('【工作区现状】') >= 0 : false,
-      sysChatMode: last ? String(last.messages[0].content).indexOf('【你现在是「聊天」模式】') >= 0 : false,
+      sysAutoMode: last ? String(last.messages[0].content).indexOf('【你现在是「自动」模式】') >= 0 : false,
       sysToolsOn: last ? String(last.messages[0].content).indexOf('create_entity') >= 0 : false,
       joined: last ? last.messages.map((m) => m.content).join(' ') : '',
     };
   })()`);
   /* ⭐ 2C 翻转：主会话与助手共用系统提示 ⇒ 动作协议**也在**（旧版这里断言 `sysToolsOff === true`，
      那是"AI 页还没有提议卡片界面"时的权宜；现在卡片也在这一页了，协议必须注入）。 */
-  check('★7 从 AI 页发的这一轮：系统提示是**助手那一份**（聊天档 + 工作区现状 + 动作协议），分割线之上的对话没发给模型、回执照发',
+  check('★7 从 AI 页发的这一轮：系统提示是**助手那一份**（**「自动」档**（2026-10-11 起的默认档）+ 工作区现状 + 动作协议），分割线之上的对话没发给模型、回执照发',
     !!req && req.n === 1 && req.msgs && req.msgs[0].role === 'system' && req.sysHasCtx === true
-      && req.sysChatMode === true && req.sysToolsOn === true
+      && req.sysAutoMode === true && req.sysToolsOn === true
       && /\/api\/chat$|\/chat\/completions$/.test(String(req.url || ''))
       && req.joined.indexOf('老助手说过的一句') < 0 && req.joined.indexOf('【动作结果：') >= 0
       && req.joined.indexOf('主会话共享测试二') >= 0,
-    { n: req ? req.n : null, url: req ? req.url : null, msgs: req ? req.msgs : null, sysLen: req ? req.sysLen : null, hasCtx: req ? req.sysHasCtx : null, chatMode: req ? req.sysChatMode : null, toolsOn: req ? req.sysToolsOn : null });
+    { n: req ? req.n : null, url: req ? req.url : null, msgs: req ? req.msgs : null, sysLen: req ? req.sysLen : null, hasCtx: req ? req.sysHasCtx : null, autoMode: req ? req.sysAutoMode : null, toolsOn: req ? req.sysToolsOn : null });
 
   /* ── ⑦ 助手不再写 chat.json（这是"历史只有一个家"的磁盘证据） ── */
   await sleep(700);                                  /* AI 页挂着 ⇒ 走 sink 的 400ms 节流 */
@@ -341,9 +341,9 @@ async function main() {
     await ev(ctrlK);
     await sleep(400);
   }
-  check('★12 模式开关两个入口共享一份状态（AI 页切 Agent ⇒ 助手面板就是 agent；面板切回聊天 ⇒ AI 页当场跟上）',
-    m1.indexOf('Agent：能连着走多步') >= 0 && !!m2 && m2.mode === 'agent' && m2.on === true && m3.indexOf('聊天：能查也能改') >= 0,
-    { dom: dom12, aiAgent: m1.indexOf('Agent：能连着走多步') >= 0, panel: m2, aiBackToChat: m3.indexOf('聊天：能查也能改') >= 0 });
+  check('★12 模式开关两个入口共享一份状态（AI 页切「自动」⇒ 助手面板就是 agent；面板切回「一轮」⇒ AI 页当场跟上）',
+    m1.indexOf('自动档：该用工具就用工具') >= 0 && !!m2 && m2.mode === 'agent' && m2.on === true && m3.indexOf('一轮档：能查也能改') >= 0,
+    { dom: dom12, aiAgent: m1.indexOf('自动档：该用工具就用工具') >= 0, panel: m2, aiBackToChat: m3.indexOf('一轮档：能查也能改') >= 0 });
 
   /* ★13 ⭐AI 页那一头不许有荧光绿（第一轮：用户「这里面有三处荧光绿」；第二轮：「聊天/agent 在选中状态下也是荧光绿」）。
      基准色从页面上取（`#ai-send` 发送按钮的颜色 = accent），数 `#ai-head` 里文字/边框/底色

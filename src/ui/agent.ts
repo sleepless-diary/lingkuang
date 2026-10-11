@@ -27,14 +27,14 @@ import {
   addMemory, adoptFromDisk, getMemory, memoryPrompt, removeMemory,
   setMemorySink, summarizePrefs, updateMemory,
 } from './agent-memory';
-import { MODE_HINT, MODE_LABEL, MODES, modePrompt, type AgentMode } from './agent-mode';
+import { DEFAULT_MODE, MODE_HINT, MODE_LABEL, MODES, modePrompt, type AgentMode } from './agent-mode';
 import { ASKS, ASK_LABEL, SCOPES, SCOPE_LABEL, gateWrite, getAgentAsk, getAgentScope, permHint, permName, permissionPrompt, setAgentAsk, setAgentScope } from './agent-perm';
 import { isWriteTool, looksLikeToolJson, parseToolCalls, planWrite, runReadTool, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
 import { fsAddRoot, fsAvailable, fsRemoveRoot, fsRootsCached, fsSetRootWrite, refreshFsRoots, type FsRoot } from './agent-fs';
 import { motionReduced } from './motion';
 import { isImeEnter } from './keys';
 import { escapeHtml } from './html';
-import { activeProviderProfile, type AgentAsk, type AgentScope } from './settings';
+import { activeProviderProfile, loadSettings, saveSettings, type AgentAsk, type AgentScope } from './settings';
 import { providerSummary } from './ai-providers';
 import type { Store } from '../store/store';
 
@@ -106,10 +106,11 @@ let busy = false;
 /* 模型不吐思考时，只在**本次运行**里说明一次（用户 2026-09-26 问「还是看不到思考链」——
    真因是他在用的 qwen2.5:7b 根本不吐 thinking 字段，而界面上一点痕迹都没有）。 */
 let noThinkHinted = false;
-/** 当前模式（⭐ 两个模式**都有**灵框内部的动作 —— 差别在自主程度：`chat` 一次只做一个动作，
- *  `agent` 可以连着走多步。见 `src/ui/agent-mode.ts` 顶部说明）。
- *  ⚠️ **面板会话态、不落盘**：每次打开都从 `chat` 开始。 */
-let mode: AgentMode = 'chat';
+/** 当前模式（⭐ 两个模式**都有**全部动作 —— 差别在自主程度：`chat` =「一轮」一次只做一个动作，
+ *  `agent` =「自动」可以连着走多步。见 `src/ui/agent-mode.ts` 顶部说明）。
+ *  ⚠️ **2026-10-11 起落盘**（`lingkuang-settings.agentMode`，用户选了「记着」）：默认档 = 自动，
+ *  关掉面板不再回落 —— 收窄到「一轮」是创作者明确的克制选择，关一次就忘掉才是错的。 */
+let mode: AgentMode = loadSettings().agentMode || DEFAULT_MODE;
 /* AI 的 `set_mode` 动作（`src/ui/agent-tools.ts` 的 planWrite）不能直接改这个模块变量
    （会成 import 环），它广播事件、这里收 —— 与 `lingkuang-agent-perm` / `lingkuang-sessions`
    同一套做法。面板开着就顺手重画那两段按钮与说明。 */
@@ -543,17 +544,20 @@ function renderMode(): void {
 }
 
 /* ⭐ 2C：模式**两个入口共享一份**（Ctrl+K 的助手浮层 + AI 页的主会话）。
-   `setAgentMode()` 是唯一写入口：改状态 → 重画本层 → 广播 `lingkuang-agent-mode`，
+   `setAgentMode()` 是唯一写入口：改状态 → **落盘** → 重画本层 → 广播 `lingkuang-agent-mode`，
    另一个入口听这个事件刷新自己的分段控件。 */
 export function getAgentMode(): AgentMode { return mode; }
 
 export function setAgentMode(next: AgentMode): void {
   if (mode === next) return;
   mode = next;
+  /* ⭐ 2026-10-11：**记着**（用户选的）。与权限两把旋钮同一套存法 —— 它是"我要它多自主"的长期设定，
+     不该关一次面板就重置成默认档。写失败（隐私模式 / 配额）不影响这一次会话。 */
+  try { saveSettings({ ...loadSettings(), agentMode: next }); } catch { /* 存不下就只在本次运行里生效 */ }
   renderMode();
   setNote(mode === 'agent'
-    ? '已切到 Agent：能连着走多步（写入按下面那档权限走）'
-    : '已切回聊天：一次只做一个动作（写入照样要过下面那关）');
+    ? '已切到「自动」：该用工具就用工具，需要时连着走多步（写入按下面那档权限走）'
+    : '已切到「一轮」：一次只做一个动作（写入照样要过下面那关）');
   window.dispatchEvent(new CustomEvent('lingkuang-agent-mode', { detail: { mode: next } }));
 }
 
@@ -811,9 +815,9 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
         }
         const out = await runReadTool(c, host.store);
         push({ role: 'user', content: `【动作结果：${c.tool}】\n${out}` });
-        /* 聊天模式一次只做一个动作（片 4 的规矩）—— 多做的那几个不丢，说清楚让创作者自己定 */
+        /* 「一轮」档一次只做一个动作 —— 多做的那几个不丢，说清楚让创作者自己定 */
         if (mode !== 'agent' && k < calls.length - 1) {
-          host.note(`一次提问只做一个动作（这次做了 1 个，还留着 ${calls.length - 1} 个）—— 切到 Agent 模式我能连着做`, true);
+          host.note(`一次提问只做一个动作（这次做了 1 个，还留着 ${calls.length - 1} 个）—— 切到「自动」我能连着做`, true);
           stop = true;
           break;
         }
@@ -822,7 +826,7 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
       /* 写动作出卡片、聊天模式额度用完 ⇒ 这一轮就到这儿（与原来 `handleWrite` 之后 break 同义） */
       if (stop) break;
       if (round === roundMax) {
-        host.note(mode === 'agent' ? '动作调了几轮了，先停一下' : '聊天模式一次只做一个动作 —— 要我接着做就再说一声', true);
+        host.note(mode === 'agent' ? '动作调了几轮了，先停一下' : '「一轮」档一次只做一个动作 —— 要我接着做就再说一声（或切「自动」）', true);
       }
     }
   } catch (e) {
@@ -881,8 +885,8 @@ export function closeAgentPanel(): void {
   store = null;
   draft = false;
   cards = [];
-  /* 模式回落：关掉面板 = 收回"动手"的授权，下次打开还是聊天（用户 2026-09-26：「平常是聊天」） */
-  setAgentMode('chat');
+  /* ⚠️ 2026-10-11 起**不再**在这里把模式回落成「聊天」：模式已经落盘（用户选「记着」），
+     默认档本身就是「自动」。关一次面板就把它忘掉，会让"刚切到一轮"的人下次一开口又被连着干一长串。 */
   setMemorySink(null);
   disposeAll?.();
   disposeAll = null;

@@ -116,7 +116,7 @@ async function main() {
   await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })); true`);
   await sleep(700);
   const mode0 = await ev(`(document.getElementById('lk-agent-panel') || {}).dataset ? document.getElementById('lk-agent-panel').dataset.mode : ''`);
-  /* ⚠️ 批量形态只在 Agent 模式认（用户 2026-09-26 的分工），所以下面每一步前都确认模式是 agent */
+  /* ⚠️ 批量形态只在「自动」档认（用户 2026-09-26 的分工），所以下面每一步前都确认模式是 agent */
   await ev(`document.getElementById('lk-agent-mode-agent').click(); true`);
   await sleep(400);
   const modeAgent = await ev(`document.getElementById('lk-agent-panel').dataset.mode`);
@@ -124,8 +124,8 @@ async function main() {
   await ask('建一条叫「批量第二条」的设定。');
   const applyOk = await applyLast();
   const afterCreate = await rows();
-  check('★1 起点：面板默认聊天 ⇒ 切到 Agent 后建出第二条设定（批量改才有两条可改）',
-    mode0 === 'chat' && modeAgent === 'agent' && applyOk === true && afterCreate === 2,
+  check('★1 起点：面板**默认就是「自动」档**（2026-10-11 起；批量形态只有它认）⇒ 切/留在 agent 后建出第二条设定（批量改才有两条可改）',
+    mode0 === 'agent' && modeAgent === 'agent' && applyOk === true && afterCreate === 2,
     { mode0, modeAgent, applyOk, rows: afterCreate });
 
   /* ---------- ② 批量改字段：一张卡片改两条 ---------- */
@@ -158,7 +158,7 @@ async function main() {
     newCards3 === 1 && lastTitle3.indexOf('2 个') >= 0 && wrote3a === true && wrote3b === true,
     { newCards3, lastTitle3, wrote3a, wrote3b });
 
-  /* ---------- ④ 聊天模式不认批量形态（用户的分工：批量归 Agent） ---------- */
+  /* ---------- ④ 「一轮」档不认批量形态（用户的分工：批量归「自动」） ---------- */
   await ev(`document.getElementById('lk-agent-mode-chat').click(); true`);
   await sleep(400);
   const cards2 = await cards();
@@ -166,8 +166,8 @@ async function main() {
   await ask('把这两条的发色都改成墨绿。');
   const after4 = { mode: await ev(`document.getElementById('lk-agent-panel').dataset.mode`), cards: await cards(), tool: await lastTool() };
   const leaked = await waitVault('墨绿', 6);
-  check('★4 ⭐聊天模式收到批量形态：**不出卡片**、一句话让它切 Agent，数据一个字没动',
-    after4.mode === 'chat' && after4.cards === cards2 && after4.tool.indexOf('Agent') >= 0 && leaked === false,
+  check('★4 ⭐「一轮」档收到批量形态：**不出卡片**、一句话让它切「自动」，数据一个字没动',
+    after4.mode === 'chat' && after4.cards === cards2 && after4.tool.indexOf('自动') >= 0 && leaked === false,
     { mode: after4.mode, cardsBefore: cards2, cards: after4.cards, tool: after4.tool.slice(0, 70), leaked });
 
   const errs = await ev(`window.__errs`);

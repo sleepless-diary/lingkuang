@@ -25,6 +25,7 @@ import { renderTavern } from './tavern';
    `runTurn()`（一次提问的共用实现）+ `cardsHtml()` / `agentCardClick`（提议卡片）
    + `getAgentMode()` / `setAgentMode()`（模式开关，两个入口共享一份状态）。 */
 import { FOLD_ALWAYS, FOLD_AT, RESULT_RE, agentCallRow, agentCardClick, cardsHtml, getAgentMode, isAgentRunning, receiptSummary, runTurn, setAgentMode } from './agent';
+import { MODE_HINT, MODE_LABEL, MODES } from './agent-mode';
 import {
   AI_SESSION_FRAME, adoptSessions, clearHistory, createSession, ensureSessionsLoaded, listSessions, linkSummary,
   markAutoNamed, pushMsg, removeSession, renameSession, sessionPrompt, setActiveSession, setSessionPersona,
@@ -115,13 +116,11 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
         ? '<div style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
             '<span style="font-size:11px;color:var(--fg-2);">模式</span>' +
             '<span class="lk-agent__seg">' +
-              `<button class="lk-agent__seg-btn${getAgentMode() === 'chat' ? ' is-on' : ''}" id="lk-ai-mode-chat" data-mode="chat">聊天</button>` +
-              `<button class="lk-agent__seg-btn${getAgentMode() === 'agent' ? ' is-on' : ''}" id="lk-ai-mode-agent" data-mode="agent">Agent</button>` +
+              /* ⚠️ 文案**不写死**：与助手浮层共用 `agent-mode.ts` 那一份（2026-10-11 改成「自动 / 一轮」） */
+              MODES.map((m) => `<button class="lk-agent__seg-btn${getAgentMode() === m ? ' is-on' : ''}" id="lk-ai-mode-${m}" data-mode="${m}">${MODE_LABEL[m]}</button>`).join('') +
             '</span>' +
             '<span style="font-size:11px;color:var(--fg-2);">' +
-              (getAgentMode() === 'agent'
-                ? 'Agent：能连着走多步、可批量改（写入按两把权限旋钮走）'
-                : '聊天：能查也能改，一次只做一个动作') +
+              esc(MODE_HINT[getAgentMode()]) +
             '</span>' +
           '</div>'
         : '') +

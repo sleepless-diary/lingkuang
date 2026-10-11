@@ -1,20 +1,23 @@
-/* agent-mode.cjs —— 灵框助手的**两种模式**（片 4：聊天 / Agent）
+/* agent-mode.cjs —— 灵框助手的**两种档位**（片 4 的「聊天 / Agent」；2026-10-11 改叫「自动 / 一轮」）
  *
  * 用户原话（2026-09-26）：「我想让灵框平常是正常的聊天及工作，但是少数情况下有 agent 工作能力。」
  * 当天第二次改口：「**聊天模式也留一点灵框内部的工具吧，agent 模式是在灵框外工作用的**」
- * ⇒ 这份套件守的就是这个目的，五条不变量：
- *   ① 面板**每次打开都是聊天模式**（模式不落盘、不进设置）——「少数情况」不许变成"忘了切回来"；
- *   ② 聊天模式的系统提示里**有**灵框内部的动作协议与权限段（"也留一点内部工具"），
- *      但写明「一次提问只提一个动作」；Agent 模式换个说法：「可以连着提多个动作」；
- *   ③ 聊天模式的回复**照旧解析动作**：读动作当场执行、写动作只出卡片不落盘；
- *   ④ 切到 Agent 才拿到多步自主；关掉面板再打开 = 授权收回（回聊天）；
+ * 2026-10-11 又一次改口（这份套件跟着改）：**「还有使用工具时能不能直接切换到 agent 模式
+ * （话说聊天模式真的有必要吗）」** ⇒ 两个档的能力早就一样了，差的只是步子多少：
+ *   ① 面板**默认就是「自动」档**（data-mode=agent）—— "这一问该拨哪个档"不该由创作者猜；
+ *   ② 模式**落盘**（`lingkuang-settings.agentMode`，用户选了「记着」）⇒ 关掉再打开**保持**上次那个档，
+ *      不再像上一版那样回落成「聊天」；
+ *   ③ 「一轮」档：sys 里有全部动作协议与权限段，但写明「一次提问只提一个动作」；
+ *      「自动」档换个说法：「可以连着提多个动作」；
+ *   ④ 两个档的回复**都解析动作**：读动作当场执行、写动作只出卡片不落盘；
  *   ⑤ 自我提权（`set_mode` → agent）**永远**要创作者亲手点「应用」，哪怕权限是"直接执行"档。
  *
  * ⭐ 最要紧的四条：
- *   ★2 —— 聊天模式的 sys 里**有** `【你能用的动作】` 且写了"一次只做一个动作"；
- *   ★3 —— 聊天模式下模型吐动作 JSON 会被**真执行**（旧版把它当文字，是片 4 的规矩，已推翻）；
+ *   ★1 —— 默认开局就是「自动」（分段控件 agent 亮、data-mode=agent）；
+ *   ★2 —— 「一轮」档的 sys 里**有** `【你能用的动作】` 且写了"一次只做一个动作"；
+ *   ★3 —— 「一轮」档下模型吐动作 JSON 会被**真执行**（旧版把它当文字，是片 4 的规矩，已推翻）；
  *   ★6b —— 直接执行档下 `set_mode agent` 仍然只出卡片、模式没变；
- *   ★7 —— 关开一次回到聊天（授权不残留）。
+ *   ★7 —— 关开一次**保持**上次那个档（落盘），而且 localStorage 里真的写着它。
  *
  * 假引擎：`window.__lkAgentMock`（见 src/ui/agent-model.ts）——用**函数形态**顺手把喂进去的
  * messages 存进 `window.__lkSeen`，好断言提示词里到底有什么。
@@ -63,6 +66,18 @@ async function main() {
     const ex = r.result && r.result.exceptionDetails;
     if (ex) throw new Error('eval: ' + ((ex.exception && ex.exception.description) || ex.text));
     return r.result && r.result.result ? r.result.result.value : undefined;
+  };
+  /** ⭐ `location.reload()` 期间执行上下文会被换掉（读会抛、也可能拿到 null）⇒ 带重试的读法
+   *  （★7b 要跨一次真·重载证明模式是落盘的；典例见 `session-restore.cjs`）。 */
+  const evSoft = async (expr, tries = 20) => {
+    for (let i = 0; i < tries; i++) {
+      try {
+        const v = await ev(expr);
+        if (v !== undefined && v !== null) return v;
+      } catch { /* 上下文还没回来 */ }
+      await sleep(250);
+    }
+    return undefined;
   };
 
   /* ---------- 打开工作台（设定库里要有东西，才量得出"没落盘"） ---------- */
@@ -123,8 +138,8 @@ async function main() {
       hasToolExample: s.indexOf('{"tool":"read_entity"') >= 0,
       hasWarn: s.indexOf('不要写成') >= 0,
       hasPerm: s.indexOf('【你的权限') >= 0,
-      hasChatNote: s.indexOf('【你现在是「聊天」模式】') >= 0,
-      hasAgentNote: s.indexOf('【你现在是「Agent」模式】') >= 0,
+      hasChatNote: s.indexOf('【你现在是「一轮」模式】') >= 0,
+      hasAgentNote: s.indexOf('【你现在是「自动」模式】') >= 0,
       oneStep: s.indexOf('一次提问只提一个动作') >= 0,
       multiStep: s.indexOf('可以连着提多个动作') >= 0,
       hasCtx: s.indexOf('【工作区现状】') >= 0,
@@ -145,22 +160,32 @@ async function main() {
   check('★0 前置：工作台开着、助手按钮在、此刻没有面板（也没有 data-mode 可读）',
     pre.tools.includes('agent') === true && pre.panel === false, pre);
 
-  /* ---------- ① 默认 = 聊天模式 ---------- */
+  /* ---------- ① 默认 = 自动档（2026-10-11：用户「使用工具时能不能直接切换到 agent 模式」）---------- */
   await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })); true`);
   await sleep(700);
   const opened = await modeSnap();
-  check('★1 ⭐打开面板默认是「聊天」：data-mode=chat、分段控件 chat 亮、权限两把旋钮在**两个模式都可用**（聊天也能动手，只是按下面那档走）',
-    opened.exists === true && opened.mode === 'chat' && opened.agentClass === false
-      && opened.segs.join(',') === 'chat:on,agent:off' && opened.permOff === false && opened.permDisabled === false
+  check('★1 ⭐打开面板**默认就是「自动」档**：data-mode=agent、分段控件 agent 亮、权限两把旋钮两个档都可用（"该拨哪个档"不用创作者猜）',
+    opened.exists === true && opened.mode === 'agent' && opened.agentClass === true
+      && opened.segs.join(',') === 'chat:off,agent:on' && opened.permOff === false && opened.permDisabled === false
       && ['readonly', 'workspace'].indexOf(opened.permScope) >= 0 && ['always', 'never'].indexOf(opened.permAsk) >= 0
-      && opened.modeHint.indexOf('聊天') >= 0 && opened.permHint.indexOf('逐项确认') >= 0,
+      && opened.modeHint.indexOf('自动') >= 0 && opened.permHint.indexOf('逐项确认') >= 0,
     opened);
 
-  /* ---------- ② 聊天模式的系统提示：**也有**灵框内部的动作（用户当天改口）---------- */
+  /* ---------- ①b 显式切到「一轮」档（下面 ②③ 测的就是这个档的克制语义）---------- */
+  await ev(`document.getElementById('lk-agent-mode-chat').click(); true`);
+  await sleep(400);
+  const oneRound = await modeSnap();
+  check('★1b 切成「一轮」档：data-mode=chat、焦点文案写「一轮」、而且**立刻落盘**（`lingkuang-settings.agentMode`）',
+    oneRound.mode === 'chat' && oneRound.agentClass === false
+      && oneRound.segs.join(',') === 'chat:on,agent:off' && oneRound.modeHint.indexOf('一轮') >= 0
+      && String(await ev(`JSON.parse(localStorage.getItem('lingkuang-settings') || '{}').agentMode`)) === 'chat',
+    { mode: oneRound.mode, segs: oneRound.segs, hint: oneRound.modeHint.slice(0, 30), stored: await ev(`JSON.parse(localStorage.getItem('lingkuang-settings') || '{}').agentMode`) });
+
+  /* ---------- ② 「一轮」档的系统提示：**也有**全部动作（用户当天改口）---------- */
   await setMock(['我在，你想聊点什么？']);
   await ask('随便聊聊。');
   const chatSys = await sysOf();
-  check('★2 ⭐聊天模式的 sys 里**有**动作协议与权限段（"聊天模式也留一点灵框内部的工具"），且写明"一次提问只提一个动作"',
+  check('★2 ⭐「一轮」档的 sys 里**有**动作协议与权限段（"也留一点灵框内部的工具"），且写明"一次提问只提一个动作"',
     chatSys.role === 'system' && chatSys.hasHead === true && chatSys.hasCtx === true
       && chatSys.hasChatNote === true && chatSys.hasAgentNote === false
       && chatSys.hasTools === true && chatSys.hasToolExample === true && chatSys.hasWarn === true
@@ -168,7 +193,7 @@ async function main() {
       && chatSys.n === 1 && chatSys.last === '随便聊聊。',
     chatSys);
 
-  /* ---------- ③ 聊天模式**照旧解析动作**：读动作当场执行；写动作只出卡片、不落盘 ---------- */
+  /* ---------- ③ 「一轮」档**照旧解析动作**：读动作当场执行；写动作只出卡片、不落盘 ---------- */
   const rows0 = await rows();
   const cards0 = await cards();
   const calls0 = await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__call').length`);
@@ -182,16 +207,16 @@ async function main() {
   await setMock(['{"tool":"create_entity","args":{"name":"聊天模式下的卡片条目","type":"角色"}}']);
   await ask('建一条叫「聊天模式下的卡片条目」的。');
   const chatWrite = { cards: await cards(), rows: await rows() };
-  check('★3 ⭐聊天模式也解析动作：读动作当场执行（出「用到动作」+ 回执），写动作只出卡片、不落盘',
+  check('★3 ⭐「一轮」档也解析动作：读动作当场执行（出「用到动作」+ 回执），写动作只出卡片、不落盘',
     chatRead.calls === calls0 + 1 && chatRead.receipts >= 1 && chatRead.rows === rows0
       && chatWrite.cards === cards0 + 1 && chatWrite.rows === rows0,
     { calls0, chatRead, rows0, cards0, chatWrite });
 
-  /* ---------- ④ 切到 Agent：协议与闸门都回来 ---------- */
+  /* ---------- ④ 切到「自动」：协议与闸门都回来 ---------- */
   await ev(`document.getElementById('lk-agent-mode-agent').click(); true`);
   await sleep(400);
   const agentUi = await modeSnap();
-  check('★4 切到 Agent：data-mode=agent、面板根带 .is-agent、权限下拉恢复可用、闸门有值',
+  check('★4 切到「自动」：data-mode=agent、面板根带 .is-agent、权限下拉可用、闸门有值',
     agentUi.mode === 'agent' && agentUi.agentClass === true
       && agentUi.segs.join(',') === 'chat:off,agent:on' && agentUi.permOff === false
       && agentUi.permDisabled === false && ['deny', 'propose', 'allow'].indexOf(agentUi.gate) >= 0,
@@ -213,19 +238,19 @@ async function main() {
   await setMock(['我先看看有什么设定。']);
   await ask('现在都有哪些设定？');
   const agentSys = await sysOf();
-  check('★5 ⭐Agent 模式的 sys 里动作协议、格式警告、权限段都在，且写明"可以连着提多个动作"（多步自主）',
+  check('★5 ⭐「自动」档的 sys 里动作协议、格式警告、权限段都在，且写明"可以连着提多个动作"（多步自主）',
     agentSys.hasTools === true && agentSys.hasToolExample === true && agentSys.hasWarn === true
       && agentSys.hasPerm === true && agentSys.hasCtx === true && agentSys.hasChatNote === false
       && agentSys.hasAgentNote === true && agentSys.multiStep === true && agentSys.oneStep === false,
     agentSys);
 
-  /* ---------- ⑤ Agent 模式：写动作照旧出提议卡片（回归） ---------- */
+  /* ---------- ⑤ 「自动」档：写动作照旧出提议卡片（回归） ---------- */
   const gate = await ev(`document.getElementById('lk-agent-panel').dataset.gate`);
   await setMock(['{"tool":"create_entity","args":{"name":"模式回归条目","type":"角色"}}']);
   await ask('建一条叫「模式回归条目」的。');
   const props = await ev(`[...document.querySelectorAll('#lk-agent-msgs .lk-agent__prop')].map((p) => (p.querySelector('.lk-agent__prop-h') || {}).textContent || '')`);
   const propsLast = props.length ? props[props.length - 1] : '';
-  check('★6 Agent 模式 + 默认权限档：写动作变成提议卡片（点应用前不落盘）',
+  check('★6 「自动」档 + 默认权限档：写动作变成提议卡片（点应用前不落盘）',
     gate === 'propose' && propsLast.indexOf('模式回归条目') >= 0 && (await rows()) === rows0,
     { gate, props, rows: await rows(), rows0 });
 
@@ -258,19 +283,55 @@ async function main() {
     applied.mode === 'agent' && applied.agentClass === true && applied.segs.join(',') === 'chat:off,agent:on',
     { mode: applied.mode, agentClass: applied.agentClass, segs: applied.segs });
 
-  /* ---------- ⑥ 关掉再打开 = 授权收回 ---------- */
+  /* ---------- ⑥ 关掉再打开 = **保持**上次那个档（2026-10-11：模式落盘，用户选「记着」） ---------- */
   await ev(`document.getElementById('lk-agent-close').click(); true`);
   await sleep(700);
   await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })); true`);
   await sleep(700);
   const reopened = await modeSnap();
   const kept = await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__msg').length`);
-  check('★7 ⭐关掉再打开回到聊天模式（"多步自主"的授权不残留），但对话历史还在',
-    reopened.exists === true && reopened.mode === 'chat' && reopened.agentClass === false
-      && reopened.permDisabled === false && kept >= 4,
-    { mode: reopened.mode, msgs: kept, permDisabled: reopened.permDisabled });
+  check('★7 ⭐关掉再打开**保持**上次那个档（上一版是"授权不残留"⇒回聊天；现在用户选了「记着」）：这一刻是 agent（⑥c 刚切过去的），对话历史还在',
+    reopened.exists === true && reopened.mode === 'agent' && reopened.agentClass === true
+      && reopened.segs.join(',') === 'chat:off,agent:on' && reopened.permDisabled === false && kept >= 4,
+    { mode: reopened.mode, segs: reopened.segs, msgs: kept, permDisabled: reopened.permDisabled });
 
-  const errs = await ev(`window.__errs`);
+  /* ---------- ⑥b ⭐落盘是真的：把 localStorage 写成 chat ⇒ 重载后开局就是「一轮」 ---------- */
+  await ev(`(function () {
+    const k = 'lingkuang-settings';
+    const s = JSON.parse(localStorage.getItem(k) || '{}');
+    s.agentMode = 'chat';
+    localStorage.setItem(k, JSON.stringify(s));
+    return s.agentMode;
+  })()`);
+  await ev(`document.getElementById('lk-agent-close').click(); true`);
+  await sleep(600);
+  try { await ev(`window.location.reload()`); } catch { /* 导航期间读不到回执是正常的 */ }
+  await sleep(2500);
+  /* ⚠️ 重载会把套件自己装的错误钩子一起冲掉（文件开头那次 `window.__errs = []`）—— 装回去，
+     否则 ★8 读到 undefined（首跑就是这么红的）。 */
+  await evSoft(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); true`);
+  /* 重载后应用是全新一份（面板一般不会再开着）⇒ 先按 Ctrl+K 开出来，再读那两段按钮 */
+  await evSoft(`(function () {
+    if (!document.getElementById('lk-agent-panel')) {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    }
+    return true;
+  })()`);
+  const reloaded = await evSoft(`(function () {
+    const p = document.getElementById('lk-agent-panel');
+    if (!p) return null;
+    const seg = [...p.querySelectorAll('#lk-agent-mode .lk-agent__seg-btn')];
+    return {
+      exists: true, mode: p.dataset.mode || '', agentClass: p.classList.contains('is-agent'),
+      segs: seg.map((b) => b.dataset.mode + (b.classList.contains('is-on') ? ':on' : ':off')),
+    };
+  })()`);
+  check('★7b ⭐模式是**落盘**的：localStorage 里写着 chat ⇒ 整个应用重载后面板开局就是「一轮」（不是硬编码的默认档）',
+    !!reloaded && reloaded.exists === true && reloaded.mode === 'chat' && reloaded.agentClass === false
+      && reloaded.segs.join(',') === 'chat:on,agent:off',
+    { snap: reloaded || null });
+
+  const errs = await ev(`window.__errs || []`);
   check('★8 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 
   const pass = results.filter(Boolean).length;

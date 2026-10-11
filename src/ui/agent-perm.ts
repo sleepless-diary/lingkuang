@@ -2,7 +2,7 @@
  *
  *  用户 2026-09-15 定的方向：「**和真 agent 软件一样，有禁止，部分执行和 YOLO 什么的**」；
  *  2026-09-26 又把它收窄到「**平常是正常的聊天及工作，但是少数情况下有 agent 工作能力**」⇒
- *  权限只在 **Agent 模式**下有意义（聊天模式根本不动手，见 `src/ui/agent-mode.ts`）。
+ *  权限对**两个档都有效**（「自动」/「一轮」都有全部动作，只是步子多少不同 —— 见 `src/ui/agent-mode.ts`）。
  *
  *  两个旋钮（都存 `localStorage['lingkuang-settings']`：这是"我允许这个助手做什么"的**长期设定**，
  *  该跟模型选择放一起，关掉助手也不该忘）：
@@ -81,7 +81,7 @@ export function gateWrite(): 'deny' | 'propose' | 'allow' {
 }
 
 /** 拼进系统提示的那一段：让模型知道自己的手被绑到哪一步（否则它会一口答应"我帮你改好了"）。
- *  只在 **Agent 模式**下拼（聊天模式由 `src/ui/agent-mode.ts` 的 `modePrompt()` 说"你只能聊天"）。 */
+ *  两个档都拼（「自动」/「一轮」都有动作；模式那一段由 `src/ui/agent-mode.ts` 的 `modePrompt()` 说）。 */
 export function permissionPrompt(): string {
   const { scope, ask } = getAgentKnobs();
   if (scope === 'readonly') {

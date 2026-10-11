@@ -28,6 +28,8 @@ import {
   sanitizeProvider,
   type ProviderProfile,
 } from './ai-providers';
+/* 助手的模式（自动 / 一轮）也存在这儿 —— 只取类型与默认值，不 import `agent.ts`（那会成环） */
+import { DEFAULT_MODE, type AgentMode } from './agent-mode';
 
 /** 演变（设定库的版本历史）的三种模式，用户 2026-09-13 选「都做，把模式放到设置里面」 */
 export type EvolveMode = 'manual' | 'auto' | 'locked';
@@ -37,7 +39,8 @@ export type EvolveMode = 'manual' | 'auto' | 'locked';
  *   · `AgentAsk`  ：**询问** —— 每次确认 / 直接执行（借 approval 那一维）
  *  两者组合出的三种实际行为，与片 2~4 那个单档 `readonly|confirm|yolo` 一一对应
  *  （见 `src/ui/agent-perm.ts`）；老的单档值在 `loadSettings()` 里一次性迁移过来。
- *  ⚠️ 它们只在 **Agent 模式**下有意义 —— 聊天模式根本不动手（见 `src/ui/agent-mode.ts`）。 */
+ *  ⚠️ 两个档（「自动」/「一轮」）**都动手** —— 权限管"允许它做到哪一步"，模式管"这次要多自主"
+ *  （见 `src/ui/agent-mode.ts` 与 `src/ui/agent-perm.ts` 顶部）。 */
 export type AgentScope = 'readonly' | 'workspace';
 export type AgentAsk = 'always' | 'never';
 
@@ -57,11 +60,14 @@ interface Settings {
   motionSpeed: number;      // 速度倍率（改的是时长：300ms ÷ 倍率）
   motionStagger: number;    // 行错峰 ms（一行比上一行晚多少）
   motionEnterDx: number;    // 入场距离 px（同时是出场距离，往左走同样的量）
-  /* 助手能动手到什么程度（两个旋钮；闸门在 `src/ui/agent-perm.ts`，只在 Agent 模式下有意义）。
+  /* 助手能动手到什么程度（两个旋钮；闸门在 `src/ui/agent-perm.ts`，对两个档都有效）。
      范围：readonly = 一个字都不许改；workspace = 可以写这个世界的设定与事件。
      询问：always = 每次改动出一张提议卡片等你点「应用」；never = 直接执行。 */
   agentScope: AgentScope;
   agentAsk: AgentAsk;
+  /* 助手的**自主程度**（2026-10-11 起落盘，用户选「记着」）：'agent' = 自动档（默认，需要时连着走多步）
+     / 'chat' = 一轮档（一次只做一个动作）。见 `src/ui/agent-mode.ts` 顶部。 */
+  agentMode: AgentMode;
 }
 
 const DEFAULTS: Settings = {
@@ -81,6 +87,9 @@ const DEFAULTS: Settings = {
      创作者点「应用」才落盘 —— 既不是什么都不让做（那样它没用），也不是一上来就全自动（风险太高）。 */
   agentScope: 'workspace',
   agentAsk: 'always',
+  /* 默认档 = **自动**（2026-10-11）：用户「使用工具时能不能直接切换到 agent 模式」⇒ 不必先猜档位，
+     该用工具就用工具、需要时连着走多步；"一轮"是他明确的克制选择，选了会被记住。 */
+  agentMode: DEFAULT_MODE,
 };
 
 /** 老的单档权限（片 2~4 的 `agentPerm`）→ 两个旋钮的迁移表。
@@ -155,6 +164,8 @@ export function loadSettings(): Settings {
   /* 手改过 localStorage / 老版本写进怪值 ⇒ 回落到默认，别让闸门读到一个它不认识的档 */
   if (s.agentScope !== 'readonly' && s.agentScope !== 'workspace') s.agentScope = DEFAULTS.agentScope;
   if (s.agentAsk !== 'always' && s.agentAsk !== 'never') s.agentAsk = DEFAULTS.agentAsk;
+  /* 模式同理（老版本没有这个键 ⇒ 拿到默认档「自动」；手改成怪值也回落） */
+  if (s.agentMode !== 'chat' && s.agentMode !== 'agent') s.agentMode = DEFAULTS.agentMode;
   return s;
 }
 export function saveSettings(s: Settings) {

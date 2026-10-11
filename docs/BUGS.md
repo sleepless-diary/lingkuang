@@ -15,6 +15,30 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第七十二轮（2026-10-11）· 「使用工具时能不能直接切到 agent 模式（聊天模式真的有必要吗）」＝ 两档能力早就一样，差的是步子；默认自动 + 模式落盘
+
+**用户原话**：「**还有使用工具时能不能直接切换到 agent 模式（话说聊天模式真的有必要吗）**」。
+
+**先回答那句疑问（代码事实，不是搪塞）**：两个档当时的能力**完全一样** —— 都注入 `【你能用的动作】` 协议、都注入权限段、都解析并执行动作、写操作都出提议卡片（片 2A 那次改口就把 `chat` 的"零工具"划法推翻了；片 1/片 2 又把文件与联网加进两个档）。差别只剩三处：`CHAT_ROUNDS = 1` vs `AGENT_ROUNDS = 8`、提示词末句「一次提问只提一个动作」vs「可以连着提多个动作」、以及批量形态（`set_field{entities}` / `create_node{nodes}`）只认 agent。⇒ "聊天模式"实质是"**只走一步的 agent**"，唯一价值是"我就问一句、你别自己连着动手"，而它的代价是创作者得先猜该拨哪个档（他上一次的原话就是「你忘记开agent模式了」）。**两问定案（ask_user_question）**：形态选 **A 自动升档**、模式**记着**（落盘）。
+
+**修法**：
+1. `src/ui/agent-mode.ts`：`MODE_LABEL = { chat: '一轮', agent: '自动' }`、新增 `DEFAULT_MODE = 'agent'`、`MODE_HINT` 与 `modePrompt()` 改口径（chat 段改成「你手上有全部动作…但**一次提问只做一个动作**」，agent 段改成「该用工具就用工具：需要的话**连着做多步**…」（仍是"最多 8 步"那句）；文件头那段"两个模式都有全部动作、差别只剩自主程度"的说明重写，并写明 2026-10-11 起模式落盘）。
+2. `src/ui/settings.ts`：`Settings` 加 `agentMode: AgentMode`、`DEFAULTS.agentMode = DEFAULT_MODE`、`loadSettings()` 里加一条回落校验（`!== 'chat' && !== 'agent' ⇒ DEFAULTS`）。⚠️ 加键必须同时改 `loadSettings` 的回落分支，否则手改过 localStorage 的人会读到一个闸门/模式都不认识的档。
+3. `src/ui/agent.ts`：`let mode: AgentMode = loadSettings().agentMode || DEFAULT_MODE`（模块加载即读盘）；`setAgentMode()` 从"写状态 + 重画 + 广播"变成"写状态 + **`saveSettings({...loadSettings(), agentMode})`** + 重画 + 广播"（存不下只影响本次运行，try/catch 兜住）；**删掉** `closeAgentPanel()` 里那句 `setAgentMode('chat')` —— 上一版"关掉面板 = 收回授权"的规矩**作废**（用户选了「记着」）；两处提示文案跟着改（「一轮」档一次只做一个动作…）。
+4. `src/ui/ai-workbench.ts`：AI 页那排「聊天 / Agent」按钮与右边那句说明改成从 `agent-mode.ts` 的 `MODES/MODE_LABEL/MODE_HINT` 取 —— 原来两个入口**各写死一份**文案，改名时必然漏一处。
+5. `src/ui/agent-tools.ts`：所有面向模型/创作者的话术统一到「一轮 / 自动」（`toolsPrompt()` 末句、批量形态的两条拒绝语、`set_setting`/`set_mode` 卡片的 `what`、`set_mode` 的 `desc`、`set_field`/`create_node` 的 `desc` 里"仅 Agent 模式"）。`src/ui/agent-perm.ts` 两处注释顺手改对（旧注释写着"聊天模式根本不动手"，那从片 2A 起就是错的）。
+
+**守卫**：`tools/e2e/agent-mode.cjs` 12 → **14 项**：
+- ★1 改成**默认就是「自动」档**（`data-mode=agent` + `agentClass` + `segs = chat:off,agent:on` + `modeHint` 含"自动"）；
+- 新增 **★1b**：点「一轮」⇒ `data-mode=chat` + 焦点文案写"一轮" + **`localStorage.lingkuang-settings.agentMode === 'chat'`**（落盘是立刻的）；
+- ★2/★3 之前显式切到「一轮」（它们测的是那个档的克制语义），断言串改成 `【你现在是「一轮」模式】`/`【你现在是「自动」模式】`；
+- ★7 反过来断言"关开**保持**上次那个档"（这一刻是 agent），新增 **★7b**：把 localStorage 写成 `chat` ⇒ `window.location.reload()` ⇒ 面板开局就是「一轮」。
+  ⚠️ ★7b 踩到两个坑：① reload 期间 CDP 执行上下文会被换掉 ⇒ 必须用带重试的 `evSoft()`（照抄 `session-restore.cjs` 的做法）；② **reload 会把套件自己装的 `window.__errs = []` 错误钩子一起冲掉** ⇒ 重载后要重新装（首跑就是 ★8 读到 `undefined` 而红）。
+- **A/B：旧构建 9/14**（★1 读到 `mode:"chat"`/`modeHint:"聊天模式：…"`、★1b 没有 `stored`、★2/★5 两种模式串都读不到、★7 读到 `mode:"chat"`）→ 新构建 **14/14**。
+- 同步改了两个邻居的断言：`agent-batch.cjs` ★1（`mode0 === 'agent'`：面板默认就是自动档）、★4（拒绝语里现在写「自动」）、`agent-main-session.cjs` ★7（`sysAutoMode`：系统提示是「自动」档那份）、★12（两头提示文案 = `MODE_HINT`）。
+
+**邻居**（各自干净起点）：`agent-tools` **23/23**、`agent-main-session` **14/14**、`agent-fs` **22/22**、`agent-panel` **21/21**、`agent-memory` **15/15**；`agent-batch` **4/6** —— ★2/★3 挂在 `waitVault()` 轮询超时，**盘上内容逐字正确**（`银发少女.md`/`批量第二条.md` 都是 `发色: 银白`、`批量事件甲/乙.md` 都在）⇒ 隐藏窗口定时器节流 + 落 .md 的 debounce 迟到，**既有抖动**（与上一轮记录的现象/失败项一致），与本轮无关。`tsc --noEmit` exit 0、`vite build` 绿。
+
 ## 第七十一轮（2026-10-11）· 「listfile没有折叠」＝ 判据只看字数，清单类回执"有时折有时不折"
 
 **用户原话**：「**listfile没有折叠**」。
