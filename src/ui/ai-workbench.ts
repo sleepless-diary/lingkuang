@@ -25,6 +25,7 @@ import { renderTavern } from './tavern';
    `runTurn()`（一次提问的共用实现）+ `cardsHtml()` / `agentCardClick`（提议卡片）
    + `getAgentMode()` / `setAgentMode()`（模式开关，两个入口共享一份状态）。 */
 import { FOLD_ALWAYS, FOLD_AT, RESULT_RE, agentCallRow, agentCardClick, cardsHtml, getAgentMode, isAgentRunning, receiptSummary, runTurn, setAgentMode } from './agent';
+import { toolProse } from './agent-tools';
 import { MODE_HINT, MODE_LABEL, MODES } from './agent-mode';
 import {
   AI_SESSION_FRAME, adoptSessions, clearHistory, createSession, ensureSessionsLoaded, listSessions, linkSummary,
@@ -163,7 +164,17 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       }
       /* ⭐ 2C：主会话会真调动作 ⇒ 调用画成一行（与助手浮层同一个写法），别把 JSON 当聊天文字 */
       const callRow = agentCallRow(m);
-      if (callRow) return callRow;
+      if (callRow) {
+        /* ⭐ 动作消息里那句散文照画（与助手浮层 `msgHtml()` 同一件事：用户 2026-10-11 那一批动作
+           前面写着「我先把整个库的结构扫完…」）。没有散文时只返回原来那一行。 */
+        const prose = m.role === 'assistant' ? toolProse(m.content) : '';
+        const proseBubble = prose
+          ? '<div style="display:flex;"><div class="lk-md" style="max-width:78%;white-space:normal;word-break:break-word;' +
+            'background:var(--surface-2);color:var(--fg);border-radius:var(--radius-sm);padding:7px 10px;font-size:13px;' +
+            'line-height:1.7;">' + mdToHtml(prose) + '</div></div>'
+          : '';
+        return proseBubble + callRow;
+      }
       if (m.role === 'user') {
         const receipt = RESULT_RE.exec(m.content);
         if (receipt) {

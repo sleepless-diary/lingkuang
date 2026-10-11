@@ -215,36 +215,102 @@ export function normalizeCall(obj: unknown): ToolCall | null {
   return null;
 }
 
-/** 把一段「连在一起的多个 JSON 对象」切成一个个对象文本；夹了散文就返回 null。
+/** 从 `from` 处切出一个**配平**的 JSON 对象（`from` 必须是 `{`）；切不动返回 null。
  *  ⚠️ 必须**字符串感知**地数大括号：参数里带 `{` / `}`（`write_file` 的正文、`set_field` 的值）
  *     时，按字符数大括号会当场切错。 */
+function readJsonObject(text: string, from: number): { span: string; next: number } | null {
+  if (text[from] !== '{') return null;
+  let i = from;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) { i++; break; } }
+  }
+  if (depth !== 0) return null; /* 括号没配平 */
+  return { span: text.slice(from, i), next: i };
+}
+
+/** 把一段「连在一起的多个 JSON 对象」切成一个个对象文本；夹了散文就返回 null。 */
 function splitJsonSpans(text: string): string[] | null {
   const spans: string[] = [];
   let i = 0;
   while (i < text.length) {
     while (i < text.length && /[\s,;]/.test(text[i])) i++; /* 分隔符：换行 / 逗号 / 分号 / 空格 */
     if (i >= text.length) break;
-    if (text[i] !== '{') return null; /* 夹了散文 ⇒ 不当动作看 */
-    const start = i;
-    let depth = 0;
-    let inStr = false;
-    let esc = false;
-    for (; i < text.length; i++) {
-      const ch = text[i];
-      if (inStr) {
-        if (esc) esc = false;
-        else if (ch === '\\') esc = true;
-        else if (ch === '"') inStr = false;
-        continue;
-      }
-      if (ch === '"') { inStr = true; continue; }
-      if (ch === '{') depth++;
-      else if (ch === '}') { depth--; if (depth === 0) { i++; break; } }
-    }
-    if (depth !== 0) return null; /* 括号没配平 */
-    spans.push(text.slice(start, i));
+    const one = readJsonObject(text, i);
+    if (!one) return null; /* 夹了散文 ⇒ 不当动作看 */
+    spans.push(one.span);
+    i = one.next;
   }
   return spans.length ? spans : null;
+}
+
+/** `text[i]` 那一行里、`{` 之前只有空白 / 一个列表符号（`-` `*` `•` `1.`）⇒ 算「顶在行首」 */
+function atLineStart(text: string, i: number): boolean {
+  let j = i;
+  while (j > 0 && text[j - 1] !== '\n') j--;
+  return /^\s*(?:[-*+•]|\d+[.)])?\s*$/.test(text.slice(j, i));
+}
+
+/** ⭐ 用户 2026-10-11 实测报的坑（原话：「工具也被吃了」）：
+ *  模型**先写一句话、再一行一个动作** ——
+ *  「好，这是个大工程 —— 我先把整个库的结构扫完，再分批读内容建条目。」后面跟 8 行
+ *  `{"tool":"list_files","args":{"path":"D:\\Desktop\\…"}}`。
+ *  老规矩「整段就是一个 JSON」把这一整条当聊天吃了（`splitJsonSpans` 一遇散文就 null）⇒
+ *  **8 个动作一个都没跑**，创作者看到的就是"工具被吃了"。
+ *
+ *  现在多认这一种形状。判据刻意收得很紧，免得把"举例说明"当成真调用（★13 那条仍然不许跑）：
+ *   ① 至少 **2 个**对象（`你可以这样写：` + 一个例子 = 1 个 ⇒ 还是聊天）；
+ *   ② 第 1 个之后，每个对象都**顶在一行开头**（夹在句子中间的不算）；
+ *   ③ 对象之间、最后一个之后**只有空白/逗号/分号**，没有别的散文。
+ *  返回 null = 不是这种形状（当普通聊天）。 */
+function splitJsonSpansAfterProse(text: string): string[] | null {
+  const spans: string[] = [];
+  let i = 0;
+  let sawProse = false;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '{') {
+      if (spans.length && !atLineStart(text, i)) return null; /* 第 2 个起必须独立成行 */
+      const one = readJsonObject(text, i);
+      if (!one) return null;
+      spans.push(one.span);
+      i = one.next;
+      continue;
+    }
+    if (/[ \t\r\n,;]/.test(ch)) { i++; continue; }
+    if (spans.length) return null; /* 对象之后又冒出散文 ⇒ 不认 */
+    sawProse = true; /* 第 1 个对象之前可以有散文（那就是「先写一句话」） */
+    i++;
+  }
+  return sawProse && spans.length >= 2 ? spans : null;
+}
+
+/** 一串对象文本 ⇒ 工具调用；**有一段认不出就整段作废**（宁可不动，也不猜着执行） */
+function callsFromSpans(spans: string[]): ToolCall[] {
+  const out: ToolCall[] = [];
+  for (const s of spans) {
+    let o: unknown;
+    try {
+      o = JSON.parse(s);
+    } catch {
+      return [];
+    }
+    const call = normalizeCall(o);
+    if (!call) return [];
+    out.push(call);
+  }
+  return out;
 }
 
 /** 从模型回复里抠出**全部**工具调用；不是调用就返回空数组（当普通聊天处理）。
@@ -260,8 +326,12 @@ export function parseToolCalls(raw: string): ToolCall[] {
     const dsml = parseDsmlCalls(text);
     if (dsml.length) return dsml;
   }
-  /* ② 整段就是一个 JSON 才认 —— 免得回答里提到例子被误当成调用 */
-  if (!text.startsWith('{')) return [];
+  /* ② ⭐「先说一句话、再一行一个动作」（用户 2026-10-11：「工具也被吃了」）——
+     不是以 `{` 开头的**不代表不是动作**：那一批 8 个 list_files 就是这么被吃掉的。 */
+  if (!text.startsWith('{')) {
+    const batch = splitJsonSpansAfterProse(text);
+    return batch ? callsFromSpans(batch) : [];
+  }
   let obj: unknown;
   let parsed = false;
   try {
@@ -282,19 +352,7 @@ export function parseToolCalls(raw: string): ToolCall[] {
   }
   const spans = splitJsonSpans(text);
   if (!spans) return [];
-  const out: ToolCall[] = [];
-  for (const s of spans) {
-    let o: unknown;
-    try {
-      o = JSON.parse(s);
-    } catch {
-      return [];
-    }
-    const call = normalizeCall(o);
-    if (!call) return []; /* 有一段认不出 ⇒ 整段当聊天（宁可不动，也不猜着执行） */
-    out.push(call);
-  }
-  return out;
+  return callsFromSpans(spans);
 }
 
 /** 单个调用（渲染层画「用到动作」那一行、只读判定都用它） */
@@ -308,6 +366,9 @@ export function looksLikeToolJson(raw: string): boolean {
   /* ⭐ 认不出的 DSML 标记也算「像动作、格式写歪了」—— 好让上层回头纠正它一次，
      而不是把这一坨标记当聊天画到创作者脸上（用户 2026-10-11：「又被当正文发出来了」） */
   if (looksLikeDsml(text)) return parseDsmlCalls(text).length === 0;
+  /* ⭐「先说一句话、再一行一个动作」的形状同理：认得出动作就正常跑（那条走 `parseToolCalls`），
+     认不出（工具名写歪了）也该回头纠正一次，而不是当聊天糊在脸上。 */
+  if (!text.startsWith('{') && splitJsonSpansAfterProse(text)) return true;
   if (!text.startsWith('{') || !text.endsWith('}')) return false;
   try {
     if (isObj(JSON.parse(text))) return true;
@@ -321,6 +382,29 @@ export function looksLikeToolJson(raw: string): boolean {
       return false;
     }
   });
+}
+
+/** 流式用的**宽松**判据：这一段里只要出现「顶在行首的 `{`」，就先别往气泡里写 ——
+ *  对象还没吐完（括号没配平）也得能认出来。落定后真不真跑由 `parseToolCalls()` 定：
+ *  认不出就照旧当聊天画出来（气泡由 `renderMsgs()` 重画，闪不到人）。
+ *  ⭐ 用户 2026-10-11：「工具也被吃了」—— 那一批动作前面有一句话，于是 `startsWith('{')` 不成立，
+ *  整批 JSON 边流边往气泡里写。 */
+export function looksLikeToolBatch(raw: string): boolean {
+  return /(^|\n)[ \t]*(?:[-*+•]|\d+[.)])?[ \t]*\{/.test(String(raw ?? ''));
+}
+
+/** 动作消息里那截**散文**（模型先写的那句话 —— 用户 2026-10-11 实测的
+ *  「好，这是个大工程 —— 我先把整个库的结构扫完，再分批读内容建条目。」）。
+ *  这条消息不是「动作 + 散文」的形状就返回 ''：宁可什么都不显示，也绝不把 JSON 画到创作者脸上。 */
+export function toolProse(raw: string): string {
+  const rawText = String(raw ?? '');
+  if (looksLikeDsml(rawText)) return ''; /* DSML 形态没有正文可留 */
+  const text = rawText.replace(/```[a-zA-Z]*/g, '').trim();
+  const spans = splitJsonSpans(text) ?? splitJsonSpansAfterProse(text);
+  if (!spans) return ''; /* 抠不干净（比如「{…}后面还挂一句话」）⇒ 一个字都不留 */
+  let rest = text;
+  for (const s of spans) rest = rest.replace(s, '\n');
+  return rest.replace(/[ \t]+\n/g, '\n').replace(/\n{2,}/g, '\n').trim();
 }
 
 /* ---------- DSML：DeepSeek 那一族的**原生**函数调用标记 ----------

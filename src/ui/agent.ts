@@ -29,7 +29,7 @@ import {
 } from './agent-memory';
 import { DEFAULT_MODE, MODE_HINT, MODE_LABEL, MODES, modePrompt, type AgentMode } from './agent-mode';
 import { ASKS, ASK_LABEL, SCOPES, SCOPE_LABEL, gateWrite, getAgentAsk, getAgentScope, permHint, permName, permissionPrompt, setAgentAsk, setAgentScope } from './agent-perm';
-import { isWriteTool, looksLikeToolJson, looksLikeToolMarkup, parseToolCalls, planWrite, runReadTool, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
+import { isWriteTool, looksLikeToolBatch, looksLikeToolJson, looksLikeToolMarkup, parseToolCalls, planWrite, runReadTool, toolProse, toolsPrompt, type Proposal, type ToolCall } from './agent-tools';
 import { fsAddRoot, fsAvailable, fsRemoveRoot, fsRootsCached, fsSetRootWrite, refreshFsRoots, type FsRoot } from './agent-fs';
 import { motionReduced } from './motion';
 import { isImeEnter } from './keys';
@@ -295,7 +295,14 @@ function callLabelOf(m: ChatMsg): string | null {
 
 function msgHtml(m: ChatMsg): string {
   if (isCallMsg(m)) {
-    return `<div class="lk-agent__call">用到动作：${escapeHtml(callLabelOf(m) ?? '?')}</div>`;
+    const row = `<div class="lk-agent__call">用到动作：${escapeHtml(callLabelOf(m) ?? '?')}</div>`;
+    /* ⭐ 动作消息里那句话不丢（用户 2026-10-11：「工具也被吃了」那批动作前面写着
+       「好，这是个大工程 —— 我先把整个库的结构扫完，再分批读内容建条目。」—— 那是它的**打算**，
+       不该因为后半截是动作就整条消失）。没有散文（纯 JSON / DSML）时 DOM 与从前一模一样。 */
+    const prose = toolProse(m.content);
+    if (!prose) return row;
+    const think = m.reasoning ? thinkBlockHtml(m.reasoning) : '';
+    return think + `<div class="lk-agent__msg is-ai"><div class="lk-agent__bubble lk-md">${mdToHtml(prose)}</div></div>` + row;
   }
   if (m.role === 'user') {
     const mm = RESULT_RE.exec(m.content);
@@ -738,9 +745,10 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
       /* 分割线之上的对话**不发给模型**（系统提示词、记忆、工作区现状都在 sys 里，照旧每次现拼） */
       const msgs: ChatMsg[] = [{ role: 'system', content: sys }, ...sentHistory(hist())];
       /* 流式（用户 2026-09-26：「我想要流式输出」）：先挂一个空气泡，增量到了就往里写。
-         ⚠️ 两个模式下这一段都可能在吐动作调用 —— 那种东西不给创作者看：从第一个 `{`、或者
-         第一段 DSML 标记（`＜…invoke…＞`，DeepSeek 那一族的原生格式，用户 2026-10-11 实测）起
-         就改说「正在整理成动作…」，这一轮走完再由 renderMsgs() 画成「用到动作」那一行。 */
+         ⚠️ 两个模式下这一段都可能在吐动作调用 —— 那种东西不给创作者看：从第一个 `{`、第一段 DSML
+         标记（`＜…invoke…＞`，DeepSeek 那一族的原生格式，用户 2026-10-11 实测）、或者**一句话之后
+         顶在行首的 `{`**（一批动作，同一天「工具也被吃了」）起，就改说「正在整理成动作…」，
+         这一轮走完再由 renderMsgs() 画成「用到动作」那一行（+ 那句散文）。 */
       live?.remove();
       think?.remove();
       /* ⚠️ **先挂思考块、再挂气泡**：DOM 的追加顺序就是屏幕上的上下顺序 —— 反过来写，
@@ -761,7 +769,7 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
           /* 自动化要看的「中间态」：测试先建好 window.__lkStreamLog，这里只往里记，正式运行零成本 */
           const log = (window as any).__lkStreamLog;
           if (Array.isArray(log)) log.push({ len: acc.length, t: Date.now() });
-          if (acc.trimStart().startsWith('{') || looksLikeToolMarkup(acc)) { suppressed = true; live?.placeholder('正在整理成动作…'); return; }
+          if (acc.trimStart().startsWith('{') || looksLikeToolMarkup(acc) || looksLikeToolBatch(acc)) { suppressed = true; live?.placeholder('正在整理成动作…'); return; }
           live?.push(d);
         },
       });

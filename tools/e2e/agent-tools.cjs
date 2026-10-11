@@ -410,6 +410,59 @@ async function main() {
     (shortList.otherTag === 'DIV' || shortList.otherLen > 320),
     { ...shortList, dir: oneFile });
 
+  /* ---------- ⑮ ⭐「先说一句话、再一行一个动作」整批也要跑（用户 2026-10-11：「工具也被吃了」）----------
+     真机原样（他贴的）：先一句「好，这是个大工程 —— 我先把整个库的结构扫完，再分批读内容建条目。」，
+     紧跟 **8 行** `{"tool":"list_files","args":{"path":"D:\\Desktop\\世界观资料整理\\…"}}`。
+     老解析器只认「整段就是一个 JSON」⇒ 一遇散文整条当聊天吃了，8 个动作一个都没跑。
+     现在：≥2 个动作 + 每个都顶在行首 ⇒ 认下来；★13 那种「你可以这样写：」+ 一个例子仍是聊天。 */
+  const b23dirs = await ev(`(async function () {
+    const rs = ((await window.lingkuangAPI.fs.roots()) || {}).roots || [];
+    const v = rs.find((r) => r.builtin) || rs[0];
+    if (!v) return { err: '没有可写根' };
+    const base = String(v.path).replace(/[\\\\/]+$/, '');
+    const dirs = [];
+    for (let i = 1; i <= 8; i++) {
+      const d = base + '/lk-e2e-batch-' + i;
+      await window.lingkuangAPI.fs.write(d + '/w.md', '第' + i + '份。', 'overwrite');
+      dirs.push(d.replace(/\\\\/g, '/'));
+    }
+    return { dirs: dirs };
+  })()`);
+  const c23 = await calls();
+  const t23 = await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__tool').length`);
+  const dumps23Before = await dumps19();
+  const PROSE23 = '好，这是个大工程 —— 我先把整个库的结构扫完，再分批读内容建条目。';
+  const b23 = (b23dirs.dirs || []).map((p) => JSON.stringify({ tool: 'list_files', args: { path: p } })).join('\n');
+  await setMock([PROSE23 + '\n' + b23, '八份都看过了。']);
+  await ask('我在测试灵框能不能吃下我的所有世界观信息，你都补进来吧。');
+  await sleep(1400);
+  const batch = {
+    calls: (await calls()) - c23,
+    receipts: (await ev(`document.querySelectorAll('#lk-agent-msgs .lk-agent__tool').length`)) - t23,
+    lastCall: await ev(`(function () { const c = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__call')]; return c.length ? c[c.length - 1].textContent : ''; })()`),
+    cards: (await props()).length,
+    /* 那句散文要留着（那是它的**打算**），而且**不许**把 JSON 一起带进气泡 */
+    prose: await ev(`(function () {
+      const bs = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__msg.is-ai .lk-agent__bubble')];
+      const hit = bs.filter((b) => b.textContent.indexOf('我先把整个库的结构扫完') >= 0);
+      return { n: hit.length, dirty: hit.filter((b) => b.textContent.indexOf('"tool"') >= 0 || b.textContent.indexOf('list_files') >= 0).length };
+    })()`),
+    dumped: (await dumps19()) - dumps23Before,
+    /* ⚠️ 只数**这 8 个目录**有没有回喂（历史里还留着更早回合的 list_files 回执 —— 直接数
+       `【动作结果：list_files】` 会多数一条，首跑就是这么假红的） */
+    fedDirs: await ev(`(function () {
+      const s = window.__lkSeen || []; const m = s[s.length - 1] || [];
+      const t = m.map((x) => String(x.content || '')).join('\\n');
+      return ${JSON.stringify(b23dirs.dirs || [])}.filter((d) => t.indexOf(d) >= 0).length;
+    })()`),
+  };
+  check('★23 ⭐「先说一句话、再一行一个动作」（8 个 list_files）整批都跑、回执都喂回模型、那句散文照留、JSON 一个字节都不进气泡（用户 2026-10-11：「工具也被吃了」）',
+    batch.calls === 1 && batch.receipts === 8 && batch.cards === 0 &&
+    batch.lastCall.indexOf('list_files ×8') >= 0 &&
+    batch.prose.n >= 1 && batch.prose.dirty === 0 && batch.dumped === 0 &&
+    batch.fedDirs === 8,
+    { ...batch, dirs: (b23dirs.dirs || []).length });
+
   const errs = await ev(`window.__errs`);
   check('★14 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 

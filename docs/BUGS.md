@@ -15,6 +15,33 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第七十四轮（2026-10-11）· 「工具也被吃了」＝ 先说一句话、再一行一个动作（8 个 `list_files`），老解析器把整条当聊天吃了
+
+**用户原话**：「**我在测试灵框能不能吃下我的所有世界观信息，你都补进来吧**」；他随后把助手那**一条**回复原样贴回来（先一句「好，这是个大工程 —— 我先把整个库的结构扫完，再分批读内容建条目。」，紧跟 **8 行** `{"tool":"list_files","args":{"path":"D:\\Desktop\\世界观资料整理\\设定\\第一世界\\…"}}` —— 基础设施 / 科技 / 生命魔法 / 文化 / 物品 / 星魂 / 组织 / 整理）+ 一句「**工具也被吃了**」。
+
+**真因（两条路都没认这种形状）**：
+1. `src/ui/agent-tools.ts` 的 `parseToolCalls(raw)`（第七十轮起）只认两种形状 —— ①整段就是一个 JSON；②一串**连写**的 JSON（`splitJsonSpans()`）。而 `splitJsonSpans()` 一遇非分隔符字符就 `return null`（`if (text[i] !== '{') return null`，注释写着"夹了散文 ⇒ 不当动作看"）⇒ 那 8 行前面只要有一句散文，整条就落到 `if (!text.startsWith('{')) return []` 上：**8 个动作一个都没跑**，整批 JSON 被当聊天画进气泡（用户看到的"工具被吃了"）。
+2. `src/ui/agent.ts` 的流式遮罩同样只判 `acc.trimStart().startsWith('{')` ⇒ 这句话带头的一批 JSON **边流边往气泡里写**。
+   ⚠️ 第七十轮那条守卫守的是"**连写**"（`{"tool":…}{"tool":…}`，中间连换行都没有）；散文前缀没人管。而 ★13「你可以这样写：」+ **一个**例子是**故意**当聊天画的 ⇒ 新判据必须同时照顾这两头。
+
+**修法**：
+- `src/ui/agent-tools.ts`：把原来内联在 `splitJsonSpans()` 里的配平器拆成 `readJsonObject(text, from)`；新增 `atLineStart(text, i)`（那一行里 `{` 之前只有空白 / 一个列表符号 `-` `*` `•` `1.`）与 **`splitJsonSpansAfterProse(text)`** ——「先说一句话、再一行一个动作」也认，判据**刻意收紧**：① 至少 **2 个**对象（★13 那种只有一个例子的仍是聊天）② 第 1 个之后每个对象都**顶在行首**（夹在句子中间举例的不算）③ 对象之间、最后一个之后**只有空白/逗号/分号**。`parseToolCalls()` 里那条早退变成 `if (!text.startsWith('{')) { const batch = splitJsonSpansAfterProse(text); return batch ? callsFromSpans(batch) : []; }`（`callsFromSpans()` 抽出来给两条路共用）。`looksLikeToolJson()` 也认这种形状 ⇒ 认不出的批次仍走"回头纠正一次"。
+- `src/ui/agent-tools.ts`：新增 **`looksLikeToolBatch(raw)`**（**流式宽松**判据：`/(^|\n)[ \t]*(?:[-*+•]|\d+[.)])?[ \t]*\{/` —— 对象还没吐完（括号没配平）也得能认出来）与 **`toolProse(raw)`**（把动作那几段抠掉，剩下的就是**散文**；抠不干净（比如「{…} 后面还挂一句话」那条路）就返回 `''` —— 宁可什么都不显示，也绝不把 JSON 画到创作者脸上）。
+- `src/ui/agent.ts`：流式遮罩加 `|| looksLikeToolBatch(acc)`（从那句话之后的第一个行首 `{` 起改说「正在整理成动作…」）；**`msgHtml()` 的动作分支不再只有那一行** —— 有散文就先画一个 AI 气泡（`thinkBlockHtml()` + `mdToHtml(prose)` + 「用到动作：…」一行）。那句散文是它的**打算**（"我先把整个库的结构扫完，再分批读内容建条目"），不该因为后半截是动作就整条消失；**纯 JSON / DSML 的动作消息 DOM 与从前一模一样**（★2/★19/★20/★22 的断言一个字没动）。
+- `src/ui/ai-workbench.ts`：AI 页主会话同一件事（`agentCallRow(m)` 前面补一个同款散文气泡）—— 判据取 `agent.ts` 那一份，两个入口不许各写一套。
+
+**守卫 `tools/e2e/agent-tools.cjs` 23 → 24 项**：新增 **★23** —— 套件先真建 8 个目录（`lk-e2e-batch-1..8`，各放一个 `w.md`），再喂一条**真机原样**的回复（那句散文 + 8 行 `list_files`，一行一个 JSON），断言：`用到动作：list_files ×8` 只有**一行**、**8 个回执全出**、8 个目录都**回喂**给了模型（在 `s[s.length-1]` 的 messages 里逐个找得到）、散文气泡在（`prose.n >= 1`）且**不含** `"tool"` / `list_files`、气泡里裸 JSON 增量 0、不出卡片。★13（散文 + **一个**例子 ⇒ 仍当聊天）原样保留且仍 PASS —— 那是新判据"不许误伤"的另一头。
+
+**守卫自己的两个假红（都写进套件注释了）**：
+1. 首版拿 `window.__lkSeen[s.length - 2]` 当"喂回去的那一条" ⇒ 读到的是**动作之前**那一轮。要读**最后一次**（`s[s.length - 1]`）。
+2. 第二版直接数 `【动作结果：list_files】` 出现次数 ⇒ 数出 **9**：**历史里还留着更早回合的 `list_files` 回执**（★22 那条），而这一条消息里本来就带着历史。改成**只数这 8 个目录**（`b23dirs` 逐个 `indexOf`）⇒ 8/8。
+
+**A/B**（`git stash push -- src/ui/agent-tools.ts src/ui/agent.ts src/ui/ai-workbench.ts` → `npm run build` → 跑同一份**新**套件 → `git stash pop` → 重建）：旧构建 **23/24** —— ★23 读到 `{"calls":0,"receipts":0,"prose":{"n":1,"dirty":1},"dumped":1,"fedDirs":0}`：**一个动作都没跑**，那句散文**连整批 JSON 一起**被当聊天画进气泡（`dirty:1`）—— 与用户贴回来的现象逐字一致。新构建 **24/24**。
+
+**邻居**（各自一份干净实例）：`agent-dsml.cjs` **10/10**、`agent-stream.cjs` **14/14**、`agent-fs.cjs` **22/22**、`agent-panel.cjs` **21/21**（需 `seed-agent-chat.cjs`）、`agent-main-session.cjs` **14/14**（需 `seed-agent-main-session.cjs`）；`tsc --noEmit` exit 0、`npm run build` 绿。
+
+**遗留（同一目的的下一道坎，尚未做）**：用户那句「**你都补进来吧**」= 把一整个库（几十上百条设定）搬进灵框。现在**读**这一步能整批跑（一句话 + 8 个 `list_files` 全跑、8 份内容都能读回来），但**写**这一步一次只出一张卡片（`src/ui/agent.ts` 的 `runTurn()`：`isWriteTool` 命中就 `handleWrite()` 完 `stop = true` ⇒ 一轮只为**一个**写动作出卡）⇒ 搬 100 条 = 100 轮点击。`set_field{entities:[…]}` 与 `create_node{nodes:[…]}` 已有批量形态，**`create_entity` 还没有批量形态** —— 下一步该补 `create_entity{entities:[…]}`（仅「自动」档、一张卡片建一批），那才是"吃下一整个库"。已向用户说明并征询。
+
 ## 第七十三轮（2026-10-11）· 「又被当正文发出来了」＝ 厂商模型的原生函数调用标记（DSML）也得认，且流式途中不许闪
 
 **用户原话**：贴了一坨灵框助手吐出来的文本 + 一句「**又被当正文发出来了**」。贴的就是 DeepSeek 那一族的原生标记（`＜｜｜DSML｜｜` 里的竖线是**全角 U+FF5C**）：
