@@ -363,7 +363,7 @@ export const FOLD_AT = 320;
  *  存在感，不是把四行目录摊在对话里；而且它天然随目录长大（今天 4 行、明天 400 行）。
  *  只按字数判会出现"同一件事有时折有时不折"的怪相：上一版 608 字的 `read_file` 折了、
  *  108 字的 `list_files` 摊着，看起来就是"list_files 没折叠"。 */
-export const FOLD_ALWAYS = new Set(['list_files', 'search_files']);
+export const FOLD_ALWAYS = new Set(['list_files', 'search_files', 'read_many', 'import_status']);
 
 /** 折起来那一行的文案：清单类拿正文**首行**当标题（「D:\Desktop」（Desktop · 只读）里 96 项：），
  *  比"2104 字"有用得多；其余回执仍用字数。 */

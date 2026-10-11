@@ -1613,6 +1613,172 @@ ipcMain.handle('fs:delete', async (e, payload) => {
   } catch (err) { return fsErr(String(err.message || err)); }
 });
 
+/* ── IPC: 助手的「批量导入手」：一次读一批 + 导入进度（片 4，2026-10-15）────────
+   用户原话：「**话说为什么他干活了这么久但是我一个节点都没看到**」。
+   只读取证（`%APPDATA%\lingkuang\agent\sessions.json` 主会话 120 条）：模型要求过的动作 =
+   list_files 60 次 / read_file 29 次 / list_nodes 3 / list_entities 1，**写入类一次都没有**；
+   它自己那句计划是「先把内容全摸清，再一次性建条目」，而真能发给模型的只有最近十几条消息
+   （`HISTORY_SEND = 16`）⇒ 读到后面忘了前面、回头重读，永远到不了"建"那一步。
+   ⇒ 根治不是催它，是给它一件趁手的家伙：
+     · `fs:read-many`：一次读**一批**（默认读"还没读过的下一批"），把"搬一整个资料库"从几十轮压到几轮；
+     · 已读清单落盘 `userData/agent-imports.json` ⇒ "重复读同一批"从机制上消失；
+     · `fs:import-status`：整库 N 个文本文件 / 已读 M / 还剩 K / 下一批是谁 —— 模型随时看得见进度。
+   安全姿势与其余 `fs:*` 一字不差：每条路径都过 `fsMatchRoot(p, false)`（读不改盘，只读就够），
+   只碰白名单里的**文本文件**（`FS_TEXT_EXT`、跳过点文件 / `FS_SKIP_DIRS` / 512 KB 以上）。 */
+const FS_IMPORT_FILE = () => path.join(app.getPath('userData'), 'agent-imports.json');
+const FS_BATCH_FILES = 12;      /* 一批最多读几个文件 */
+const FS_BATCH_CHARS = 12000;   /* 一批正文总字数上限（喂多了模型自己也看不见 —— 窗口就那么大） */
+const FS_BATCH_FILE_CAP = 6000; /* 单个文件最多给多少字（和 read_file 的 FILE_READ_CAP 一个口径） */
+
+function fsImportedLoad() {
+  try {
+    const j = JSON.parse(fs.readFileSync(FS_IMPORT_FILE(), 'utf8'));
+    return new Set(Array.isArray(j && j.read) ? j.read.map((x) => fsNorm(String(x))) : []);
+  } catch (e) { return new Set(); }
+}
+function fsImportedSave(set) {
+  try {
+    fs.mkdirSync(path.dirname(FS_IMPORT_FILE()), { recursive: true });
+    fs.writeFileSync(FS_IMPORT_FILE(), JSON.stringify({ read: [...set] }, null, 2), 'utf8');
+  } catch (e) { /* 清单存不下不该拦住读文件 —— 顶多下一轮重读一遍 */ }
+}
+/** 这些 root 里所有能当"素材"的文本文件（跳过点文件 / 依赖目录 / 超大文件），按路径排序 */
+function fsTextFiles(roots) {
+  const out = [];
+  let seen = 0;
+  const walk = (dir, depth) => {
+    if (seen > FS_WALK_MAX || depth > 8) return;
+    let items = [];
+    try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const d of items) {
+      if (seen > FS_WALK_MAX) return;
+      if (d.name.startsWith('.')) continue;
+      const full = path.join(dir, d.name);
+      if (d.isDirectory()) {
+        if (FS_SKIP_DIRS.has(d.name)) continue;
+        walk(full, depth + 1);
+        continue;
+      }
+      seen++;
+      if (!FS_TEXT_EXT.test(d.name)) continue;
+      let st = null;
+      try { st = fs.statSync(full); } catch (e) { continue; }
+      if (!st.isFile() || st.size > 512 * 1024) continue;
+      out.push(full);
+    }
+  };
+  for (const r of roots) walk(r.path, 0);
+  out.sort((a, b) => a.localeCompare(b, 'zh'));
+  return out;
+}
+/** 批量读取的范围：给了 dir 就只在那一个文件夹里（也得过白名单），否则全部根 */
+function fsBatchRoots(dir) {
+  if (!dir) return { ok: true, roots: fsRootsList() };
+  if (!fsMatchRoot(dir, false)) {
+    return { ok: false, error: '这个文件夹不在助手能看的文件夹里：' + dir + '（要让助手读它，得先把这个文件夹交给它：面板「助手 → 文件夹 → ＋ 添加文件夹」，或者提一个 allow_folder 动作让创作者点一下「应用」）' };
+  }
+  let isDir = false;
+  try { isDir = fs.statSync(dir).isDirectory(); } catch (e) { return { ok: false, error: '没有这个文件夹：' + dir }; }
+  if (!isDir) return { ok: false, error: '这不是文件夹（读单个文件用 read_file）：' + dir };
+  return { ok: true, roots: [{ path: path.resolve(dir), label: path.basename(dir) || dir, write: !!fsMatchRoot(dir, true) }] };
+}
+
+ipcMain.handle('fs:import-status', (e, payload) => {
+  /* 容错：`{path}` 是渲染层的正规形状；**裸字符串也认**（与 `fs:add-root` 同一条规矩 ——
+     手工/自动化调 `lingkuangAPI.fs.importStatus('C:/x')` 时不会静悄悄退化成"扫全部根"）。 */
+  const dir = typeof payload === 'string' ? payload : ((payload && payload.path) ? String(payload.path) : '');
+  const r = fsBatchRoots(dir);
+  if (!r.ok) return fsErr(r.error);
+  const imported = fsImportedLoad();
+  const all = fsTextFiles(r.roots);
+  const unread = all.filter((p) => !imported.has(fsNorm(p)));
+  return {
+    ok: true,
+    total: all.length,
+    read: all.length - unread.length,
+    remaining: unread.length,
+    next: unread.slice(0, 5),
+    roots: r.roots.map((x) => x.path),
+  };
+});
+
+ipcMain.handle('fs:read-many', (e, payload) => {
+  const a = (payload && typeof payload === 'object') ? payload : {};
+  const again = a.again === true || a.again === 'true';
+  /* 裸字符串 = 「就读这个文件夹」(与 import-status / add-root 一致) */
+  const dir = typeof payload === 'string' ? payload : (a.dir ? String(a.dir) : (a.path ? String(a.path) : ''));
+  const r = fsBatchRoots(dir);
+  if (!r.ok) return fsErr(r.error);
+  const roots = r.roots;
+  const limit = Math.max(1, Math.min(Number(a.limit) || FS_BATCH_FILES, 40));
+  const budget = Math.max(2000, Math.min(Number(a.chars) || FS_BATCH_CHARS, 40000));
+  const imported = fsImportedLoad();
+  const all = fsTextFiles(roots);
+
+  const outside = [];
+  const already = [];
+  let picked = [];
+  const wanted = Array.isArray(a.paths) ? a.paths.map((x) => String(x)).filter(Boolean) : [];
+  if (wanted.length) {
+    for (const p of wanted) {
+      if (!fsMatchRoot(p, false)) { outside.push(p); continue; }
+      if (!again && imported.has(fsNorm(p))) { already.push(p); continue; }
+      if (!picked.includes(p)) picked.push(p);
+    }
+  } else {
+    picked = all.filter((p) => again || !imported.has(fsNorm(p)));
+  }
+  picked = picked.slice(0, limit);
+
+  const files = [];
+  let used = 0;
+  let stopForBudget = false;
+  for (const p of picked) {
+    const left = budget - used;
+    if (left < 400) { stopForBudget = true; break; }
+    let st = null;
+    let text = '';
+    try {
+      st = fs.statSync(p);
+      if (!st.isFile()) continue;
+      const buf = fs.readFileSync(p);
+      if (buf.includes(0)) continue;           /* 二进制（改了扩展名的图/压缩包）跳过 */
+      text = buf.toString('utf8');
+    } catch (err) { continue; }
+    const cap = Math.min(FS_BATCH_FILE_CAP, left);
+    const truncated = text.length > cap;
+    const body = truncated ? text.slice(0, cap) : text;
+    const owner = fsMatchRoot(p, false) || roots[0];
+    files.push({
+      path: p,
+      name: path.basename(p),
+      rel: path.relative(owner.path, p) || path.basename(p),
+      size: st.size,
+      chars: text.length,
+      truncated,
+      text: body,
+    });
+    used += body.length;
+    if (!again) imported.add(fsNorm(p));
+  }
+  if (!again && files.length) fsImportedSave(imported);
+
+  const unread = all.filter((p) => !imported.has(fsNorm(p)));
+  return {
+    ok: true,
+    files,
+    again,
+    outside,
+    already: already.slice(0, 20),
+    stopped: stopForBudget,
+    roots: roots.map((x) => ({ path: x.path, label: x.label, write: x.write })),
+    total: all.length,
+    read: all.length - unread.length,
+    remaining: unread.length,
+    next: unread.slice(0, 5),
+  };
+});
+
 /* ── IPC: 助手的「联网手」：搜索 + 抓网页（片 2，2026-09-29）──────────────
    用户原话：「把能做的东西都写了吧…联网搜索还有拖入文件到会话什么的」。范围仍然只加了**联网搜索/抓网页**：
    没有 shell、没有 MCP 客户端。

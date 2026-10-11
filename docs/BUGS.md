@@ -15,6 +15,68 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第八十六轮（2026-10-15）· 助手能「批量搬库」了：一次读一批 + 已读清单 + 导入进度
+
+**用户**：「**话说为什么他干活了这么久但是我一个节点都没看到**」（他让助手搬 `D:\Desktop\世界观资料整理` 那一库素材）。
+
+**取证（只读，非猜）** —— 两个数就把话说清了：
+
+- `%APPDATA%\lingkuang\agent\sessions.json` 主会话最近 **120** 条里，模型要求过的动作 =
+  `list_files` **60** / `read_file` **29** / `list_nodes` 3 / `list_entities` 1；
+  **写入类（`create_entity` / `create_node` / `set_field` / `append_doc` / `write_file`）一次都没有**。
+- 盘上：`F:\lingkuang-vault` **0 个 .md**（只有 `.obsidian` / `.trash` / `维斯莱特`）；
+  `%APPDATA%\lingkuang\worldbuilding.json` 里「维斯莱特」`timelines=0 / nodes=0 / entities=0`。
+
+所以**不是没落盘、也不是他看错地方** —— 助手从头到尾只在"看"。它自己那句计划就是
+「先把内容全摸清，再一次性建条目」，而真能发给模型的只有最近十几条（`HISTORY_SEND = 16`）
+⇒ 读到后面忘了前面、回头重读（`list_files` 被要求 60 次、回执 72 次），永远到不了"建"。
+权限档是 `agentScope=workspace / agentAsk=never`（＝「直接执行」），所以"没点卡片"也不是原因。
+
+**修法**：不是催它，是给它一件趁手的家伙。
+
+- `main.js` 新增 `fs:read-many` / `fs:import-status`：一次读**一批**文本文件（默认读"**还没读过的下一批**"，
+  `FS_BATCH_FILES = 12` / `FS_BATCH_CHARS = 12000` / 单文件 `FS_BATCH_FILE_CAP = 6000` 字），
+  已读清单落盘 `userData/agent-imports.json`（`again:true` 才重读）⇒ **重复读从机制上消失**；
+  进度随返回值带出 `{total, read, remaining, next}`。安全姿势与其余 `fs:*` 一字不差：
+  每条路径过 `fsMatchRoot(p, false)`、只碰 `FS_TEXT_EXT` 且 ≤512 KB 的文本文件、跳过点文件与 `FS_SKIP_DIRS`；
+  payload 除对象外**裸字符串也认**（＝就读那个文件夹，与 `fs:add-root` 同一条规矩）。
+- `preload.js` 暴露 `fs.readMany` / `fs.importStatus`；`src/ui/agent-fs.ts` 包成
+  `fsReadMany(o)` / `fsImportStatus(dir)`，并新增 `fsBatchAvailable()`（旧主进程没这两个通道 ⇒ 提示词里别列）。
+- `src/ui/agent-tools.ts` 新增两个只读动作 **`read_many`** / **`import_status`**（`needsFsBatch`）：
+  回执带头部**进度行**（「这一批 N 个文件 · 范围内 M 个文本文件，已读 X，还剩 Y」）与**下一步指令**
+  （「就着这一批**立刻**建条目」）；白名单外的路径照旧给 `allow_folder` 出路。
+- `toolsPrompt()` 里钉死**搬库三步循环**（`read_many` → 读完**立刻** `create_entity{entities:[…]}` → 再 `read_many`），
+  并明写「**绝不要"先把整个库读完、再一次性建"**」（他这一晚卡的就是这句话）；另加
+  「`create_node` 要有当前时间线，没有就先 `create_timeline`」——`planWrite()` 里那两条"没有时间线"的拒绝语
+  也补上了可照抄的 `create_timeline` JSON（片 1.1 的不变量：拦下来必须给一条出路）。
+- `src/ui/agent.ts` 的 `FOLD_ALWAYS` 加上 `read_many` / `import_status`（批量读的回执一律折起来）。
+
+**守卫** `tools/e2e/agent-import.cjs` **21 项**（自造夹具：`library/` 5 份素材、含一份 7500 字大文件；
+`library2/` 3 份给"助手真调"那段用；`outside/` 白名单外的秘密文件）：
+★2 一次读全 5 份并报进度 / ★2a 每份给相对路径 / **★2b 再读一次不重复读** / ★2c `again` 才重读 /
+★3 大文件按 6000 字截断并标全文 / ★3b `chars` 预算（读不完就停、标 `stopped`）/
+**★4 白名单外读不到且不泄漏、并给出路** / ★5 `import_status` 报数 / **★6 助手真调 `read_many`**、
+结果喂回下一轮、回执折起来（★6b）、★6d 末尾是"立刻建条目"、★6e 读过的那批立刻进已读清单 /
+★7 系统提示有「读一批、建一批」纪律 / ★7b 提示里列了白名单文件夹 /
+**★8 ⭐「读一批 → 立刻建一批」走通了：条目真落进设定库**（盘上摸得到 `导入测试甲.md` / `导入测试乙.md`）/
+★9 `import_status` 动作走通 / ★10 无异常。**A/B：旧构建 4/21 → 新 21/21**。
+邻居（各自干净实例）：`agent-tools` **26/26**、`agent-native` **13/13**、`agent-toolfold` **16/16**、
+`agent-thinkonly` **12/12**、`agent-fs` **22/22**、`agent-mode` **17/17**。
+
+**教训（写进套件注释与记忆）**：
+
+1. **两个计数表就能定性"干了很久没结果"**：模型"要求过的动作" vs 我们"真跑过的回执" ——
+   前者有写入、后者没有 ⇒ 闸门问题；两者都没有写入 ⇒ **提示词/工具问题**（这一轮就是后者）。
+2. 套件里直调 preload 的 API 时，**payload 形状要照那层的约定**（`importStatus` 收的是 `{path}` 对象；
+   传裸字符串会静悄悄退化成"扫全部根"，第一版 ★5 因此读到 `total=7`：5 个素材 + vault 里 2 个 .md）。
+   顺手让 main.js 也**认裸字符串**，与 `fs:add-root` 一致 —— 免得下一个人踩同一个坑。
+3. **旧构建会让"看起来没问题"的断言静悄悄假绿**（★2b「再读一次不重复读」在旧构建上因为"本来就没读到"而成立）
+   ⇒ 每条断言都要带上"这一轮的通道真在"的前置（`m1.ok === true`），否则 A/B 看不出差别。
+4. 测"读到内容"要用**没被直调段读过**的另一份夹具（`library2/`）—— 已读清单是**跨调用共享**的，
+   拿 `library/` 测只会读到「已经全读过了」。
+5. 写入动作之后这一轮就收手（`handleWrite` → 落盘 → `break`），**没有下一次模型调用**
+   ⇒ 那条【动作结果】不在 `__lkSeen` 末条里，判据要读 **DOM 最后那条回执**（第七十七轮同款坑）。
+
 ## 第八十五轮（2026-10-15）· 助手接入**厂商原生 function calling**（用户问的「现成的轮子」）
 
 **用户原话**：「**工具调用又被当成正文了，有没有现成的轮子可以用啊**」。问过之后（ask_user_question 三选一）

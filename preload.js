@@ -64,7 +64,12 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
     search: (p, q) => ipcRenderer.invoke('fs:search', { path: p, q }),
     write: (p, text, mode) => ipcRenderer.invoke('fs:write', { path: p, text, mode }),
     /* 删一个文件 —— 主进程走系统回收站（`shell.trashItem`），只认可写白名单里的**文件** */
-    remove: (p) => ipcRenderer.invoke('fs:delete', { path: p })
+    remove: (p) => ipcRenderer.invoke('fs:delete', { path: p }),
+    /* ⭐ 片 4（2026-10-15）：一次读**一批** + 导入进度 —— 用户问「为什么他干活了这么久但是我一个节点都没看到」。
+       `readMany` 默认读"还没读过的下一批"（已读清单在主进程 `userData/agent-imports.json`），
+       `importStatus` 报"整库 N 个文本文件 / 已读 M / 还剩 K"。两者都只读、都过同一份白名单。 */
+    readMany: (payload) => ipcRenderer.invoke('fs:read-many', payload),
+    importStatus: (payload) => ipcRenderer.invoke('fs:import-status', payload)
   },
   /* 灵框助手的「联网手」：搜索 + 抓网页（片 2，2026-09-29）。
      ⭐ 只有主进程能出手（渲染进程直连第三方会被 CORS 拦），且由主进程把关"只认 http/https、不碰本机内网"。 */

@@ -20,7 +20,7 @@ import { addEntity, addNode, addTimeline, addWorld, removeEntity, removeNode, re
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import type { Entity, PropValue, Timeline, TimelineNode, Worldset } from '../store/types';
-import { fsAddRoot, fsAvailable, fsDefaultPath, fsDelete, fsList, fsPrompt, fsRead, fsRootOf, fsRootsCached, fsSearch, fsSetRootWrite, fsWrite } from './agent-fs';
+import { fsAddRoot, fsAvailable, fsBatchAvailable, fsDefaultPath, fsDelete, fsImportStatus, fsList, fsPrompt, fsRead, fsReadMany, fsRootOf, fsRootsCached, fsSearch, fsSetRootWrite, fsWrite } from './agent-fs';
 import { webAvailable, webFetch, webPrompt, webSearch } from './agent-web';
 import { setAgentAsk, setAgentScope } from './agent-perm';
 import { stepsPrompt, type AgentMode } from './agent-mode';
@@ -57,6 +57,8 @@ interface ToolSpec {
   args: string;
   /** 灵框**外**的文件动作：只在文件通道可用时列进提示词（旧版主进程没有 `fs:*` 通道） */
   needsFs?: boolean;
+  /** 批量导入那两个（`read_many` / `import_status`）：还要主进程**有** `fs:read-many`（旧版只有单文件那几个） */
+  needsFsBatch?: boolean;
   /** 联网动作：只在主进程有 `web:*` 通道时列出（片 2） */
   needsWeb?: boolean;
 }
@@ -72,6 +74,12 @@ const READ_TOOLS: ToolSpec[] = [
   { name: 'list_files', title: '列文件夹', desc: '列出某个文件夹里有什么（目录 / 名字 / 大小 / 改动时间）', args: '{ path: 文件夹绝对路径 }', needsFs: true },
   { name: 'read_file', title: '读文件', desc: '读一个文本文件的内容（2 MB 以内）', args: '{ path: 文件绝对路径 }', needsFs: true },
   { name: 'search_files', title: '搜文件', desc: '在一个文件夹里按关键词找内容，给「文件:行号:那一行」', args: '{ q: 关键词, path?: 文件夹绝对路径 }', needsFs: true },
+  /* ⭐ 片 4（2026-10-15）：批量读 + 导入进度 —— 用户问「**为什么他干活了这么久但是我一个节点都没看到**」：
+     真机 120 条里只有 list_files×60 / read_file×29，**一个写入都没有**；它自己的计划是"先全摸清再建"，
+     而能发给模型的只有最近十几条 ⇒ 读完忘、忘了重读，永远到不了"建"。
+     `read_many` 把"搬库"从几十轮压到几轮（一次一批、默认读还没读过的），`import_status` 让它随时看得见进度。 */
+  { name: 'read_many', title: '批量读文件', desc: '一次读一批文本文件（不给参数 = 读**还没读过的**下一批，一次最多 12 个 / 约 12000 字）—— 搬一整个资料库用这个，别一个文件一个动作地磨', args: '{ paths?: [文件绝对路径…], dir?: 文件夹绝对路径, limit?: 一批几个, chars?: 总字数, again?: true 表示重读读过的 }', needsFs: true, needsFsBatch: true },
+  { name: 'import_status', title: '导入进度', desc: '看这个资料库一共多少文本文件、已读多少、还剩多少、下一批是哪些（别靠记忆猜，问它）', args: '{ dir?: 文件夹绝对路径 }', needsFs: true, needsFsBatch: true },
   /* ⭐ 片 2（2026-09-29）：联网 —— 只读两件（搜 + 抓网页），主进程 `web:*` 通道把关（见 `src/ui/agent-web.ts`）。
      用户原话：「把能做的东西都写了吧…联网搜索还有拖入文件到会话什么的」。 */
   { name: 'web_search', title: '联网搜', desc: '在互联网上搜关键词，给标题 / 网址 / 摘要（要用它核实资料、找参考资料时先搜）', args: '{ q: 关键词, limit?: 条数 }', needsWeb: true },
@@ -128,7 +136,7 @@ export function isWriteTool(name: string): boolean {
  *  `fs:*` 通道时列出（否则模型会对着不存在的工具空转）；后面再跟一段 `fsPrompt()`，说清"你能碰哪些
  *  文件夹、规矩是什么"。⚠️ 命令 / 联网 / 抓网页**仍然一条都没有**（这一轮用户只批了文件读写）。 */
 export function toolsPrompt(mode: AgentMode = 'agent'): string {
-  const live = (t: ToolSpec): boolean => (!t.needsFs || fsAvailable()) && (!t.needsWeb || webAvailable());
+  const live = (t: ToolSpec): boolean => (!t.needsFs || fsAvailable()) && (!t.needsFsBatch || fsBatchAvailable()) && (!t.needsWeb || webAvailable());
   const rows = READ_TOOLS.filter(live).map((t) => `- ${t.name} ${t.args} —— ${t.desc}`)
     .concat(WRITE_TOOLS.filter(live).map((t) => `- ${t.name}（要创作者点头）${t.args} —— ${t.desc}`));
   return [
@@ -148,6 +156,18 @@ export function toolsPrompt(mode: AgentMode = 'agent'): string {
     '⭐ **「一次多个动作」的正规写法就是一行一个 JSON**（要连着做几件事就写几行，我按顺序全跑）—— 别理解成"一次只能一个"：',
     '{"tool":"list_files","args":{"path":"D:/Desktop/世界观资料整理/设定/第一世界"}}',
     '{"tool":"list_files","args":{"path":"D:/Desktop/世界观资料整理/设定/第二世界"}}',
+    /* ⭐ 片 4（2026-10-15，用户：「**话说为什么他干活了这么久但是我一个节点都没看到**」）：
+       真机 120 条里它读了 60 次目录 + 29 次文件、**一次写入都没有** —— 计划是"先把内容全摸清，
+       再一次性建条目"，而能发给它的只有最近十几条消息 ⇒ 读完忘、忘了重读，永远到不了"建"。
+       这里把正规打法钉死（有批量通道时才说 —— 旧版主进程没有 read_many）。 */
+    ...(fsBatchAvailable() ? [
+      '⭐ **搬资料库（把一个文件夹的素材变成灵框里的条目）的正规打法**，就这三步循环做：',
+      '   ① `read_many`（不给参数）= 读下一批**还没读过**的文件（一次最多 12 个 / 约 12000 字）；',
+      '   ② **读完这一批就立刻建条目**：`create_entity{entities:[{name,type?,fields?},…]}` 一次建一批；事件用 `create_node{nodes:[…]}`，正文用 `append_doc`；',
+      '   ③ 建完再 `read_many` 读下一批；想知道还剩多少就问 `import_status`。',
+      '⚠️ **绝不要"先把整个库读完、再一次性建"**：你只看得见最近十几条消息，读多了前面的就从你眼前消失了（历次实测：那样会无限重读、一个条目都建不出来）。**读一批、建一批**是唯一走得通的做法。',
+      '⚠️ `create_node`（事件）要有当前时间线；这个世界还没有时间线就先 `create_timeline`（设定条目 `create_entity` 不依赖时间线）。',
+    ] : []),
     '⚠️ **别用你厂商那套原生函数调用**（`＜…invoke name="…"＞`／DSML 那种形状，或在后台自行发起"调用"）：那套一次只允许一个，你多写几个会被**厂商接口**当场拒绝，并把一段 `<system_warning>…</system_warning>` 塞进你的回复里 —— 那是噪音，我只会丢掉它，创作者一个字都看不到。多动作一律用上面那种"一行一个纯 JSON"。',
     '要放开权限（切到「自动」档、把权限改宽）时，那张卡片**永远**要创作者点「应用」才会生效 —— 别催他。',
     '⚠️ 删除类动作（delete_entity / delete_node / delete_timeline / delete_world / delete_file）**只有创作者明说要删时才用**：别自己判断"这条重复了、那个没用了"就动手。它们都会进回收站（灵框库里 → vault 回收站，灵框库外的文件 → Windows 回收站），但那是给创作者捞回误删的，不是给你试错的。',
@@ -190,7 +210,7 @@ function propNames(argsText: string): string[] {
 
 /** 厂商原生工具清单（与 `toolsPrompt()` 同一张表、同一套 `needsFs`/`needsWeb` 过滤）。 */
 export function nativeTools(): NativeTool[] {
-  const live = (t: ToolSpec): boolean => (!t.needsFs || fsAvailable()) && (!t.needsWeb || webAvailable());
+  const live = (t: ToolSpec): boolean => (!t.needsFs || fsAvailable()) && (!t.needsFsBatch || fsBatchAvailable()) && (!t.needsWeb || webAvailable());
   const all = READ_TOOLS.concat(WRITE_TOOLS).filter(live);
   return all.map((t) => {
     const props: Record<string, unknown> = {};
@@ -261,6 +281,8 @@ const PRIMARY: Record<string, string> = {
   set_mode: 'mode',
   list_files: 'path',
   read_file: 'path',
+  read_many: 'dir',
+  import_status: 'dir',
   search_files: 'q',
   write_file: 'text',
   append_file: 'text',
@@ -783,6 +805,63 @@ async function runFileRead(call: ToolCall): Promise<string> {
       : text;
     return `「${p}」（${fmtSize(r.data.size)}）\n${body || '（空文件）'}`;
   }
+  /* ⭐ 片 4：批量读（一次一批，默认"还没读过的下一批"）—— 「搬一整个资料库」的正规家伙 */
+  if (call.tool === 'read_many') {
+    if (!fsBatchAvailable()) return '这个版本的灵框还没有批量读取通道（升级一下主进程）；先用 read_file 一个文件一个来。';
+    const paths = Array.isArray(a.paths) ? (a.paths as unknown[]).map((x) => str(x)).filter(Boolean) : [];
+    const dir = str(a.dir) || str(a.path);
+    const lim = num(a.limit);
+    const chars = num(a.chars);
+    const again = a.again === true || a.again === 'true';
+    const r = await fsReadMany({
+      paths: paths.length ? paths : undefined,
+      dir: dir || undefined,
+      limit: lim && lim > 0 ? lim : undefined,
+      chars: chars && chars > 0 ? chars : undefined,
+      again,
+    });
+    if (!r.ok) return withFolderHint(r.error, dir || paths[0] || fsDefaultPath(), true);
+    const d = r.data;
+    const leftover = d.outside.length
+      ? `\n⚠️ 有 ${d.outside.length} 个路径不在助手能看的文件夹里（被跳过）：${d.outside.slice(0, 3).join('、')}` +
+        `\n（要够到它们得先让创作者把文件夹交给你：提一个 {"tool":"allow_folder","args":{"path":"${d.outside[0].replace(/[\\/][^\\/]*$/, '')}"}} —— 他点「应用」就成了。**别直接说做不到**。）`
+      : '';
+    if (!d.files.length) {
+      const done = d.total > 0 && d.remaining === 0
+        ? `【批量读取】范围内 ${d.total} 个文本文件**已经全读过了**（已读 ${d.read}），没有新内容。\n` +
+          '⭐ 别再读了 —— 现在该**建条目**：把手上这些内容用 `create_entity{entities:[…]}` 落进设定库（事件用 `create_node{nodes:[…]}`，没有时间线就先 `create_timeline`）。'
+        : `【批量读取】这一批没有读到东西（范围内 ${d.total} 个文本文件，已读 ${d.read}，还剩 ${d.remaining}）。`;
+      const al = d.already.length
+        ? `\n（你要的那 ${d.already.length} 个之前已经读过：${d.already.slice(0, 3).join('、')} —— 真想再读一遍就加 "again":true）`
+        : '';
+      return done + al + leftover;
+    }
+    const charsGot = d.files.reduce((x, f) => x + f.text.length, 0);
+    const head = `【批量读取】这一批 ${d.files.length} 个文件（共 ${charsGot} 字）· 范围内 ${d.total} 个文本文件，已读 ${d.read}，还剩 ${d.remaining}`;
+    const body = d.files.map((f) =>
+      `---- ${f.rel}（${fmtSize(f.size)}${f.truncated ? ` · 全文 ${f.chars} 字，这里只给了前 ${f.text.length} 字` : ''}）----\n${f.text || '（空文件）'}`).join('\n\n');
+    const tail = '⭐ **就着这一批立刻建条目**：`create_entity{entities:[{name,type?,fields?},…]}` 一次建一批（事件用 `create_node{nodes:[…]}`，没有时间线就先 `create_timeline`），建完再 `read_many` 读下一批 —— 别攒着"全读完再建"。';
+    return head + leftover + '\n' + body + '\n' + tail + (d.stopped ? '\n（这一批是字数到顶提前停的，下一批接着读）' : '');
+  }
+  /* ⭐ 片 4：导入进度 —— 让模型**看得见**还剩多少，不靠记忆猜（"还有多少没读"是无限重读的根源） */
+  if (call.tool === 'import_status') {
+    if (!fsBatchAvailable()) return '这个版本的灵框还没有导入进度通道（升级一下主进程）。';
+    const dir = str(a.dir) || str(a.path);
+    const r = await fsImportStatus(dir || undefined);
+    if (!r.ok) return withFolderHint(r.error, dir || fsDefaultPath(), true);
+    const d = r.data;
+    if (!d.total) return '这些文件夹里没找到可读的文本文件（.md/.txt/.json 这些）。先 list_files 看一眼里面到底有什么。';
+    return [
+      `【导入进度】范围内 ${d.total} 个文本文件：已读 ${d.read}，还剩 ${d.remaining}。`,
+      d.roots.length ? `范围：${d.roots.join('、')}` : '',
+      d.remaining
+        ? `下一批（还没读的，最多列 5 个）：\n${d.next.map((x) => '  ' + x).join('\n')}`
+        : '（全读完了 —— 接下来只该建条目，别再读了）',
+      d.remaining
+        ? '⭐ 直接 `read_many`（不给参数）就读下一批；**读完一批立刻建条目**，别攒到最后。'
+        : '⭐ 把手上这些内容用 `create_entity{entities:[…]}`（事件 `create_node{nodes:[…]}`）落进灵框。',
+    ].filter(Boolean).join('\n');
+  }
   /* search_files */
   const q = str(a.q);
   if (!q) return '要搜什么关键词？（q）';
@@ -870,6 +949,8 @@ export async function runReadTool(call: ToolCall, store: Store): Promise<string>
     }
     case 'list_files':
     case 'read_file':
+    case 'read_many':
+    case 'import_status':
     case 'search_files':
       return await runFileRead(call);
     case 'web_search':
@@ -1066,7 +1147,7 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
       if (manyNodes) {
         if (mode !== 'agent') return { ok: false, note: '「一轮」档一次只建一个 —— 要批量建请先切到「自动」档，或者一个一个说。' };
         const tl0 = ws?.timelines?.[store.activeTimeline];
-        if (!tl0) return { ok: false, note: '当前没有打开的时间线，先在沙盘里选一条。' };
+        if (!tl0) return { ok: false, note: '当前没有打开的时间线（这个世界连一条时间线都还没有）—— 先把时间线建出来：{"tool":"create_timeline","args":{"name":"<时间线名字>"}}，建完再往它上面建事件。设定条目（create_entity）不受影响，可以先建。' };
         const items = manyNodes
           .map((o) => (isObj(o) ? o : ({ title: o } as ToolArgs)))
           .map((o) => ({ title: str(o.title), year: num(o.year) ?? 0, kind: str(o.kind), desc: str(o.desc) }))
@@ -1095,7 +1176,7 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
       const title = str(a.title);
       if (!title) return { ok: false, note: '新建事件要给我标题（args.title）。' };
       const tl = ws?.timelines?.[store.activeTimeline];
-      if (!tl) return { ok: false, note: '当前没有打开的时间线，先在沙盘里选一条。' };
+      if (!tl) return { ok: false, note: '当前没有打开的时间线（这个世界连一条时间线都还没有）—— 先把时间线建出来：{"tool":"create_timeline","args":{"name":"<时间线名字>"}}，建完再往它上面建事件。' };
       const year = num(a.year) ?? 0;
       const kind = str(a.kind);
       const desc = str(a.desc);

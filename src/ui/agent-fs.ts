@@ -35,6 +35,41 @@ export interface FsWriteData { path: string; bytes: number; mode: string }
 export interface FsDeleteData { path: string; bytes: number; label: string }
 export interface FsRootsData { roots: FsRoot[]; existed?: boolean }
 
+/* ⭐ 片 4（2026-10-15）：批量导入 —— 一次读一批 + 导入进度。
+   用户问「为什么他干活了这么久但是我一个节点都没看到」：真机 120 条里只有只读动作、
+   一个写入都没有，而它自己的计划是"先全摸清再建"（窗口只有十来条 ⇒ 无限重读）。 */
+export interface FsBatchFile {
+  path: string;
+  name: string;
+  /** 相对它所属那个白名单文件夹的路径（给模型看，比一长串绝对路径好认） */
+  rel: string;
+  size: number;
+  /** 全文多少字（`text` 可能被截断） */
+  chars: number;
+  truncated: boolean;
+  text: string;
+}
+export interface FsBatchData {
+  files: FsBatchFile[];
+  /** 这次是不是"强制重读"（again:true） */
+  again: boolean;
+  /** 请求里给了、但不在白名单里的路径 */
+  outside: string[];
+  /** 请求里给了、但之前已经读过（没加 again:true）的路径 */
+  already: string[];
+  /** 是不是因为字数预算用完而提前停下（下一批接着读） */
+  stopped: boolean;
+  roots: { path: string; label: string; write: boolean }[];
+  /** 范围内文本文件总数 / 已读 / 还剩 */
+  total: number;
+  read: number;
+  remaining: number;
+  /** 还没读的下一批（最多 5 个） */
+  next: string[];
+}
+export interface FsImportData { total: number; read: number; remaining: number; next: string[]; roots: string[] }
+export interface FsBatchOpts { paths?: string[]; dir?: string; limit?: number; chars?: number; again?: boolean }
+
 export interface FsOk<T> { ok: true; data: T }
 export interface FsFail { ok: false; error: string; canceled?: boolean }
 export type FsResult<T> = FsOk<T> | FsFail;
@@ -49,6 +84,9 @@ interface RawFsApi {
   search(p: string, q: string): Promise<Record<string, unknown>>;
   write(p: string, text: string, mode: 'overwrite' | 'append'): Promise<Record<string, unknown>>;
   remove(p: string): Promise<Record<string, unknown>>;
+  /* ⭐ 片 4：批量读取 / 导入进度（旧版主进程没有这两个 ⇒ `fsAvailable()` 只管到旧的那几个） */
+  readMany(payload: Record<string, unknown>): Promise<Record<string, unknown>>;
+  importStatus(payload: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
 function api(): RawFsApi | null {
@@ -151,6 +189,24 @@ export function fsDelete(p: string): Promise<FsResult<FsDeleteData>> {
   return call<FsDeleteData>((a) => a.remove(p));
 }
 
+/* ⭐ 片 4（2026-10-15）：批量读 —— 「搬一整个资料库」的正规家伙。
+   不给 paths 就是**读下一批还没读过的**（已读清单在主进程，落盘 `userData/agent-imports.json`）；
+   给了 paths 就只读那几个（都过白名单）。⚠️ 这两个通道是补上来的，旧版主进程没有 ⇒ 调用点自己判空。 */
+export function fsReadMany(o: FsBatchOpts = {}): Promise<FsResult<FsBatchData>> {
+  return call<FsBatchData>((a) => a.readMany(o as unknown as Record<string, unknown>));
+}
+
+/** 导入进度：整库 N 个文本文件 / 已读 M / 还剩 K / 下一批是谁（不读正文，只报数） */
+export function fsImportStatus(dir?: string): Promise<FsResult<FsImportData>> {
+  return call<FsImportData>((a) => a.importStatus({ path: dir || '' }));
+}
+
+/** 批量通道在不在（旧版主进程没有 readMany/importStatus —— 提示词靠它决定要不要列这两个动作） */
+export function fsBatchAvailable(): boolean {
+  const a = api();
+  return !!(a && typeof a.readMany === 'function' && typeof a.importStatus === 'function');
+}
+
 /** 路径 → 小写正斜杠（**纯字符串**，不做 realpath —— 这里只是给卡片判"是不是灵框库外"） */
 const norm = (p: string): string => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 
@@ -180,7 +236,8 @@ export function fsPrompt(): string {
     /* ⭐ 这两句是给模型**定心的**（用户 2026-09-29 实测：他被白名单拦下之后，模型回了一句
        「目前我只能操作灵框内的数据，无法直接读取或写入灵框外的文件」——**错**，而且正是这句让他以为功能不存在）。
        所以先说清"你能读能写灵框外的文件"，再说清"清单之外怎么办"。 */
-    '⭐ 你不是"只能动灵框里的数据"：灵框**外**的文件你照样能读能写（list_files / read_file / search_files / write_file / append_file），' +
+    '⭐ 你不是"只能动灵框里的数据"：灵框**外**的文件你照样能读能写（list_files / read_file / search_files / write_file / append_file'
+      + (fsBatchAvailable() ? '，搬一整个资料库用 read_many + import_status' : '') + '），' +
       '只是**得创作者先把那个文件夹交给你**。',
     '创作者已经把这些文件夹交给你了：',
     ...rows,
