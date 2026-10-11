@@ -10,7 +10,7 @@ import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { entityTypeOf } from '../store/entities';
 import type { Entity } from '../store/types';
-import { aiChat, aiChatStream, type ChatMsg } from './ai';
+import { aiChat, aiChatStream, splitReply, type ChatMsg } from './ai';
 import { liveBubble, liveThink, thinkBlockHtml } from './chat-live';
 import { mdToHtml } from './md';
 import { isImeEnter } from './keys';
@@ -247,7 +247,8 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
         { role: 'system', content: '给下面这段对话起一个 2~6 个字的短标题，直接输出标题本身：不要标点、不要引号、不要解释。' },
         { role: 'user', content: transcript },
       ], { temperature: 0.3, numPredict: 24 });
-      const title = String(r.text || '').replace(/[\s\r\n"'「」『』《》【】。，、！？：；]/g, '').slice(0, 12);
+      /* ⭐ 2026-10-12：只出思考、没正文的那种回复**不是**标题，别拿思考当名字 */
+      const title = r.thinkingOnly ? '' : String(r.text || '').replace(/[\s\r\n"'「」『』《》【】。，、！？：；]/g, '').slice(0, 12);
       if (title) { renameSession(s.id, title); setNote('按内容起了个名字：' + title); }
     } catch {
       /* 起名失败不影响聊天（设置里可以关掉） */
@@ -379,12 +380,15 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
         live.placeholder('在想…');
         try {
           const r = await aiChatStream(msgs, { temperature: 0.85, onDelta: (d) => live.push(d), onReasoning: (d) => think.push(d) });
-          live.finish(r.text);
-          think.finish(r.reasoning);
-          pushMsg(id, { role: 'assistant', content: r.text, reasoning: r.reasoning });
+          /* ⭐ 2026-10-12（用户：「思考又被当成正文了」）：只出思考的那种回复，`r.text` 里是思考的兜底、
+             不是它说的话 —— 拆开画（正文一句实话，思考全文折进思考块），历史里那份也照同一份存。 */
+          const sp = splitReply(r);
+          live.finish(sp.body);
+          think.finish(sp.think);
+          pushMsg(id, { role: 'assistant', content: sp.body, reasoning: sp.think });
           /* 被截断如实说（用户 2026-09-26 报「输出被截断了」） */
           if (r.truncated) setNote('回复被模型的输出上限截断了（' + r.model + '）：说「接着说」可以续', true);
-          else setNote(r.model + ' · ' + (r.text.length) + ' 字');
+          else setNote(r.model + ' · ' + (sp.body.length) + ' 字');
         } catch (e) {
           live.remove();
           think.remove();

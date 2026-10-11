@@ -1,7 +1,7 @@
 /** 酒馆剧情推演模块——基于当前剧情线/时间线，AI 推演下一步剧情走向（分支选项） */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
-import { aiChatStream } from './ai';
+import { aiChatStream, splitReply } from './ai';
 import { liveBubble, liveThink } from './chat-live';
 import { mdToHtml } from './md';
 import { escapeHtml } from './html';
@@ -86,8 +86,10 @@ export function renderTavern(store: Store, host: HTMLElement): void {
         ? `你是剧情推演引擎。基于下面的剧情线/时间线，推演"下一步最可能发生的事件"，用 2-4 句话描述，续写剧情。\n\n${context}`
         : `你是剧情推演引擎。基于下面的剧情线/时间线，给出 2-3 个不同的分支走向（每个分支一句话，用「分支N：」开头）。\n\n${context}`;
       const reply = await aiChatStream([{ role: 'user', content: instruction }], { temperature: mode === 'branch' ? 1.0 : 0.8, onDelta: (d) => live.push(d), onReasoning: (d) => think.push(d) });
-      live.finish(reply.text || '(空回复)');
-      think.finish(reply.reasoning);
+      /* ⭐ 2026-10-12：只出思考、没正文时 `reply.text` 里是思考的兜底 —— 拆分，别当推演结果画出去 */
+      const sp = splitReply(reply);
+      live.finish(sp.body || '(空回复)');
+      think.finish(sp.think);
     } catch (e) {
       live.remove();
       think.remove();

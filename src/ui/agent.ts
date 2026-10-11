@@ -214,6 +214,14 @@ const FIX_NOTE =
   '不要写成 {"动作名":{…}} 这种形状，也不要写成 {"name":…,"arguments":…}；' +
   '⚠️ 也别用厂商的原生函数调用标记（那会被厂商接口当场拒掉、回一段警告噪音，我看不到你的动作）。' +
   '如果只是想聊天，就直接说人话，别写 JSON。';
+/* ⭐ 2026-10-12（用户：「思考又被当成正文了」）：模型这一轮**只输出了思考、正文一个字没有**
+   （真机：DeepSeek 把整轮预算花在 reasoning_content 上，content 为空）。喂回去叫它接着说。
+   与 `FIX_NOTE` 一样**只进历史、不进气泡**。 */
+const THINK_ONLY_NOTE =
+  '【提醒】你上一条回复里**只有思考过程，正文是空的** —— 我看不见你的思考，只看见一条空回复。' +
+  '请接着说：要说的话直接写正文；要动手就写成**一行一个的纯 JSON 动作**（{"tool":"动作名","args":{…}}）。';
+/* 那一轮的助手气泡上写什么（思考那份折进思考块，正文只有这一句实话） */
+const THINK_ONLY_ECHO = '（这一轮我只顾着想，没写正文）';
 let cards: { p: Proposal; done?: string; ignored?: boolean }[] = [];
 
 const api = (): any => (window as any).lingkuangAPI;
@@ -856,6 +864,7 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
     /* 一次提问 = 最多 `roundMax` 轮：模型要么说话（结束），要么要求一个只读动作
        （执行完把结果喂回去，让它接着说）。写入动作一轮就结束 —— 要么落盘要么等点击。 */
     let fixed = false; /* ⭐ 格式纠错只做一次，免得跟模型来回拉锯 */
+    let thinkRetried = false; /* ⭐ 「只想了没答」也只催一次（2026-10-12） */
     const roundMax = mode === 'agent' ? agentRounds() : CHAT_ROUNDS;
     for (let round = 0; round <= roundMax; round++) {
       /* ⭐「停」（发送键在跑时变「停下」）：每一轮开头看一次 —— 不打断正在飞的那一次请求，
@@ -903,12 +912,37 @@ export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?
         },
       });
       /* 气泡收尾：正常说完就落定；在吐动作调用（JSON 或 DSML 标记）就保持"正在整理成动作…"
-         —— 不给那坨东西闪一下的机会（用户 2026-10-11：「又被当正文发出来了」） */
-      if (!suppressed && !looksLikeToolMarkup(r.text) && !looksLikeToolJson(r.text)) live?.finish(r.text);
+         —— 不给那坨东西闪一下的机会（用户 2026-10-11：「又被当正文发出来了」）。
+         ⭐ 2026-10-12（用户：「思考又被当成正文了」）：`thinkingOnly` 时 `r.text` 里装的是**思考**、
+         正文一个字都没有 ⇒ 那不是"说完了"，气泡直接摘掉（下面按 thinkingOnly 另走一路）。 */
+      if (r.thinkingOnly) live?.remove();
+      else if (!suppressed && !looksLikeToolMarkup(r.text) && !looksLikeToolJson(r.text)) live?.finish(r.text);
       /* 思考落定即折叠（正文才是主角；想回看点开它，历史里那份也还在）。
-         真值以 `r.reasoning` 为准 —— 与下面落进历史的那一份对齐；空的话整块摘掉。 */
-      if (r.reasoning) sawThink = true;
-      think?.finish(r.reasoning);
+         真值以 `r.reasoning` 为准 —— 与下面落进历史的那一份对齐；空的话整块摘掉。
+         ⭐ thinkingOnly 时 `r.reasoning` 被那条兜底清成了空串（同一份思考被塞进了 `r.text`）——
+         不认这一位，那段思考就既不在正文也不在思考块（凭空消失）。 */
+      const thinkText = r.thinkingOnly ? r.text : r.reasoning;
+      if (thinkText) sawThink = true;
+      think?.finish(thinkText);
+      /* ⭐ 2026-10-12（用户：「思考又被当成正文了」）：这一轮**只有思考、没有正文**。
+         别把这坨思考当回答（那正是他看到的），也别拿它去解析动作（思考里常抄着 JSON 例子）——
+         折进思考块（上一行已经 finish 了），留一条实话的助手消息，再让它重说一次（只催一次）。 */
+      if (r.thinkingOnly) {
+        const native = (r.toolCalls || []).length > 0;
+        push({ role: 'assistant', content: THINK_ONLY_ECHO, reasoning: thinkText });
+        reseatSupplements();
+        if (!thinkRetried && round < roundMax) {
+          thinkRetried = true;
+          push({ role: 'user', content: native ? FIX_NOTE : THINK_ONLY_NOTE });
+          host.note(native
+            ? '它这轮想动手，却走了厂商那套原生函数调用（' + (r.toolCalls || []).join('/') + '）—— 那套我们收不到，我让它改成 JSON 行重说一次…'
+            : '它这轮只顾着想、正文一个字都没写 —— 我让它接着说一次…');
+          continue;
+        }
+        host.note('它这一轮只出了思考、没有正文' + (r.truncated ? '（输出上限被思考吃光了）' : '')
+          + '：说「接着说」可以继续', true);
+        break;
+      }
       /* ⭐ 两个模式**都解析动作**（2026-09-26 用户改口：聊天模式也有灵框内部的动作）；
          差别只在能连着走几步 —— `roundMax` 已经按模式定好了。别再说"聊天模式不解析"，
          那会让模型吐的动作 JSON 被当聊天画到脸上、什么也不发生。 */

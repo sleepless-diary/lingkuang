@@ -1,6 +1,6 @@
 /** 角色扮演模块——AI 代入设定角色对话（用「设置 → 模型」里**当前在用**那家供应商与它选中的模型） */
 import type { Store } from '../store/store';
-import { aiChatStream, type ChatMsg } from './ai';
+import { aiChatStream, splitReply, type ChatMsg } from './ai';
 import { liveBubble, liveThink } from './chat-live';
 import { mdToHtml } from './md';
 import { isImeEnter } from './keys';
@@ -66,9 +66,11 @@ export function renderRoleplay(_store: Store, host: HTMLElement): void {
     try {
       status.textContent = 'AI 思考中…';
       const reply = await aiChatStream(history, { temperature: 0.9, onDelta: (d) => live.push(d), onReasoning: (d) => think.push(d) });
-      live.finish(reply.text || '(空回复)');
-      think.finish(reply.reasoning);
-      history.push({ role: 'assistant', content: reply.text });
+      /* ⭐ 2026-10-12：只出思考、没正文时 `reply.text` 里是思考的兜底 —— 拆分，别把思考当台词说出去 */
+      const sp = splitReply(reply);
+      live.finish(sp.body || '(空回复)');
+      think.finish(sp.think);
+      history.push({ role: 'assistant', content: sp.body });
     } catch (e) {
       live.remove();
       bubble('⚠️ AI 调用失败：' + (e instanceof Error ? e.message : String(e)), 'ai');

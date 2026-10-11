@@ -35,6 +35,14 @@ export interface AiReply {
   truncated?: boolean;
   /** 模型的思考过程（不思考的模型 = 空串；content 为空时 thinking 已经是正文，就不再重复回传） */
   reasoning?: string;
+  /** ⭐ 2026-10-12（用户：「思考又被当成正文了」）：正文**一个字都没有**、只有思考。
+   *  推理模型（DeepSeek `reasoning_content`）把整轮预算全花在思考上时就是这个形状。
+   *  ⚠️ 这时 `text` 里塞的是**思考**（见文件尾那条兜底，那是给"只要一段字"的调用方如联想/起名用的），
+   *  但**它不是模型说的话** —— 要画给创作者看的界面必须判这一位，别把思考当正文端出去。 */
+  thinkingOnly?: boolean;
+  /** 厂商**原生函数调用**的名字（非空 = 模型走了厂商那套 tool_calls）。我们这套协议收不到它，
+   *  所以它非空时这一轮的动作是**丢了**的 —— 界面要据此走「纠正一次」，别当无事发生。 */
+  toolCalls?: string[];
 }
 export interface AiOpts {
   /** 覆盖当前供应商选中的模型（留空 = 用这一家选中的那个） */
@@ -93,6 +101,7 @@ export async function aiChatStream(messages: ChatMsg[], opts: AiOpts = {}): Prom
   let text = '';
   let thinking = '';
   let truncated = false;
+  const toolCalls: string[] = [];
   const eat = (obj: unknown): void => {
     if (!obj || typeof obj !== 'object') return;
     const o = obj as Record<string, any>;
@@ -107,12 +116,26 @@ export async function aiChatStream(messages: ChatMsg[], opts: AiOpts = {}): Prom
          「整包 + 正文空 + 思考里有答案」那种响应会解析出 0 个词（联想画布那边就栽在这个形状上）。 */
       const th = firstStr(ch?.delta?.reasoning_content, ch?.delta?.reasoning, ch?.message?.reasoning_content, ch?.message?.reasoning, o.reasoning_content, o.reasoning);
       if (th) { thinking += th; onReasoning?.(th); }
+      /* 厂商原生函数调用（`tool_calls`）：我们这套"一行一个 JSON"的协议收不到它 ——
+         但**必须知道它发生过**，否则模型那一轮正文为空、动作也没了，界面看着就是"卡住"
+         （用户 2026-10-11「工具也被吃了」/ 2026-10-12「思考又被当成正文了」都撞在这附近）。 */
+      const tc = Array.isArray(ch?.delta?.tool_calls) ? ch.delta.tool_calls
+        : Array.isArray(ch?.message?.tool_calls) ? ch.message.tool_calls : null;
+      if (tc) for (const t of tc) {
+        const n = (t as { function?: { name?: unknown } })?.function?.name;
+        if (typeof n === 'string' && n && !toolCalls.includes(n)) toolCalls.push(n);
+      }
       if (ch?.finish_reason === 'length') truncated = true;
     } else {
       const m = o.message ?? {};
       if (typeof m.content === 'string' && m.content) { text += m.content; onDelta?.(m.content); }
       const th = firstStr(m.thinking, m.reasoning_content, m.reasoning, o.thinking);
       if (th) { thinking += th; onReasoning?.(th); }
+      /* 原生函数调用（Ollama 原生线也有一套）—— 同上：**收不到，但得知道它发生过** */
+      if (Array.isArray(m.tool_calls)) for (const t of m.tool_calls) {
+        const n = (t as { function?: { name?: unknown } })?.function?.name;
+        if (typeof n === 'string' && n && !toolCalls.includes(n)) toolCalls.push(n);
+      }
       if (o.done_reason === 'length') truncated = true;
     }
   };
@@ -144,13 +167,27 @@ export async function aiChatStream(messages: ChatMsg[], opts: AiOpts = {}): Prom
   }
 
   /* qwen3 内容可能放 thinking（content 空）——兜底成正文；那种情况下 thinking **就是答案本身**，
-     不再当"思考"重复画一遍 ⇒ `reasoning` 只在真有正文时回传（用户 2026-09-26：「看不到他的思考」）。 */
-  return { text: text || thinking, model, truncated, reasoning: text ? thinking : '' };
+     不再当"思考"重复画一遍 ⇒ `reasoning` 只在真有正文时回传（用户 2026-09-26：「看不到他的思考」）。
+     ⚠️ 2026-10-12（用户：「思考又被当成正文了」）：这条兜底对**推理模型**是错的 ——
+     它把整轮预算花在思考上、正文一个字都没写时（真机 `%APPDATA%\lingkuang\agent\sessions.json`
+     实测：一条 assistant 的 content = 2465 字英文思考、reasoning = 0），兜底把**思考**端到了创作者脸上。
+     兜底照旧（联想/起名/分类那几个"只要一段字"的调用方靠它），但把 `thinkingOnly` 一起交出去 ——
+     要画给创作者看的界面用 `splitReply()` 拆，别把思考当正文。 */
+  const thinkingOnly = !text && !!thinking;
+  return { text: text || thinking, model, truncated, reasoning: text ? thinking : '', thinkingOnly, toolCalls };
 }
 
 /** 一次性调用（不关心增量时用它；内部就是 `aiChatStream` 不传 `onDelta`） */
 export async function aiChat(messages: ChatMsg[], opts?: AiOpts): Promise<AiReply> {
   return aiChatStream(messages, opts);
+}
+
+/** 界面收尾用：把回复拆成「正文画什么 / 思考画什么」。
+ *  ⭐ 2026-10-12（用户：「思考又被当成正文了」）：`thinkingOnly` 时 `r.text` 里装的是**思考**，
+ *  一个字的正文都没有 ⇒ 正文那边给一句实话，思考那边收下全文（折叠块里还翻得到）。 */
+export function splitReply(r: AiReply): { body: string; think: string } {
+  if (r.thinkingOnly) return { body: '（这一轮它只出了思考、没写正文 —— 说「接着说」让它继续）', think: r.text };
+  return { body: r.text, think: r.reasoning || '' };
 }
 
 /** 从触发的一个词生成 N 个联想词（联想专用，干净分隔）

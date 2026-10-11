@@ -15,6 +15,23 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第八十一轮（2026-10-12）· 「思考又被当成正文了」：只有思考、没有正文的那种回复不许当正文
+
+**用户原话**：「**思考又被当成正文了**」。
+
+**真因（一句话：一条"兜底"用错了地方）**：`src/ui/ai.ts` 文件尾那条 `return { text: text || thinking, … }` —— 它本来是给本机 qwen3「答案放在 `thinking` 里」那种模型兜底的（文件里的注释、`docs/ARCHITECTURE.md` 第 38 行都写着"content 为空时 thinking 就是答案本身"）。推理模型（DeepSeek 的 `reasoning_content`）把**整轮预算全花在思考上、正文一个字都没写**时，这条兜底把**思考**塞进了正文，同一行又把 `reasoning` 清成空串 ⇒ 那段思考**既当正文显示、又不在思考块里**（用户 2026-09-26 那次「部分思考内容被当成正文了」是另一个原因：历史窗口里没有创作者的话；这一轮是兜底本身）。
+
+**真机证据**（只读 `%APPDATA%\lingkuang\agent\sessions.json`，主会话 120 条）：`#119`（最新那条）assistant `content` = **2465 字英文思考**（"I was in the middle of exploring the folder structure… Let me plan: list the remaining subfolders…"）、`reasoning` = **0**；全史只有这一条是这个形状，前面 `#111/#113/#115/#117` 的 `reasoning` 分别 1415/319/86/194 字、正文正常。**真端点形状也实测过**（同一把 key、同一段历史尾巴、`https://api.deepseek.com/v1/chat/completions`）：思考走 `reasoning_content`（81/117 字）、正文走 `content`（852/1052 字）、`tool_calls` 为 **none** ⇒ **正文为空就是真的空**，不是我们解析丢了。
+
+**改法**：
+- `src/ui/ai.ts`：`AiReply` 新增 `thinkingOnly?: boolean`（正文为空、只有思考）与 `toolCalls?: string[]`（厂商**原生**函数调用的名字）；`eat()` 两条线（OpenAI 的 `delta.tool_calls` / `message.tool_calls`、Ollama 的 `message.tool_calls`）都把名字收下来；文件尾那条兜底**保留**（联想/起名/分类那几个"只要一段字"的调用方靠它：`aiAssociate()` 与自动起名都是），但多回一个 `thinkingOnly`；新增 `splitReply(r): { body; think }` 给"要画给创作者看"的界面用（`thinkingOnly` 时正文给一句实话、思考那份原样交出去）。
+- `src/ui/agent.ts`：气泡收尾改成 `if (r.thinkingOnly) live?.remove()`（**不把思考落定进气泡**）；思考块的真值改成 `const thinkText = r.thinkingOnly ? r.text : r.reasoning`（不认这一位，那段思考会**凭空消失** —— 兜底已经把 `reasoning` 清空了）；在**解析动作之前**拦一层 `if (r.thinkingOnly)`：push 一条 `THINK_ONLY_ECHO = '（这一轮我只顾着想，没写正文）'` + `reasoning: thinkText` 的助手消息（折叠的思考跟着它落盘、翻得回来），然后**自动催一次**（`thinkRetried` 只催一次，与 `FIX_NOTE` 同款）—— 催的话分两种：模型走了厂商原生 `tool_calls` 时用现成的 `FIX_NOTE`（叫它写成一行一个 JSON），否则用新的 `THINK_ONLY_NOTE`（"你上一条只有思考过程，正文是空的"）。催不动就如实提示「它这一轮只出了思考、没有正文」。
+- `src/ui/ai-workbench.ts`（主会话那一支 + 自动起名）、`src/ui/roleplay.ts`、`src/ui/tavern.ts`：四处 `live.finish(reply.text)` 全改走 `splitReply()` —— 这几个页签从前会把思考当台词/推演结果画出去（同一个 bug 的另外几张脸）。
+
+**守卫** `tools/e2e/agent-thinkonly.cjs` **12 项**（新文件；用 **`window.fetch` 回放**而不是 `__lkAgentMock` —— 那个绕过了 `ai.ts`，压根测不到这条兜底；夹具一行里同时带 `message`（Ollama 原生 NDJSON）与 `choices`（OpenAI SSE）两种形状，免得依赖"当前配的是哪一家"）：★0 前置、★1 `Ctrl+K`、**★2 ⭐思考一个字都没进 AI 气泡**、**★3 思考全文在折叠思考块里**、**★4 自动催了一次（请求数 2）**、★5 催的话真喂回去了（末条 user 消息含「只有思考过程，正文是空的」）、★6 那一轮气泡写的是实话 + 最后一条气泡是第二轮正文、**★7 只催一次（两轮都空正文 ⇒ 停在 2 次请求，不来回拉锯）**、★8 两轮思考都不进气泡、**★9 模型走厂商原生 `tool_calls` 时催的话换成「格式提醒」**、★10 同样不进气泡且第二轮正文照常、★11 无未捕获异常。**A/B：旧构建 3/12**（★2 读到气泡里就是「思考哨兵-A」全文、★4/★7/★9 只有 1 次请求、★3 思考块 0 个）**→ 新 12/12**。
+
+**教训**：① 一条"为了不返回空字符串"的兜底，在**界面**这条路上是错的 —— 兜底留给"只要一段字"的调用方，**要画给人看的界面必须知道这段字是哪儿来的**（所以修法是加一位 `thinkingOnly` + `splitReply()`，而不是删掉兜底）；② 真机取证的价值：`content` 2465 字 + `reasoning` 0 **这一个组合**就是线索（有正文时 `reasoning` 绝不会是 0）；③ 一次性套件的夹具别依赖测试实例的默认供应商（本机 Ollama 走 `ai.ts` 的 NDJSON 分支、云端走 SSE 分支）；④ 套件里的注释写反引号会把模板字符串提前闭合（`node --check` 一秒逮到）。
+
 ## 第八十轮（2026-10-12）· 厂商的 `<system_warning>` 不是正文：剥掉它，「一行一个 JSON」才是"一次多个动作"
 
 **用户原话**（贴的就是那一坨）：「用到动作：list_files / `<system_warning>工具调用被拒绝：一次只能输出一个动作。</system_warning>` / `{"tool":"list_files","args":{"path":"D:\\Desktop\\世界观资料整理\\设定\\第一世界\\角色"}}` —— **不能兼容一次多个动作执行吗**」。
