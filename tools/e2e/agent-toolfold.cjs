@@ -23,7 +23,12 @@
  *   $env:LINGKUANG_TEST_USERDATA=<root>\userdata
  *   node tools\e2e\reset-entity-vault.cjs; node tools\e2e\seed-node.cjs
  * 跑：$env:LK_CDP_PORT=9500; node tools\e2e\agent-toolfold.cjs
- */
+ *
+ * ⭐ 2026-10-14（第八十三轮，用户原话「**还是被当成正文发出来了**」）又加一节 ★7/★7b：
+ * 真机 `#119` 那条的形状是**动作 → 中间一大段回声与散文 → 又是动作**（17 个动作夹着 26 行非 JSON）。
+ * 旧 `splitJsonSpansLoose()` 只许散文挂在头/尾各一段（`if (tailProse) return null`）⇒ 中间一回声
+ * 就整批作废。现在**对象之间的非 JSON 行一律放行**；另加 `toolProse()` 的**回声剥离**
+ * （`【动作结果：…】` 起、到空行为止整块丢掉 —— 那是模型抄历史，不是它说的话）。 */
 const PORT = process.env.LK_CDP_PORT || '9500';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
@@ -230,8 +235,52 @@ async function main() {
     r6.bubbles.n === 0 && r6.calls.length >= 2,
     { bubbles: r6.bubbles, calls: r6.calls });
 
+  /* ---------- ⑥ ⭐ 真机第三次实测（用户 2026-10-14「还是被当成正文发出来了」）：
+     动作 → **中间一大段回声 + 散文** → 又是动作。
+     他真实那条（`%APPDATA%\lingkuang\agent\sessions.json` 主会话 `#119`，1931 字、49 行）=
+     4 行动作 + 模型把前几轮的历史回执原样抄了一遍（`【动作结果：list_files】` ×3，连"里 8 项"
+     都抄串了、实际列了 14 行）+ 两句英文散文 + 13 行动作，一共 17 个动作。
+     旧规矩只许散文挂在头/尾各一段 ⇒ 中间一回声就整批作废、17 个动作一个没跑。 */
+  const ECHO_HEAD = '【动作结果：list_files】';
+  const MID_PROSE = 'Hmm, the results are a bit garbled. Let me re-list properly.';
+  const text3 = [
+    JSON.stringify({ tool: 'read_file', args: { path: files[0] } }),
+    JSON.stringify({ tool: 'read_file', args: { path: files[1] } }),
+    '',
+    ECHO_HEAD,
+    '「D:/Desktop/世界观资料整理/设定/第一世界」（Desktop · 只读）里 8 项：',
+    '地理/（目录）',
+    '（大概 14 个目录，我按上面列的继续读）',
+    '',
+    MID_PROSE,
+    '',
+    JSON.stringify({ tool: 'read_file', args: { path: files[2] } }),
+    JSON.stringify({ tool: 'read_file', args: { path: files[0] } }),
+  ].join('\n');
+  await setMock([text3, '四份都过了一遍。']);
+  const t7 = await toolCount();
+  await ask('把材料都过一遍。');
+  const r7 = {
+    calls: await callTexts(),
+    receipts: (await toolCount()) - t7,
+    bubbles: await jsonInBubbles(),
+    bubbleText: await aiBubbleText(),
+  };
+  check('★7 ⭐「动作 + 中间夹回声/散文 + 又是动作」整批**真跑**（前 2 个 + 后 2 个 = 4 个）',
+    r7.receipts === 4 && r7.calls.some((c) => c.indexOf('read_file ×4') >= 0),
+    { receipts: r7.receipts, calls: r7.calls });
+  check('★7b ⭐回声（`【动作结果：…】`连同它下面那块）不许画进气泡，中间那句真散文要留着',
+    r7.bubbles.n === 0 && r7.bubbleText.indexOf(MID_PROSE) >= 0 &&
+    r7.bubbleText.indexOf('里 8 项') < 0 && r7.bubbleText.indexOf('地理/（目录）') < 0,
+    {
+      bubbles: r7.bubbles,
+      hasProse: r7.bubbleText.indexOf(MID_PROSE) >= 0,
+      echoLeak: r7.bubbleText.indexOf('里 8 项') >= 0,
+      sample: r7.bubbleText.slice(-200),
+    });
+
   const errs = await ev(`window.__errs`);
-  check('★7 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
+  check('★8 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 
   const pass = results.filter(Boolean).length;
   console.log(`==== ${pass}/${results.length} PASS ====`);

@@ -15,6 +15,52 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第八十三轮（2026-10-14）· 「动作 — 中间一大段回声/散文 — 又是动作」也不许被当正文
+
+**用户原话**：「**还是被当成正文发出来了**」（贴回的真机会话原文 = 4 条 `list_files` JSON → 四条
+`【动作结果：list_files】` → 两句英文散文 → 又是 13 条 `list_files` JSON）。**先排除了"没重启"**：
+他那 4 个 electron.exe（pid 61656/60148/27656/54168）**19:56:51** 起，晚于第八十二轮的提交
+`36ee52e`（19:56:14）与那次 `npm run build` ⇒ 跑的是新构建，所以是**新解析器也没认下来的形状**。
+
+**真机取证**（只读 `%APPDATA%\lingkuang\agent\sessions.json` —— ⚠️ 它是**裸数组**、没有 `sessions` 字段；
+85462 B、主会话 `s1789737985411`、history 120；一次性脚本 `%TEMP%\lk83-sess.cjs` 把每条含 JSON 的
+assistant 正文另存 `%TEMP%\lk83-cases\case-<i>.txt`）：**`#119` = assistant、len 1931、49 行、
+`jsonLines 17`、`nonJsonLines 26`、reasoning 1004** —— 这一条消息里既有 17 个动作，又把**前几轮的历史回执
+原样抄了一遍**（`【动作结果：list_files】…` 三块；连我们编的"里 N 项"都抄串了：写着「里 8 项」却列了 14 行），
+中间还夹着模型自己的英文独白（`Hmm, the results are a bit garbled. Let me re-list properly.`）。
+头 4 条动作是第八十二轮就报过的形状（那次已经能跑），**栽在中间那 26 行上**。
+
+**真因**（`src/ui/agent-tools.ts` 的 `splitJsonSpansLoose()`）：第八十二轮放开了"尾巴上一句散文"，
+但判据仍是**散文只许挂在头/尾各一段** —— 对象的间隙里出现非 JSON 行就 `tailProse = true`，
+**再冒出一个 `{` 就 `return null`** ⇒ 整批 17 个动作作废；`parseToolCalls()` 返回 `[]`，
+`renderMsgs()` 按 `isCallMsg()` 判"不是动作消息" ⇒ 整坨 JSON + 回声又当正文画到脸上。
+**真机数据上的直接对照**（把 `src/ui/agent-tools.ts` 用 vite lib 模式打成 CJS —— vite 8.2.2 是 ESM-only、
+`node_modules` 里也没有顶层 esbuild，所以用一次性 `.mjs` + `import { build } from 'vite'` —— 拿 `#119` 原文跑**真解析器**）：
+旧解析器 `calls=0` / `looksLikeToolJson=false` / `proseLen=0`；新解析器 `calls=17`（全 `list_files`）/ `proseLen=389`。
+
+**修法**：
+① `splitJsonSpansLoose()` 把"散文只许在头/尾"这条**取消**：对象之间的任何非 JSON 行一律放行
+（回声、散文都算），只守两条 —— **≥2 个对象**、**第 2 个起必须独立成行**（`atLineStart`）；
+单个对象 + 前置散文**仍然当聊天**（`agent-tools.cjs` ★13 的"举例说明"守卫不破）。
+② `toolProse()` 新增**回声剥离**：从 `【动作结果：` 那一行起、连同它下面那块正文（到空行为止）整块丢掉 ——
+那是模型抄历史、不是它说的话（`【动作结果：` 是我们自己的机器消息前缀，`sentHistory()` 的 `isMachineMsg()`
+也按它认；正经写话不会这么开头）。剥完气泡里只剩模型真说的那两句 `Hmm, the results are a bit garbled…`。
+
+**守卫**：`tools/e2e/agent-toolfold.cjs` 11 → **13 项** —— 新增 **★7**（真机第三次形状：动作 → 中间回声 + 散文 →
+又是动作 ⇒ **4 个动作全跑**、`用到动作：read_file ×4`）与 **★7b**（回声块一个字都不进 AI 气泡、中间那句真散文留着）。
+**A/B（`git stash push -- src/ui/agent-tools.ts` → `npm run build` → 跑 → `git stash pop` → 重建）**：
+旧构建 **11/13**（★7 `receipts:0`、★7b 气泡里就是那坨 JSON —— 用户现象原样复现）→ 新 **13/13**。
+
+**邻居**（各自一份干净实例；一次性 runner `%TEMP%\lk83-many.ps1` 逐套件跑）：`agent-tools` **26/26**
+（★13「举例说明」没破）、`agent-dsml` 10/10、`agent-vendor` 12/12、`agent-mode` 17/17、`agent-fs` 22/22、
+`agent-delete` 23/23、`agent-supplement` 12/12、`agent-scroll`（exit 0）、`agent-stream` 14/14、
+`agent-main-session` 14/14（需 `seed-agent-main-session.cjs`）、`agent-panel` 21/21（需 `seed-agent-chat.cjs`）；
+`tsc --noEmit` exit 0、`npm run build` 绿、`node --check tools/e2e/agent-toolfold.cjs` 绿。
+
+**教训**：① 判据别写成"散文只能出现在哪些位置"—— 模型的形状是**任意穿插**的；与其枚举位置，
+不如只守"对象本身长什么样 + 至少两个"。② **模型会把历史回执抄进正文**（这次连计数都抄串了，
+一眼假），展示层必须能认出来扔掉，否则创作者会以为又拿到一份结果。
+
 ## 第八十二轮（2026-10-13）· 「一行一个动作 + 尾巴上还有一句话」不许被当正文 + 连续多条工具结果收成一块
 
 **用户原话**：「**依旧被当成正文了，对了，还有连续多条工具调用做一下折叠吧**」。

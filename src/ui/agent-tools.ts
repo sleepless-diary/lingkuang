@@ -306,17 +306,23 @@ function atLineStart(text: string, i: number): boolean {
  *  所以这里前后都认。判据仍然收得很紧，免得把"举例说明"当成真调用（★13 那条仍然不许跑）：
  *   ① 至少 **2 个**对象（`你可以这样写：` + 一个例子 = 1 个 ⇒ 还是聊天）；
  *   ② 第 1 个之后，每个对象都**顶在一行开头**（夹在句子中间的不算）；
- *   ③ 中间只有空白/逗号/分号；散文只允许出现在**头**与**尾**各一段，尾部散文之后不许再冒动作。
- *  返回 null = 不是这种形状（当普通聊天）。 */
+ *   ③ 单对象 + 前置散文 ⇒ 仍然当聊天（★13）。
+ *
+ *  ⭐ 用户 2026-10-14 第三次实测（原话：「**还是被当成正文发出来了**」，附真机会话原文）：一批
+ *  **4 行动作 + 一大段回声（模型把前几轮的历史回执原样抄了一遍：`【动作结果：list_files】…`）
+ *  + 两句英文散文 + 又是 13 行动作**，一共 17 个动作、中间夹着 26 行非 JSON。旧规矩只允许
+ *  散文挂在"头"或"尾"各一段（`if (tailProse) return null`）⇒ 中间那段一回声就整批作废，
+ *  17 个动作一个都没跑、整坨 JSON 又被当正文画到脸上。
+ *  ⇒ 现在的规矩：**对象之间的任何非 JSON 行都允许**（回声 / 散文都算），只守「≥2 个」与
+ *  「第 2 个起必须独立成行」这两条。代价是"回复里正好有两行能解析成动作的 JSON 例子"会真跑，
+ *  但那本来就是我们给的协议形状 —— 宁可跑，不可吃。 */
 function splitJsonSpansLoose(text: string): string[] | null {
   const spans: string[] = [];
   let i = 0;
   let sawProse = false; /* 第 1 个对象**之前**有散文（「先写一句话」） */
-  let tailProse = false; /* 最后一个对象**之后**有散文（「接下来先读…」） */
   while (i < text.length) {
     const ch = text[i];
     if (ch === '{') {
-      if (tailProse) return null; /* 尾巴上那句散文之后又冒出动作 ⇒ 不认 */
       if (spans.length && !atLineStart(text, i)) return null; /* 第 2 个起必须独立成行 */
       const one = readJsonObject(text, i);
       if (!one) return null;
@@ -325,12 +331,12 @@ function splitJsonSpansLoose(text: string): string[] | null {
       continue;
     }
     if (/[ \t\r\n,;]/.test(ch)) { i++; continue; }
-    if (spans.length) { tailProse = true; i++; continue; } /* 对象之后的散文：只许挂在末尾 */
-    sawProse = true;
+    /* 非 JSON 行：第 1 个对象之前＝前置散文；对象之间 / 之后＝回声或散文。都放行。 */
+    if (!spans.length) sawProse = true;
     i++;
   }
   if (!spans.length) return null;
-  if (spans.length >= 2) return spans; /* 一行一个动作：前后挂话都认 */
+  if (spans.length >= 2) return spans; /* 一行一个动作：前后、中间挂话都认 */
   return sawProse ? null : spans; /* 单个动作 + 前置散文 ⇒ 仍然当聊天（★13） */
 }
 
@@ -488,7 +494,21 @@ export function toolProse(raw: string): string {
   if (!spans) return ''; /* 抠不干净（比如「{…}后面还挂一句话」）⇒ 一个字都不留 */
   let rest = text;
   for (const s of spans) rest = rest.replace(s, '\n');
-  return rest.replace(/[ \t]+\n/g, '\n').replace(/\n{2,}/g, '\n').trim();
+  /* ⭐ 用户 2026-10-14（「还是被当成正文发出来了」）：模型会把**前几轮的历史回执**原样抄进正文
+     （连我们编的"里 N 项"都抄串了：抄成"里 8 项"却列了 14 行）。那是回声、不是它说的话 ——
+     画进气泡只会让创作者以为又拿到一份结果。`【动作结果：` 是我们自己的机器消息前缀，
+     模型正经写话不会这么开头 ⇒ 从这一行起、连同它下面那段正文（到空行为止）整块丢掉。 */
+  const out: string[] = [];
+  let echoing = false;
+  for (const line of rest.split('\n')) {
+    if (/^\s*【动作结果：/.test(line)) { echoing = true; continue; }
+    if (echoing) {
+      if (line.trim() === '') { echoing = false; out.push(''); } /* 空行 = 这段回声到头了 */
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n').replace(/[ \t]+\n/g, '\n').replace(/\n{2,}/g, '\n').trim();
 }
 
 /* ---------- DSML：DeepSeek 那一族的**原生**函数调用标记 ----------
