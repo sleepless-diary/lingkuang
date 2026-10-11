@@ -309,6 +309,36 @@ async function main() {
     { fed: r9.fed.slice(-300) });
   check('★9c 坏行也没把整坨 JSON 顶进气泡', r9.bubbles.n === 0, r9.bubbles);
 
+  /* ---------- ⑤ ⭐⭐ 用户 2026-10-16 第四次报同一件事，真机原样：**一句打算 + 一个动作** ----------
+     真机 `%APPDATA%\lingkuang\agent\sessions.json` 主会话 `#119`（78 字 / 3 行）。老规矩
+     「单对象 + 前置散文 ⇒ 当聊天」（★13 为了防"举例"）把这条**真调用**也吃了：一个动作都没跑、
+     JSON 又被当正文画到脸上。这次改成**按那句散文的样子分流** —— 像在说打算 ⇒ 干；像在举例 ⇒ 聊天。 */
+  const P1 = '我先看一眼 D:\\Desktop 里有什么可导的。';
+  await setMock([P1 + '\n\n' + JSON.stringify({ tool: 'read_file', args: { path: files[0] } }), '看过了。']);
+  const t11 = await toolCount();
+  await ask('先看一眼那第一份。');
+  const r11 = { receipts: (await toolCount()) - t11, bubbles: await jsonInBubbles(), bubbleText: await aiBubbleText() };
+  check('★11 ⭐「一句打算 + 一个动作」真跑（用户 2026-10-16：「又被当成正文了」的原样）',
+    r11.receipts === 1 && r11.bubbles.n === 0 && r11.bubbleText.indexOf(P1) >= 0, r11);
+
+  /* 反面一：冒号收尾 = 在把那行当例子递出来 ⇒ 仍然是聊天（★13 的口径一个字没松） */
+  const P2 = '你可以这样写：';
+  await setMock([P2 + '\n' + JSON.stringify({ tool: 'read_file', args: { path: files[1] } }), '好的。']);
+  const t11b = await toolCount();
+  await ask('格式是什么样的？');
+  const r11b = { receipts: (await toolCount()) - t11b, bubbleText: await aiBubbleText() };
+  check('★11b 「你可以这样写：」+ 一个例子 ⇒ 仍然当聊天（不许跑）',
+    r11b.receipts === 0 && r11b.bubbleText.indexOf(P2) >= 0, r11b);
+
+  /* 反面二：散文里带"比如 / 例如"这类词 ⇒ 也是举例，不许跑（判据的第二条） */
+  const P3 = '比如要读第二份，就可以这样写';
+  await setMock([P3 + '\n' + JSON.stringify({ tool: 'read_file', args: { path: files[2] } }), '好的。']);
+  const t11c = await toolCount();
+  await ask('举个例子？');
+  const r11c = { receipts: (await toolCount()) - t11c };
+  check('★11c 散文里带「比如」⇒ 也算举例、不跑（宁可让人再催一次，也不把例子当命令）',
+    r11c.receipts === 0, r11c);
+
   const errs = await ev(`window.__errs`);
   check('★10 全程没有未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 

@@ -406,26 +406,40 @@ function atLineStart(text: string, i: number): boolean {
  *  于是 14 个动作一个都没跑、整坨 JSON 被当正文画到脸上。
  *
  *  所以这里前后都认。判据仍然收得很紧，免得把"举例说明"当成真调用（★13 那条仍然不许跑）：
- *   ① 至少 **2 个**对象（`你可以这样写：` + 一个例子 = 1 个 ⇒ 还是聊天）；
- *   ② 第 1 个之后，每个对象都**顶在一行开头**（夹在句子中间的不算）；
- *   ③ 单对象 + 前置散文 ⇒ 仍然当聊天（★13）。
+ *   ① 第 1 个之后，每个对象都**顶在一行开头**（夹在句子中间的不算）；
+ *   ② 单对象 + 前置散文：**看那句散文像不像在举例**（见 `looksLikeProtocolProse()`）——
+ *      「你可以这样写：」⇒ 例子（★13）；「我先看一眼 …。」⇒ 真调用（见下面第四次实测）。
  *
  *  ⭐ 用户 2026-10-14 第三次实测（原话：「**还是被当成正文发出来了**」，附真机会话原文）：一批
  *  **4 行动作 + 一大段回声（模型把前几轮的历史回执原样抄了一遍：`【动作结果：list_files】…`）
  *  + 两句英文散文 + 又是 13 行动作**，一共 17 个动作、中间夹着 26 行非 JSON。旧规矩只允许
  *  散文挂在"头"或"尾"各一段（`if (tailProse) return null`）⇒ 中间那段一回声就整批作废，
  *  17 个动作一个都没跑、整坨 JSON 又被当正文画到脸上。
- *  ⇒ 现在的规矩：**对象之间的任何非 JSON 行都允许**（回声 / 散文都算），只守「≥2 个」与
- *  「第 2 个起必须独立成行」这两条。代价是"回复里正好有两行能解析成动作的 JSON 例子"会真跑，
- *  但那本来就是我们给的协议形状 —— 宁可跑，不可吃。 */
+ *  ⇒ 现在的规矩：**对象之间的任何非 JSON 行都允许**（回声 / 散文都算），第 2 个起独立成行即可。
+ *  代价是"回复里正好有两行能解析成动作的 JSON 例子"会真跑，但那本来就是我们给的协议形状
+ *  —— 宁可跑，不可吃。
+ *
+ *  ⭐ 用户 2026-10-16 第四次实测（原话：「**又被当成正文了**」，附会话原文）：他刚拿到 `read_many`，
+ *  模型回的是**一句打算 + 一个动作**（真机 `%APPDATA%\lingkuang\agent\sessions.json` 主会话 `#119`，
+ *  78 字 3 行）：
+ *
+ *      我先看一眼 D:\Desktop 里有什么可导的。
+ *
+ *      {"tool":"list_files","args":{"path":"D:\\Desktop"}}
+ *
+ *  老规矩「单对象 + 前置散文 ⇒ 当聊天」（★13 为了防"举例"）把这一条**真调用**也吃了：
+ *  一个动作都没跑、JSON 又当正文画到脸上。可"一句打算 + 一个动作"恰恰是最常见的写法
+ *  （★13 那种"举例"反而是少数）⇒ 现在**按散文的样子**分流：像在举例 ⇒ 聊天；像在说打算 ⇒ 干。 */
 function splitJsonSpansLoose(text: string): string[] | null {
   const spans: string[] = [];
   let i = 0;
-  let sawProse = false; /* 第 1 个对象**之前**有散文（「先写一句话」） */
+  let lead = '';        /* 第 1 个对象**之前**那段散文（「先写一句话」的原话） */
+  let sawProse = false;
   while (i < text.length) {
     const ch = text[i];
     if (ch === '{') {
       if (spans.length && !atLineStart(text, i)) return null; /* 第 2 个起必须独立成行 */
+      if (!spans.length) lead = text.slice(0, i);
       const one = readJsonObject(text, i);
       if (!one) return null;
       spans.push(one.span);
@@ -439,7 +453,23 @@ function splitJsonSpansLoose(text: string): string[] | null {
   }
   if (!spans.length) return null;
   if (spans.length >= 2) return spans; /* 一行一个动作：前后、中间挂话都认 */
-  return sawProse ? null : spans; /* 单个动作 + 前置散文 ⇒ 仍然当聊天（★13） */
+  if (!sawProse) return spans;         /* 整段就是一个动作（老行为） */
+  /* 单对象 + 前置散文：**只有"像在举例"的才当聊天**（★13：`你可以这样写：` + 一个例子）。 */
+  return looksLikeProtocolProse(lead) ? null : spans;
+}
+
+/** 这句散文像不像在**举例说明协议**（而不是"说一句打算、然后动手"）？
+ *  - 「你可以这样写：`{"tool":…}`」  ⇒ 例子（★13：不许跑）
+ *  - 「我先看一眼 D:\Desktop 里有什么可导的。`{"tool":…}`」 ⇒ 真调用（用户 2026-10-16 报的那条）
+ *  两条判据：以冒号收尾（把那行当例子递出来）、或含"例如 / 比如 / 格式 / 这样写"这类词。
+ *  ⚠️ 故意收得紧 —— 认不出的按"像举例"处理，宁可让人再催一次，也不把例子当命令跑。 */
+const EXPLAIN_RE = /(例如|比如|示例|举例|格式|这样写|写成|形如|如下|类似|像这样|照这个|当作|模版|模板)/;
+
+function looksLikeProtocolProse(prose: string): boolean {
+  const t = prose.trim();
+  if (!t) return false;
+  if (/[：:]\s*$/.test(t)) return true;
+  return EXPLAIN_RE.test(t);
 }
 
 /** 模型偶尔会把键名**写重**一遍：真机 `#119` 的第 24 行就是
