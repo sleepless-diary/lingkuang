@@ -15,6 +15,22 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第八十二轮（2026-10-13）· 「一行一个动作 + 尾巴上还有一句话」不许被当正文 + 连续多条工具结果收成一块
+
+**用户原话**：「**依旧被当成正文了，对了，还有连续多条工具调用做一下折叠吧**」。
+
+**真机原样**（只读 `%APPDATA%\lingkuang\agent\sessions.json`；主会话 id `s1789737985411`、history 120 条）：`#119` role=assistant、len **1095**、lines 16、**jsonLines 14**、`reasoning` **1909** —— 头一行是 `{"tool":"list_files","args":{"path":"D:/Desktop/世界观资料整理/设定/第一世界"}}`，接着 13 行 `read_file`（科技/科技.md、历史/白色国王.md … 生命魔法/生命魔法.md），**末尾还有一句散文**「接下来先读其他几批文件，先把内容全摸清，再一次性建条目。」；`#96`~`#118` 全是 `【动作结果：…】` 回执（说明前面二十多轮单动作循环一直是好的）。
+
+**真因**：`src/ui/agent-tools.ts` 的 `parseToolCalls()` 走「以 `{` 开头」那条主路 —— `JSON.parse(text)` 抛错、`JSON.parse(text.slice(0, lastIndexOf('}') + 1))` 也抛错（切出来是 14 个对象连写），落到 `splitJsonSpans()`，而它**一遇散文就 `null`**（末尾那句也算）⇒ 整批 14 个动作一个都没跑；`src/ui/agent.ts` 里 `renderMsgs()` 又按 `isCallMsg()`（= `parseToolCalls().length > 0`）判它"不是动作消息" ⇒ **整坨 JSON 当正文画到创作者脸上**。第七十四轮加的 `splitJsonSpansAfterProse()` 只认**前置**散文（`return sawProse && spans.length >= 2 ? spans : null`），尾巴上那句话照样让整批作废。
+
+**修法**：`splitJsonSpansAfterProse()` → **`splitJsonSpansLoose()`** —— 头一段与尾一段散文都允许（尾段之后不许再冒动作），中间仍是「第 1 个之后每个对象必须顶在行首」；**单个对象 + 前置散文仍然当聊天**（`tools/e2e/agent-tools.cjs` ★13 那条"举例说明"的守卫不许破）。`parseToolCalls()` 收尾改 `splitJsonSpans(text) ?? splitJsonSpansLoose(text)`；`looksLikeToolJson()` 把 loose 尝试提到 `!text.endsWith('}')` 早退**之前**；`toolProse()` 同步 —— 头尾两句散文都还算"它要说的话"，照旧画进气泡。
+
+**折叠**（用户 ask_user_question 选定的形态 A、**默认收起**）：`src/ui/agent.ts` 新增 `TOOL_GROUP_MIN = 2` + `receiptInnerHtml()` + `toolGroupHtml()` + `historyHtml()` —— 一条动作消息 + 紧跟其后的 **≥2** 条回执 ⇒ 一块 `<details class="lk-agent__tools">`，一行「`read_file ×3` · 3 个结果（点开看）」，展开才是那条「用到动作：…」+ 每条结果；那句散文与思考块留在折叠块**外面**（第七十四轮的要求：动作前面那句打算不能丢）。只跑一个动作时**不收**（一行调用 + 一行结果本来就够短，也少动 DOM）。⚠️ **块里每条仍是 `.lk-agent__tool`** —— `agent-tools` / `agent-fs` / `agent-delete` / `agent-dsml` / `agent-vendor` / `agent-mode` / `agent-web` / `agent-batch` / `agent-main-session` 一大票套件按它数回执、取"最后一条结果"的文本，收进折叠块不许把它收没。AI 页（`src/ui/ai-workbench.ts` 的 `renderLog()`）用同一份规矩（同一份 `TOOL_GROUP_MIN`），块里每条仍是 `[data-k="receipt"]`。
+
+守卫 `tools/e2e/agent-toolfold.cjs` **11 项**（★2 真机形状的三个动作全跑、★2b JSON 一个字不进气泡且尾巴那句留着、★3 收成一块且默认收起、★3b 块里那三条仍是 `.lk-agent__tool`、★4 点一下才展开、★5 三条结果真喂回下一轮、★6/★6b 单动作那轮不收）。**A/B 旧构建 3/11**（★2 `receipts:0`、★2b 气泡里就是那坨 JSON —— 用户现象原样复现）**→ 新 11/11**。
+
+⚠️ 套件里踩到的两处判据坑：① 别拿「最后一条 AI 气泡」当"那句散文还在"的判据 —— 动作跑完之后模型还会再说一句，那句才是最后一条（首跑 ★2b 因此假红）；② 「单个动作 + **前置**散文」按老规矩**故意不解析**（★13），拿它测"单动作不收"会测成"动作根本没跑"（首跑 ★6 读到 `grew:0`）—— 要测就用**纯 JSON** 那一轮。
+
 ## 第八十一轮（2026-10-12）· 「思考又被当成正文了」：只有思考、没有正文的那种回复不许当正文
 
 **用户原话**：「**思考又被当成正文了**」。

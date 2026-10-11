@@ -24,7 +24,7 @@ import { renderTavern } from './tavern';
 /* ⭐ 2C：主会话与 Ctrl+K 的助手是**同一格会话、同一套能力** ⇒ 这一页直接用助手那一套：
    `runTurn()`（一次提问的共用实现）+ `cardsHtml()` / `agentCardClick`（提议卡片）
    + `getAgentMode()` / `setAgentMode()`（模式开关，两个入口共享一份状态）。 */
-import { FOLD_ALWAYS, FOLD_AT, RESULT_RE, SUPPLEMENT_HINT, agentCallRow, agentCardClick, cardsHtml, getAgentMode, isAgentRunning, receiptSummary, requestAgentStop, runTurn, setAgentMode, supplementMessage } from './agent';
+import { FOLD_ALWAYS, FOLD_AT, RESULT_RE, SUPPLEMENT_HINT, TOOL_GROUP_MIN, agentCallRow, agentCardClick, callLabelOf, cardsHtml, getAgentMode, isAgentRunning, receiptSummary, requestAgentStop, runTurn, setAgentMode, supplementMessage } from './agent';
 import { toolProse } from './agent-tools';
 import { MODE_HINT, MODE_LABEL, MODES } from './agent-mode';
 import {
@@ -158,7 +158,24 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       logEl.innerHTML = '<div style="font-size:12px;color:var(--fg-2);line-height:1.9;">还没有对话。<br>直接说点什么，或者先给这个会话写一段「角色设定」。</div>';
       return;
     }
-    logEl.innerHTML = s.history.map((m) => {
+    /* ⭐ 一轮里**连续多条**工具结果收成一块（用户 2026-10-13）—— 与助手浮层 `historyHtml()` 同一规矩：
+       `groupAt` 装「从哪一条开始、收几条回执」，`skip` 装被收进去那几条的下标。 */
+    const hist = s.history;
+    const groupAt = new Map<number, number>();
+    const skip = new Set<number>();
+    for (let i = 0; i < hist.length; i++) {
+      if (!agentCallRow(hist[i])) continue;
+      let n = 0;
+      while (i + 1 + n < hist.length && hist[i + 1 + n].role === 'user' && RESULT_RE.test(hist[i + 1 + n].content)) n++;
+      if (n >= TOOL_GROUP_MIN) {
+        groupAt.set(i, n);
+        for (let k = 1; k <= n; k++) skip.add(i + k);
+      }
+    }
+    logEl.innerHTML = hist.map((m, i) => {
+      if (skip.has(i)) return '';
+      const grouped = groupAt.get(i);
+      if (grouped) return toolGroupHtmlAi(m, hist.slice(i + 1, i + 1 + grouped));
       /* ⭐ 2026-09-26：这一格可能与**助手**共用历史（`role:'main'` 就是 Ctrl+K 的灵框助手），
          两类「系统痕迹」不能画成聊天气泡 —— ① 分割线 `div:true`；② `【动作结果：…】` 的系统回执
          （它的 role 是 user，照旧画就成了「创作者说过这句话」）。 */
@@ -511,6 +528,39 @@ function entityNameOf(store: Store, id: string): string {
   const ws = currentWorld(store);
   const e = ((ws?.entities ?? {}) as Record<string, Entity>)[id];
   return e ? e.name : '';
+}
+
+/** 一轮里**连续多条**工具结果收成一块 —— 与助手浮层 `historyHtml()` 同一规矩
+ *  （用户 2026-10-13：「连续多条工具调用做一下折叠吧」：一行「N 个结果（点开看）」、默认收起）。
+ *  ⚠️ 里面每条仍是 `[data-k="receipt"]`：`agent-main-session.cjs` 按它数回执。 */
+function toolGroupHtmlAi(call: ChatMsg, receipts: ChatMsg[]): string {
+  const label = callLabelOf(call) ?? '?';
+  const wrapStyle = 'max-width:78%;font-size:12px;color:var(--fg-2);background:var(--surface-2);' +
+    'border:1px dashed var(--border-strong);border-radius:var(--radius-sm);padding:6px 9px;';
+  const bodyStyle = 'margin:3px 0 0;white-space:pre-wrap;font-family:inherit;';
+  /* 动作前面那句散文照旧留在折叠块**外面**（与助手浮层同一条规矩） */
+  const prose = toolProse(call.content);
+  const bubble = prose
+    ? '<div style="display:flex;"><div class="lk-md" style="max-width:78%;white-space:normal;word-break:break-word;' +
+      'background:var(--surface-2);color:var(--fg);border-radius:var(--radius-sm);padding:7px 10px;font-size:13px;' +
+      'line-height:1.7;">' + mdToHtml(prose) + '</div></div>'
+    : '';
+  const inner = receipts
+    .map((r) => {
+      const mm = RESULT_RE.exec(r.content);
+      const body = mm ? r.content.slice(mm[0].length).trim() : r.content.trim();
+      return '<div data-k="receipt" style="' + wrapStyle + '">' +
+        '<div style="font-weight:600;">' + esc(mm ? mm[1] : '动作结果') + '</div>' +
+        '<pre style="' + bodyStyle + '">' + esc(body) + '</pre></div>';
+    })
+    .join('');
+  return bubble +
+    '<details data-k="tools" style="' + wrapStyle + '">' +
+    '<summary style="font-weight:600;cursor:pointer;">' + esc(label) + ' · ' + receipts.length + ' 个结果（点开看）</summary>' +
+    '<div style="display:flex;flex-direction:column;gap:6px;margin-top:4px;">' +
+    '<div style="font-size:12px;color:var(--muted);">用到动作：' + esc(label) + '</div>' +
+    inner +
+    '</div></details>';
 }
 
 function esc(s: string): string {

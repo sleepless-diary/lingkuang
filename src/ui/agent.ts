@@ -377,6 +377,49 @@ export function receiptSummary(tool: string, body: string): string {
 
 export const RESULT_RE = /^【动作结果：([^】]+)】/;
 
+/** ⭐ 一轮里**连续多条**工具结果收成**一块**（用户 2026-10-13：「连续多条工具调用做一下折叠吧」）。
+ *  形态（他选的）：一行「用到动作：X ×N · N 个结果（点开看）」，**默认收起**，展开才是那条
+ *  「用到动作」+ 每条结果。只跑了一个动作时**不收** —— 「一行调用 + 一行结果」本来就够短，
+ *  别为它多一层点击（也少动 DOM，一堆套件按 `.lk-agent__tool` 数回执）。 */
+export const TOOL_GROUP_MIN = 2;
+
+/** 分组块**里面**的一条结果。
+ *  ⚠️ `.lk-agent__tool` 这个类**必须留着**：`agent-tools` / `agent-fs` / `agent-delete` / `agent-dsml` /
+ *  `agent-vendor` / `agent-mode` / `agent-web` / `agent-batch` / `agent-main-session` 一大票套件按它
+ *  数回执、取「最后一条结果」的文本 —— 收进折叠块只是换个位置，不许把这个类收没了。 */
+function receiptInnerHtml(tool: string, body: string): string {
+  return (
+    `<div class="lk-agent__tool"><div class="lk-agent__tool-h">${escapeHtml(tool)}</div>` +
+    `<pre>${escapeHtml(body)}</pre></div>`
+  );
+}
+
+/** 一轮 = 一条动作消息 + 紧跟其后的 N 条回执 ⇒ 一块 `<details>`（默认收起）。
+ *  那句散文与思考块留在折叠块**外面**（用户 2026-10-11：动作前面那句「我先把整个库的结构扫完…」不能丢）。 */
+function toolGroupHtml(callMsg: ChatMsg, receipts: ChatMsg[]): string {
+  const label = callLabelOf(callMsg) ?? '?';
+  const prose = toolProse(callMsg.content);
+  const think = callMsg.reasoning ? thinkBlockHtml(callMsg.reasoning) : '';
+  const bubble = prose
+    ? `<div class="lk-agent__msg is-ai"><div class="lk-agent__bubble lk-md">${mdToHtml(prose)}</div></div>`
+    : '';
+  const inner =
+    `<div class="lk-agent__call">用到动作：${escapeHtml(label)}</div>` +
+    receipts
+      .map((r) => {
+        const mm = RESULT_RE.exec(r.content);
+        const body = mm ? r.content.slice(mm[0].length).trim() : r.content.trim();
+        return receiptInnerHtml(mm ? mm[1] : '动作结果', body);
+      })
+      .join('');
+  return (
+    think + bubble +
+    `<details class="lk-agent__tools"><summary class="lk-agent__tools-h">` +
+    `${escapeHtml(label)} · ${receipts.length} 个结果（点开看）</summary>` +
+    `<div class="lk-agent__tools-body">${inner}</div></details>`
+  );
+}
+
 function isCallMsg(m: ChatMsg): boolean {
   /* ⭐ 两个模式都把动作消息画成「用到动作」那一行（2026-09-26 用户改口：聊天模式也留内部工具）。
      旧版按 mode 短路是片 4 的规矩（那时 chat 零工具）；现在 chat 也会真执行动作，
@@ -387,7 +430,7 @@ function isCallMsg(m: ChatMsg): boolean {
 /** 这条 AI 消息里用到的动作名（按出现顺序；连着同名合成「list_files ×3」）；不是动作消息 ⇒ null。
  *  ⭐ 一次回复里可能不止一个动作（`parseToolCalls` 认连写的 JSON）—— 只画第一个会让创作者
  *  以为"只跑了一个"，第四个就在眼前被漏掉。 */
-function callLabelOf(m: ChatMsg): string | null {
+export function callLabelOf(m: ChatMsg): string | null {
   if (m.role !== 'assistant') return null;
   const cs = parseToolCalls(m.content);
   if (!cs.length) return null;
@@ -420,10 +463,7 @@ function msgHtml(m: ChatMsg): string {
          ⭐ 清单类（`list_files` / `search_files`）**不管多短都折** —— 见 `FOLD_ALWAYS`。
          其余短的照旧原样摊开（不做无谓的一层点击）—— DOM 形状与从前一模一样。 */
       if (body.length <= FOLD_AT && !FOLD_ALWAYS.has(mm[1])) {
-        return (
-          `<div class="lk-agent__tool"><div class="lk-agent__tool-h">${escapeHtml(mm[1])}</div>` +
-          `<pre>${escapeHtml(body)}</pre></div>`
-        );
+        return receiptInnerHtml(mm[1], body);
       }
       return (
         `<details class="lk-agent__tool">` +
@@ -503,25 +543,47 @@ export function agentCallRow(m: ChatMsg): string | null {
     '用到动作：' + escapeHtml(label) + '</div>';
 }
 
+/** 历史 → HTML。除了一条一条画，还要**把一轮动作收成一块**（见 `TOOL_GROUP_MIN`）。 */
+function historyHtml(h: ChatMsg[], cut: number): string {
+  const out: string[] = [];
+  for (let i = 0; i < h.length; i++) {
+    const m = h[i];
+    if ((m as AgentMsg).div === true) {
+      out.push(
+        '<div class="lk-agent__cut">上下文分割：以上 ' + i +
+        ' 条不再发给模型（系统提示词与长期记忆照常）' +
+        '<button class="lk-agent__cut-x" data-cut-x="1" title="重新接上这段上下文（上面的对话又发给模型）">×</button>' +
+        '</div>'
+      );
+      continue;
+    }
+    const wrap = (html: string) => `<div class="lk-agent__cutwrap${i < cut ? ' is-cut' : ''}">${html}</div>`;
+    /* ⭐ 一轮动作收成一块：动作消息 + 紧跟其后的 ≥ `TOOL_GROUP_MIN` 条回执 */
+    if (isCallMsg(m)) {
+      let n = 0;
+      while (i + 1 + n < h.length) {
+        const x = h[i + 1 + n];
+        if (x.role === 'user' && RESULT_RE.test(x.content)) n++;
+        else break;
+      }
+      if (n >= TOOL_GROUP_MIN) {
+        out.push(wrap(toolGroupHtml(m, h.slice(i + 1, i + 1 + n))));
+        i += n;
+        continue;
+      }
+    }
+    out.push(wrap(msgHtml(m)));
+  }
+  return out.join('');
+}
+
 function renderMsgs(): void {
   const box = openEl?.querySelector('#lk-agent-msgs');
   if (!box) return;
   const h = hist();
   const cut = cutIndex(h);
   const head = h.length
-    ? h
-        .map((m, i) => {
-          if ((m as AgentMsg).div === true) {
-            return (
-                            '<div class="lk-agent__cut">上下文分割：以上 ' + i +
-              ' 条不再发给模型（系统提示词与长期记忆照常）' +
-              '<button class="lk-agent__cut-x" data-cut-x="1" title="重新接上这段上下文（上面的对话又发给模型）">×</button>' +
-              '</div>'
-            );
-          }
-          return `<div class="lk-agent__cutwrap${i < cut ? ' is-cut' : ''}">${msgHtml(m)}</div>`;
-        })
-        .join('')
+    ? historyHtml(h, cut)
     : '<div class="lk-agent__empty">问点什么吧。比如「这条时间线的冲突还缺什么」「帮我把正在编的那条设定写细一点」。</div>';
   /* ⭐ 贴底才跟（同 `src/ui/chat-live.ts` 的滚动纪律）：他正往上翻着读，就别被一次重画拽回底部。
      ⚠️ 必须在改 innerHTML **之前**量。 */

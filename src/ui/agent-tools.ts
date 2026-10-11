@@ -298,18 +298,25 @@ function atLineStart(text: string, i: number): boolean {
  *  老规矩「整段就是一个 JSON」把这一整条当聊天吃了（`splitJsonSpans` 一遇散文就 null）⇒
  *  **8 个动作一个都没跑**，创作者看到的就是"工具被吃了"。
  *
- *  现在多认这一种形状。判据刻意收得很紧，免得把"举例说明"当成真调用（★13 那条仍然不许跑）：
+ *  ⭐ 用户 2026-10-13 第二次实测（原话：「**依旧被当成正文了**」）：那一批是
+ *  **14 行动作 + 末尾还有一句散文**（「接下来先读其他几批文件，先把内容全摸清，再一次性建条目。」）——
+ *  上面那条规矩只认**前置**散文（`if (spans.length) return null`），尾巴上挂一句话就整批作废，
+ *  于是 14 个动作一个都没跑、整坨 JSON 被当正文画到脸上。
+ *
+ *  所以这里前后都认。判据仍然收得很紧，免得把"举例说明"当成真调用（★13 那条仍然不许跑）：
  *   ① 至少 **2 个**对象（`你可以这样写：` + 一个例子 = 1 个 ⇒ 还是聊天）；
  *   ② 第 1 个之后，每个对象都**顶在一行开头**（夹在句子中间的不算）；
- *   ③ 对象之间、最后一个之后**只有空白/逗号/分号**，没有别的散文。
+ *   ③ 中间只有空白/逗号/分号；散文只允许出现在**头**与**尾**各一段，尾部散文之后不许再冒动作。
  *  返回 null = 不是这种形状（当普通聊天）。 */
-function splitJsonSpansAfterProse(text: string): string[] | null {
+function splitJsonSpansLoose(text: string): string[] | null {
   const spans: string[] = [];
   let i = 0;
-  let sawProse = false;
+  let sawProse = false; /* 第 1 个对象**之前**有散文（「先写一句话」） */
+  let tailProse = false; /* 最后一个对象**之后**有散文（「接下来先读…」） */
   while (i < text.length) {
     const ch = text[i];
     if (ch === '{') {
+      if (tailProse) return null; /* 尾巴上那句散文之后又冒出动作 ⇒ 不认 */
       if (spans.length && !atLineStart(text, i)) return null; /* 第 2 个起必须独立成行 */
       const one = readJsonObject(text, i);
       if (!one) return null;
@@ -318,11 +325,13 @@ function splitJsonSpansAfterProse(text: string): string[] | null {
       continue;
     }
     if (/[ \t\r\n,;]/.test(ch)) { i++; continue; }
-    if (spans.length) return null; /* 对象之后又冒出散文 ⇒ 不认 */
-    sawProse = true; /* 第 1 个对象之前可以有散文（那就是「先写一句话」） */
+    if (spans.length) { tailProse = true; i++; continue; } /* 对象之后的散文：只许挂在末尾 */
+    sawProse = true;
     i++;
   }
-  return sawProse && spans.length >= 2 ? spans : null;
+  if (!spans.length) return null;
+  if (spans.length >= 2) return spans; /* 一行一个动作：前后挂话都认 */
+  return sawProse ? null : spans; /* 单个动作 + 前置散文 ⇒ 仍然当聊天（★13） */
 }
 
 /** 一串对象文本 ⇒ 工具调用；**有一段认不出就整段作废**（宁可不动，也不猜着执行） */
@@ -361,7 +370,7 @@ export function parseToolCalls(raw: string): ToolCall[] {
   /* ② ⭐「先说一句话、再一行一个动作」（用户 2026-10-11：「工具也被吃了」）——
      不是以 `{` 开头的**不代表不是动作**：那一批 8 个 list_files 就是这么被吃掉的。 */
   if (!text.startsWith('{')) {
-    const batch = splitJsonSpansAfterProse(text);
+    const batch = splitJsonSpansLoose(text);
     return batch ? callsFromSpans(batch) : [];
   }
   let obj: unknown;
@@ -382,7 +391,8 @@ export function parseToolCalls(raw: string): ToolCall[] {
     const one = normalizeCall(obj);
     return one ? [one] : [];
   }
-  const spans = splitJsonSpans(text);
+  /* ⭐ 尾巴上挂着散文的那一批（用户 2026-10-13）走这条 —— `splitJsonSpans` 遇散文一律 null */
+  const spans = splitJsonSpans(text) ?? splitJsonSpansLoose(text);
   if (!spans) return [];
   return callsFromSpans(spans);
 }
@@ -401,22 +411,22 @@ export function looksLikeToolJson(raw: string): boolean {
   /* ⭐ 厂商警告同理（用户 2026-10-12）：只剩警告、没有可跑动作 ⇒ 当"像动作、格式被搅了"，
      让上层回头纠正它一次 —— 绝不把那段 `<system_warning>…</system_warning>` 当正文画出来。 */
   if (looksLikeVendorNoise(text)) return parseToolCalls(text).length === 0;
-  /* ⭐「先说一句话、再一行一个动作」的形状同理：认得出动作就正常跑（那条走 `parseToolCalls`），
-     认不出（工具名写歪了）也该回头纠正一次，而不是当聊天糊在脸上。 */
-  if (!text.startsWith('{') && splitJsonSpansAfterProse(text)) return true;
+  /* ⭐「先说一句话 / 末尾再叮嘱一句、中间一行一个动作」的形状同理（用户 2026-10-11「工具也被吃了」、
+      2026-10-13「依旧被当成正文了」）：认得出动作就正常跑（那条走 `parseToolCalls`），
+      认不出（工具名写歪了）也该回头纠正一次，而不是当聊天糊在脸上。
+      ⚠️ 这条必须排在 `!text.endsWith('}')` 那个早退**之前** —— 尾巴上有散文时它不以 `}` 结尾。 */
+  const isObjText = (s: string): boolean => {
+    try { return isObj(JSON.parse(s)); } catch { return false; }
+  };
+  const loose = splitJsonSpansLoose(text);
+  if (loose) return loose.every(isObjText);
   if (!text.startsWith('{') || !text.endsWith('}')) return false;
   try {
     if (isObj(JSON.parse(text))) return true;
   } catch { /* 可能是一串对象 */ }
   const spans = splitJsonSpans(text);
   if (!spans) return false;
-  return spans.every((s) => {
-    try {
-      return isObj(JSON.parse(s));
-    } catch {
-      return false;
-    }
-  });
+  return spans.every(isObjText);
 }
 
 /** 流式用的**宽松**判据：这一段里只要出现「顶在行首的 `{`」，就先别往气泡里写 ——
@@ -440,7 +450,7 @@ export function looksLikeToolBatch(raw: string): boolean {
  *  在"想一次提多个动作"时走了它自己那套**原生**函数调用，厂商接口一次只放一个 ⇒ 当场拒掉、
  *  把这段警告塞进 `message.content`。它既不是动作、也不是创作者要看的话：
  *  旧代码里这段会被 `toolProse()` 当正文画进气泡，而它后面**那一条正经 JSON 反而没被认**
- *  （`splitJsonSpansAfterProse()` 要求"散文 + ≥2 个对象"，只有一个对象 ⇒ 当聊天，
+ *  （`splitJsonSpansLoose()` 要求"散文 + ≥2 个对象"，只有一个对象 ⇒ 当聊天，
  *  动作被静默吃掉 —— 创作者看到的就是"提示一次只能一个动作、然后什么也没发生"）。
  *
  *  处理：**先剥噪音再解析**（剥完是纯 JSON 就照常跑，`警告 + 1 个 JSON` 与 `警告 + N 个 JSON` 都认）；
@@ -474,7 +484,7 @@ export function toolProse(raw: string): string {
   /* ⭐ 厂商警告不是正文（用户 2026-10-12）—— 先剥掉它；「一句话 + 一批动作」里那句真散文照留 */
   const text = stripVendorNoise(rawText.replace(/```[a-zA-Z]*/g, '').trim());
   if (!text) return '';
-  const spans = splitJsonSpans(text) ?? splitJsonSpansAfterProse(text);
+  const spans = splitJsonSpans(text) ?? splitJsonSpansLoose(text);
   if (!spans) return ''; /* 抠不干净（比如「{…}后面还挂一句话」）⇒ 一个字都不留 */
   let rest = text;
   for (const s of spans) rest = rest.replace(s, '\n');

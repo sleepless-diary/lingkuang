@@ -1333,6 +1333,19 @@ details.lk-agent__prop-d > summary::before {
 details.lk-agent__tool[open] > .lk-agent__tool-h::before,
 details.lk-agent__prop-d[open] > summary::before { content: '▾'; }
 .lk-agent__prop-d pre { margin: 4px 0 0; font-family: inherit; white-space: pre-wrap; word-break: break-word; }
+/* 一轮里**连续多条**工具结果收成一块（用户 2026-10-13：「连续多条工具调用做一下折叠吧」）。
+   折叠块里每一条仍是 `.lk-agent__tool`（套件按它数回执），只是不再各自折一层。 */
+details.lk-agent__tools { flex: 0 0 auto; font-size: var(--text-xs); color: var(--fg-2); }
+details.lk-agent__tools > .lk-agent__tools-h { cursor: pointer; user-select: none; list-style: none; color: var(--muted); }
+details.lk-agent__tools > .lk-agent__tools-h::-webkit-details-marker { display: none; }
+details.lk-agent__tools > .lk-agent__tools-h::before {
+  content: '▸'; display: inline-block; width: 12px; color: var(--muted);
+}
+details.lk-agent__tools[open] > .lk-agent__tools-h::before { content: '▾'; }
+.lk-agent__tools-body {
+  display: flex; flex-direction: column; gap: 6px;
+  margin: 4px 0 0; padding-left: 4px; border-left: 2px solid var(--border);
+}
 .lk-agent__prop {
   display: flex; flex-direction: column; gap: 6px;
   padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-md);
