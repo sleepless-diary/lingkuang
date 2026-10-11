@@ -24,7 +24,7 @@ import { renderTavern } from './tavern';
 /* ⭐ 2C：主会话与 Ctrl+K 的助手是**同一格会话、同一套能力** ⇒ 这一页直接用助手那一套：
    `runTurn()`（一次提问的共用实现）+ `cardsHtml()` / `agentCardClick`（提议卡片）
    + `getAgentMode()` / `setAgentMode()`（模式开关，两个入口共享一份状态）。 */
-import { FOLD_ALWAYS, FOLD_AT, RESULT_RE, agentCallRow, agentCardClick, cardsHtml, getAgentMode, isAgentRunning, receiptSummary, requestAgentStop, runTurn, setAgentMode } from './agent';
+import { FOLD_ALWAYS, FOLD_AT, RESULT_RE, SUPPLEMENT_HINT, agentCallRow, agentCardClick, cardsHtml, getAgentMode, isAgentRunning, receiptSummary, requestAgentStop, runTurn, setAgentMode, supplementMessage } from './agent';
 import { toolProse } from './agent-tools';
 import { MODE_HINT, MODE_LABEL, MODES } from './agent-mode';
 import {
@@ -307,23 +307,42 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
      流式气泡全在一处。非主会话（角色 / 视角 / 主控）照旧：它们只演，不动手。 */
   const send = async (): Promise<void> => {
     const s = activeSession();
-    /* 两个入口共用"正在跑"的标志：同一格会话不能在浮层和这一页同时跑两轮。
-       ⚠️ 发送键**只管发送**（跑的时候点它是空点，不打断）—— 打断走旁边那个「停」按钮。
-       2026-10-11 一开始写成"跑起来发送键变「停下」"，所有盲点 `#ai-send` / `#lk-agent-send`
-       的 e2e 套件当场连挂（上一轮没跑完时那一下从"提问"变成了"打断"）。 */
-    if (!s || busy || isAgentRunning()) return;
+    if (!s) return;
     const raw = inputEl.value.trim();
     /* ⭐ 有拖进来的材料时，"没打字"也算有话可说（材料本身就是这一问的上下文） */
     if (!raw && !attachCount()) return;
     /* 材料拼在**用户消息正文前面**；主会话与非主会话（角色/视角/主控）走同一条 */
     const text = attachCount() ? attachBlock() + '\n\n' + raw : raw;
+    const isMain = s.role === 'main';
+    /* ⭐ 两个入口共用"正在跑"的标志：同一格会话不能在浮层和这一页同时跑两轮。
+       ⚠️ 发送键**只管发送** —— 跑的时候点它是**补发**（下面那条），打断走旁边那个「停」按钮。
+       2026-10-11 一开始写成"跑起来发送键变「停下」"，所有盲点 `#ai-send` / `#lk-agent-send`
+       的 e2e 套件当场连挂（上一轮没跑完时那一下从"提问"变成了"打断"）。
+       ⭐ 补发这一关必须排在 `busy` **前面**：AI 页自己跑主会话时 `busy` 也是 true
+       （只有非主会话那几种一次性生成才真的插不进话）。 */
+    if (isMain && isAgentRunning()) {
+      if (supplementMessage(text)) {
+        inputEl.value = '';
+        attachClear();
+        attachChipsRender();
+        renderLog();
+        renderHead();
+        setNote('这句补进去了 —— 它做完手上这一步就会读到你这句话');
+      }
+      return;
+    }
+    if (busy) return;
     inputEl.value = '';
     attachClear();
     attachChipsRender();
     busy = true;
     stopEl.style.display = 'inline-block';
+    /* 主会话跑起来时输入框自己说明白：这里点发送是**补发**（非主会话没这回事，不动它） */
+    if (isMain) {
+      if (!inputEl.dataset.hint) inputEl.dataset.hint = inputEl.placeholder;
+      inputEl.placeholder = SUPPLEMENT_HINT;
+    }
     const id = s.id;
-    const isMain = s.role === 'main';
     const BUBBLE = 'max-width:78%;word-break:break-word;background:var(--surface-2);color:var(--fg);border-radius:var(--radius-sm);padding:7px 10px;font-size:13px;line-height:1.7;';
     try {
       if (isMain) {
@@ -378,6 +397,8 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
     }
     busy = false;
     stopEl.style.display = 'none';
+    /* 输入框提示换回来（`dataset.hint` 是跑起来前那份，见上面的补发那段） */
+    if (inputEl.dataset.hint) { inputEl.placeholder = inputEl.dataset.hint; delete inputEl.dataset.hint; }
     if (activeSession()?.id === id) { renderLog(); renderHead(); }
     /* 聊完这一轮看看要不要按内容起个名（设置里默认关；要发一次模型请求，所以只做一次） */
     void autoName(s);

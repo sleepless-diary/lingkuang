@@ -148,15 +148,62 @@ function stepsFree(): boolean { return getAgentSteps() <= 0; }
    ⚠️ 它是**单独一个按钮**（`#lk-agent-stop`，跑的时候才显形），**不占用发送键** ——
    最初写成"发送键在跑时变「停下」"（同一个键两种意思），结果所有 e2e 套件的 `ask()` 都是
    盲点 `#lk-agent-send`：上一轮还没跑完时那一下就从"提问"变成了"打断"，问题根本没发出去
-   （`agent-dsml` ★4/★5 当场连挂、`agent-stream` 跟着崩）。发送键就让它一辈子只干发送。 */
+   （`agent-dsml` ★4/★5 当场连挂、`agent-stream` 跟着崩）。
+   ⭐ 2026-10-12 起发送键在跑的时候也不是空点了：那一下是**补发**（`supplementMessage()`，
+   见下）—— 键还是那个键、还是"发送"，只是跑的时候这句话进的是**正在跑的那条流**。 */
 let stopAsked = false;
 export function requestAgentStop(): void {
   if (busy) stopAsked = true;
 }
-/** 跑起来时把「停」亮出来、跑完收回去（发送键的文案与语义**不动**） */
+/** 输入框的常态提示（模板里那份与这里**同一个常量**，别写两遍） */
+const INPUT_HINT = '问点什么…（Enter 发送，Shift+Enter 换行）';
+/** 跑的时候把提示换成"这里点发送是补发" —— 不然没人知道跑的过程中还能插话（AI 页也用它） */
+export const SUPPLEMENT_HINT = '它在做事 —— 这里打字点发送是「补发」：这句会直接进它正在跑的流程，不用等它说完';
+/* ⭐「补发」（用户 2026-10-12：「**加一下补发的功能（点发送该信息直接加入正在执行的数据流）**」）：
+   从前跑的过程中点发送是**静默空点**（消息留在框里、什么也不发生），现在：
+   ① 那句立刻进主会话历史（屏幕上马上画出来）；
+   ② 工具循环**每一轮都重新从历史拼 `msgs`**（`[{system}, ...sentHistory(hist())]`）
+      ⇒ 它下一次请求就带上这句 —— 这就是"加入正在执行的数据流"。
+   ⚠️ 但"下一次请求"不保证来（模型说完就结束 / 写动作出卡片就收手）⇒ 留一面旗子：
+   跑完若还没人读到这句，`runTurn` 末尾**自动再接一轮**把它读进去（不是只写进历史就算完）。 */
+let supplementPending = false;
+/* 这一轮流式途中补进来的那几句（对象引用 —— 索引会被 `HIST_MAX` 裁剪弄歪，引用不会）。
+   它们由 `supplementMessage()` 推进历史时**排在助手这条回答前面**（那时回答还没生成完），
+   等回答落定要靠 `reseatSupplements()` 挪到**回答之后**（否则下一轮请求以 assistant 消息收尾，
+   模型会当成"自己刚说完"而不理会补发）。 */
+let suppMsgs: ChatMsg[] = [];
+
+/** 把这一轮补进来的那几句挪到**刚推的那条助手消息之后**（原地 splice + 落盘，不重推） */
+function reseatSupplements(): void {
+  if (!suppMsgs.length) return;
+  const h = hist();
+  const at = suppMsgs.map((m) => h.indexOf(m)).filter((i) => i >= 0);
+  suppMsgs = [];
+  if (!at.length) return;
+  const block = h.splice(at[0], at[at.length - 1] - at[0] + 1);
+  h.push(...block);
+  persistSessions();
+}
+
+/** 跑着的时候补一句（两个入口共用）。返回 false = 此刻没在跑 ⇒ 调用方走正常发送。 */
+export function supplementMessage(text: string): boolean {
+  const t = text.trim();
+  if (!busy || !t) return false;
+  const m: ChatMsg = { role: 'user', content: t };
+  suppMsgs.push(m);
+  pushHistory(m);
+  supplementPending = true;
+  if (openEl) renderMsgs();
+  setNote('这句补进去了 —— 它做完手上这一步就会读到你这句话');
+  return true;
+}
+
+/** 跑起来时把「停」亮出来、跑完收回去（发送键的文案与语义**不动**；只换输入框提示） */
 function setRunUi(): void {
   const b = openEl?.querySelector<HTMLElement>('#lk-agent-stop');
   if (b) b.hidden = !busy;
+  const ta = openEl?.querySelector<HTMLTextAreaElement>('#lk-agent-input');
+  if (ta) ta.placeholder = busy ? SUPPLEMENT_HINT : INPUT_HINT;
 }
 /* 模型把动作格式写歪时，用它回头纠正一次（只一次） */
 const FIX_NOTE =
@@ -746,7 +793,7 @@ function panelHost(): AgentRunHost {
 
 /* ── 发送 ─────────────────────────────────────────────────────────── */
 async function send(): Promise<void> {
-  if (busy || !openEl || !store) return;
+  if (!openEl || !store) return;
   const ta = openEl.querySelector<HTMLTextAreaElement>('#lk-agent-input');
   const raw = (ta?.value ?? '').trim();
   /* ⭐ 有拖进来的材料时，"没打字"也算有话可说（材料本身就是这一问的上下文） */
@@ -756,11 +803,14 @@ async function send(): Promise<void> {
   if (ta) ta.value = '';
   attachClear();
   attachChipsRender();
+  /* ⭐ 跑着的时候点发送 = 补发（用户 2026-10-12）：进它正在跑的那条流，另起一轮就错了 */
+  if (supplementMessage(text)) return;
   await runTurn(text, panelHost());
 }
 
-/** 一次提问的**共用实现**：助手浮层与 AI 页的主会话都走它 */
-export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
+/** 一次提问的**共用实现**：助手浮层与 AI 页的主会话都走它。
+ *  `opts.noPush` = 这一轮不用再往历史里推用户消息（补发兜底那一轮用：那句话早在历史里了）。 */
+export async function runTurn(text: string, host: AgentRunHost, opts?: { noPush?: boolean }): Promise<void> {
   if (busy) return;
   /* ⚠️ `busy` 必须在 `await` **之前**占位：`ensureLoaded()` 会让出这一帧，两次点击就都能挤进来
      （老代码 busy=true 是同步设的，这个顺序不能变） */
@@ -783,7 +833,8 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
   };
   hist();
   host.note('正在思考…');
-  push({ role: 'user', content: text });
+  /* `noPush`（补发兜底那一轮）：这句话历史里已经有了，别再推一条重复的用户消息 */
+  if (!opts?.noPush) push({ role: 'user', content: text });
   host.rerender();
   /* ⭐ 系统提示里要写清"你能碰哪些文件夹"（`toolsPrompt()` 是同步的，读的是 `agent-fs.ts` 的缓存），
      所以每轮开始先刷一次白名单：创作者刚加的文件夹这一问就能用上，删掉的也不会再列。 */
@@ -874,6 +925,7 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
       }
       if (!calls.length) {
         push({ role: 'assistant', content: r.text || '（模型返回了空内容）', reasoning: r.reasoning });
+        reseatSupplements();
         /* 被截断要如实说 —— 用户 2026-09-26 报「输出被截断了」时界面上什么都没有 */
         if (r.truncated) host.note('回复被模型的输出上限截断了（' + (r.model || '模型') + '）：说「接着说」可以续', true);
         else if (!sawThink && !noThinkHinted) {
@@ -883,9 +935,19 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
           host.note((r.model && r.model !== 'mock' ? '模型：' + r.model + ' · ' : '')
             + '它不吐思考过程（这个模型不是推理模型）—— 想看得见思考，去「设置 → 模型」换成会推理的，比如本机的 qwen3:14b');
         } else host.note(r.model === 'mock' ? '' : r.model ? '模型：' + r.model : '');
+        /* ⭐ 补发（用户 2026-10-12）：模型这一轮说完了，可创作者刚补了一句 —— **别结束**，
+           再走一轮把那句读进去（下一轮的 `msgs` 会重新从历史里拼出来，那句话就在里面）。
+           `round--` 是故意的：补发是他新加的需求，不该吃掉这次提问的步数额度。 */
+        if (supplementPending) {
+          supplementPending = false;
+          host.note('收到你补的那句，接着处理…');
+          round--;
+          continue;
+        }
         break;
       }
       push({ role: 'assistant', content: r.text, reasoning: r.reasoning });
+      reseatSupplements();
       /* ⭐ 一轮里可能不止一个动作（用户 2026-10-10 实测：模型把 **4 个 JSON 连写**在一段里，
          中间连分隔符都没有 ⇒ 老解析器 `JSON.parse` 整段直接抛错 ⇒ 整坨被当聊天画到脸上、
          **一个都没跑** —— 他看到的正是"工具打出来了但无法调用、卡住了"）。
@@ -951,6 +1013,7 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
     think?.remove();
     host.note('出错：' + (e instanceof Error ? e.message : String(e)) + '（检查设置里的 AI 模式与模型）', true);
   }
+  const wasStopped = stopAsked;
   busy = false;
   stopAsked = false;
   setRunUi(); /*「停」收回 */
@@ -959,6 +1022,14 @@ export async function runTurn(text: string, host: AgentRunHost): Promise<void> {
      （那是为了不打断流式气泡，见 `openAgentPanel` 的 onSessions）。跑完必须补一次广播，
      否则同一格会话在另一边还停在旧内容上（实测：AI 页写完 8 条，助手浮层只画得出 6 条）。 */
   window.dispatchEvent(new CustomEvent('lingkuang-sessions'));
+  /* ⭐ 补发的兜底：那句消息要是落在"最后一次请求已经发出、这一轮还没 break"那一瞬间，
+     上面那圈循环就没人读它了（屏幕上看得见、模型没看见）⇒ **自动再接一轮**（历史里已有它，
+     所以 `noPush`）。点了「停」的不接（他明确说了停；那句话仍留在对话里，想跑再点一次发送）。 */
+  if (supplementPending && !wasStopped) {
+    supplementPending = false;
+    host.note('接着处理你补的那句…');
+    await runTurn('', host, { noPush: true });
+  }
 }
 
 /* ── 从对话里总结偏好 ─────────────────────────────────────────────── */
@@ -1075,7 +1146,7 @@ export function openAgentPanel(s: Store): () => void {
     '<div class="lk-agent__note" id="lk-agent-note"></div>' +
     '<div class="lk-agent__input">' +
       '<div class="lk-agent__attach" id="lk-agent-attach"></div>' +
-      '<textarea id="lk-agent-input" rows="3" placeholder="问点什么…（Enter 发送，Shift+Enter 换行）"></textarea>' +
+      '<textarea id="lk-agent-input" rows="3" placeholder="' + INPUT_HINT + '"></textarea>' +
       /* 「停」与发送并排（跑起来才显形）—— 步数默认不限，得有地方随时能掐；发送键永远只管发送 */
       '<div class="lk-agent__acts">' +
         '<button class="lk-agent__stop" id="lk-agent-stop" hidden>停</button>' +
