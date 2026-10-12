@@ -15,6 +15,64 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第九十二轮（2026-10-14）· 地图生成搬进**独立面板**：自己调参数 / AI 直出 / 抽卡
+
+**用户原话**：「emm，生成做成一个独立的面板吧，两种，创作者自己一个个调参数或者 AI 直出，可以抽卡（毕竟是随机生成的）」。
+先按 AGENTS.md 需求协作规范问清形态，用户当场三选：
+- 面板形态 = **A 悬浮面板**（不接管主区、**不盖遮罩** —— 边看沙盘上的地图边调；另两个选项是「左栏独立工具页」与「悬浮面板 + 面板内大预览」）
+- AI 直出 = **真调模型 + 关键词兜底**（没配 AI / 没回出参数 / 端点断网都退回 `parseMapPrompt()`，离线也能用）
+- 抽卡 = **一次 6 张**（点一张看大图、「用这张」或底下「采用到地图」才落盘、单张可「换」、抽过的保留 12 张）
+
+### 改了哪几处
+- **新增 `src/ui/map-studio.ts`**（约 470 行）：`openMapStudio(store)` / `closeMapStudio()` / `isMapStudioOpen()` /
+  **`openMapStudioFromToolbar(store)`**。面板 = 右侧停靠的悬浮层（`#lk-map-studio`，560px，**不盖遮罩**），三个页签
+  **共用一份表单状态与一块预览**（`#ms-img` 底图 + `#ms-vec` 矢量层 + `#ms-note` 统计行）：
+  · **自己调**：`#ms-style` + 陆地/岛/山脉/河/湖/陆地占比（`#ms-lands`…`#ms-ratio`，**留空 = 交给档位默认值，不写 0**）+ `#ms-seed`；
+    改动 300ms 防抖出预览（`fromForm()` → `previewOf()`）
+  · **AI 直出**：`aiChat([AI_SYS, aiPrompt(desc)], { temperature: 0.2 })` → `parseAiParams()`（容忍 ```json 代码块、前后带说明、
+    `{"style":…,"spec":{…}}` 嵌套形态、字符串数字；越界值收窄到 lands 0-6、其余 0-12、landRatio 0.15-0.6；档位与参数一个都没给 ⇒ 当没回）；
+    认不出就 `parseMapPrompt()` 关键词解析，**结果填进「自己调」那一页**（三个页签同一份参数）
+  · **抽卡**：`roll(withParams)` 一次 6 颗种子，**一张一张串行出图**（`setTimeout(step, 0)`；整批一起算会白等 0.6~1s），
+    单张 `rerollOne(i)`、`[data-use]` 选中、`KEEP = 12` 保留历史（模块级 `cands` ⇒ 关掉再开还在）
+- **`src/ui/map.ts`**：工具栏从「描述/种子/档位/生成/换个种子」**五控件**缩成 **`#map-gen`（生成地形…）+ `#map-gen-note`（现状行）**；
+  现状行在 `renderSvg()` 里从缓存取 `terrainSummary()`（不重算）。删掉原 `generate()` 与对 `parseMapPrompt/generateIntoMap` 的直接调用。
+- **`src/tools/register.ts`**：新增面板型工具 `mapgen`（`name: '地图生成'`、`panel: true`、`isOpen/close/open` + `IC.map` 图标），
+  登记在「设定库」之后、「素材库」之前 ⇒ 左栏创作组第 5 位（`tools/e2e/toolbar-groups.cjs` 的 `CREATE` 同步改）。
+- **`src/style.css`**：`.lk-ms*` 一套（head/tabs/body/stage/note/sec/row/grid/btn/cards/card/wait/card-meta/mini/foot/state；全走 token、无 emoji）。
+
+### 两个真 bug（都是 e2e 逮到的）
+1. **从地图栏开的面板不在注册表里 ⇒ 两块浮层叠着**：`Tool.panel = true` 的注册表只有**一格** `disposePanel`，
+   「开第二个面板先收起上一个」是 `src/tools/registry.ts` 的 `openTool()` 干的；地图栏直接调 `openMapStudio()` 时注册表不知道这层存在
+   ⇒ 之后开设置面板不会收起它（实测 `{settings:true, studio:true}` 同时挂着），左栏按钮也不亮。
+   修：新增 `openMapStudioFromToolbar(store)` = `openTool('mapgen', document.createElement('div'), store)`，地图栏走它。
+2. **「AI 直出」只改了预览、没写表单**：`previewOf(planGeneration({ seed: desc }))` 把种子设成那句话，但 `#ms-seed` 里还是上一颗
+   ⇒ 创作者下一次改任何参数（防抖 `fromForm()`）就按表单里那颗老种子重算，预览莫名其妙跳回旧图。修：`aiGo()` 里 `seedEl.value = desc`。
+   同一条道理补在「连参数一起随机」上：抽到的参数 `fillForm()` 写回表单，否则卡上的参数与表单对不上。
+
+### 守卫
+- **新增 `tools/e2e/map-studio.cjs` 16 项**：★0 前置（地图栏有入口、左栏有「地图生成」、面板还没开）／★1 面板开 + 三页签齐 + 默认「自己调」+ 开局已有预览／
+  **★2 改参数先出预览（300ms 防抖：立刻读还是旧的、等一下才换）且此刻没落盘**／★3 「采用到地图」才落盘（磁盘 `terrain` == 预览那一份）+ 地图栏现状行 + 地图上真画出地形与岸线／
+  ★4 抽卡一次 6 张（每张都出图、各有种子）+ 点第 3 张大图换成它／**★4b 选中的卡与大图是同一份 dataURL**／★4c「连参数一起随机」抽到的参数写回表单／
+  ★5 单张「换」只换那一张（张数不变）／★6 「用这张」+「采用到地图」落盘的就是那张的种子／**★7 AI 直出真调模型**（请求体里有我们的提示词与那句话，回来的参数填进表单）／
+  **★8 AI 回废话 ⇒ 关键词解析接手并如实说明走了这条路**／**★9 端点断网 ⇒ 照样给出一张图 + 如实报「没连上」**／★10 面板型工具只有一格（开设置面板会收起它）／
+  ★11 左栏按钮点开（高亮）再点关／★12 关掉再开抽过的卡还在／★13 无未捕获异常。
+  ⚠️ AI 两条走 **`window.fetch` 回放**（夹具一行里同时带 `message`(Ollama NDJSON) 与 `choices`(OpenAI SSE) 两种形状 ⇒ 不依赖实例配的是哪一家）；
+  断言以**磁盘 `worldbuilding.json`** 为真相。
+  **A/B：旧构建 2/16 → 新 16/16**（旧构建上面板整体不存在：★0/★1 先红，只有 ★10「面板不存在时自然不会叠层」与 ★13「无异常」这两条"否定式"断言碰巧过）。
+- **`tools/e2e/map-gen.cjs` 17 项改走面板输入口**（`gen()` = 开面板 → 填档位/种子/数量 → 「采用到地图」）：★0 改成「地图栏只剩生成按钮与现状行、旧控件已搬走」，
+  ★5/★6 改成「面板里改档位/数量真生效」。**A/B：旧构建 11/17（红的是 ★0/★1b/★2c/★4/★5/★6 —— 全是"输入口"那几条）→ 新 17/17**。
+- 邻居（各自干净实例）：`agent-tools.cjs` **30/30**、`toolbar-groups.cjs` **5/5**（左栏创作组 6 → 7 个，`CREATE` 已加 `mapgen`）、
+  `map-gen.cjs` **17/17**。`tsc --noEmit` exit 0、`vite build` 绿、`node --check` 绿。
+
+### 教训
+1. **面板型工具必须从注册表开**（bug 1）—— 「谁负责收起上一个面板」是注册表的职责，绕过它等于把面板互斥丢了。
+   同理：`mapgen` 这种新面板型工具会让 `toolbar-groups.cjs` 的 `CREATE` 列表变红 —— 加工具要顺手看一眼那条套件。
+2. e2e 里读面板 DOM 的 eval **都要先判 `#lk-map-studio` 在不在**，而且 `panel()` 这种"读一眼"的辅助函数在面板不存在时要返回**同形状的空值**
+   （本轮第一版返回 `{open:false}` ⇒ 旧构建上 `p4.seeds.every(...)` 直接把整套崩成「脚本异常」，A/B 只剩一行报错、看不出差在哪一条）。
+3. 生成类 UI 的「预览」与「落盘」必须是两步（要能一眼抽十张、试参数），而且**预览绝不许写 store** ——
+   本轮 `previewOf()` 只画 DOM，落盘只有 `generateIntoMap()` 一条路（一步 Ctrl+Z）。
+4. 抽卡是**有历史**的：`cands = fresh.concat(cands).slice(0, 12)` ⇒ 断言"张数"时别写死 6（第一批才是 6），要拿「抽之前 / 抽之后」比。
+
 ## 第九十一轮（2026-10-13/14）· 地图生成：从「圆疙瘩 / 等高带」到**混合方案**（栅格地形底图 + 矢量岸线·湖岸·河 + 手绘文化分区）
 
 **用户四句话（按时间）**：①「我已经自己跑通了一次地图生成，我现在想把这个地图生成加到世界沙盒里面，你先看看」

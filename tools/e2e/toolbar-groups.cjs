@@ -19,8 +19,10 @@ function check(n, ok, extra) { results.push(ok); console.log(`${ok ? 'PASS' : 'F
 /* 「编辑器」已并入「设定库」工作台（2026-09-13 用户批准：一个工具两种形态，设置里切），
    所以创作组从 6 个变 5 个 —— 少一个图标是本轮刻意付的代价。
    2026-09-17：新增第 6 个「助手」（`src/tools/register.ts` 里 `id: 'agent'`，面板型工具、
-   Ctrl+K 呼出），它**落在创作组尾部**（注册顺序 = 组内顺序，shell 只按 `Tool.group` 分段）。 */
-const CREATE = ['sandbox', 'inspire', 'ai', 'codex', 'library', 'agent'];
+   Ctrl+K 呼出），它**落在创作组尾部**（注册顺序 = 组内顺序，shell 只按 `Tool.group` 分段）。
+   2026-10-14：新增「地图生成」（`id: 'mapgen'`，同样是 `panel: true` 的悬浮面板 —— 生成控件
+   从地图栏搬进它），登记在「设定库」之后、「素材库」之前 ⇒ 创作组第 5 位。 */
+const CREATE = ['sandbox', 'inspire', 'ai', 'codex', 'mapgen', 'library', 'agent'];
 const MANAGE = ['schema', 'trash', 'backup', 'settings'];
 
 async function main() {
@@ -57,7 +59,7 @@ async function main() {
   })()`);
 
   const flat = (geo.order || []).join(',');
-  check('★1 左栏两组、顺序固定：创作 6 个在上、管理 4 个在下（设置排最底）',
+  check('★1 左栏两组、顺序固定：创作 7 个在上、管理 4 个在下（设置排最底）',
     (geo.groups || []).length === 2
       && (geo.groups[0].tools || []).join(',') === CREATE.join(',')
       && (geo.groups[1].tools || []).join(',') === MANAGE.join(',')

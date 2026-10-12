@@ -6,14 +6,18 @@
  *  **地形 = 栅格位图**（有光影、好看，最底层）+ **岸线/湖岸/河 = 矢量描边**（同一套噪声场派生、
  *  放大不糊、以后能点，见 `src/ui/map-terrain.ts` 的 `terrainVectors`）；**文化分区仍是手绘
  *  `regions`**（可拖拽、可改，压在底图之上）⇒「生成作底稿、手绘精修」。
- *  整次生成只走一次 `save()` ⇒ 一步 Ctrl+Z 撤销回去。 */
+ *  整次生成只走一次 `save()` ⇒ 一步 Ctrl+Z 撤销回去。
+ *  ⭐ 2026-10-14（用户：「生成做成一个独立的面板吧，两种，创作者自己一个个调参数或者 AI 直出，
+ *  可以抽卡」）：生成控件**从这里搬走**，进了 `src/ui/map-studio.ts` 那层悬浮面板；
+ *  地图栏只留「生成地形…」一个入口 + 一行现状（`#map-gen-note`）。 */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { uid } from '../store/ids';
 import type { MapData } from '../store/types';
 import { escapeHtml } from './html';
-import { DEFAULT_MAP, MAP_STYLES, generateIntoMap, parseMapPrompt, polylinePath, smoothClosedPath, type MapStyle } from './map-gen';
-import { terrainDataUrl, terrainVectors } from './map-terrain';
+import { DEFAULT_MAP, polylinePath, smoothClosedPath } from './map-gen';
+import { terrainDataUrl, terrainSummary, terrainVectors } from './map-terrain';
+import { openMapStudioFromToolbar } from './map-studio';
 
 type Mode = 'region' | 'marker' | 'move';
 
@@ -57,15 +61,9 @@ export function renderMap(store: Store, host: HTMLElement): void {
     <div style="display:flex;flex-direction:column;height:100%;">
       <div style="display:flex;flex-wrap:wrap;gap:6px;row-gap:4px;padding:6px 10px;border-bottom:1px solid var(--border-soft);background:var(--surface-2);align-items:center;">
         <span style="font-size:var(--text-xs);font-weight:600;color:var(--fg);">地图 · ${escapeHtml(curMap()?.name ?? '默认地图')}</span>
-        <span style="flex:1;"></span>
-        <input id="map-prompt" placeholder="描述：一片群岛，三条大河" title="用人话描述你要的地形 —— 「群岛 / 大陆 / 盘古」定档位，「三座岛 / 两条河 / 一个湖 / 群山」定数量；描述本身当种子（同样的描述 = 同一张图）" style="width:172px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 6px;">
-        <input id="map-seed" value="${escapeHtml(curMap()?.terrain?.seed ?? '')}" placeholder="种子（留空=用描述）" title="同一颗种子永远长出同一片地；留空就用描述当种子（也没有描述就用「灵框」）" style="width:92px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 6px;">
-        <select id="map-style" title="生成档位" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 4px;">
-          ${MAP_STYLES.map((s) => `<option value="${s.id}" title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}</option>`).join('')}
-        </select>
-        <button id="map-gen" style="background:none;border:1px solid var(--accent);color:var(--accent);border-radius:var(--radius-sm);font-size:11px;padding:3px 10px;cursor:pointer;">生成地形</button>
-        <button id="map-reseed" title="换一颗种子再生成" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">换个种子</button>
         <span id="map-gen-note" style="font-size:var(--text-xs);color:var(--fg-2);"></span>
+        <span style="flex:1;"></span>
+        <button id="map-gen" title="打开地图生成面板：自己一个个调参数 / AI 直出 / 抽卡" style="background:none;border:1px solid var(--accent);color:var(--accent);border-radius:var(--radius-sm);font-size:11px;padding:3px 10px;cursor:pointer;">生成地形…</button>
         <span style="width:1px;height:16px;background:var(--border-soft);"></span>
         <button data-mode="region" class="map-mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">区域</button>
         <button data-mode="marker" class="map-mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">标记</button>
@@ -100,42 +98,24 @@ export function renderMap(store: Store, host: HTMLElement): void {
     save((m) => { m.markers = []; });
   });
 
-  /* ── 生成地形：调 `src/ui/map-gen.ts` 的纯函数，产出一张底稿 ──────────────
-     产物就是 regions（含等高分层）/ lines（山脊、河）/ markers 这一套**同一份数据**
-     ⇒ 生成后照样能拖拽画区域、放标记（「生成作底稿、手绘精修」）。
-     ⭐ 与助手的 `generate_map` 动作**共用同一个落盘入口** `generateIntoMap()`：
-     描述 → 参数（档位/陆地块数/岛数/山河湖数）只写一份，两条路不会分叉；
-     整次生成只走一次 store.update ⇒ 一步 Ctrl+Z 就能撤销回去。 */
-  const promptEl = host.querySelector('#map-prompt') as HTMLInputElement;
-  const seedEl = host.querySelector('#map-seed') as HTMLInputElement;
-  const styleEl = host.querySelector('#map-style') as HTMLSelectElement;
+  /* ── 生成地形：控件已经搬进**地图生成工作室**（`src/ui/map-studio.ts` 的悬浮面板 ——
+     用户 2026-10-14：「生成做成一个独立的面板吧，两种，创作者自己一个个调参数或者 AI 直出，
+     可以抽卡」）。地图栏这里只留**一个入口**（`#map-gen`）与一行现状（`#map-gen-note`）。
+     落盘仍只有一条路：`src/ui/map-gen.ts` 的 `generateIntoMap()` —— 工作室的「采用到地图」
+     与助手的 `generate_map` 动作共用它，一次 store.update ⇒ 一步 Ctrl+Z 就能撤销回去。 */
   const genNote = host.querySelector('#map-gen-note') as HTMLElement;
-  styleEl.value = curMap()?.terrain?.style ?? 'continent';
-  const generate = (seed?: string) => {
-    /* ⭐ 描述里点名了档位就以**描述**为准（用户 2026-10-13：「向助手描述然后生成」——
-       说「一片群岛」时不该被下拉框里的"大陆"压回去），并把下拉框同步成实际用的那一档，
-       免得界面显示的和真生成的对不上。 */
-    const said = parseMapPrompt(promptEl.value).style;
-    const style = said ?? ((styleEl.value || 'continent') as MapStyle);
-    const r = generateIntoMap(store, {
-      description: promptEl.value,
-      /* 种子里留空 = 用描述当种子（同样的描述 = 同一张图）；只在这个「换个种子」按钮上钉一颗新的 */
-      seed: seed ?? seedEl.value,
-      style,
-    });
-    if (seed !== undefined) seedEl.value = seed;
-    if (!r.ok) { genNote.textContent = r.note; return; }
-    styleEl.value = r.plan?.style ?? style;
-    genNote.textContent = r.note;
-    fitView();   /* 生成完自动缩到看得见全图（不然只能看到左上角一块） */
-  };
-  host.querySelector('#map-gen')?.addEventListener('click', () => generate());
-  host.querySelector('#map-reseed')?.addEventListener('click', () => generate(`灵框-${Math.random().toString(36).slice(2, 7)}`));
+  host.querySelector('#map-gen')?.addEventListener('click', () => { openMapStudioFromToolbar(store); });
   setMode('move');
 
   function renderSvg() {
     const m = curMap();
     if (!m) { svg.innerHTML = ''; return; }   /* maps 瞬时缺失（worldsets 被整体替换中）→ 这一帧不画 */
+    /* 现状一行（生成工作室搬走之后，这里是「现在长的是什么」的唯一去处）：
+       参数直接从缓存里取统计，不重算 —— 这一帧的 `terrainVectors()` 刚算过同一份网格。 */
+    const s = m.terrain ? terrainSummary(m.terrain, m.width, m.height) : null;
+    genNote.textContent = s && m.terrain
+      ? `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.zones} 个地形区 · ${s.rivers} 条河 · ${s.lakes} 个湖 · 种子「${m.terrain.seed}」`
+      : '还没有地形';
     /* ⭐ 生成的地形 = 一张现算出来的图（`src/ui/map-terrain.ts`）。
        画在最底层，手绘的区域 / 标记 / 轨迹都盖在它上面 ⇒「生成作底稿、手绘精修」。 */
     const terr = terrainDataUrl(m.terrain, m.width, m.height);

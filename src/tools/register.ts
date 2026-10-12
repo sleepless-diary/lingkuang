@@ -2,6 +2,7 @@
 import { registerTool } from './registry';
 import { isSettingsPanelOpen, closeSettingsPanel, openSettingsPanel } from '../ui/settings-panel';
 import { isAgentPanelOpen, closeAgentPanel, openAgentPanel } from '../ui/agent';
+import { isMapStudioOpen, closeMapStudio, openMapStudio } from '../ui/map-studio';
 
 /** Lucide 风格图标（内联 SVG，线性） */
 const IC = {
@@ -14,6 +15,7 @@ const IC = {
   schema: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="16" width="10" height="4" rx="1"/></svg>',
   codex: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/><path d="M9 7h7M9 11h5"/></svg>',
   agent: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.3 0-2.5-.3-3.6-.9L4 21l1.5-4.3A8.5 8.5 0 1 1 21 11.5Z"/><path d="M12 8.5v6"/><path d="M9 11.5h6"/></svg>',
+  map: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4.5 3 7v13l6-2.5 6 2.5 6-2.5V4.5L15 7Z"/><path d="M9 4.5v13"/><path d="M15 7v13"/></svg>',
 };
 
 export function registerAllTools(): void {
@@ -45,6 +47,20 @@ export function registerAllTools(): void {
       /* 返回清理函数：面板有 store 订阅 + 状态提示定时器 */
       if (!store) return;
       return import('../ui/codex').then((m) => m.renderCodex(store, host));
+    },
+  });
+  /* 地图生成（`panel: true`）：**悬浮面板** —— 用户 2026-10-14：「生成做成一个独立的面板吧，
+     两种，创作者自己一个个调参数或者 AI 直出，可以抽卡」。开在地图旁边、不盖遮罩，边看边调；
+     地图栏那个「生成地形…」按钮是同一个入口（`src/ui/map.ts`）。
+     静态 import 的理由与设置/助手相同：左栏高亮要同步问 `isMapStudioOpen()`。 */
+  registerTool({
+    id: 'mapgen', name: '地图生成', icon: IC.map,
+    panel: true,
+    isOpen: () => isMapStudioOpen(),
+    close: () => closeMapStudio(),
+    open(_host, store) {
+      if (!store) return;
+      return openMapStudio(store);
     },
   });
   /* 占位模块：素材库

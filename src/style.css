@@ -1400,3 +1400,71 @@ details.lk-agent__tools[open] > .lk-agent__tools-h::before { content: '▾'; }
   color: var(--fg-2); font-size: 11px; padding: 2px 7px; cursor: pointer; white-space: nowrap; margin-left: auto;
 }
 .lk-agent__split:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ── 地图生成工作室（`src/ui/map-studio.ts`）────────────────────────────────
+   用户 2026-10-14：「生成做成一个独立的面板吧，两种，创作者自己一个个调参数或者 AI 直出，
+   可以抽卡」。**右侧停靠的悬浮面板**：不盖遮罩、不接管主区 —— 边看地图边调；
+   三页签（自己调 / AI 直出 / 抽卡）共用一份参数与一块预览。 */
+.lk-ms {
+  position: fixed; right: 16px; top: 16px; bottom: 16px; width: 560px; max-width: calc(100vw - 32px);
+  z-index: 1700; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--surface); color: var(--fg);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-lg); box-shadow: var(--elev-raised);
+}
+.lk-ms__head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.lk-ms__title { font-size: var(--text-base); font-weight: 600; color: var(--fg); }
+.lk-ms__tabs { display: flex; gap: 4px; margin-left: 4px; }
+.lk-ms__tab {
+  background: none; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--fg-2); font-size: var(--text-xs); padding: 3px 10px; cursor: pointer; font-family: inherit;
+}
+.lk-ms__tab:hover { color: var(--fg); }
+.lk-ms__tab.is-on { border-color: var(--accent); color: var(--accent); background: rgba(158,194,98,.14); }
+.lk-ms__x {
+  margin-left: auto; background: transparent; border: 1px solid var(--border); color: var(--fg-2);
+  border-radius: var(--radius-sm); width: 24px; height: 24px; line-height: 1; font-size: 15px; cursor: pointer; flex-shrink: 0;
+}
+.lk-ms__x:hover { color: var(--accent); border-color: var(--accent); }
+.lk-ms__body { flex: 1; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.lk-ms__stage {
+  position: relative; width: 100%; aspect-ratio: 9 / 5; overflow: hidden;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.lk-ms__stage img { width: 100%; height: 100%; display: block; }
+.lk-ms__stage svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.lk-ms__empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: var(--text-xs); }
+.lk-ms__note { font-size: var(--text-xs); color: var(--fg-2); line-height: 1.6; }
+.lk-ms__hint { font-size: var(--text-xs); color: var(--fg-2); line-height: 1.6; }
+.lk-ms__dim { font-size: var(--text-xs); color: var(--muted); line-height: 1.6; }
+.lk-ms__sec { display: flex; flex-direction: column; gap: 8px; }
+.lk-ms__row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lk-ms__row > label { font-size: var(--text-xs); color: var(--fg-2); min-width: 34px; }
+.lk-ms__row > input { flex: 1; min-width: 120px; }
+.lk-ms input, .lk-ms select, .lk-ms textarea {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--fg); font-size: var(--text-xs); padding: 4px 6px; font-family: inherit;
+}
+.lk-ms textarea { resize: vertical; line-height: 1.6; }
+.lk-ms__grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.lk-ms__grid label { display: flex; flex-direction: column; gap: 3px; font-size: var(--text-xs); color: var(--fg-2); }
+.lk-ms__btn {
+  background: none; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--fg); font-size: var(--text-xs); padding: 4px 10px; cursor: pointer; font-family: inherit;
+}
+.lk-ms__btn:hover { color: var(--accent); border-color: var(--accent); }
+.lk-ms__btn.is-primary { border-color: var(--accent); color: var(--accent); }
+.lk-ms__cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.lk-ms__card {
+  border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;
+  background: var(--surface-2); cursor: pointer;
+}
+.lk-ms__card:hover { border-color: var(--border-strong); }
+.lk-ms__card.is-on { border-color: var(--accent); }
+.lk-ms__card img { width: 100%; aspect-ratio: 9 / 5; display: block; }
+.lk-ms__wait { width: 100%; aspect-ratio: 9 / 5; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: var(--text-xs); }
+.lk-ms__card-meta { display: flex; align-items: center; gap: 3px; padding: 3px 5px; font-size: 10px; color: var(--fg-2); }
+.lk-ms__card-meta > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lk-ms__mini { background: none; border: none; color: var(--fg-2); font-size: 10px; padding: 0 2px; cursor: pointer; font-family: inherit; }
+.lk-ms__mini:hover { color: var(--accent); }
+.lk-ms__foot { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
+.lk-ms__state { flex: 1; font-size: var(--text-xs); color: var(--fg-2); line-height: 1.5; }

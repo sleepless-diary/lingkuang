@@ -6,11 +6,16 @@
  *   ③「地形主要是拿来看，文化分区什么的主要是拿来动手」⇒ 定下**混合方案**：
  *      栅格地形位图（看）+ 矢量海岸线/湖岸/河（描边、放大不糊）+ 手绘 `regions`（动手层）。
  *
+ * 2026-10-14 用户：「生成做成一个独立的面板吧，两种，创作者自己一个个调参数或者 AI 直出，可以抽卡」
+ *   ⇒ 控件搬进 `#lk-map-studio`（`src/ui/map-studio.ts`）。**本套件只管"生成出来的地形对不对"**，
+ *   所以只借面板「自己调」那一页当输入口（开面板 → 填参数 → 采用）；面板本身的行为
+ *   （三页签 / 抽卡 / AI 直出 / 防抖）在 `tools/e2e/map-studio.cjs`。
+ *
  * 本套件钉住的：
  *   · 生成真画出地形（不是只改了数据）；矢量层真画出来且**不落盘**（派生自同一份参数）；
  *   · 提示行的数字与图上真画出来的**对得上**（湖数 === 湖岸条数；岸线条数 ≈ 陆块数）；
  *   · 岸线绝不贴画布边缘（"最外一圈是海"—— 否则等值线会首尾一连连出斜穿海面的线）；
- *   · 同描述 ⇒ 同一张图（描述即种子）；描述能压过档位下拉框；
+ *   · 同档位同种子 ⇒ 同一张图；面板里改档位/数量真生效；
  *   · 生成完照样能拖拽画区域（「生成作底稿、手绘精修」），且**分区在岸线之下**（层序）；
  *   · 助手的 `generate_map` 在图上已有地形时一定出卡片（不许悄悄换掉）。
  *
@@ -64,17 +69,36 @@ async function main() {
     await ev(`(function () { const t = document.getElementById('lk-agent-input'); t.value = ${JSON.stringify(text)}; document.getElementById('lk-agent-send').click(); return true; })()`);
     await sleep(wait);
   };
-  const gen = async (prompt, seed, style) => {
-    /* ⚠️ 旧构建上 `#map-gen` 根本不存在 —— 这里必须**优雅判假**（不许 null.click() 把整套崩掉），
+  const gen = async (style, seed, counts) => {
+    /* ⚠️ 2026-10-14 起生成控件**搬进了悬浮面板** `#lk-map-studio`（用户：「生成做成一个独立的面板吧」）：
+       这里按**「自己调」那一页**驱动（开面板 → 填档位/种子/数量 → 等 300ms 防抖 → 「采用到地图」）。
+       面板本身的行为（三页签、抽卡、AI 直出）在 `tools/e2e/map-studio.cjs`；本套件只管
+       "生成出来的地形对不对"，所以只借面板当输入口。
+       ⚠️ 旧构建上 `#lk-map-studio` 根本不存在 —— 这里必须**优雅判假**（不许 null.click() 把整套崩掉），
        否则 A/B 只能看到"脚本异常"，看不出差在哪一条。 */
-    const clicked = await ev(`(function () {
-      const p = document.getElementById('map-prompt'); if (p) p.value = ${JSON.stringify(prompt ?? '')};
-      const s = document.getElementById('map-seed'); if (s) s.value = ${JSON.stringify(seed ?? '')};
-      const st = document.getElementById('map-style'); if (st && ${JSON.stringify(style ?? '')}) st.value = ${JSON.stringify(style ?? '')};
-      const b = document.getElementById('map-gen'); if (!b) return false; b.click(); return true;
+    const ok1 = await ev(`(function () {
+      const g = document.getElementById('map-gen'); if (!g) return false;
+      g.click();
+      const card = document.getElementById('lk-map-studio'); if (!card) return false;
+      const st = card.querySelector('#ms-style'); if (!st) return false;
+      st.value = ${JSON.stringify(style)};
+      st.dispatchEvent(new Event('change', { bubbles: true }));
+      const sd = card.querySelector('#ms-seed');
+      if (sd) { sd.value = ${JSON.stringify(seed ?? '')}; sd.dispatchEvent(new Event('input', { bubbles: true })); }
+      const c = ${JSON.stringify(counts ?? {})};
+      Object.keys(c).forEach(function (k) {
+        const el = card.querySelector('#' + k);
+        if (el) { el.value = String(c[k]); el.dispatchEvent(new Event('input', { bubbles: true })); }
+      });
+      return true;
     })()`);
-    await sleep(1000);   /* 400ms 防抖 + 生成 ~100ms + 重画 */
-    return clicked;
+    await sleep(700);   /* 300ms 防抖 + 生成 ~100ms */
+    const ok2 = await ev(`(function () {
+      const card = document.getElementById('lk-map-studio'); if (!card) return false;
+      const b = card.querySelector('#ms-apply'); if (!b) return false; b.click(); return true;
+    })()`);
+    await sleep(900);   /* 生成 ~100ms + store.update + 400ms 防抖落盘 */
+    return ok1 === true && ok2 === true;
   };
   const dom = () => ev(`(function () {
     const q = (s) => document.querySelectorAll(s).length;
@@ -102,8 +126,9 @@ async function main() {
       regions: q('#map-svg path[data-region]'),
       order: { region: html.indexOf('data-region'), coast: html.indexOf('data-coast') },
       note: note ? note.textContent : '',
-      controls: ['map-prompt', 'map-seed', 'map-style', 'map-gen', 'map-reseed'].filter((x) => !!document.getElementById(x)),
-      styles: [...document.querySelectorAll('#map-style option')].map((o) => o.value),
+      controls: ['map-gen', 'map-gen-note'].filter((x) => !!document.getElementById(x)),
+      gone: ['map-prompt', 'map-seed', 'map-style', 'map-reseed'].filter((x) => !!document.getElementById(x)),
+      studio: !!document.getElementById('lk-map-studio'),
       hint: (document.getElementById('map-hint') || {}).textContent || '',
     };
   })()`);
@@ -123,19 +148,20 @@ async function main() {
   await sleep(1500);
   await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); true`);
 
-  /* ⭐ 0 前置：这一格真在、而且界面里有生成入口（旧构建这里就是 0 个控件） */
+  /* ⭐ 0 前置：这一格真在、生成入口在（**地图栏只剩一个按钮** —— 控件都搬进面板了） */
   const d0 = await dom();
-  check('★0 前置：地图那格在、生成入口齐（描述/种子/档位/生成/换个种子）',
-    d0.hasSvg && d0.controls.length === 5 && d0.styles.length === 3, { controls: d0.controls, styles: d0.styles });
+  check('★0 前置：地图那格在、生成入口在地图栏（旧控件已搬走，还没开面板）',
+    d0.hasSvg && d0.controls.length === 2 && d0.gone.length === 0 && d0.studio === false,
+    { controls: d0.controls, gone: d0.gone, studio: d0.studio });
 
-  /* ⭐ 1 点一下「生成地形」⇒ DOM 上真画出一张地形图 */
-  await gen('', '测试甲', 'continent');
+  /* ⭐ 1 点「生成地形…」→ 面板里按一下「采用到地图」⇒ DOM 上真画出一张地形图 */
+  await gen('continent', '测试甲');
   const d1 = await dom();
   const m1 = diskMap();
   check('★1 生成后真画出地形（底图 image 是 PNG dataURL）',
     d1.terrHref.startsWith('data:image/png') && d1.terrHref.length > 20000, { href: d1.terrHref.length, png: d1.terrHref.slice(0, 22) });
-  check('★1b 提示行如实报数（块陆地·座岛·个湖·条河·最高峰·Ctrl+Z）',
-    /块陆地/.test(d1.note) && /座岛/.test(d1.note) && /个湖/.test(d1.note) && /最高峰/.test(d1.note) && /Ctrl\+Z 可撤销/.test(d1.note),
+  check('★1b 地图栏那行如实报数（块陆地·座岛·个湖·条河·种子）',
+    /块陆地/.test(d1.note) && /座岛/.test(d1.note) && /个湖/.test(d1.note) && /条河/.test(d1.note) && /种子「测试甲」/.test(d1.note),
     { note: d1.note.slice(0, 130) });
 
   /* ⭐ 2 矢量层（混合方案的"另一半"）：岸线/河是**描边**，不是等高带 */
@@ -157,29 +183,33 @@ async function main() {
 
   /* ⭐ 4 同一颗种子永远同一张图；换一颗就换一张 */
   const sigA = await sig();
-  await gen('', '测试甲', 'continent');
+  await gen('continent', '测试甲');
   const sigB = await sig();
-  await gen('', '测试乙', 'continent');
+  await gen('continent', '测试乙');
   const sigC = await sig();
   check('★4 同种子逐字节一样 / 换种子不一样（确定性：可复现的地图）',
     sigA !== '' && sigA === sigB && sigA !== sigC, { same: sigA === sigB, differs: sigA !== sigC, len: sigA.length });
 
-  /* ⭐ 5 **输入口**：说人话就能定档位与数量；描述本身当种子 */
-  await gen('一片群岛，三条大河', '', 'continent');   /* 档位故意选"大陆"，看描述能不能压过它 */
+  /* ⭐ 5 面板里改档位 ⇒ 真按那一档生成（`#ms-style` 的 change 走同一条 planGeneration） */
+  const okGen5 = await gen('archipelago', '测试丙');
   const d5 = await dom();
   const m5 = diskMap();
-  check('★5 描述压过下拉框：说「一片群岛」⇒ 真按群岛档生成，且描述本身当种子',
-    m5?.terrain?.style === 'archipelago' && m5?.terrain?.seed === '一片群岛，三条大河' && d5.note.includes('按你说的'),
+  check('★5 面板里选「群岛」⇒ 这一档真生效，种子也按填的存下来',
+    okGen5 === true && m5?.terrain?.style === 'archipelago' && m5?.terrain?.seed === '测试丙' && d5.note.includes('种子「测试丙」'),
     { style: m5?.terrain?.style, seed: m5?.terrain?.seed, note: d5.note.slice(0, 110) });
-  await gen('一片群岛，三条大河', '', 'archipelago');
-  check('★5b 同一句描述再生成一次 ⇒ 一模一样（描述即种子）', (await sig()) === (await sig()), {});
+  check('★5b 同一档同一颗种子再采用一次 ⇒ 一模一样（换种子才换图）',
+    (await sig()) === (await sig()), {});
 
-  /* ⭐ 6 点数也能听：说几个就尽量给几个（收敛回路） */
-  await gen('两个大陆', '', 'continent');
+  /* ⭐ 6 数量也听（收敛回路）：填「陆地 2」⇒ 提示行报 2 块陆地，岸线条数跟着在 2~6 之间 */
+  await gen('continent', '测试丁', { 'ms-lands': 2 });
   const d6 = await dom();
   const n6 = numsIn(d6.note);
-  check('★6 说「两个大陆」⇒ 提示行就报 2 块陆地，岸线条数也跟着在 2~6 之间',
+  check('★6 面板里填「陆地 2」⇒ 提示行就报 2 块陆地，岸线条数也跟着在 2~6 之间',
     n6.lands === 2 && d6.coast >= 2 && d6.coast <= 6, { lands: n6.lands, coast: d6.coast, note: d6.note.slice(0, 90) });
+
+  /* 生成这一段查完了：把面板收起来，后面的手绘 / 助手那两条在**干净的主区**上做 */
+  await ev(`(function () { const b = document.getElementById('ms-close'); if (b) b.click(); return true; })()`);
+  await sleep(300);
 
   /* ⭐ 7 「生成作底稿、手绘精修」：生成完照样能拖拽画区域（文化分区 = 动手层） */
   const before = (diskMap()?.regions || []).length;
