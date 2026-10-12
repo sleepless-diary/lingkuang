@@ -154,6 +154,9 @@ export interface MapRegion {
   altitude?: number;            // 标量场（等高线）
   concentration?: number;
   filter?: string;              // 粗糙化滤镜（AE 式叠加）
+  /** ⭐ 生成器的多层等高带：一个 path 里可能有多个环（内海/盆地）⇒ 要 evenodd 才挖得对洞。
+      手绘区域不写这个字段（默认 nonzero，与从前一模一样）。 */
+  rule?: 'evenodd';
 }
 export interface MapMarker { id: string; x: number; y: number; label: string; entityId?: string; }
 export interface MapPath {                       // 路径追踪（人物/物品轨迹）
@@ -161,6 +164,24 @@ export interface MapPath {                       // 路径追踪（人物/物品
   entityId: string;
   points: { t: number; x: number; y: number }[]; // t=时间
   color?: string;
+}
+/** 地图上的**开放**线（河流 / 山脊 / 路线）—— 区域是闭合面，这些是线。
+    生成器（`src/ui/map-gen.ts`）与将来的手绘路径共用这一条。 */
+export interface MapLine {
+  id: string;
+  kind: 'river' | 'ridge' | 'road';
+  points: [number, number][];
+  name?: string;
+  width?: number;
+  color?: string;
+}
+/** ⭐ 生成的地形：**只存参数**（种子 / 档位 / 数量，几百字节）——
+    地形图由 `src/ui/map-gen.ts` 现算现画（确定性：同一份参数永远同一片地），
+    所以 worldbuilding.json 里不会塞进几百 KB 的 base64 图片。 */
+export interface MapTerrainSpec {
+  seed: string;
+  style: string;
+  spec?: { [k: string]: number | undefined };
 }
 export interface MapData {
   id: string;
@@ -170,6 +191,10 @@ export interface MapData {
   regions: MapRegion[];
   markers: MapMarker[];
   paths: MapPath[];
+  /* ⚠️ 下面两个是**可选**字段（旧数据没有 ⇒ 照旧能读能画）。加字段而不是改结构，
+     是因为地图住在 worldbuilding.json 里，用户手里那份数据不能因升级读不出来。 */
+  lines?: MapLine[];        // 开放线（手绘轨迹之外，给将来的矢量水系留位）
+  terrain?: MapTerrainSpec; // 程序化生成的地形（见 `src/ui/map-gen.ts`；图现算）
 }
 
 /** 世界观（= 顶部世界栏的一个 tab） */

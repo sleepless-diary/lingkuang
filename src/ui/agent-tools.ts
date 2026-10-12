@@ -21,6 +21,7 @@ import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import type { Entity, PropValue, Timeline, TimelineNode, Worldset } from '../store/types';
 import { fsAddRoot, fsAvailable, fsBatchAvailable, fsDefaultPath, fsDelete, fsImportStatus, fsList, fsPrompt, fsRead, fsReadMany, fsRootOf, fsRootsCached, fsSearch, fsSetRootWrite, fsWrite } from './agent-fs';
+import { MAP_STYLES, generateIntoMap, planGeneration, type MapStyle } from './map-gen';
 import { webAvailable, webFetch, webPrompt, webSearch } from './agent-web';
 import { setAgentAsk, setAgentScope } from './agent-perm';
 import { stepsPrompt, type AgentMode } from './agent-mode';
@@ -110,6 +111,13 @@ const WRITE_TOOLS: ToolSpec[] = [
      而「世界」「时间线」这两层一直没有入口 —— `src/store/actions.ts` 的 addWorld / addTimeline 早就有。 */
   { name: 'create_world', title: '新建世界', desc: '新建一个世界观（同名会自动加序号；建完会切到它，里面是空的）。⚠️ **别拿它当"新建一个世界"用**：创作者说「第一世界 / 第二世界 / 第三世界」时说的**不是新世界观，而是一条时间线**（那种时候用 `create_timeline`）；只有创作者明说要"再开一整部作品 / 另一个世界观"时才用它', args: '{ name: 世界名字 }' },
   { name: 'create_timeline', title: '新建时间线', desc: '在当前世界观里新建一条时间线（空的，之后可以往里建事件）—— 一条时间线 = 一个「世界」／一段独立历史：素材按世界分册时，一个世界建一条', args: '{ name: 时间线名字 }' },
+  /* ⭐ 2026-10-13（用户：「**要留一点输入口，比如向助手描述然后生成**」）：**画地图**。
+     创作者说「给我画一片群岛，中间一个湖，三条大河」时用它 —— 把**他的原话**塞进 description，
+     同一份「描述 → 参数」解析器（`src/ui/map-gen.ts` 的 `planGeneration()`）会把它
+     翻成档位与数量（群岛 / 大陆 / 盘古、几块陆、几座岛、几条山、几条河、几个湖），
+     描述本身当种子 ⇒ 同样的描述永远是同一张图。⚠️ 这一步会**整张换掉**当前地图上的地形
+     （手绘的也会换掉，落地后 Ctrl+Z 可撤销）⇒ 图上有内容时 `needsConfirm`（一定出卡片）。 */
+  { name: 'generate_map', title: '生成地图', desc: '按创作者的话生成一张地图底稿（**会替换**当前地图上的地形；手绘的内容会被换掉、可撤销）。描述里可以直接带档位与数量，比如「一片群岛，中间一个湖，三条大河」', args: '{ description?: 创作者的原话, seed?: 种子, style?: "continent"|"archipelago"|"pangaea" }' },
   /* ⭐ 片 3（2026-10-12）：**删除**。用户当天问「你没给AI配置删除和创建的工具吗」——
      创建早有（create_entity / create_node / write_file / append_file），删除一条都没有。
      全部走回收站：灵框库里那三个由 `src/store/actions.ts` 的 removeXxx 把 .md 移进 `vault/.trash/`，
@@ -279,6 +287,7 @@ const PRIMARY: Record<string, string> = {
   create_node: 'title',
   create_world: 'name',
   create_timeline: 'name',
+  generate_map: 'description',
   rename_entity: 'name',
   set_setting: 'value',
   set_mode: 'mode',
@@ -1396,6 +1405,42 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
     }
     /* ⭐ 新建世界 / 时间线（片 3 的另一半：「删除和创建」）。两层都用 `src/store/actions.ts` 的
        `addWorld` / `addTimeline` —— id 由 `uid('tl')` 生成、字段由 actions 补齐，这里不自己拼。 */
+    /* ⭐ 2026-10-13（用户：「**要留一点输入口，比如向助手描述然后生成**」）：画地图。
+       与地图面板那个描述框**共用** `src/ui/map-gen.ts` 的 `planGeneration()`（描述 → 档位/数量）
+       与 `generateIntoMap()`（唯一的落盘入口）⇒ 两条路行为一致。
+       ⚠️ 生成是"整张换掉"：图上有东西时 `needsConfirm: true`（哪怕创作者开着「直接执行」也出卡片，
+       别把他手绘的东西悄悄清了）；空图直接生成。 */
+    case 'generate_map': {
+      const desc = str(a.description);
+      const wantStyle = str(a.style);
+      const style = (['continent', 'archipelago', 'pangaea'] as MapStyle[]).find((s) => s === wantStyle);
+      if (wantStyle && !style) {
+        return { ok: false, note: `档位只有 continent（大陆）/ archipelago（群岛）/ pangaea（盘古），不认「${wantStyle}」—— 也可以干脆用一句人话描述。` };
+      }
+      const plan = planGeneration({ description: desc, seed: str(a.seed), style });
+      const map = ws?.maps?.[0];
+      /* ⭐ 地形是**独立一层**（只存参数、图现算）⇒ 生成/重生成都不碰手绘的区域与标记，
+         所以这里只管"是不是要换掉已经生成过的那片地形"。 */
+      const again = !!map?.terrain;
+      const styleName = MAP_STYLES.find((s) => s.id === plan.style)?.label ?? plan.style;
+      return {
+        ok: true,
+        proposal: {
+          tool: call.tool,
+          title: `生成地形：${plan.matched.length ? plan.matched.join('、') : styleName}`,
+          detail:
+            `${desc ? `你描述的：「${desc}」` : '没给描述'} → 档位「${styleName}」，种子「${plan.seed}」；` +
+            (again
+              ? '⚠️ 这张图已经有一片地形了，会**整片换成新的**（手绘的区域/标记不受影响；换完 Ctrl+Z 可撤销）'
+              : '这张图还没有地形，生成不会覆盖任何手绘的东西'),
+          needsConfirm: again,
+          apply: () => {
+            const r = generateIntoMap(store, { description: desc, seed: str(a.seed), style });
+            return { ok: r.ok, note: r.note };
+          },
+        },
+      };
+    }
     case 'create_world': {
       const name = str(a.name);
       if (!name) return { ok: false, note: '新世界叫什么？（args.name）' };
