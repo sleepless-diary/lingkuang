@@ -146,7 +146,10 @@ async function main() {
     const t = document.querySelector('#lk-agent-ctx')?.textContent ?? '';
     return {
       chip, model, len: t.length,
-      world: t.includes('【工作区】当前世界「测试世界观」'),
+      world: t.includes('【工作区】当前世界观「测试世界观」'),
+      /* ⭐ 2026-10-20 用户：「世界观是世界集合的总称，时间线才是不同世界」——
+         现状块里必须每一轮都钉着这条层级（光写在系统提示开头，小模型读完就忘）。 */
+      layer: t.includes('【层级】') && t.includes('时间线 = 一个具体的世界') && t.includes('世界观 = 装这些世界的那个大集合'),
       timeline: t.includes('【当前时间线】') && t.includes('个事件）'),
       node: t.includes('312 王国的建立'),
       setting: t.includes('【设定】共 1 条') && t.includes('银发少女'),
@@ -165,8 +168,8 @@ async function main() {
   check('★4 焦点小标签 + 模型标签（供应商 · 模型名）',
     ctx1.chip === '正在编：银发少女' && ctx1.model === '本地 Ollama · qwen2.5:7b', { chip: ctx1.chip, model: ctx1.model });
   check('★5 上下文打包到了世界 / 时间线 / 设定清单 / **正在编那一条**（字段 + 正文 + 文件路径，且排在设定清单前）',
-    ctx1.world && ctx1.timeline && ctx1.node && ctx1.setting && ctx1.focusEnt && ctx1.focusFile && ctx1.focusFirst && ctx1.fields && ctx1.doc && ctx1.len > 80,
-    { world: ctx1.world, timeline: ctx1.timeline, node: ctx1.node, setting: ctx1.setting, focusEnt: ctx1.focusEnt, focusFile: ctx1.focusFile, focusFirst: ctx1.focusFirst, fields: ctx1.fields, doc: ctx1.doc, len: ctx1.len });
+    ctx1.world && ctx1.layer && ctx1.timeline && ctx1.node && ctx1.setting && ctx1.focusEnt && ctx1.focusFile && ctx1.focusFirst && ctx1.fields && ctx1.doc && ctx1.len > 80,
+    { world: ctx1.world, layer: ctx1.layer, timeline: ctx1.timeline, node: ctx1.node, setting: ctx1.setting, focusEnt: ctx1.focusEnt, focusFile: ctx1.focusFile, focusFirst: ctx1.focusFirst, fields: ctx1.fields, doc: ctx1.doc, len: ctx1.len });
 
   /* ── ③ ⭐ 换条目：「正在编」跟着换（UI 状态不动数据，靠 lingkuang-agent-focus 事件） ── */
   const nodeClk = await ev(`(() => {

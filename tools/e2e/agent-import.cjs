@@ -265,6 +265,20 @@ async function main() {
   check('★7b 系统提示里列了白名单文件夹（模型知道能碰哪儿）',
     sys.indexOf('【你能碰的文件夹】') >= 0 && sys.indexOf(LIB) >= 0,
     { hasBlock: sys.indexOf('【你能碰的文件夹】') >= 0, hasLib: sys.indexOf(LIB) >= 0 });
+  /* ⭐ 2026-10-20 用户：「**这个AI不知道世界观是世界集合的总称，时间线才是不同世界**，
+     你要不要把这个加进系统提示词」 —— 素材按世界分册时，一个世界要落成**一条时间线**
+     （不是几个世界观、也不是全塞进一条「主线」）。 */
+  check('★7c ⭐层级写清楚了：时间线 = 一个具体的世界、世界观 = 装世界的集合，且搬库时一个世界建一条时间线',
+    sys.indexOf('时间线 = 一个具体的世界') >= 0 && sys.indexOf('世界观 = 装这些世界的那个大集合') >= 0 &&
+    sys.indexOf('不是三个世界观') >= 0 && sys.indexOf('一个世界建一条时间线') >= 0 &&
+    sys.indexOf('【层级】') >= 0,
+    {
+      hasLayer: sys.indexOf('时间线 = 一个具体的世界') >= 0,
+      hasTimelineLayer: sys.indexOf('世界观 = 装这些世界的那个大集合') >= 0,
+      notThreeWorlds: sys.indexOf('不是三个世界观') >= 0,
+      oneWorldOneLine: sys.indexOf('一个世界建一条时间线') >= 0,
+      contextNote: sys.indexOf('【层级】') >= 0,
+    });
 
   /* ---------- ★8 ⭐读一批 → 立刻建一批：条目真落盘 ---------- */
   const NAME_A = '导入测试甲';
