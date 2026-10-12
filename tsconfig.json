@@ -13,5 +13,9 @@
     "verbatimModuleSyntax": true,
     "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  /* vendored 的 mapgen4（Apache-2.0，见 src/mapgen/NOTICE.md）不参与灵框的类型检查：
+     上游是「用 esbuild 打包、不做类型检查」的，文件顶部已加 // @ts-nocheck；
+     这里再排除一次，免得它们被当成程序根文件。 */
+  "exclude": ["src/mapgen/vendor"]
 }

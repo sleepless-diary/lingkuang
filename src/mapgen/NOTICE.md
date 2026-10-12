@@ -1,0 +1,58 @@
+# 这里是什么
+
+`src/mapgen/vendor/` 里的代码**不是灵框写的**，是从开源项目 **mapgen4** 搬进来的
+（vendored），用来当地图生成的**内核**。灵框自己的适配层在上一级 `src/mapgen/index.ts`。
+
+## 上游与许可证
+
+| 上游 | 版本/来源 | 许可证 | 我们搬了哪些文件 |
+|---|---|---|---|
+| [mapgen4](https://github.com/redblobgames/mapgen4) | `main`（2026-03-29 最后推送） | **Apache-2.0**（Copyright 2017–2025 Red Blob Games <redblobgames@gmail.com>） | `map.ts` `geometry.ts` `colormap.ts` `render.ts` `painting.ts` `generate-points.ts` `types.d.ts` `LICENSE-mapgen4.txt` |
+| [dual-mesh](https://github.com/redblobgames/dual-mesh) | 3.0.0（随 mapgen4 以 git-subrepo 同步） | **Apache-2.0** | `dual-mesh/index.ts` `dual-mesh/create.ts` `dual-mesh/LICENSE.txt` |
+| [@redblobgames/prng](https://github.com/redblobgames/prng) | 1.0.0 | **Apache-2.0** | `prng.ts` 的前半（`makeRandInt` / `makeRandFloat`） |
+| [hash-int](https://www.npmjs.com/package/hash-int) | 1.0.0（prng 的依赖） | **MIT**（Copyright 2013 Mikola Lysenko） | `prng.ts` 里的 `hashInt` |
+
+完整许可证原文就在同目录：`LICENSE-mapgen4.txt`、`dual-mesh/LICENSE.txt`、`LICENSE-prng.txt`。
+
+## 依赖（走 npm，装在本仓库的 devDependencies 里；渲染层由 vite 打进 app-dist）
+
+`delaunator`(ISC) · `fast-2d-poisson-disk-sampling`(MIT) · `flatqueue`(ISC) · `gl-matrix`(MIT) · `simplex-noise`(MIT)
+
+> `@redblobgames/dual-mesh` 与 `@redblobgames/prng` **都没有发布到 npm**（后者上游是拿 git URL 装的），
+> 所以只能把源码搬进来 —— 见上表。
+
+## ⚠️ 灵框改了什么（Apache-2.0 第 4 条要求「声明修改」）
+
+搬进来时只做了**接线**改动，**没有改任何算法**（地形/降雨/河流/渲染的数学一字未改）：
+
+1. **导入路径规范化**：去掉 `.ts` / `.d.ts` 后缀（`./geometry.ts` → `./geometry`、`./types.d.ts` → `./types`、
+   `./dual-mesh/index.ts` → `./dual-mesh/index`），`@redblobgames/prng` → `./prng`（本目录的 vendored 版本）。
+2. **`render.ts`：画布从参数来**。上游构造函数里现查 `document.getElementById('mapgen4')`、`resizeCanvas()`
+   里再查一次；灵框要在沙盘地图栏与生成面板里各放一块画布 ⇒ 改成 `constructor(mesh, canvas?)`、
+   `resizeCanvas()` 用 `this.canvas`。找不到画布、拿不到 WebGL2 / `EXT_color_buffer_float` 时
+   由 `alert()` 改成 **throw**（灵框自己兜）。
+3. **`render.ts`：能停下来**。上游的 `requestAnimationFrame` 循环一开就不再结束；新增
+   `stopped` + `stopDrawingLoop()`，销毁时不再空转。
+4. **`painting.ts`：DOM 解耦**。上游有 4 处**模块顶层**的 DOM 副作用（`#button-reset` 监听、快捷键、
+   工具按钮、`setUpPaintEventHandling()`），且画布写死 `#mapgen4` —— 灵框一 import 就会抛。
+   改为：逐个加存在性判断 + `setUpPaintEventHandling()` 找不到画布就跳过；
+   **快捷键（1-4 / q w e r）与工具按钮整段收进 `setUpPaintKeys()`，默认不装**
+   （上游是 import 就全局抢键 —— 在灵框里打字按到 w/e/r 会静默换笔刷，不能要）；
+   并在文件末尾补具名导出 `paintTools` / `paintSizes` / `beginStroke()` / `paintAt()` /
+   `resetPainting()` / `userHasPainted()`，好让灵框用自己的指针事件驱动同一套笔刷
+   （笔刷算法仍走 `heightMap.paintAt`，一字未改）。
+5. **`prng.js`（CommonJS，`require('hash-int')`）→ `prng.ts`（ESM）**：两个文件合成一个模块，
+   函数体逐字保留（同种子逐位一致）。
+6. **删掉了 3 个不用的上游文件**：`mesh.ts`（它的取点走浏览器相对 `fetch('build/points-*.data')`，
+   灵框改用 `generate-points.ts` 的 `choosePoints()` 在运行时算）、`serialize-points.ts`、
+   `config.js`（默认参数搬进了 `src/mapgen/index.ts` 的 `DEFAULT_PARAMS`，字段与上游
+   `mapgen4.ts` 的 `initialParams` 一致）。
+7. **`// @ts-nocheck`**：上游是「用 esbuild 打包、不做类型检查」（它自己的 `tsconfig.json` 里
+   `"module": "bundler"` 其实是非法值，`tsc` 直接报 TS5110）。灵框的 `tsc --noEmit` 要留给我们自己的代码，
+   所以在这批文件顶部加了 `// @ts-nocheck`（`tsconfig.json` 里也把 `src/mapgen/vendor` 排除了）。
+   ⇒ **它们是"一个装配进来的第三方库"**：语法错会暴露，类型错不拦。
+
+## 怎么用
+
+只看 `src/mapgen/index.ts`（`createEngine` / `runGeneration` / `statsOf` / `TerrainView`）。
+不要在业务代码里直接 import `vendor/` 里的东西。
