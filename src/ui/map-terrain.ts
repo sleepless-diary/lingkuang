@@ -12,7 +12,7 @@
  *  渲染时现算（确定性：同一份参数永远同一片地）。 */
 
 import {
-  BAND, TerrainView, createEngineFor, resetPaint, runGeneration, statsOf,
+  BAND, TerrainView, createEngineFor, resetPaint, runGeneration, statsOf, styleRenderParams,
   type MapgenSpecInput, type TerrainEngine, type TerrainStats,
 } from '../mapgen';
 import type { MapTerrainSpec } from '../store/types';
@@ -101,6 +101,8 @@ export function bandSource(): { sx: number; sy: number; sw: number; sh: number }
 export interface TerrainHandle {
   dispose: () => void;
   regenerate: (opts?: { shape?: boolean }) => void;
+  /** ⭐ 「看的方式」（第九十七轮）：只换渲染风格 —— 不重建网格、不重算地形，下一帧就变。 */
+  setStyle: (v: string | undefined) => void;
 }
 
 /** 把一块画布变成"这个世界的地形"。 */
@@ -114,9 +116,11 @@ export function mountTerrain(canvas: HTMLCanvasElement, t: MapTerrainSpec, w: nu
   canvas.style.height = L.size + 'px';
   canvas.style.pointerEvents = 'none';
   const view = new TerrainView(canvas, engine);
+  view.setStyle(styleRenderParams(t.view));   /* 风格在构造后立刻定下来（缺省 = 立体）*/
   view.update();
   return {
     dispose: () => view.dispose(),
+    setStyle: (v) => view.setStyle(styleRenderParams(v)),
     regenerate: (opts) => {
       /* ⚠️ 实时刷的时候场里**已经**有这一笔（`paintStep` 直接写进内核的约束场）⇒
          `replayPaint` 会因为"场里有笔迹"而跳过重放，不会双重叠加。 */
@@ -148,7 +152,10 @@ export function mapPointToWorld(mx: number, my: number, w: number, h: number): {
 let thumb: { canvas: HTMLCanvasElement; view: TerrainView; key: string } | null = null;
 
 function thumbViewFor(t: MapTerrainSpec, w: number, h: number): TerrainView {
-  const key = keyOf(t, w, h);
+  /* ⚠️ 键里**含风格**（第九十七轮实测）：复用同一个视图改渲染参数时，`snapshot()` 抓到的
+     是上一档的画面（每次换风格都滞后一格 —— 参数明明已经送进 GL 了，见 BUGS 第九十七轮）。
+     换风格 = 换一块画布 + 一个新渲染器 ⇒ 第一帧就是对的，与抽卡那张卡同一个道理。 */
+  const key = keyOf(t, w, h) + '|' + (t.view ?? '');
   if (thumb && thumb.key === key) return thumb.view;
   thumb?.view.dispose();          /* 丢旧上下文（那块画布随之作废，不再复用） */
   const canvas = document.createElement('canvas');
@@ -164,6 +171,9 @@ export async function terrainThumbUrl(
 ): Promise<string> {
   try {
     const view = thumbViewFor(t, w, h);
+    /* ⭐ 风格是渲染参数（不在缓存键里）⇒ 每次出图前按这份 spec 重设一次：
+       同一块地切「等高线」「平面」时，缩略图才跟着变（而不是永远第一档）。 */
+    view.setStyle(styleRenderParams(t.view));
     const shot = await view.snapshot();
     const out = document.createElement('canvas');
     out.width = Math.max(16, Math.round(outW));

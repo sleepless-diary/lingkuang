@@ -357,13 +357,27 @@ const frag_drape = `
                   u_ambient, u_overhead,
                   u_outline_strength, u_outline_coast, u_outline_water,
                   u_outline_depth, u_outline_threshold,
-                  u_biome_colors;
+                  u_biome_colors,
+                  /* ⭐ 灵框追加（第九十七轮）：渲染风格三件套 —— 见 NOTICE.md */
+                  u_shade, u_contour, u_contour_scale, u_bands;
     in vec2 v_uv, v_xy, v_em;
     in float v_z;
     out vec4 out_fragcolor;
 
     const vec3 neutral_land_biome = vec3(0.9, 0.8, 0.7);
     const vec3 neutral_water_biome = 0.8 * neutral_land_biome;
+
+    /* ⭐ 灵框追加（第九十七轮）：给"画线/上色带"用的**平滑**高度（五抽头盒滤，±12 个纹素）。
+       内核的高度场是网格插值来的、逐格带细尺度噪声 ⇒ 直接拿它画等高线会抖成锯齿。
+       只在真的要用（等高线 / 分层设色）时调它 —— 默认档（立体）一次都不多采。 */
+    float smoothLandHeight(sampler2D tex, vec2 pos, vec2 inv, float z0) {
+        vec2 zs = inv * 4.0;
+        return 0.2 * (z0
+            + texture(tex, pos + vec2(zs.x, 0.0)).x
+            + texture(tex, pos - vec2(zs.x, 0.0)).x
+            + texture(tex, pos + vec2(0.0, zs.y)).x
+            + texture(tex, pos - vec2(0.0, zs.y)).x);
+    }
 
     void main() {
         vec2 sample_offset = 0.5 * u_inverse_texture_size;
@@ -376,6 +390,11 @@ const frag_drape = `
         float zN = texture(u_elevation, pos - dy).x;
         float zW = texture(u_elevation, pos - dx).x;
         float zS = texture(u_elevation, pos + dy).x;
+        /* ⭐ 灵框追加（第九十七轮）：风格用的**原始**高度 —— 下面第 386 行会给河流压低 z，
+           等高线要是用被压低过的 z，河两边就会长出一圈假等高线。 */
+        float z0 = z;
+        bool styleLand = (u_bands > 1.0 || u_contour > 0.0) && z0 >= 0.5;
+        float zLand = styleLand ? smoothLandHeight(u_elevation, pos, u_inverse_texture_size, z0) : z0;
         vec3 slope_vector = normalize(vec3(zS-zN, zE-zW, u_overhead * (u_inverse_texture_size.x + u_inverse_texture_size.y)));
         vec3 light_vector = normalize(vec3(u_light_angle, mix(u_slope, u_flat, slope_vector.z)));
         float light = u_ambient + max(0.0, dot(light_vector, slope_vector));
@@ -388,7 +407,16 @@ const frag_drape = `
             // in the ocean, or underground, don't draw rivers
             water_color.a = 0.0; neutral_biome_color = neutral_water_biome;
         }
-        vec3 biome_color = texture(u_colormap, vec2(z, v_em.y)).rgb;
+        /* ⭐ 灵框追加（第九十七轮）：分层设色（等高线风格的底）—— 把"取色用的高度"量化成 u_bands 档。
+           档内留 0.35 的渐变，免得平得像色卡；关着时（u_bands ≤ 1）与上游逐字一致。
+           ⚠️ **只量化陆地**（z0 ≥ 0.5）：海里也量化的话，深浅海的渐变会被切成几块死色
+           （第九十七轮真机截图逮到的）。同一条平滑高度 zLand 也给等高线用 ⇒ 色带的边与线正好吻合。 */
+        float zc = z;
+        if (u_bands > 1.0 && z0 >= 0.5) {
+            float lv = zLand * u_bands;
+            zc = (floor(lv) + 0.35 * (lv - floor(lv))) / u_bands;
+        }
+        vec3 biome_color = texture(u_colormap, vec2(zc, v_em.y)).rgb;
         water_color = mix(vec4(neutral_water_biome * (1.2 - water_color.a), water_color.a), water_color, u_biome_colors);
         biome_color = mix(neutral_biome_color, biome_color, u_biome_colors);
         if (v_z < 0.0) {
@@ -400,7 +428,20 @@ const frag_drape = `
             biome_color = mix(underground_color, highlight_color, 0.5 * smoothstep(-0.025, 0.0, v_z));
             light = 1.0 - 0.3 * smoothstep(0.8, 1.0, fract((v_em.x - v_z) * 20.0)); // add horizontal lines
         }
-        // if (fract(z * 10.0) < 10.0 * fwidth(z)) { biome_color = vec3(0,0,0); } // contour lines
+        /* ⭐ 灵框追加（第九十七轮）：等高线 —— 上游那句原注释就写着 contour lines，是注释掉的，
+           这里放开并做成可调（u_contour 开关 / u_contour_scale 每格几条）：
+             · 只画陆地（z0 ≥ 0.5）：这个尺度下海里的等深线只会糊成一片；
+             · 用原始高度 z0，不用被河流压低过的 z；
+             · 线宽按屏幕导数 fwidth 归一 ⇒ 约 1.5 像素，缩放不变粗。
+           ⚠️ 线宽既然用 fwidth 归一，而 GLSL 对"在非一致分支里求导"是**未定义行为**
+           ⇒ 这里无条件算好，开关（u_contour）与"是否陆地"乘进结果里。
+           算术很便宜，取纹理才贵 —— 真正贵的 zLand 上面已经按需算过了。 */
+        float cInterval = 1.0 / max(u_contour_scale, 1.0);
+        float cFrac = fract(zLand / cInterval);
+        float cDist = min(cFrac, 1.0 - cFrac) * cInterval;   /* 到最近档线的"高度距离" */
+        float cPx = max(fwidth(zLand), 1e-6);
+        float cLine = (1.0 - smoothstep(1.0, 2.2, cDist / cPx)) * u_contour * step(0.5, z0);
+        biome_color = mix(biome_color, biome_color * 0.5, cLine);
 
         // TODO: add noise texture based on biome
 
@@ -426,7 +467,9 @@ const frag_drape = `
         );
         if (z <= 0.5 && max(depth1, depth2) > 1.0/256.0 && neighboring_river <= 0.2) { outline += u_outline_coast * 256.0 * (max(depth1, depth2) - 2.0*(z - 0.5)); }
 
-        out_fragcolor = vec4(mix(biome_color, water_color.rgb, water_color.a) * light / outline, 1);
+        /* ⭐ 灵框追加（第九十七轮）：u_shade = 0 ⇒ 完全平面（light 恒 1），1 ⇒ 上游原样的山体阴影 */
+        float shade = mix(1.0, light, u_shade);
+        out_fragcolor = vec4(mix(biome_color, water_color.rgb, water_color.a) * shade / outline, 1);
     }`;
 
 const vert_final = `
@@ -668,6 +711,11 @@ export default class Renderer {
             gl.uniform1f(program.u_outline_strength, renderParam.outline_strength);
             gl.uniform1f(program.u_outline_threshold, renderParam.outline_threshold / 1000);
             gl.uniform1f(program.u_biome_colors, renderParam.biome_colors);
+            /* ⭐ 灵框追加（第九十七轮）：风格三件套。缺省值 = 上游原样（全晕渲、无等高线、无分层设色）*/
+            gl.uniform1f(program.u_shade, renderParam.shade ?? 1);
+            gl.uniform1f(program.u_contour, renderParam.contour ?? 0);
+            gl.uniform1f(program.u_contour_scale, renderParam.contour_scale ?? 10);
+            gl.uniform1f(program.u_bands, renderParam.bands ?? 0);
 
             this.texture_colormap.activate(gl.TEXTURE0, program.u_colormap);
             this.fbo_land.texture.activate(gl.TEXTURE1, program.u_elevation);

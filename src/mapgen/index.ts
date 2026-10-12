@@ -76,6 +76,12 @@ export interface MapgenRenderParams {
   outline_coast: number;
   outline_water: number;
   biome_colors: number;
+  /* ⭐ 灵框追加（第九十七轮）：渲染风格 —— 与"生成什么地形"无关，只决定怎么看。
+     缺省值必须等于上游原样（晕渲满格、无等高线、无分层设色）⇒ 旧数据/旧调用一个字节都不变。 */
+  shade: number;          /* 0 = 完全平面，1 = 上游原样的山体阴影 */
+  contour: number;        /* 0/1：等高线 */
+  contour_scale: number;  /* 整个高度范围画几条等高线（10 ⇒ 每 0.1 高度一条） */
+  bands: number;          /* >1 = 分层设色档数（0/1 = 关） */
 }
 export interface MapgenParams {
   spacing: number;
@@ -103,6 +109,8 @@ export const DEFAULT_PARAMS: MapgenParams = {
     overhead: 30, tilt_deg: 0, rotate_deg: 0, mountain_height: 50,
     outline_depth: 1, outline_strength: 15, outline_threshold: 0, outline_coast: 0,
     outline_water: 13.0, biome_colors: 1,
+    /* ⭐ 灵框追加（第九十七轮）：这四个上游没有 ⇒ 缺省值即上游原样（见 `styleRenderParams()`）*/
+    shade: 1, contour: 0, contour_scale: 10, bands: 0,
   },
 };
 
@@ -121,6 +129,50 @@ export const APPLY_NOTES = [
   '陆块数 / 岛数不再是指定项 —— 上游的陆地形状由噪声与「岛屿度」决定，不是数出来的',
   '湖泊不再"挖"出来：内陆低地被淹就是内陆海（所以湖数可能为 0）',
 ];
+
+/* ── ⭐ 灵框追加（第九十七轮）：渲染风格（「看的方式」）──────────────────────────
+   用户 2026-10-14：「这个山怎么是立体的，不应该是等高线那一种的吗」→ 选了"做成开关"。
+   关键事实：**风格只是渲染参数**（照度强度 / 等高线 / 分层设色），与"生成什么地形"无关
+   ⇒ 换风格 = `TerrainView.setStyle()` = 下一帧重画，**不重建网格、不重算地形**（瞬时）。
+   三档各自的一套参数在 `styleRenderParams()` 里，改档只改这一个函数。 */
+
+export type TerrainStyleId = 'relief' | 'contour' | 'flat';
+export const DEFAULT_TERRAIN_STYLE: TerrainStyleId = 'relief';
+
+/** 面板上的三档（`label` 进 UI，`hint` 作悬停说明 —— 全项目界面不用 emoji） */
+export const TERRAIN_STYLES: { id: TerrainStyleId; label: string; hint: string }[] = [
+  { id: 'relief', label: '立体', hint: '山体阴影（上游默认）：一眼看出山在哪、哪边是坡，偏插画' },
+  { id: 'contour', label: '等高线', hint: '分层设色 + 等高线，只留一点点阴影：像地形图，读高度读得准' },
+  { id: 'flat', label: '平面', hint: '纯色块：没有阴影也没有线，看植被与地形分区最清楚' },
+];
+
+export function isTerrainStyle(v: unknown): v is TerrainStyleId {
+  return v === 'relief' || v === 'contour' || v === 'flat';
+}
+
+/** 数据里那个宽 `string` → 认得出的档（认不出的按默认档，不报错） */
+export function terrainStyleOf(v: unknown): TerrainStyleId {
+  return isTerrainStyle(v) ? v : DEFAULT_TERRAIN_STYLE;
+}
+
+export function terrainStyleLabel(v: unknown): string {
+  const id = terrainStyleOf(v);
+  return (TERRAIN_STYLES.find((s) => s.id === id) ?? TERRAIN_STYLES[0]).label;
+}
+
+/** 风格 → 渲染参数（叠在 `params.render` 之上；缺省档 = 空对象也能跑，值就是上游原样）。
+ *  `contour` 那一档的 0.35 晕渲是刻意的：纯平的分层设色在缩略图上"糊成一块"，
+ *  留一点阴影既像地形图、又还能看出山脊走向；同时把山脊描边压到 8，
+ *  让**等高线**当主角（15 的话满屏都是深色棱线，与线打架）。
+ *  `flat` 把 `outline_strength` 归零：那是内核沿深度不连续性画的山脊描边，
+ *  不关掉的话"平面"档看着还是立体的（第九十七轮真机截图逮到的）。 */
+export function styleRenderParams(v: unknown): Partial<MapgenRenderParams> {
+  switch (terrainStyleOf(v)) {
+    case 'contour': return { shade: 0.35, bands: 10, contour: 1, contour_scale: 10, outline_strength: 8 };
+    case 'flat': return { shade: 0, bands: 0, contour: 0, outline_strength: 0 };
+    default: return { shade: 1, bands: 0, contour: 0, outline_strength: 15 };
+  }
+}
 
 /* ── 种子：一串文字 → 两个 32 位整数（网格种子与高度种子分开，照上游的规矩）──────── */
 
@@ -462,6 +514,8 @@ export class TerrainView {
   private renderer: any;
   private engine: TerrainEngine;
   private disposed = false;
+  /** ⭐ 灵框追加（第九十七轮）：当前风格叠在 `params.render` 之上（`setStyle()` 写它） */
+  private styleOverride: Partial<MapgenRenderParams> = {};
 
   constructor(canvas: HTMLCanvasElement, engine: TerrainEngine) {
     this.canvas = canvas;
@@ -469,11 +523,20 @@ export class TerrainView {
     this.renderer = new (Renderer as any)(engine.mesh, canvas);
   }
 
+  /** ⭐ 只换风格：**不重传几何、不重算地形**，只把新参数交给渲染循环 ⇒ 下一帧就变。
+   *  （`update()` 会重新上传地图几何 + 河流几何，那是"地形变了"才需要的；
+   *   风格是"看"的参数，所以走这条更短的路。） */
+  setStyle(renderParam?: Partial<MapgenRenderParams>): void {
+    this.styleOverride = renderParam ?? {};
+    if (this.disposed) return;
+    this.renderer.updateView({ ...this.engine.params.render, ...this.styleOverride });
+  }
+
   /** 把最新数据推给 GPU 并排一帧（生成完 / 换了渲染参数 / 刚构造完都要调） */
   update(renderParam?: Partial<MapgenRenderParams>): void {
     if (this.disposed) return;
     const { map, params } = this.engine;
-    const p = { ...params.render, ...(renderParam ?? {}) };
+    const p = { ...params.render, ...this.styleOverride, ...(renderParam ?? {}) };
     Geometry.setMapGeometry(map, params.elevation.mountain_folds, this.renderer.quad_elements, this.renderer.a_quad_em);
     this.renderer.numRiverTriangles = Geometry.setRiverGeometry(map, params.spacing, params.rivers, this.renderer.a_river_xyww);
     this.renderer.updateMap();

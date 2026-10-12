@@ -19,7 +19,8 @@ import { currentWorld } from '../store/store';
 import { uid } from '../store/ids';
 import type { MapData } from '../store/types';
 import {
-  APPLY_NOTES, MAPGEN_STYLES, createEngineFor, runGeneration, statsOf,
+  APPLY_NOTES, DEFAULT_TERRAIN_STYLE, MAPGEN_STYLES, createEngineFor, isTerrainStyle,
+  runGeneration, statsOf, terrainStyleLabel,
   type MapgenSpecInput, type MapgenStyle, type TerrainStats,
 } from '../mapgen';
 
@@ -149,6 +150,9 @@ export interface MapGenInput {
   seed?: string;
   style?: string;
   spec?: MapSpec;
+  /** ⭐ 「看的方式」（第九十七轮）：relief 立体 / contour 等高线 / flat 平面。
+   *  不给 = 沿用这张地图原来那档（换地形不该重置创作者的显示偏好）。 */
+  view?: string;
 }
 
 export interface MapPlan {
@@ -199,6 +203,12 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
      ⚠️ 少了这一步，创作者刷了二十笔、去面板只调一个旋钮再「采用」，笔迹会被静默清掉。 */
   const old = before?.terrain;
   const keepPaint = old && old.seed === plan.seed && old.style === plan.style ? old.paint : undefined;
+  /* ⭐ 「看的方式」（第九十七轮）：显式给了就用（工作室每次都给）；没给就沿用这张地图原来那档
+     （助手的 `generate_map` 不带 view ⇒ 换一片地不该把创作者选的"看的方式"重置）；
+     都没有才落回默认「立体」。它只是**显示参数** ⇒ 与"生成什么地形"无关、不参与缓存键。 */
+  const view = isTerrainStyle(input.view)
+    ? input.view
+    : (isTerrainStyle(old?.view) ? old!.view! : DEFAULT_TERRAIN_STYLE);
   const engine = createEngineFor(plan.seed, plan.style, plan.spec);
   runGeneration(engine, { strokes: keepPaint });   /* 统计要跟画布看到的一致 ⇒ 笔迹一起算 */
   const s = statsOf(engine);
@@ -209,7 +219,7 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
     if (!ws) return;
     if (!ws.maps?.length) { ws.maps = [DEFAULT_MAP()]; created = true; }
     const m = ws.maps[0];
-    m.terrain = { seed: plan.seed, style: plan.style, spec: plan.spec };
+    m.terrain = { seed: plan.seed, style: plan.style, spec: plan.spec, view };
     if (keepPaint?.length) m.terrain.paint = keepPaint;
   });
 
@@ -224,7 +234,7 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
       `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m` +
       `（陆地占 ${Math.round(s.landRatio * 100)}%）${what}` +
       (kept ? `（手刷的 ${kept} 笔保住了 —— 种子与档位没变）` : '') +
-      `（种子「${plan.seed}」，Ctrl+Z 可撤销，生成后照样能手绘精修。` +
+      `（种子「${plan.seed}」，看的方式「${terrainStyleLabel(view)}」，Ctrl+Z 可撤销，生成后照样能手绘精修。` +
       `图是 ${w}×${h} 的现算图，不写进数据文件）`,
   };
 }

@@ -208,6 +208,30 @@ const areaWater = (eng, y0, y1) => {
     { dirty, after: E.paintedSoFar(), painted: +wDirty.toFixed(3), cleared: +wClean.toFixed(3) });
 }
 
+/* ★14 「看的方式」三档（第九十七轮）：它只是**一组渲染参数**（纯函数），与"生成什么地形"无关
+   ⇒ 缺省/认不出的值都必须落回「立体」（= 上游原样），这是"不传就什么都不变"的保证。 */
+{
+  const r = E.styleRenderParams('relief');
+  const c = E.styleRenderParams('contour');
+  const f = E.styleRenderParams('flat');
+  const unknown = E.styleRenderParams('不认识的东西');
+  const none = E.styleRenderParams(undefined);
+  const d = E.DEFAULT_PARAMS.render;
+  const ok = E.TERRAIN_STYLES.length === 3
+    && E.TERRAIN_STYLES.map((s) => s.id).join(',') === 'relief,contour,flat'
+    && E.TERRAIN_STYLES.every((s) => s.label && s.hint)
+    && d.shade === 1 && d.contour === 0 && d.contour_scale === 10 && d.bands === 0
+    && r.shade === 1 && r.contour === 0 && r.bands === 0
+    && c.shade > 0 && c.shade < 1 && c.contour === 1 && c.contour_scale > 1 && c.bands > 1
+    && f.shade === 0 && f.contour === 0 && f.bands === 0
+    && JSON.stringify(unknown) === JSON.stringify(r) && JSON.stringify(none) === JSON.stringify(r)
+    && E.isTerrainStyle('contour') && !E.isTerrainStyle('x') && !E.isTerrainStyle(null)
+    && E.terrainStyleOf('flat') === 'flat' && E.terrainStyleOf('乱写') === 'relief'
+    && E.terrainStyleLabel('contour') === '等高线' && E.terrainStyleLabel(undefined) === '立体';
+  check('★14 风格三档是一组渲染参数（缺省/认不出都落回立体）', ok,
+    { relief: r, contour: c, flat: f, unknownFallsBack: JSON.stringify(unknown) === JSON.stringify(r) });
+}
+
 const pass = results.filter(Boolean).length;
 console.log(`\n${pass}/${results.length} PASS`);
 process.exit(pass === results.length ? 0 : 1);

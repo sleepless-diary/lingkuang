@@ -20,7 +20,7 @@ import { DEFAULT_MAP, polylinePath, smoothClosedPath } from './map-gen';
 import {
   mountTerrain, mapPointToWorld, resetTerrainPaint, terrainStats, type TerrainHandle,
 } from './map-terrain';
-import { DEFAULT_PAINT_SIZE, DEFAULT_PAINT_TOOL, beginPaintStroke, paintStep } from '../mapgen';
+import { DEFAULT_PAINT_SIZE, DEFAULT_PAINT_TOOL, TERRAIN_STYLES, beginPaintStroke, paintStep, terrainStyleLabel, terrainStyleOf } from '../mapgen';
 import { openMapStudioFromToolbar } from './map-studio';
 
 type Mode = 'region' | 'marker' | 'move' | 'paint';
@@ -68,6 +68,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
         <span id="map-gen-note" style="font-size:var(--text-xs);color:var(--fg-2);"></span>
         <span style="flex:1;"></span>
         <button id="map-gen" title="打开地图生成面板：自己一个个调参数 / AI 直出 / 抽卡" style="background:none;border:1px solid var(--accent);color:var(--accent);border-radius:var(--radius-sm);font-size:11px;padding:3px 10px;cursor:pointer;">生成地形…</button>
+        <select id="map-view" title="看的方式：地形怎么画（立体 / 等高线 / 平面）—— 只换画法，不重算地形" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${TERRAIN_STYLES.map((s) => `<option value="${s.id}" title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}</option>`).join('')}</select>
         <span style="width:1px;height:16px;background:var(--border-soft);"></span>
         <button data-mode="region" class="map-mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">区域</button>
         <button data-mode="marker" class="map-mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">标记</button>
@@ -107,6 +108,8 @@ export function renderMap(store: Store, host: HTMLElement): void {
   let terrainCanvas: HTMLCanvasElement | null = null;
   let terrainHandle: TerrainHandle | null = null;
   let terrainKey = '';
+  /* ⭐ 「看的方式」：上一次已经推给 GPU 的那一档（与 `terrainKey` 分开 —— 换风格不重建画布）*/
+  let terrainStyleKey = '';
   const hint = host.querySelector('#map-hint') as HTMLElement;
   let labelSeq = 1;
 
@@ -194,7 +197,15 @@ export function renderMap(store: Store, host: HTMLElement): void {
      落盘仍只有一条路：`src/ui/map-gen.ts` 的 `generateIntoMap()` —— 工作室的「采用到地图」
      与助手的 `generate_map` 动作共用它，一次 store.update ⇒ 一步 Ctrl+Z 就能撤销回去。 */
   const genNote = host.querySelector('#map-gen-note') as HTMLElement;
+  const viewSel = host.querySelector('#map-view') as HTMLSelectElement;
   host.querySelector('#map-gen')?.addEventListener('click', () => { openMapStudioFromToolbar(store); });
+  /* ⭐ 「看的方式」（第九十七轮）：改了**只重画**（`syncTerrain` 里换渲染参数），不重算地形。
+     落盘照走 `save()`（一步撤销）—— 与面板「采用到地图」同一条路，不留第二份状态。 */
+  viewSel.addEventListener('change', () => {
+    const v = viewSel.value;
+    if (!curMap()?.terrain) return;
+    save((mm) => { if (mm.terrain) mm.terrain.view = v; });
+  });
   setMode('move');
 
   function renderSvg() {
@@ -236,14 +247,24 @@ export function renderMap(store: Store, host: HTMLElement): void {
     terrainBox.style.width = m.width + 'px';
     terrainBox.style.height = m.height + 'px';
     const s = terrainStats(m.terrain, m.width, m.height);
+    /* ⭐ 「看的方式」（第九十七轮）：只决定**怎么画**。控件跟着数据走（在别处改了这里也同步），
+       没有地形时置灰 —— 还没生成出来的地，谈不上用哪种画法。 */
+    const style = terrainStyleOf(m.terrain?.view);
+    if (viewSel.value !== style) viewSel.value = style;
+    viewSel.disabled = !m.terrain;
     genNote.textContent = s && m.terrain
-      ? `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}% · 种子「${m.terrain.seed}」`
+      ? `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}% · 种子「${m.terrain.seed}」 · ${terrainStyleLabel(style)}`
       : '还没有地形';
     const key = m.terrain
       ? `${m.terrain.seed}|${m.terrain.style}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}|${JSON.stringify(m.terrain.paint ?? [])}`
       : '';
-    if (key === terrainKey) return;
+    if (key === terrainKey) {
+      /* 地形没变，但「看的方式」可能变了（面板采用 / 助手改了数据）⇒ **只换渲染参数、不重建画布** */
+      if (terrainStyleKey !== style) { terrainStyleKey = style; terrainHandle?.setStyle(style); }
+      return;
+    }
     terrainKey = key;
+    terrainStyleKey = style;
     terrainHandle?.dispose();
     terrainHandle = null;
     /* ⚠️ 重建前**换一块新画布**：`TerrainView.dispose()` 会 `loseContext()` 把那块画布永久作废，
@@ -444,6 +465,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
     terrainHandle?.dispose();   /* ⭐ 地形画布后面挂着 WebGL 上下文（4 张 2048² FBO）—— 必须销毁 */
     terrainHandle = null;
     terrainKey = '';
+    terrainStyleKey = '';
   };
 
   /* 改动必须发生在 store.update 内部：update() 先把「当前」data 深拷贝进撤销栈，

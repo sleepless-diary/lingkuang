@@ -27,6 +27,7 @@ import {
   type MapGenSummary, type MapPlan, type MapSpec, type MapStyle,
 } from './map-gen';
 import { releaseThumbs, terrainStats, terrainThumbUrl } from './map-terrain';
+import { TERRAIN_STYLES, terrainStyleLabel, terrainStyleOf } from '../mapgen';
 import { openTool } from '../tools/registry';
 
 const BATCH = 6;      /* 一次抽几张（用户选的 6） */
@@ -171,6 +172,11 @@ export function openMapStudio(store: Store): () => void {
 
       <div class="lk-ms__sec" data-sec="tune">
         <div class="lk-ms__row">
+          <label>风格</label>
+          <select id="ms-view">${TERRAIN_STYLES.map((s) => `<option value="${s.id}" title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}</option>`).join('')}</select>
+          <span id="ms-view-hint" class="lk-ms__dim"></span>
+        </div>
+        <div class="lk-ms__row">
           <label>档位</label>
           <select id="ms-style">${MAP_STYLES.map((s) => `<option value="${s.id}">${escapeHtml(s.label)}</option>`).join('')}</select>
           <span id="ms-style-hint" class="lk-ms__dim"></span>
@@ -232,6 +238,15 @@ export function openMapStudio(store: Store): () => void {
   const gridEl = q<HTMLElement>('#ms-grid');
   const styleSel = q<HTMLSelectElement>('#ms-style');
   const hintEl = q<HTMLElement>('#ms-style-hint');
+  /* ⭐ 「风格」（第九十七轮）：**看的方式**（立体 / 等高线 / 平面）—— 与上面的「档位」不是一回事：
+     档位决定"生成什么地形"，风格决定"怎么画出来"。它不进引擎缓存键 ⇒ 换风格不重算地形。 */
+  const viewSel = q<HTMLSelectElement>('#ms-view');
+  const viewHintEl = q<HTMLElement>('#ms-view-hint');
+  const viewNow = () => terrainStyleOf(viewSel.value);
+  const syncViewHint = () => {
+    const hit = TERRAIN_STYLES.find((s) => s.id === viewNow());
+    viewHintEl.textContent = hit ? `${hit.hint}（只换画法，地形不重算）` : '';
+  };
   const seedEl = q<HTMLInputElement>('#ms-seed');
   const descEl = q<HTMLTextAreaElement>('#ms-desc');
   const drawParamsEl = q<HTMLElement>('#ms-draw-params');
@@ -281,7 +296,7 @@ export function openMapStudio(store: Store): () => void {
     /* 预览要跟"采用之后的样子"一致 ⇒ 种子与档位没变时把手刷笔迹也带上（同 `generateIntoMap`） */
     const old = hostStore ? currentWorld(hostStore).maps?.[0]?.terrain : undefined;
     const keepPaint = old && old.seed === p.seed && old.style === p.style ? old.paint : undefined;
-    const t: MapTerrainSpec = { seed: p.seed, style: p.style, spec: p.spec, ...(keepPaint?.length ? { paint: keepPaint } : {}) };
+    const t: MapTerrainSpec = { seed: p.seed, style: p.style, spec: p.spec, view: viewNow(), ...(keepPaint?.length ? { paint: keepPaint } : {}) };
     const seq = ++previewSeq;
     const url = await terrainThumbUrl(t, w, h, PREVIEW_W, PREVIEW_H);
     if (seq !== previewSeq || !openEl) return;
@@ -303,7 +318,7 @@ export function openMapStudio(store: Store): () => void {
 
   const apply = () => {
     if (!cur || !hostStore) { setState('先出一张预览，再采用。'); return; }
-    const r = generateIntoMap(hostStore, { seed: cur.seed, style: cur.style, spec: cur.spec });
+    const r = generateIntoMap(hostStore, { seed: cur.seed, style: cur.style, spec: cur.spec, view: viewNow() });
     setState(r.note);
     syncBrush();
   };
@@ -381,7 +396,7 @@ export function openMapStudio(store: Store): () => void {
     const step = async () => {
       if (!openEl) { rolling = false; return; }
       const c = fresh[i];
-      c.url = await terrainThumbUrl({ seed: c.seed, style: c.style, spec: c.spec }, w, h, CARD_W, CARD_H);
+      c.url = await terrainThumbUrl({ seed: c.seed, style: c.style, spec: c.spec, view: viewNow() }, w, h, CARD_W, CARD_H);
       if (!openEl) { rolling = false; return; }
       renderGrid();
       setState(`抽到第 ${i + 1}/${BATCH} 张…`);
@@ -403,11 +418,31 @@ export function openMapStudio(store: Store): () => void {
     const { w, h } = dims();
     window.setTimeout(async () => {
       if (!openEl) return;
-      c.url = await terrainThumbUrl({ seed: c.seed, style: c.style, spec: c.spec }, w, h, CARD_W, CARD_H);
+      c.url = await terrainThumbUrl({ seed: c.seed, style: c.style, spec: c.spec, view: viewNow() }, w, h, CARD_W, CARD_H);
       if (!openEl) return;
       renderGrid();
       if (picked === i) selectCard(i);
     }, 0);
+  };
+
+  /** ⭐ 换风格（第九十七轮）：卡片是**渲染出来的缩略图** ⇒ 得一张张重出图
+   *  （地形本身没重算 —— 风格只是渲染参数，重画一次而已）。串行出图，与抽卡同一套节奏。 */
+  const repaintCards = () => {
+    if (!cands.length || rolling) return;
+    const { w, h } = dims();
+    const v = viewNow();
+    let i = 0;
+    const step = async () => {
+      if (!openEl) return;
+      const c = cands[i];
+      if (c) {
+        c.url = await terrainThumbUrl({ seed: c.seed, style: c.style, spec: c.spec, view: v }, w, h, CARD_W, CARD_H);
+        if (openEl) renderGrid();
+      }
+      i++;
+      if (i < cands.length) window.setTimeout(() => void step(), 0);
+    };
+    window.setTimeout(() => void step(), 0);
   };
 
   /** AI 直出：真调模型；模型没回出参数 / 没配 AI ⇒ 退回关键词解析（离线可用） */
@@ -473,6 +508,13 @@ export function openMapStudio(store: Store): () => void {
     if (cd) { selectCard(Number(cd.dataset.cand)); return; }
   });
   styleSel.addEventListener('change', () => { syncHint(); fromForm(); });
+  /* ⭐ 风格（第九十七轮）：只换画法 —— 大图立刻重画、卡片重出缩略图，**都不重算地形** */
+  viewSel.addEventListener('change', () => {
+    syncViewHint();
+    if (cur) void previewOf(cur);
+    repaintCards();
+    setState(`风格换成「${terrainStyleLabel(viewNow())}」—— 地形没重算，只是换了个画法。满意就「采用到地图」。`);
+  });
   ['ms-ridges', 'ms-rivers', 'ms-ratio'].forEach((id) =>
     inputOf(id).addEventListener('input', debounced)
   );
@@ -490,10 +532,14 @@ export function openMapStudio(store: Store): () => void {
     const t = { seed: m.terrain.seed, style: m.terrain.style as MapStyle, spec: m.terrain.spec ?? {} };
     fillForm(t.style, t.spec);
     seedEl.value = t.seed;
+    /* 接着上一轮"看的方式"（没有这个字段的旧数据 ⇒ 落回默认「立体」）*/
+    viewSel.value = terrainStyleOf(m.terrain.view);
+    syncViewHint();
     void previewOf({ ...t, matched: [] });
     setState(`这是「${m.name}」现在的地形 —— 改参数或抽一张，满意了再采用。`);
   } else {
     fillForm('continent', {});
+    syncViewHint();
     fromForm();
     setState('挑一套参数或抽几张 —— 预览满意了按「采用到地图」。');
   }
