@@ -23,15 +23,19 @@ import type { MapTerrainSpec } from '../store/types';
 import { aiChat, splitReply } from './ai';
 import { escapeHtml } from './html';
 import {
-  MAP_STYLES, generateIntoMap, parseMapPrompt, planGeneration, styleHint,
+  MAP_LIMITS, MAP_STYLES, generateIntoMap, parseMapPrompt, planGeneration, styleHint,
   type MapGenSummary, type MapPlan, type MapSpec, type MapStyle,
 } from './map-gen';
-import { terrainDataUrl, terrainSummary, terrainVectors } from './map-terrain';
+import { releaseThumbs, terrainStats, terrainThumbUrl } from './map-terrain';
 import { openTool } from '../tools/registry';
 
 const BATCH = 6;      /* 一次抽几张（用户选的 6） */
 const KEEP = 12;      /* 抽过的保留多少张（翻得回去） */
 const DEBOUNCE = 300; /* 调参数 → 出预览的防抖 */
+const PREVIEW_W = 720; /* 大图（缩略图是渲染结果缩放出来的，不是另画一遍） */
+const PREVIEW_H = 400;
+const CARD_W = 264;   /* 抽卡小图 */
+const CARD_H = 147;
 
 interface Cand { seed: string; style: MapStyle; spec: MapSpec; url: string }
 
@@ -63,24 +67,16 @@ export function closeMapStudio(): void {
   if (dbTimer !== null) { window.clearTimeout(dbTimer); dbTimer = null; }
   disposeInner?.();
   disposeInner = null;
+  releaseThumbs();   /* ⭐ 离屏视图后面挂着 WebGL 上下文（64MB 显存）—— 关面板就还回去 */
   el.remove();
   window.dispatchEvent(new CustomEvent('lingkuang-panel', { detail: { id: 'mapgen', open: false } }));
 }
 
+/** 预览上的统计行（顺手把"最长的河"也标出来 —— 内核有这条数据） */
 function sumLine(s: MapGenSummary): string {
-  return `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.zones} 个地形区 · ${s.rivers} 条河 · `
+  const river = s.longestRiver > 0 ? `（最长一条 ${s.longestRiver} 格）` : '';
+  return `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.zones} 个地形区 · ${s.rivers} 条河${river} · `
     + `${s.lakes} 个湖 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}%`;
-}
-
-/** 预览上的矢量层（岸线/湖岸/河）：与地图栏同一份数据、同一套颜色 —— 预览里看到的
- *  就是采用之后地图上的样子。`non-scaling-stroke` 让描边在缩小的预览里也保持 1 像素的清晰度。 */
-function vectorSvg(t: MapTerrainSpec, w: number, h: number): string {
-  const v = terrainVectors(t, w, h);
-  const draw = (list: string[], stroke: string, width: number) =>
-    list.map((d) => `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${width}" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`).join('');
-  return draw(v.coast, 'rgba(22,34,46,.72)', 1.3)
-    + draw(v.lakes, 'rgba(30,56,78,.7)', 1.1)
-    + draw(v.rivers, 'rgba(64,104,132,.6)', 1);
 }
 
 /* ── AI 直出：一句话 → 参数 JSON（认不出就退回关键词解析）───────────────────── */
@@ -90,10 +86,11 @@ const AI_SYS = '你是世界地图生成器的参数解析器。把创作者的�
 function aiPrompt(desc: string): string {
   return [
     '把下面这句话翻译成地图生成参数。',
-    '档位 style（三选一）：continent = 大陆（两三块大陆 + 几座岛）／archipelago = 群岛（一片岛链）／pangaea = 盘古（一整块超级大陆）。',
-    '可选参数（没有的就不写，别硬凑）：lands 陆块数 0-6、islands 岛数 0-12、ridges 山脉数 0-12、rivers 河流数 0-12、lakes 湖泊数 0-12、landRatio 陆地占比 0.15-0.6。',
+    '档位 style（三选一）：continent = 大陆／archipelago = 群岛（海岸线碎、岛多）／pangaea = 盘古（一整块超级大陆）。',
+    '可选参数（没有的就不写，别硬凑）：ridges 山脊密度 1-8（越大山越多越密）、rivers 河流密度 0-4、landRatio 陆地占比 0.15-0.6。',
+    '注意：**陆块数与岛数不是参数**（由档位与随机决定），别输出 lands/islands/lakes。',
     `创作者的话：${desc}`,
-    '只输出形如 {"style":"archipelago","islands":8,"rivers":4,"lakes":2,"landRatio":0.28} 的一行 JSON。',
+    '只输出形如 {"style":"archipelago","rivers":3,"landRatio":0.28} 的一行 JSON。',
   ].join('\n');
 }
 
@@ -120,11 +117,8 @@ function parseAiParams(raw: string): { style?: MapStyle; spec: MapSpec } | null 
     if (!Number.isFinite(n)) return undefined;
     return Math.max(lo, Math.min(hi, Math.round(n)));
   };
-  const lands = int(src.lands, 0, 6);          if (lands !== undefined) spec.lands = lands;
-  const islands = int(src.islands, 0, 12);     if (islands !== undefined) spec.islands = islands;
-  const ridges = int(src.ridges, 0, 12);       if (ridges !== undefined) spec.ridges = ridges;
-  const rivers = int(src.rivers, 0, 12);       if (rivers !== undefined) spec.rivers = rivers;
-  const lakes = int(src.lakes, 0, 12);         if (lakes !== undefined) spec.lakes = lakes;
+  const ridges = int(src.ridges, 1, 8);        if (ridges !== undefined) spec.ridges = ridges;
+  const rivers = int(src.rivers, 0, 4);        if (rivers !== undefined) spec.rivers = rivers;
   const ratio = Number(src.landRatio);
   if (Number.isFinite(ratio) && ratio > 0) spec.landRatio = Math.max(0.15, Math.min(0.6, ratio > 1 ? ratio / 100 : ratio));
   /* 档位和参数一个都没给 ⇒ 当它没回出东西（哪怕 JSON 是合法的） */
@@ -134,11 +128,8 @@ function parseAiParams(raw: string): { style?: MapStyle; spec: MapSpec } | null 
 
 function describeParams(style: MapStyle, spec: MapSpec): string {
   const bits: string[] = [MAP_STYLES.find((s) => s.id === style)?.label ?? style];
-  if (spec.lands !== undefined) bits.push(`${spec.lands} 块陆地`);
-  if (spec.islands !== undefined) bits.push(`${spec.islands} 座岛`);
-  if (spec.ridges !== undefined) bits.push(`${spec.ridges} 条山脉`);
-  if (spec.rivers !== undefined) bits.push(`${spec.rivers} 条河`);
-  if (spec.lakes !== undefined) bits.push(`${spec.lakes} 个湖`);
+  if (spec.ridges !== undefined) bits.push(`山脊密度 ${spec.ridges}`);
+  if (spec.rivers !== undefined) bits.push(`河流密度 ${spec.rivers}`);
   if (spec.landRatio !== undefined) bits.push(`陆地占 ${Math.round(spec.landRatio * 100)}%`);
   return bits.join(' · ');
 }
@@ -174,7 +165,6 @@ export function openMapStudio(store: Store): () => void {
     <div class="lk-ms__body">
       <div class="lk-ms__stage">
         <img id="ms-img" alt="" style="display:none;">
-        <svg id="ms-vec" viewBox="0 0 900 500" preserveAspectRatio="none"></svg>
         <div id="ms-empty" class="lk-ms__empty">还没有预览</div>
       </div>
       <div id="ms-note" class="lk-ms__note"></div>
@@ -186,13 +176,11 @@ export function openMapStudio(store: Store): () => void {
           <span id="ms-style-hint" class="lk-ms__dim"></span>
         </div>
         <div class="lk-ms__grid">
-          <label>陆地（块）<input id="ms-lands" type="number" min="0" max="6" placeholder="自动"></label>
-          <label>岛（座）<input id="ms-islands" type="number" min="0" max="12" placeholder="自动"></label>
-          <label>山脉（条）<input id="ms-ridges" type="number" min="0" max="12" placeholder="自动"></label>
-          <label>河流（条）<input id="ms-rivers" type="number" min="0" max="12" placeholder="自动"></label>
-          <label>湖（个）<input id="ms-lakes" type="number" min="0" max="12" placeholder="自动"></label>
+          <label>山脊密度<input id="ms-ridges" type="number" min="1" max="8" placeholder="按档位"></label>
+          <label>河流密度<input id="ms-rivers" type="number" min="0" max="4" placeholder="按档位"></label>
           <label>陆地占比（%）<input id="ms-ratio" type="number" min="15" max="60" placeholder="按档位"></label>
         </div>
+        <div id="ms-limits" class="lk-ms__hint"></div>
         <div class="lk-ms__row">
           <label>种子</label>
           <input id="ms-seed" placeholder="留空 = 用「灵框」，同一颗种子永远同一片地">
@@ -228,8 +216,9 @@ export function openMapStudio(store: Store): () => void {
 
   const q = <T extends HTMLElement>(sel: string) => card.querySelector(sel) as T;
   const img = q<HTMLImageElement>('#ms-img');
-  const vec = q('#ms-vec');
   const emptyEl = q<HTMLElement>('#ms-empty');
+  const limitsEl = q<HTMLElement>('#ms-limits');
+  limitsEl.innerHTML = MAP_LIMITS.map((t) => `· ${escapeHtml(t)}`).join('<br>');
   const noteEl = q<HTMLElement>('#ms-note');
   const stateEl = q<HTMLElement>('#ms-state');
   const gridEl = q<HTMLElement>('#ms-grid');
@@ -255,12 +244,9 @@ export function openMapStudio(store: Store): () => void {
   const formParams = (): { style: MapStyle; spec: MapSpec; seed: string } => {
     const style = (styleSel.value || 'continent') as MapStyle;
     const spec: MapSpec = {};
-    const clampInt = (v: number | undefined, hi: number) => (v === undefined ? undefined : Math.max(0, Math.min(hi, Math.round(v))));
-    const lands = clampInt(numOf('ms-lands'), 6);      if (lands !== undefined) spec.lands = lands;
-    const islands = clampInt(numOf('ms-islands'), 12);  if (islands !== undefined) spec.islands = islands;
-    const ridges = clampInt(numOf('ms-ridges'), 12);    if (ridges !== undefined) spec.ridges = ridges;
-    const rivers = clampInt(numOf('ms-rivers'), 12);    if (rivers !== undefined) spec.rivers = rivers;
-    const lakes = clampInt(numOf('ms-lakes'), 12);      if (lakes !== undefined) spec.lakes = lakes;
+    const clampInt = (v: number | undefined, lo: number, hi: number) => (v === undefined ? undefined : Math.max(lo, Math.min(hi, Math.round(v))));
+    const ridges = clampInt(numOf('ms-ridges'), 1, 8);  if (ridges !== undefined) spec.ridges = ridges;
+    const rivers = clampInt(numOf('ms-rivers'), 0, 4);  if (rivers !== undefined) spec.rivers = rivers;
     const ratio = numOf('ms-ratio');                    if (ratio !== undefined) spec.landRatio = Math.max(0.15, Math.min(0.6, ratio / 100));
     return { style, spec, seed: seedEl.value.trim() };
   };
@@ -271,31 +257,33 @@ export function openMapStudio(store: Store): () => void {
   const fillForm = (style: MapStyle | undefined, spec: MapSpec) => {
     if (style) styleSel.value = style;
     const put = (id: string, v: number | undefined) => { inputOf(id).value = v === undefined ? '' : String(v); };
-    put('ms-lands', spec.lands);
-    put('ms-islands', spec.islands);
     put('ms-ridges', spec.ridges);
     put('ms-rivers', spec.rivers);
-    put('ms-lakes', spec.lakes);
     put('ms-ratio', spec.landRatio === undefined ? undefined : Math.round(spec.landRatio * 100));
     syncHint();
   };
 
-  /** 出一张预览（**只画，不落盘** —— 落盘只在「采用到地图」那一下） */
-  const previewOf = (p: MapPlan) => {
+  /** 出一张预览（**只画，不落盘** —— 落盘只在「采用到地图」那一下）。
+   *  ⚠️ **异步**：图是内核现渲染的（要等渲染循环那一帧、再从 WebGL 读像素），
+   *  所以用序号把"改完参数之前的那些请求"作废，免得旧图后到盖掉新图。 */
+  let previewSeq = 0;
+  const previewOf = async (p: MapPlan) => {
     cur = p;
     const { w, h } = dims();
     const t: MapTerrainSpec = { seed: p.seed, style: p.style, spec: p.spec };
-    img.src = terrainDataUrl(t, w, h);
-    img.style.display = '';
-    emptyEl.style.display = 'none';
-    vec.setAttribute('viewBox', `0 0 ${w} ${h}`);
-    vec.innerHTML = vectorSvg(t, w, h);
-    noteEl.textContent = `${sumLine(terrainSummary(t, w, h))} · 种子「${p.seed}」`;
+    const seq = ++previewSeq;
+    const url = await terrainThumbUrl(t, w, h, PREVIEW_W, PREVIEW_H);
+    if (seq !== previewSeq || !openEl) return;
+    img.src = url;
+    img.style.display = url ? '' : 'none';
+    emptyEl.style.display = url ? 'none' : '';
+    const s = terrainStats(t, w, h);
+    noteEl.textContent = s ? `${sumLine(s)} · 种子「${p.seed}」` : `种子「${p.seed}」`;
   };
   const fromForm = () => {
     const f = formParams();
     syncHint();
-    previewOf(planGeneration({ seed: f.seed, style: f.style, spec: f.spec }));
+    void previewOf(planGeneration({ seed: f.seed, style: f.style, spec: f.spec }));
   };
   const debounced = () => {
     if (dbTimer !== null) window.clearTimeout(dbTimer);
@@ -313,10 +301,9 @@ export function openMapStudio(store: Store): () => void {
   const randomParams = (): { style: MapStyle; spec: MapSpec } => {
     const styles: MapStyle[] = ['continent', 'archipelago', 'pangaea'];
     const spec: MapSpec = {
-      islands: ri(0, 10), ridges: ri(2, 8), rivers: ri(2, 7), lakes: ri(0, 6),
-      landRatio: Math.round((0.2 + Math.random() * 0.25) * 100) / 100,
+      ridges: ri(2, 8), rivers: ri(0, 4),
+      landRatio: Math.round((0.2 + Math.random() * 0.28) * 100) / 100,
     };
-    if (Math.random() < 0.6) spec.lands = ri(1, 4);
     return { style: styles[Math.floor(Math.random() * styles.length)], spec };
   };
 
@@ -339,7 +326,7 @@ export function openMapStudio(store: Store): () => void {
     const c = cands[i];
     if (!c) return;
     picked = i;
-    previewOf({ seed: c.seed, style: c.style, spec: c.spec, matched: [] });
+    void previewOf({ seed: c.seed, style: c.style, spec: c.spec, matched: [] });
     renderGrid();
   };
   /** 抽一批：**一张一张地翻**（生成一张约 60~150ms，串行出图才不会整片白等） */
@@ -357,20 +344,21 @@ export function openMapStudio(store: Store): () => void {
     renderGrid();
     const { w, h } = dims();
     let i = 0;
-    const step = () => {
+    const step = async () => {
       if (!openEl) { rolling = false; return; }
       const c = fresh[i];
-      c.url = terrainDataUrl({ seed: c.seed, style: c.style, spec: c.spec }, w, h);
+      c.url = await terrainThumbUrl({ seed: c.seed, style: c.style, spec: c.spec }, w, h, CARD_W, CARD_H);
+      if (!openEl) { rolling = false; return; }
       renderGrid();
       setState(`抽到第 ${i + 1}/${BATCH} 张…`);
       i++;
-      if (i < BATCH) window.setTimeout(step, 0);
+      if (i < BATCH) window.setTimeout(() => void step(), 0);
       else {
         rolling = false;
         if (openEl) { selectCard(0); setState('点一张看大图；满意就「用这张」或底下「采用到地图」（一次 Ctrl+Z 能撤）。'); }
       }
     };
-    window.setTimeout(step, 0);
+    window.setTimeout(() => void step(), 0);
   };
   const rerollOne = (i: number) => {
     const c = cands[i];
@@ -379,9 +367,10 @@ export function openMapStudio(store: Store): () => void {
     c.url = '';
     renderGrid();
     const { w, h } = dims();
-    window.setTimeout(() => {
+    window.setTimeout(async () => {
       if (!openEl) return;
-      c.url = terrainDataUrl({ seed: c.seed, style: c.style, spec: c.spec }, w, h);
+      c.url = await terrainThumbUrl({ seed: c.seed, style: c.style, spec: c.spec }, w, h, CARD_W, CARD_H);
+      if (!openEl) return;
       renderGrid();
       if (picked === i) selectCard(i);
     }, 0);
@@ -413,7 +402,7 @@ export function openMapStudio(store: Store): () => void {
        创作者下一次改任何参数（防抖 fromForm）就会拿表单里那颗老种子重算 —— 预览会莫名其妙跳回旧图。 */
     seedEl.value = desc;
     syncHint();
-    previewOf(planGeneration({ description: desc, seed: desc, style, spec }));
+    void previewOf(planGeneration({ description: desc, seed: desc, style, spec }));
     if (got) setState(`AI 给的参数：${describeParams(style, spec)}。种子 = 你这句话；不抽一张？`);
     else if (err) setState(`没连上 AI（${err}）—— 这次按关键词解析：${describeParams(style, spec)}`);
     else if (kw.matched.length) setState(`AI 没回出参数，这次按关键词解析（${kw.matched.join('、')}）—— 结果填进「自己调」了`);
@@ -450,7 +439,7 @@ export function openMapStudio(store: Store): () => void {
     if (cd) { selectCard(Number(cd.dataset.cand)); return; }
   });
   styleSel.addEventListener('change', () => { syncHint(); fromForm(); });
-  ['ms-lands', 'ms-islands', 'ms-ridges', 'ms-rivers', 'ms-lakes', 'ms-ratio'].forEach((id) =>
+  ['ms-ridges', 'ms-rivers', 'ms-ratio'].forEach((id) =>
     inputOf(id).addEventListener('input', debounced)
   );
   seedEl.addEventListener('input', debounced);
@@ -466,7 +455,7 @@ export function openMapStudio(store: Store): () => void {
     const t = { seed: m.terrain.seed, style: m.terrain.style as MapStyle, spec: m.terrain.spec ?? {} };
     fillForm(t.style, t.spec);
     seedEl.value = t.seed;
-    previewOf({ ...t, matched: [] });
+    void previewOf({ ...t, matched: [] });
     setState(`这是「${m.name}」现在的地形 —— 改参数或抽一张，满意了再采用。`);
   } else {
     fillForm('continent', {});

@@ -1,12 +1,13 @@
 /** 地图模块——手绘矢量地图（区域 + 标记）+ **生成地形**，存 ws.maps[]
  *
- *  ⭐ 2026-10-13（用户：「我建议先做一个基础的，看起来像的地图生成，真实模拟是额外附件」）：
- *  顶栏多一排「种子 + 档位 + 生成地形」控件，调 `src/ui/map-gen.ts` 的纯函数生成一张底稿。
- *  ⭐ 同日第二轮（用户选**混合方案**：「地形主要是拿来看，文化分区什么的主要是拿来动手」）：
- *  **地形 = 栅格位图**（有光影、好看，最底层）+ **岸线/湖岸/河 = 矢量描边**（同一套噪声场派生、
- *  放大不糊、以后能点，见 `src/ui/map-terrain.ts` 的 `terrainVectors`）；**文化分区仍是手绘
- *  `regions`**（可拖拽、可改，压在底图之上）⇒「生成作底稿、手绘精修」。
- *  整次生成只走一次 `save()` ⇒ 一步 Ctrl+Z 撤销回去。
+ *  ⭐ 2026-10-15（用户：「好丑，有没有现成的轮子，我们生成的地图好假」→ 选定 A2「整包搬 mapgen4」）：
+ *  **地形从"我们自己画的栅格图 + 矢量岸线"整体换成内核渲染的 WebGL 画布**
+ *  （`src/mapgen/`，Apache-2.0，见 `src/mapgen/NOTICE.md`）—— 山成峰、河成网、迎风坡降雨、
+ *  山体阴影与描边全由内核的 shader 画（原来那三条 SVG 岸线/湖岸/河因此删掉：内核已经画了）。
+ *  层序变成：**地形画布（最底）→ 手绘 `regions` 文化分区（动手层）→ 手绘开放线 → 标记**。
+ *  ⚠️ 画布与 SVG 一起放在 `#map-stage` 里：`fitView()` / 平移只动这**一个**元素，
+ *  两者永远对齐（坐标都是地图自己的 900×500 空间，手绘落点不用换算）。
+ *  内核世界是方的、内部位图 2048² ⇒ 取**中间横带**铺满地图格子（`bandLayout()`），不拉伸。
  *  ⭐ 2026-10-14（用户：「生成做成一个独立的面板吧，两种，创作者自己一个个调参数或者 AI 直出，
  *  可以抽卡」）：生成控件**从这里搬走**，进了 `src/ui/map-studio.ts` 那层悬浮面板；
  *  地图栏只留「生成地形…」一个入口 + 一行现状（`#map-gen-note`）。 */
@@ -16,7 +17,7 @@ import { uid } from '../store/ids';
 import type { MapData } from '../store/types';
 import { escapeHtml } from './html';
 import { DEFAULT_MAP, polylinePath, smoothClosedPath } from './map-gen';
-import { terrainDataUrl, terrainSummary, terrainVectors } from './map-terrain';
+import { mountTerrain, terrainStats } from './map-terrain';
 import { openMapStudioFromToolbar } from './map-studio';
 
 type Mode = 'region' | 'marker' | 'move';
@@ -72,11 +73,20 @@ export function renderMap(store: Store, host: HTMLElement): void {
         <span id="map-hint" style="font-size:var(--text-xs);color:var(--fg-2);">拖拽画区域（松开闭合）</span>
       </div>
       <div style="flex:1;position:relative;overflow:hidden;">
-        <svg id="map-svg" width="${curMap()?.width ?? 900}" height="${curMap()?.height ?? 500}" style="position:absolute;left:0;top:0;background:var(--surface-2);touch-action:none;"></svg>
+        <div id="map-stage" style="position:absolute;left:0;top:0;transform-origin:0 0;">
+          <div id="map-terrain" style="position:absolute;left:0;top:0;background:var(--surface-2);overflow:hidden;"></div>
+          <svg id="map-svg" width="${curMap()?.width ?? 900}" height="${curMap()?.height ?? 500}" style="position:absolute;left:0;top:0;background:transparent;touch-action:none;"></svg>
+        </div>
       </div>
     </div>`;
 
   const svg = host.querySelector('#map-svg') as unknown as SVGSVGElement;
+  /* 缩放/平移只动 #map-stage（画布与 SVG 的公共父层）⇒ 两层永远对齐 */
+  const stage = host.querySelector('#map-stage') as HTMLElement;
+  const terrainBox = host.querySelector('#map-terrain') as HTMLElement;
+  let terrainCanvas: HTMLCanvasElement | null = null;
+  let disposeTerrain: (() => void) | null = null;
+  let terrainKey = '';
   const hint = host.querySelector('#map-hint') as HTMLElement;
   let labelSeq = 1;
 
@@ -110,31 +120,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
   function renderSvg() {
     const m = curMap();
     if (!m) { svg.innerHTML = ''; return; }   /* maps 瞬时缺失（worldsets 被整体替换中）→ 这一帧不画 */
-    /* 现状一行（生成工作室搬走之后，这里是「现在长的是什么」的唯一去处）：
-       参数直接从缓存里取统计，不重算 —— 这一帧的 `terrainVectors()` 刚算过同一份网格。 */
-    const s = m.terrain ? terrainSummary(m.terrain, m.width, m.height) : null;
-    genNote.textContent = s && m.terrain
-      ? `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.zones} 个地形区 · ${s.rivers} 条河 · ${s.lakes} 个湖 · 种子「${m.terrain.seed}」`
-      : '还没有地形';
-    /* ⭐ 生成的地形 = 一张现算出来的图（`src/ui/map-terrain.ts`）。
-       画在最底层，手绘的区域 / 标记 / 轨迹都盖在它上面 ⇒「生成作底稿、手绘精修」。 */
-    const terr = terrainDataUrl(m.terrain, m.width, m.height);
-    const terrain = terr
-      ? `<image href="${terr}" x="0" y="0" width="${m.width}" height="${m.height}" preserveAspectRatio="none" data-terrain="1" style="pointer-events:none;"/>`
-      : '';
-    /* ⭐ 矢量层（同一份网格派生）：岸线 / 湖岸 / 河 —— 底图是位图（放大糊），
-       地图之所以像地图靠的是这几条**线**（放大不糊、以后能点、能挂设定）。
-       一律 `pointer-events:none`：它们是底稿，不许挡住画区域 / 放标记 / 平移。 */
-    const vec = terrainVectors(m.terrain, m.width, m.height);
-    const coast = vec.coast
-      .map((d) => `<path d="${d}" fill="none" stroke="rgba(22,34,46,.72)" stroke-width="1.3" stroke-linejoin="round" data-coast="1" style="pointer-events:none;"/>`)
-      .join('');
-    const lakeEdge = vec.lakes
-      .map((d) => `<path d="${d}" fill="none" stroke="rgba(30,56,78,.7)" stroke-width="1.1" data-lake="1" style="pointer-events:none;"/>`)
-      .join('');
-    const riverLine = vec.rivers
-      .map((d) => `<path d="${d}" fill="none" stroke="rgba(64,104,132,.6)" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" data-river="1" style="pointer-events:none;"/>`)
-      .join('');
+    syncTerrain(m);
     const regions = m.regions
       .map(
         (r) =>
@@ -158,28 +144,63 @@ export function renderMap(store: Store, host: HTMLElement): void {
       )
       .join('');
     const drawingPath = drawing.length > 1 ? `<path d="${smoothClosedPath(drawing)}" fill="rgba(158,194,98,.15)" stroke="var(--accent)" stroke-width="1" stroke-dasharray="4 2"/>` : '';
-    /* 层序：地形图（底）→ 文化分区色块（**动手层**）→ 岸线/湖岸/河（压在上面才清晰）
-       → 手绘开放线 → 标记 → 正在画的那一笔。 */
-    svg.innerHTML = terrain + regions + coast + lakeEdge + riverLine + lines + markers + drawingPath;
+    /* 层序：地形画布（`#map-terrain`，**在 SVG 底下**，内核渲染的）+ 手绘开放线 → 标记
+       → 正在画的那一笔。（原来的矢量岸线/湖岸/河已删：内核的 shader 自己会画。）*/
+    svg.innerHTML = regions + lines + markers + drawingPath;
+  }
+
+  /* ── 地形画布：只在**参数真的变了**的时候重建（生成一次约 30~60ms），
+     同一帧里手绘层的重画不影响它。参数键一样 ⇒ 什么都不做。 */
+  function syncTerrain(m: MapData) {
+    terrainBox.style.width = m.width + 'px';
+    terrainBox.style.height = m.height + 'px';
+    const s = terrainStats(m.terrain, m.width, m.height);
+    genNote.textContent = s && m.terrain
+      ? `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}% · 种子「${m.terrain.seed}」`
+      : '还没有地形';
+    const key = m.terrain
+      ? `${m.terrain.seed}|${m.terrain.style}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}`
+      : '';
+    if (key === terrainKey) return;
+    terrainKey = key;
+    disposeTerrain?.();
+    disposeTerrain = null;
+    if (!m.terrain) { terrainCanvas?.remove(); terrainCanvas = null; return; }
+    if (!terrainCanvas) {
+      terrainCanvas = document.createElement('canvas');
+      terrainCanvas.id = 'map-terrain-canvas';
+      terrainCanvas.setAttribute('data-terrain', '1');
+      terrainBox.appendChild(terrainCanvas);
+    }
+    try {
+      disposeTerrain = mountTerrain(terrainCanvas, m.terrain, m.width, m.height);
+    } catch {
+      /* 拿不到 WebGL（老机器/禁用显卡）⇒ 地图栏退化成"只有手绘层"，不炸整个沙盘 */
+      genNote.textContent = '这台机器开不了 WebGL2，地形画不出来（手绘区域照常能用）';
+      terrainCanvas.remove();
+      terrainCanvas = null;
+      terrainKey = '';
+    }
   }
 
   let panning = false, panX = 0, panY = 0, panSX = 0, panSY = 0;
 
   /* ⭐ 适应窗口：地图数据一直是 900×500，而沙盘右半边那格比它窄 —— 不缩的话生成完只能
      看到左上角一块（2026-10-13 真机截图发现的）。缩放只动 CSS transform，不动数据；
-     代价是**指针坐标要按缩放比换算回 SVG 用户坐标**（见 `local()`），否则手绘会画偏。 */
+     代价是**指针坐标要按缩放比换算回 SVG 用户坐标**（见 `local()`），否则手绘会画偏。
+     ⚠️ 动的元素是 `#map-stage`（地形画布与 SVG 的公共父层）—— 只动 SVG 的话地形会跟着错位。 */
   let viewScale = 1;
   function fitView() {
     const m = curMap();
-    const box = svg.parentElement;
+    const box = stage.parentElement;
     if (!m || !box) return;
     const bw = box.clientWidth || m.width;
     const bh = box.clientHeight || m.height;
     viewScale = Math.min(bw / m.width, bh / m.height, 1);
-    svg.style.transformOrigin = '0 0';
-    svg.style.transform = `scale(${viewScale})`;
-    svg.style.left = Math.max(0, Math.round((bw - m.width * viewScale) / 2)) + 'px';
-    svg.style.top = Math.max(0, Math.round((bh - m.height * viewScale) / 2)) + 'px';
+    stage.style.transformOrigin = '0 0';
+    stage.style.transform = `scale(${viewScale})`;
+    stage.style.left = Math.max(0, Math.round((bw - m.width * viewScale) / 2)) + 'px';
+    stage.style.top = Math.max(0, Math.round((bh - m.height * viewScale) / 2)) + 'px';
   }
   /** 视口坐标 → SVG 用户坐标（缩放后 rect 变小了，必须除回来） */
   function local(e: PointerEvent): [number, number] {
@@ -223,8 +244,8 @@ export function renderMap(store: Store, host: HTMLElement): void {
       /* 平移基准取当前 inline style 的 left/top——与下面赋值的 style.left/top 同一坐标系。
          旧代码用 getBoundingClientRect()（视口坐标）当基准，第一帧会把 SVG 平移一个
          「容器在视口中的偏移」那么多，表现为一拖就瞬移。 */
-      panX = parseFloat(svg.style.left) || 0;
-      panY = parseFloat(svg.style.top) || 0;
+      panX = parseFloat(stage.style.left) || 0;
+      panY = parseFloat(stage.style.top) || 0;
     }
   });
   const onMove = (e: PointerEvent) => {
@@ -238,13 +259,18 @@ export function renderMap(store: Store, host: HTMLElement): void {
       drawing.push(local(e));
       renderSvg();
     } else if (panning) {
-      svg.style.left = panX + (e.clientX - panSX) + 'px';
-      svg.style.top = panY + (e.clientY - panSY) + 'px';
+      stage.style.left = panX + (e.clientX - panSX) + 'px';
+      stage.style.top = panY + (e.clientY - panSY) + 'px';
     }
   };
   const onUp = () => endDrag(true);
   const onCancel = () => endDrag(false);
   const onResize = () => fitView();
+  /* ⭐ 只监听 window.resize 是不够的：地图栏**自己**也会变高变矮 —— 上面那行状态文字一变长
+     （生成地形后正是如此）就换行、工具栏变高、下面的格子变矮，而缩放还按老高度算 ⇒
+     图被切掉一截（第九十三轮实测：格子 289→261，缩放仍按 289）。ResizeObserver 一并盯住。 */
+  const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => fitView()) : null;
+  if (ro && stage.parentElement) ro.observe(stage.parentElement);
   mapCleanup?.();
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
@@ -255,6 +281,10 @@ export function renderMap(store: Store, host: HTMLElement): void {
     window.removeEventListener('pointerup', onUp);
     window.removeEventListener('pointercancel', onCancel);
     window.removeEventListener('resize', onResize);
+    ro?.disconnect();
+    disposeTerrain?.();   /* ⭐ 地形画布后面挂着 WebGL 上下文（4 张 2048² FBO）—— 必须销毁 */
+    disposeTerrain = null;
+    terrainKey = '';
   };
 
   /* 改动必须发生在 store.update 内部：update() 先把「当前」data 深拷贝进撤销栈，

@@ -135,6 +135,9 @@ export interface MapgenSpecInput {
   landRatio?: number;
   ridges?: number;
   rivers?: number;
+  /* 索引签名：这份 spec 要存进 `MapData.terrain.spec`（数据层用的是宽索引签名），
+     少这一行 TS 会拦「没有索引签名」（第九十三轮踩过）。 */
+  [k: string]: number | undefined;
 }
 
 export const DEFAULT_SPEC: Required<MapgenSpecInput> = { landRatio: 0.34, ridges: 4, rivers: 1 };

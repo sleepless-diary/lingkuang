@@ -1,112 +1,150 @@
-/** 地形作图：把 `src/ui/map-gen.ts` 算出来的像素搬进 canvas、编码成 PNG dataURL；
- *  顺便把同一份网格里的**矢量线**（海岸线 / 湖岸 / 河）翻成 SVG path（2026-10-13 混合方案）。
+/** 地形层：把 `src/mapgen`（vendored mapgen4）接到界面上。
  *
- *  为什么用 canvas 而不是塞图进数据文件：
- *    · `MapData.terrain` 里只存**参数**（种子/档位/数量），worldbuilding.json 只多几百字节；
- *    · 图在渲染时现算（纯函数 + 确定性）⇒ 换机器、换会话都是同一片地，也不怕文件膨胀；
- *    · PNG 编码交给浏览器（`toDataURL`），**零依赖**，不用自己写编码器。
+ *  三件事，都是"把内核包成界面好用的形状"：
+ *    · **引擎缓存**：同一份参数（种子/档位/数量/尺寸）只建一次网格、只生成一次；
+ *    · **画布挂载**：内核世界是**方的**（1000×1000 网格、内部 2048² 位图），灵框地图是
+ *      900×500 ⇒ 不缩放拉伸（那会把山河拉扁），而是**取中间那条横带**显示（`bandLayout`）。
+ *      这一条是 2026-10-15 定下的：裁带 vs 拉扁，选了裁带 —— 上游的着色/光照假设世界是方的。
+ *    · **缩略图**：生成面板的预览与抽卡要的是 dataURL（`terrainThumbUrl`），
+ *      走内核自带的 screenshot 通道（WebGL 缓冲区不保留，只能在同一帧里 `readPixels`）。
  *
- *  ⭐ 混合方案（用户 2026-10-13：「地形主要是拿来看，文化分区什么的主要是拿来动手」）：
- *    栅格 = 地形本体（看）；矢量 = 岸线/湖岸/河（描边，放大不糊，以后能点能挂设定）。
- *    两者都从**同一份网格**派生 ⇒ 缓存网格，避免算两遍（900×500 约 60~150ms）。
- *  ⚠️ 缓存只按参数键 —— 同一份参数必然同一张图（生成器的确定性是前提）。 */
+ *  ⚠️ 图**不落盘**：`MapData.terrain` 里只存参数（种子/档位/数量，几百字节），
+ *  渲染时现算（确定性：同一份参数永远同一片地）。 */
 
-import { buildTerrain, polylinePath, smoothClosedPath, type MapStyle, type MapSpec, type TerrainGrid, type TerrainPath } from './map-gen';
+import {
+  BAND, TerrainView, createEngineFor, runGeneration, statsOf,
+  type MapgenSpecInput, type TerrainEngine, type TerrainStats,
+} from '../mapgen';
 import type { MapTerrainSpec } from '../store/types';
 
-const keyOf = (t: MapTerrainSpec, w: number, h: number) => `${t.seed}|${t.style}|${JSON.stringify(t.spec ?? {})}|${w}x${h}`;
+export type { TerrainStats };
 
-/* 网格缓存：栅格图与矢量线都从它派生（一张 225×125 的网格约 225KB，留 3 张够撤销重做来回） */
-const grids = new Map<string, TerrainGrid>();
+/** 内核位图边长（`render.ts` 的 `fbo_texture_size`；改那里就得改这里） */
+export const TERRAIN_BITMAP = 2048;
+/** 默认渲染参数下画布能看到的世界范围（`zoom = 100/480`、`x = y = 500`）*/
+const WORLD_VIEW = 960;
 
-function gridOf(t: MapTerrainSpec, w: number, h: number): TerrainGrid {
+/* ── 引擎缓存 ─────────────────────────────────────────────────────────────── */
+
+interface Cached { engine: TerrainEngine; stats: TerrainStats }
+const engines = new Map<string, Cached>();
+const MAX_ENGINES = 8;
+
+const keyOf = (t: MapTerrainSpec, w: number, h: number) =>
+  `${t.seed}|${t.style}|${JSON.stringify(t.spec ?? {})}|${w}x${h}`;
+
+/** 参数 → 引擎（含统计）。建一次网格约 30~70ms、生成约 30~60ms ⇒ 必须缓存。 */
+export function terrainEngine(t: MapTerrainSpec, w: number, h: number): Cached {
   const key = keyOf(t, w, h);
-  const hit = grids.get(key);
+  const hit = engines.get(key);
   if (hit) return hit;
-  const g = buildTerrain(t, w, h);
-  grids.set(key, g);
-  if (grids.size > 3) {
-    const first = grids.keys().next().value;
-    if (first !== undefined && first !== key) grids.delete(first);
-  }
-  return g;
-}
-
-const cache = new Map<string, string>();
-
-/** 参数 → 地形图 dataURL（空参数返回空串，调用方按空串跳过 <image>） */
-export function terrainDataUrl(t: MapTerrainSpec | undefined, width: number, height: number): string {
-  if (!t) return '';
-  const key = keyOf(t, width, height);
-  const hit = cache.get(key);
-  if (hit !== undefined) return hit;
-  const g = gridOf(t, width, height);
-  const small = document.createElement('canvas');
-  small.width = g.w;
-  small.height = g.h;
-  const sctx = small.getContext('2d');
-  if (!sctx) return '';
-  const img = sctx.createImageData(g.w, g.h);
-  img.data.set(g.rgb);
-  sctx.putImageData(img, 0, 0);
-  /* 小图放大到真实尺寸：canvas 的双线性插值顺手把分区边界磨软 ⇒ 不会一格一格地硬切 */
-  const out = document.createElement('canvas');
-  out.width = width;
-  out.height = height;
-  const octx = out.getContext('2d');
-  if (!octx) return '';
-  octx.imageSmoothingEnabled = true;
-  octx.imageSmoothingQuality = 'high';
-  octx.drawImage(small, 0, 0, width, height);
-  const url = out.toDataURL('image/png');
-  cache.set(key, url);
-  if (cache.size > 6) {
-    const first = cache.keys().next().value;
-    if (first !== undefined) cache.delete(first);
-  }
-  return url;
-}
-
-/** 矢量层：海岸线 / 湖岸 / 河（SVG path 字符串，坐标已从"格"换算成地图单位）。
- *  缓存与栅格同一个键 ⇒ 同一次生成的两层永远对得上。 */
-export interface TerrainVectors {
-  coast: string[];
-  lakes: string[];
-  rivers: string[];
-}
-
-const EMPTY: TerrainVectors = { coast: [], lakes: [], rivers: [] };
-const vecCache = new Map<string, TerrainVectors>();
-
-export function terrainVectors(t: MapTerrainSpec | undefined, width: number, height: number): TerrainVectors {
-  if (!t) return EMPTY;
-  const key = keyOf(t, width, height);
-  const hit = vecCache.get(key);
-  if (hit) return hit;
-  const g = gridOf(t, width, height);
-  const sc = (pts: TerrainPath) => pts.map(([x, y]) => [x * g.cell, y * g.cell] as [number, number]);
-  const out: TerrainVectors = {
-    coast: g.coast.map((p) => smoothClosedPath(sc(p))),
-    lakes: g.lakes.map((p) => smoothClosedPath(sc(p))),
-    rivers: g.rivers.map((p) => polylinePath(sc(p))),
-  };
-  vecCache.set(key, out);
-  if (vecCache.size > 6) {
-    const first = vecCache.keys().next().value;
-    if (first !== undefined) vecCache.delete(first);
+  const engine = createEngineFor(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput);
+  runGeneration(engine);
+  const out: Cached = { engine, stats: statsOf(engine) };
+  engines.set(key, out);
+  if (engines.size > MAX_ENGINES) {
+    const first = engines.keys().next().value;
+    if (first !== undefined && first !== key) engines.delete(first);
   }
   return out;
 }
 
-/** 只要统计数字（提示行/助手回执）时用它 —— 不碰 canvas */
-export function terrainSummary(t: MapTerrainSpec, width: number, height: number) {
-  return gridOf(t, width, height).summary;
+/** 只要统计数字（状态行 / 助手回执）时用它 */
+export function terrainStats(t: MapTerrainSpec | undefined, w: number, h: number): TerrainStats | null {
+  if (!t) return null;
+  return terrainEngine(t, w, h).stats;
 }
 
-/** 给测试/诊断用：这份参数算出来的图多大（字节） */
-export function terrainBytes(t: MapTerrainSpec, width: number, height: number): number {
-  return terrainDataUrl(t, width, height).length;
+export function clearTerrainCache(): void {
+  engines.clear();
 }
 
-/** 类型再导出（别的模块只要类型时不必再 import map-gen） */
-export type { MapStyle, MapSpec };
+/* ── 位图 ↔ 地图的映射：取中间横带 ────────────────────────────────────────── */
+
+/** 把 2048² 位图里「横带」那一块搬到界面上：给的是画布 CSS 尺寸与负的 top 偏移。
+ *  推导：画布能看到世界 960 单位（→ 2048 像素）⇒ 横带 y∈[BAND.y0, BAND.y1] 对应
+ *  位图 y ∈ [(y0-20)/960×2048, (y1-20)/960×2048]（本机实测 y0=234 ⇒ 456.5px，带高 1135px）。
+ *  要让它正好铺满 w×h 的格子 ⇒ 缩放 h/带高，画布整体按这个比例（**正方形、不拉伸**）。 */
+export function bandLayout(w: number, h: number): { size: number; top: number; left: number } {
+  const sy = (BAND.y0 - BAND.x0) / WORLD_VIEW * TERRAIN_BITMAP;
+  const sh = (BAND.y1 - BAND.y0) / WORLD_VIEW * TERRAIN_BITMAP;
+  const scale = h / sh;
+  const size = TERRAIN_BITMAP * scale;
+  /* 正方形画布铺进 w×h 的格子：宽高各差零点几像素（带的宽高比与格子的宽高比只近似相等），
+     居中摆 —— 宁可两边各切掉半像素，也不能非均匀缩放（那会把山河拉扁）。 */
+  return { size, top: -sy * scale, left: -(size - w) / 2 };
+}
+
+/** 位图上的源矩形（缩略图 `drawImage` 用） */
+export function bandSource(): { sx: number; sy: number; sw: number; sh: number } {
+  return {
+    sx: 0,
+    sy: (BAND.y0 - BAND.x0) / WORLD_VIEW * TERRAIN_BITMAP,
+    sw: TERRAIN_BITMAP,
+    sh: (BAND.y1 - BAND.y0) / WORLD_VIEW * TERRAIN_BITMAP,
+  };
+}
+
+/* ── 挂到界面上（地图栏那块画布）────────────────────────────────────────────── */
+
+/** 把一块画布变成"这个世界的地形"。返回卸载函数（换世界/关地图栏时必须调，否则 GL 上下文泄漏）。 */
+export function mountTerrain(canvas: HTMLCanvasElement, t: MapTerrainSpec, w: number, h: number): () => void {
+  const { engine } = terrainEngine(t, w, h);
+  const L = bandLayout(w, h);
+  canvas.style.position = 'absolute';
+  canvas.style.left = L.left + 'px';
+  canvas.style.top = L.top + 'px';
+  canvas.style.width = L.size + 'px';
+  canvas.style.height = L.size + 'px';
+  canvas.style.pointerEvents = 'none';
+  const view = new TerrainView(canvas, engine);
+  view.update();
+  return () => view.dispose();
+}
+
+/* ── 缩略图 / 预览（生成面板用）────────────────────────────────────────────── */
+
+/* ⚠️ **一个视图配一块自己的画布**：`TerrainView.dispose()` 会 `loseContext()` 把画布的 WebGL
+   上下文永久毁掉（这是对的 —— 一次抽卡要建 6~12 个视图），所以换参数时必须**连画布一起换**，
+   否则下一张卡片会在一块死掉的画布上 `getContext('webgl2')`，静默出一张空图（第九十三轮实测）。 */
+let thumb: { canvas: HTMLCanvasElement; view: TerrainView; key: string } | null = null;
+
+function thumbViewFor(t: MapTerrainSpec, w: number, h: number): TerrainView {
+  const key = keyOf(t, w, h);
+  if (thumb && thumb.key === key) return thumb.view;
+  thumb?.view.dispose();          /* 丢旧上下文（那块画布随之作废，不再复用） */
+  const canvas = document.createElement('canvas');
+  const { engine } = terrainEngine(t, w, h);
+  const view = new TerrainView(canvas, engine);
+  thumb = { canvas, view, key };
+  return view;
+}
+
+/** 出一张缩略图（异步：要等渲染循环那一帧）。失败返回空串（调用方跳过这张）。 */
+export async function terrainThumbUrl(
+  t: MapTerrainSpec, w: number, h: number, outW: number, outH: number,
+): Promise<string> {
+  try {
+    const view = thumbViewFor(t, w, h);
+    const shot = await view.snapshot();
+    const out = document.createElement('canvas');
+    out.width = Math.max(16, Math.round(outW));
+    out.height = Math.max(16, Math.round(outH));
+    const ctx = out.getContext('2d');
+    if (!ctx) return '';
+    const s = bandSource();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(shot, s.sx, s.sy, s.sw, s.sh, 0, 0, out.width, out.height);
+    return out.toDataURL('image/png');
+  } catch (e) {
+    console.warn('[map-terrain] 缩略图失败：', e);
+    return '';
+  }
+}
+
+/** 面板关掉时把离屏视图收掉（显存） */
+export function releaseThumbs(): void {
+  thumb?.view.dispose();
+  thumb = null;
+}
