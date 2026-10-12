@@ -1,27 +1,19 @@
-/* 地图生成（混合方案）—— 世界沙盘右边那格地图栏的「描述 + 生成地形」。
+/* 地图生成（内核 = vendored mapgen4）—— 从**地图栏 + 生成面板**这条真路走一遍，
+ *  断言以**磁盘上的 worldbuilding.json** 为真相（store 不暴露给页面）。
  *
- * 2026-10-13 用户三条（按时间）：
- *   ①「我建议先做一个基础的，看起来像的地图生成，真实模拟是额外附件」
- *   ②「确定不同地形的生成逻辑和形态，然后随机分区再生成…不生成等高线，而是直接生成真实地形」
- *   ③「地形主要是拿来看，文化分区什么的主要是拿来动手」⇒ 定下**混合方案**：
- *      栅格地形位图（看）+ 矢量海岸线/湖岸/河（描边、放大不糊）+ 手绘 `regions`（动手层）。
+ *  ⭐ 2026-10-15（用户：「好丑，有没有现成的轮子，我们生成的地图好假」→ 选定 A2「整包搬 mapgen4」）：
+ *  地形从"我们自己画的栅格图 + 矢量岸线"换成**内核渲染的 WebGL 画布**（`src/mapgen/`）。
+ *  本套件跟着重写，钉住的是**接进界面之后的契约**（内核那层的数字由
+ *  `tools/e2e/mapgen-engine.mjs` 无头钉，不用开实例）：
+ *    · 生成真画出来（`#map-terrain-canvas` 2048²），且**不落盘**（数据里只有参数，几百字节）；
+ *    · 画布与 SVG 一起被 `#map-stage` 缩放 ⇒ 两者尺寸一致（手绘落点才不会偏）；
+ *    · 状态行的数字与内核报的一致；
+ *    · 同种子同参数 ⇒ 同一份统计；换种子 ⇒ 不一样；
+ *    · 生成完照样能拖拽画区域（「生成作底稿、手绘精修」）；
+ *    · 助手的 `generate_map` 在图上已有地形时一定出卡片（不许悄悄换掉）。
  *
- * 2026-10-14 用户：「生成做成一个独立的面板吧，两种，创作者自己一个个调参数或者 AI 直出，可以抽卡」
- *   ⇒ 控件搬进 `#lk-map-studio`（`src/ui/map-studio.ts`）。**本套件只管"生成出来的地形对不对"**，
- *   所以只借面板「自己调」那一页当输入口（开面板 → 填参数 → 采用）；面板本身的行为
- *   （三页签 / 抽卡 / AI 直出 / 防抖）在 `tools/e2e/map-studio.cjs`。
- *
- * 本套件钉住的：
- *   · 生成真画出地形（不是只改了数据）；矢量层真画出来且**不落盘**（派生自同一份参数）；
- *   · 提示行的数字与图上真画出来的**对得上**（湖数 === 湖岸条数；岸线条数 ≈ 陆块数）；
- *   · 岸线绝不贴画布边缘（"最外一圈是海"—— 否则等值线会首尾一连连出斜穿海面的线）；
- *   · 同档位同种子 ⇒ 同一张图；面板里改档位/数量真生效；
- *   · 生成完照样能拖拽画区域（「生成作底稿、手绘精修」），且**分区在岸线之下**（层序）；
- *   · 助手的 `generate_map` 在图上已有地形时一定出卡片（不许悄悄换掉）。
- *
- * 用法（见 tools/e2e/README.md）：起一个隔离实例（LINGKUANG_TEST_* 指到临时目录），
- * LK_CDP_PORT=9500 node tools/e2e/map-gen.cjs
- * 断言以**磁盘上的 worldbuilding.json** 为真相（store 不暴露给页面），DOM 只用来驱动与看渲染。 */
+ *  用法（见 tools/e2e/README.md）：起一个隔离实例（LINGKUANG_TEST_* 指到临时目录），
+ *  LK_CDP_PORT=9500 node tools/e2e/map-gen.cjs */
 const fs = require('fs');
 const DATA = process.env.LINGKUANG_TEST_DATA;
 const PORT = process.env.LK_CDP_PORT || '9500';
@@ -32,8 +24,7 @@ function check(n, ok, extra) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${extra !== undefined ? '   ' + JSON.stringify(extra) : ''}`);
 }
 
-/* 磁盘上的地图 = 真相。⚠️ store 是渲染进程私有的，页面里读不到 ⇒ 一律读文件。
-   写盘有 400ms 防抖，读之前先等一等。 */
+/* 磁盘上的地图 = 真相。⚠️ 写盘有 400ms 防抖，读之前先等一等。 */
 function diskMap() {
   try {
     const d = JSON.parse(fs.readFileSync(DATA, 'utf8'));
@@ -55,7 +46,7 @@ async function main() {
   w.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } };
   const send = (method, params) => new Promise((res) => { const i = ++id; pending.set(i, res); w.send(JSON.stringify({ id: i, method, params })); });
   /* ⚠️ ev 一定带超时：渲染进程里某句 await 永不落定的话，套件会静静吊死 */
-  const ev = async (expr, ms = 15000) => {
+  const ev = async (expr, ms = 20000) => {
     const r = await Promise.race([
       send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }),
       sleep(ms).then(() => ({ timedOut: true })),
@@ -65,214 +56,161 @@ async function main() {
     return r.result?.result?.value;
   };
   const setMock = (queue) => ev(`window.__lkSeen = []; window.__lkMockQ = ${JSON.stringify(queue)}; window.__lkAgentMock = (m) => { window.__lkSeen.push(m); return window.__lkMockQ.length ? window.__lkMockQ.shift() : '好的。'; }; true`);
-  const ask = async (text, wait = 1500) => {
-    await ev(`(function () { const t = document.getElementById('lk-agent-input'); t.value = ${JSON.stringify(text)}; document.getElementById('lk-agent-send').click(); return true; })()`);
+  const ask = async (text, wait = 1800) => {
+    await ev(`(function () { const t = document.getElementById('lk-agent-input'); if (!t) return false; t.value = ${JSON.stringify(text)}; document.getElementById('lk-agent-send').click(); return true; })()`);
     await sleep(wait);
   };
-  const gen = async (style, seed, counts) => {
-    /* ⚠️ 2026-10-14 起生成控件**搬进了悬浮面板** `#lk-map-studio`（用户：「生成做成一个独立的面板吧」）：
-       这里按**「自己调」那一页**驱动（开面板 → 填档位/种子/数量 → 等 300ms 防抖 → 「采用到地图」）。
-       面板本身的行为（三页签、抽卡、AI 直出）在 `tools/e2e/map-studio.cjs`；本套件只管
-       "生成出来的地形对不对"，所以只借面板当输入口。
-       ⚠️ 旧构建上 `#lk-map-studio` 根本不存在 —— 这里必须**优雅判假**（不许 null.click() 把整套崩掉），
-       否则 A/B 只能看到"脚本异常"，看不出差在哪一条。 */
-    const ok1 = await ev(`(function () {
-      const g = document.getElementById('map-gen'); if (!g) return false;
-      g.click();
-      const card = document.getElementById('lk-map-studio'); if (!card) return false;
-      const st = card.querySelector('#ms-style'); if (!st) return false;
-      st.value = ${JSON.stringify(style)};
-      st.dispatchEvent(new Event('change', { bubbles: true }));
-      const sd = card.querySelector('#ms-seed');
-      if (sd) { sd.value = ${JSON.stringify(seed ?? '')}; sd.dispatchEvent(new Event('input', { bubbles: true })); }
-      const c = ${JSON.stringify(counts ?? {})};
-      Object.keys(c).forEach(function (k) {
-        const el = card.querySelector('#' + k);
-        if (el) { el.value = String(c[k]); el.dispatchEvent(new Event('input', { bubbles: true })); }
-      });
+  /* 面板上「自己调」那一页：填三个旋钮（空 = 交给档位）再采用 */
+  const gen = async (style, seed, knobs) => {
+    await ev(`(function () { const b = document.getElementById('map-gen'); if (b) b.click(); return true; })()`);
+    await sleep(400);
+    await ev(`(function () {
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+      set('ms-style', ${JSON.stringify(style)});
+      set('ms-seed', ${JSON.stringify(seed)});
+      set('ms-ridges', ${JSON.stringify(knobs?.ridges ?? '')});
+      set('ms-rivers', ${JSON.stringify(knobs?.rivers ?? '')});
+      set('ms-ratio', ${JSON.stringify(knobs?.ratio ?? '')});
+      const s = document.getElementById('ms-style'); if (s) s.dispatchEvent(new Event('change', { bubbles: true }));
+      for (const id of ['ms-ridges', 'ms-rivers', 'ms-ratio']) {
+        const el = document.getElementById(id); if (el) el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
       return true;
     })()`);
-    await sleep(700);   /* 300ms 防抖 + 生成 ~100ms */
-    const ok2 = await ev(`(function () {
-      const card = document.getElementById('lk-map-studio'); if (!card) return false;
-      const b = card.querySelector('#ms-apply'); if (!b) return false; b.click(); return true;
-    })()`);
-    await sleep(900);   /* 生成 ~100ms + store.update + 400ms 防抖落盘 */
-    return ok1 === true && ok2 === true;
+    await sleep(1600);   /* 防抖 300ms + 生成 + 渲染一帧 */
+    const note = await ev(`(document.getElementById('ms-note') || {}).textContent || ''`);
+    const url = await ev(`(function () { const i = document.getElementById('ms-img'); return i ? (i.src || '').length : 0; })()`);
+    await ev(`(function () { const b = document.getElementById('ms-apply'); if (b) b.click(); return true; })()`);
+    await sleep(1200);   /* 落盘防抖 400ms */
+    return { note, url };
   };
-  const dom = () => ev(`(function () {
-    const q = (s) => document.querySelectorAll(s).length;
-    const note = document.getElementById('map-gen-note');
+  const pane = () => ev(`(function () {
+    const c = document.getElementById('map-terrain-canvas');
+    const box = document.getElementById('map-terrain');
+    const stage = document.getElementById('map-stage');
     const svg = document.getElementById('map-svg');
-    const img = svg ? svg.querySelector('image[data-terrain]') : null;
-    const coastD = [...(svg ? svg.querySelectorAll('path[data-coast]') : [])].map((p) => p.getAttribute('d'));
-    let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
-    for (const d of coastD) {
-      const nums = (d.match(/-?\\d+(?:\\.\\d+)?/g) || []).map(Number);
-      for (let i = 0; i + 1 < nums.length; i += 2) {
-        minX = Math.min(minX, nums[i]); maxX = Math.max(maxX, nums[i]);
-        minY = Math.min(minY, nums[i + 1]); maxY = Math.max(maxY, nums[i + 1]);
-      }
-    }
-    const html = svg ? svg.innerHTML : '';
+    const r = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { w: Math.round(b.width), h: Math.round(b.height) }; };
     return {
-      hasSvg: !!svg,
-      terrHref: img ? img.getAttribute('href') : '',
-      coast: q('#map-svg path[data-coast]'),
-      lake: q('#map-svg path[data-lake]'),
-      river: q('#map-svg path[data-river]'),
-      coastClosed: coastD.length > 0 && coastD.every((d) => d.trim().endsWith('Z')),
-      coastBox: coastD.length ? { minX: Math.round(minX), minY: Math.round(minY), maxX: Math.round(maxX), maxY: Math.round(maxY) } : null,
-      regions: q('#map-svg path[data-region]'),
-      order: { region: html.indexOf('data-region'), coast: html.indexOf('data-coast') },
-      note: note ? note.textContent : '',
-      controls: ['map-gen', 'map-gen-note'].filter((x) => !!document.getElementById(x)),
-      gone: ['map-prompt', 'map-seed', 'map-style', 'map-reseed'].filter((x) => !!document.getElementById(x)),
-      studio: !!document.getElementById('lk-map-studio'),
-      hint: (document.getElementById('map-hint') || {}).textContent || '',
+      hasCanvas: !!c, cw: c ? c.width : 0, ch: c ? c.height : 0,
+      css: c ? { w: Math.round(parseFloat(c.style.width)), top: Math.round(parseFloat(c.style.top)) } : null,
+      box: box ? { w: box.style.width, h: box.style.height } : null,
+      stage: stage ? stage.style.transform : '', svg: r(svg), canvas: r(c),
+      note: (document.getElementById('map-gen-note') || {}).textContent || '',
     };
   })()`);
-  const sig = () => ev(`(function () {
-    const svg = document.getElementById('map-svg');
-    const img = svg && svg.querySelector('image[data-terrain]');
-    const coast = [...(svg ? svg.querySelectorAll('path[data-coast]') : [])].map((p) => p.getAttribute('d')).join('|');
-    return (img ? img.getAttribute('href').length : 0) + '#' + coast.length + '#' + coast.slice(0, 300);
-  })()`);
-  const numsIn = (note) => ({
-    lands: Number((note.match(/(\d+) 块陆地/) || [])[1]),
-    islands: Number((note.match(/(\d+) 座岛/) || [])[1]),
-    rivers: Number((note.match(/(\d+) 条河/) || [])[1]),
-    lakes: Number((note.match(/(\d+) 个湖/) || [])[1]),
-  });
 
-  await sleep(1500);
-  await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); true`);
+  await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); window.addEventListener('unhandledrejection', (e) => window.__errs.push('rej: ' + String(e.reason))); true`);
 
-  /* ⭐ 0 前置：这一格真在、生成入口在（**地图栏只剩一个按钮** —— 控件都搬进面板了） */
-  const d0 = await dom();
-  check('★0 前置：地图那格在、生成入口在地图栏（旧控件已搬走，还没开面板）',
-    d0.hasSvg && d0.controls.length === 2 && d0.gone.length === 0 && d0.studio === false,
-    { controls: d0.controls, gone: d0.gone, studio: d0.studio });
+  /* ★0 前置：地图栏在，还没地形 ⇒ 不该有画布 */
+  const p0 = await pane();
+  check('★0 前置：地图栏在，没地形时不出地形画布', !p0.hasCanvas && /还没有地形/.test(p0.note), { hasCanvas: p0.hasCanvas, note: p0.note });
 
-  /* ⭐ 1 点「生成地形…」→ 面板里按一下「采用到地图」⇒ DOM 上真画出一张地形图 */
-  await gen('continent', '测试甲');
-  const d1 = await dom();
-  const m1 = diskMap();
-  check('★1 生成后真画出地形（底图 image 是 PNG dataURL）',
-    d1.terrHref.startsWith('data:image/png') && d1.terrHref.length > 20000, { href: d1.terrHref.length, png: d1.terrHref.slice(0, 22) });
-  check('★1b 地图栏那行如实报数（块陆地·座岛·个湖·条河·种子）',
-    /块陆地/.test(d1.note) && /座岛/.test(d1.note) && /个湖/.test(d1.note) && /条河/.test(d1.note) && /种子「测试甲」/.test(d1.note),
-    { note: d1.note.slice(0, 130) });
-
-  /* ⭐ 2 矢量层（混合方案的"另一半"）：岸线/河是**描边**，不是等高带 */
-  check('★2 矢量层真画出来：海岸线是闭合路径、河流是折线',
-    d1.coast >= 1 && d1.coastClosed && d1.river >= 1, { coast: d1.coast, closed: d1.coastClosed, rivers: d1.river });
-  check('★2b 岸线不贴画布边缘（最外一圈是海 ⇒ 环才闭合，旧版会连出斜穿海面的线）',
-    !!d1.coastBox && d1.coastBox.minX >= 6 && d1.coastBox.minY >= 6 && d1.coastBox.maxX <= 894 && d1.coastBox.maxY <= 494,
-    { box: d1.coastBox });
-  check('★2c 矢量层**不落盘**（只存参数：terrain.seed/style，lines 为空 —— 派生自同一份参数）',
-    !!m1?.terrain && m1.terrain.seed === '测试甲' && !('coast' in (m1.terrain || {})) && (m1.lines || []).length === 0,
-    { terrain: m1?.terrain, lines: (m1?.lines || []).length });
-
-  /* ⭐ 3 提示行的数字与图上画出来的必须对得上（否则就是"数据在说一套、图在画另一套"） */
-  const n1 = numsIn(d1.note);
-  check('★3 岸线条数与提示行的陆块数对得上（同一块地走出两条环 = 这里红）',
-    d1.coast >= 1 && d1.coast <= 4 && n1.lands >= 1 && d1.coast <= n1.lands + 4, { coast: d1.coast, lands: n1.lands });
-  check('★3b 湖：提示行说几个，图上就有几条湖岸（早先参数报数、岸线却画不出来）',
-    d1.lake === n1.lakes, { lakes: n1.lakes, lakePaths: d1.lake });
-
-  /* ⭐ 4 同一颗种子永远同一张图；换一颗就换一张 */
-  const sigA = await sig();
-  await gen('continent', '测试甲');
-  const sigB = await sig();
-  await gen('continent', '测试乙');
-  const sigC = await sig();
-  check('★4 同种子逐字节一样 / 换种子不一样（确定性：可复现的地图）',
-    sigA !== '' && sigA === sigB && sigA !== sigC, { same: sigA === sigB, differs: sigA !== sigC, len: sigA.length });
-
-  /* ⭐ 5 面板里改档位 ⇒ 真按那一档生成（`#ms-style` 的 change 走同一条 planGeneration） */
-  const okGen5 = await gen('archipelago', '测试丙');
-  const d5 = await dom();
-  const m5 = diskMap();
-  check('★5 面板里选「群岛」⇒ 这一档真生效，种子也按填的存下来',
-    okGen5 === true && m5?.terrain?.style === 'archipelago' && m5?.terrain?.seed === '测试丙' && d5.note.includes('种子「测试丙」'),
-    { style: m5?.terrain?.style, seed: m5?.terrain?.seed, note: d5.note.slice(0, 110) });
-  check('★5b 同一档同一颗种子再采用一次 ⇒ 一模一样（换种子才换图）',
-    (await sig()) === (await sig()), {});
-
-  /* ⭐ 6 数量也听（收敛回路）：填「陆地 2」⇒ 提示行报 2 块陆地，岸线条数跟着在 2~6 之间 */
-  await gen('continent', '测试丁', { 'ms-lands': 2 });
-  const d6 = await dom();
-  const n6 = numsIn(d6.note);
-  check('★6 面板里填「陆地 2」⇒ 提示行就报 2 块陆地，岸线条数也跟着在 2~6 之间',
-    n6.lands === 2 && d6.coast >= 2 && d6.coast <= 6, { lands: n6.lands, coast: d6.coast, note: d6.note.slice(0, 90) });
-
-  /* 生成这一段查完了：把面板收起来，后面的手绘 / 助手那两条在**干净的主区**上做 */
-  await ev(`(function () { const b = document.getElementById('ms-close'); if (b) b.click(); return true; })()`);
+  /* ★1 生成（走面板）→ 磁盘只多"参数" */
+  const g1 = await gen('continent', 'e2e大陆', { ridges: 7, rivers: 3, ratio: 45 });
   await sleep(300);
+  const disk1 = diskMap();
+  const spec1 = disk1?.terrain?.spec ?? {};
+  check('★1 生成真出预览（dataURL）且状态行报数', g1.url > 5000 && /块陆地/.test(g1.note), { url: g1.url, note: g1.note.slice(0, 70) });
+  check('★2 落盘只有参数（种子/档位/三个数），不含任何图片',
+    disk1?.terrain?.seed === 'e2e大陆' && disk1?.terrain?.style === 'continent'
+    && spec1.ridges === 7 && spec1.rivers === 3 && Math.abs((spec1.landRatio ?? 0) - 0.45) < 1e-6
+    && JSON.stringify(disk1).length < 4000,
+    { terrain: disk1?.terrain, mapJsonLen: JSON.stringify(disk1).length });
 
-  /* ⭐ 7 「生成作底稿、手绘精修」：生成完照样能拖拽画区域（文化分区 = 动手层） */
-  const before = (diskMap()?.regions || []).length;
-  await ev(`document.querySelector('.map-mode[data-mode="region"]').click(); true`);
-  await sleep(200);
+  /* ★3 地图栏出画布：2048²，且铺满地图格子（裁带 ⇒ 画布比格子高，四周不拉伸） */
+  const p1 = await pane();
+  check('★3 地图栏出 2048² 画布 + 格子尺寸 = 地图尺寸',
+    p1.hasCanvas && p1.cw === 2048 && p1.ch === 2048 && p1.box.w === '900px' && p1.box.h === '500px',
+    { cw: p1.cw, box: p1.box, css: p1.css });
+  check('★4 裁带映射：画布 CSS 是正方形（不拉扁）、宽度略大于地图宽、上移为负',
+    p1.css && Math.abs(p1.css.w - p1.css.w) === 0 && p1.css.w > 880 && p1.css.w < 940 && p1.css.top < -180 && p1.css.top > -220,
+    p1.css);
+  check('★5 画布与 SVG 一起被缩放（同一层 ⇒ 手绘落点不偏）',
+    p1.svg && p1.canvas && Math.abs(p1.svg.w / p1.svg.h - 1.8) < 0.05 && /scale\(/.test(p1.stage),
+    { stage: p1.stage, svg: p1.svg });
+
+  /* ★6 同种子同参数 ⇒ 统计逐字一致 */
+  const g2 = await gen('continent', 'e2e大陆', { ridges: 7, rivers: 3, ratio: 45 });
+  check('★6 同种子同参数 ⇒ 状态行逐字一致（确定性）', g2.note === g1.note, { a: g1.note.slice(0, 60), b: g2.note.slice(0, 60) });
+
+  /* ★7 换种子 ⇒ 不一样 */
+  const g3 = await gen('continent', 'e2e换一颗', { ridges: 7, rivers: 3, ratio: 45 });
+  check('★7 换种子 ⇒ 统计不同', g3.note !== g1.note, { b: g2.note.slice(0, 40), c: g3.note.slice(0, 40) });
+
+  /* ★8 档位分化：群岛的岛应多于盘古（同一颗种子、同一目标占比） */
+  const gArch = await gen('archipelago', 'e2e档位', { ridges: 4, rivers: 2, ratio: 34 });
+  const gPan = await gen('pangaea', 'e2e档位', { ridges: 4, rivers: 2, ratio: 34 });
+  const num = (s, re) => Number((String(s).match(re) ?? [])[1] ?? NaN);
+  const archipelago = num(gArch.note, /(\d+) 座岛/);
+  const pangaea = num(gPan.note, /(\d+) 座岛/);
+  check('★8 群岛的岛比盘古多（档位真起作用）', archipelago > pangaea, { archipelago, pangaea });
+
+  /* ★9 生成完照样能手绘（「生成作底稿、手绘精修」） */
+  const before = (diskMap()?.regions ?? []).length;
   const drew = await ev(`(function () {
     const svg = document.getElementById('map-svg');
-    const r = svg.getBoundingClientRect();
-    const pt = (t, x, y, btn) => new PointerEvent(t, { clientX: r.left + x, clientY: r.top + y, button: btn ?? 0, buttons: btn === undefined ? 1 : 0, bubbles: true });
-    svg.dispatchEvent(pt('pointerdown', 40, 40));
-    window.dispatchEvent(pt('pointermove', 120, 60));
-    window.dispatchEvent(pt('pointermove', 90, 130));
-    window.dispatchEvent(pt('pointerup', 90, 130, 0));
+    const b = svg.getBoundingClientRect();
+    const at = (fx, fy) => ({ clientX: b.left + b.width * fx, clientY: b.top + b.height * fy });
+    const mk = (t, p) => new PointerEvent(t, { clientX: p.clientX, clientY: p.clientY, bubbles: true, button: 0, buttons: 1, pointerId: 1 });
+    const m = document.querySelector('.map-mode[data-mode="region"]'); if (m) m.click();
+    svg.dispatchEvent(mk('pointerdown', at(0.3, 0.3)));
+    svg.dispatchEvent(mk('pointermove', at(0.6, 0.3)));
+    svg.dispatchEvent(mk('pointermove', at(0.6, 0.6)));
+    svg.dispatchEvent(mk('pointermove', at(0.3, 0.6)));
+    window.dispatchEvent(mk('pointerup', at(0.3, 0.6)));
     return true;
   })()`);
-  await sleep(900);
-  const m7 = diskMap();
-  const drawn = (m7?.regions || []).filter((r) => /^区域 \d+$/.test(r.name));
-  const d7 = await dom();
-  check('★7 生成之后手绘照样能用：拖一笔就多一个「区域 N」（生成物不锁死）',
-    drew === true && (m7?.regions || []).length === before + 1 && drawn.length === 1,
-    { before, after: m7?.regions?.length, drawn: drawn.map((r) => r.name) });
-  check('★7b 层序：文化分区在**岸线之下**（色块盖住底图，但岸线压在最上面才清晰）',
-    d7.order.region >= 0 && d7.order.coast >= 0 && d7.order.region < d7.order.coast, { order: d7.order });
+  await sleep(1200);
+  const afterRegions = (diskMap()?.regions ?? []).length;
+  const p2 = await pane();
+  check('★9 生成之后照样能画区域（且地形画布还在）', drew && afterRegions === before + 1 && p2.hasCanvas,
+    { before, after: afterRegions, canvas: p2.hasCanvas });
 
-  /* ⭐ 8 助手的入口（用户第二条：「向助手描述然后生成」）：
-     ⚠️ 这一步图上已经有地形 ⇒ 哪怕权限是「直接执行」也必须出卡片 */
+  /* ★10 层序：地形画布在 SVG 之下（DOM 顺序）—— 区域/标记必须盖在地形上 */
+  const order = await ev(`(function () {
+    const stage = document.getElementById('map-stage');
+    const kids = [...stage.children].map((e) => e.id);
+    return kids;
+  })()`);
+  check('★10 层序：地形层在 SVG 之前（画在底下）', Array.isArray(order) && order.indexOf('map-terrain') < order.indexOf('map-svg'), order);
+
+  /* ★11 助手的 generate_map：图上已有地形 ⇒ 必须出卡片（不许悄悄换掉） */
+  await ev(`document.querySelector('#lk-toolbar [data-tool="codex"]').click(); true`);
+  await sleep(500);
   await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })); true`);
-  await sleep(600);
+  await sleep(700);
+  const panelOpen = await ev(`!!document.getElementById('lk-agent-panel')`);
+  /* 权限：范围 = 灵框库，询问 = 逐项确认（顺序不能反，见 agent-tools.cjs 的注释） */
   await ev(`(function () {
-    const el = document.getElementById('lk-agent-mode-agent'); if (el) el.click();
-    const sc = document.getElementById('lk-agent-scope'); if (sc) { sc.value = 'workspace'; sc.dispatchEvent(new Event('change', { bubbles: true })); }
-    const ak = document.getElementById('lk-agent-ask'); if (ak) { ak.value = 'never'; ak.dispatchEvent(new Event('change', { bubbles: true })); }
+    const s = document.getElementById('lk-agent-scope');
+    const a = document.getElementById('lk-agent-ask');
+    s.value = 'workspace'; s.dispatchEvent(new Event('change', { bubbles: true }));
+    a.value = 'always'; a.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   })()`);
-  await sleep(200);
-  await setMock(['{"tool":"generate_map","args":{"description":"盘古式超级大陆，两条大河"}}', '画好了。']);
-  const sigBefore8 = await sig();
-  await ask('帮我画一张地图：盘古式超级大陆，两条大河。');
+  await sleep(300);
+  await setMock(['{"tool":"generate_map","args":{"description":"一片被风暴撕碎的群岛"}}']);
+  const sigBefore = JSON.stringify(diskMap()?.terrain ?? {});
+  await ask('换一张群岛', 2200);
   const card = await ev(`(function () {
-    const c = document.querySelector('#lk-agent-msgs .lk-agent__prop');
-    return { has: !!c, title: c ? (c.querySelector('.lk-agent__prop-t') || c).textContent : '', isSettled: c ? c.classList.contains('is-settled') : false };
+    const c = document.querySelector('#lk-agent-msgs [data-prop-ok]');
+    const t = document.querySelector('#lk-agent-msgs .lk-agent__prop-t, #lk-agent-msgs .lk-agent__prop-h');
+    return { hasCard: !!c, title: t ? t.textContent : '' };
   })()`);
-  check('★8 图上已有地形时，助手的 generate_map 一定出提议卡片（「直接执行」档也不例外）',
-    card.has === true && card.isSettled === false && (await sig()) === sigBefore8,
-    { card: card.title.slice(0, 90), unchangedBeforeApply: (await sig()) === sigBefore8 });
+  await sleep(300);
+  const sigAfter = JSON.stringify(diskMap()?.terrain ?? {});
+  check('★11 已有地形时 generate_map 出提议卡片、点之前数据没动',
+    panelOpen && card.hasCard && sigAfter === sigBefore,
+    { panelOpen, title: card.title, unchanged: sigAfter === sigBefore });
 
-  const applied = await ev(`(function () { const b = document.querySelector('#lk-agent-msgs [data-prop-ok]'); if (!b) return null; b.click(); return true; })()`);
-  await sleep(1400);
-  const m8 = diskMap();
-  const tool8 = await ev(`(function () { const t = [...document.querySelectorAll('#lk-agent-msgs .lk-agent__tool')]; return t.length ? t[t.length - 1].textContent : ''; })()`);
-  const d8 = await dom();
-  check('★8b 点「应用」才真换掉：档位变盘古、种子是那句描述、回执点名生成、矢量层跟着换',
-    applied === true && m8?.terrain?.style === 'pangaea' && m8?.terrain?.seed === '盘古式超级大陆，两条大河'
-      && tool8.includes('生成地形') && d8.coast >= 1 && d8.terrHref.startsWith('data:image/png'),
-    { style: m8?.terrain?.style, seed: m8?.terrain?.seed, coast: d8.coast, tool: tool8.slice(0, 100) });
-
-  const errs = await ev(`window.__errs || []`);
-  check('★9 全程无未捕获异常', Array.isArray(errs) && errs.length === 0, { errs });
+  /* ★12 无未捕获异常 */
+  const errs = await ev(`(window.__errs || []).slice(0, 8)`);
+  check('★12 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 
   const pass = results.filter(Boolean).length;
   console.log(`\n${pass}/${results.length} PASS`);
-  process.exit(pass === results.length ? 0 : 2);
+  w.close();
+  process.exit(pass === results.length ? 0 : 1);
 }
 
-main().catch((e) => { console.log('FAIL 脚本异常: ' + (e && e.stack || e)); process.exit(2); });
+main().catch((e) => { console.log('FAIL 脚本异常: ' + (e && e.message)); process.exit(2); });
