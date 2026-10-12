@@ -174,7 +174,105 @@ async function main() {
   })()`);
   check('★10 层序：地形层在 SVG 之前（画在底下）', Array.isArray(order) && order.indexOf('map-terrain') < order.indexOf('map-svg'), order);
 
-  /* ★11 助手的 generate_map：图上已有地形 ⇒ 必须出卡片（不许悄悄换掉） */
+  /* ── 手刷地形（画笔）：走地图栏那条真路。真相同样是磁盘上的 `terrain.paint`（一串笔划）。
+     ⚠️ 这一段必须排在助手那段（★19）之前：★19 会切到设定库工具，地图栏就不见了。 */
+  const paneMode = () => ev(`(function () {
+    const bar = document.getElementById('map-paint-bar');
+    const hint = document.getElementById('map-hint');
+    const note = document.getElementById('map-paint-note');
+    return { bar: bar ? getComputedStyle(bar).display : 'none', hint: hint ? hint.textContent : '', note: note ? note.textContent : '' };
+  })()`);
+  /** 在图上按一串相对坐标刷一笔（工具/尺寸按钮先点一下 —— 顺便覆盖那两个按钮的接线） */
+  const stroke = async (tool, pts, size = 'large') => {
+    await ev(`(function () { const b = document.querySelector('.map-mode[data-mode="paint"]'); if (b) b.click(); return true; })()`);
+    await sleep(150);
+    await ev(`(function () { const b = document.querySelector('.map-brush[data-tool="${tool}"]'); if (b) b.click(); return true; })()`);
+    await ev(`(function () { const b = document.querySelector('.map-brush-size[data-size="${size}"]'); if (b) b.click(); return true; })()`);
+    await ev(`(function () {
+      const svg = document.getElementById('map-svg');
+      const r = svg.getBoundingClientRect();
+      const at = (fx, fy) => ({ clientX: r.left + r.width * fx, clientY: r.top + r.height * fy });
+      const mk = (t, p) => new PointerEvent(t, { clientX: p.clientX, clientY: p.clientY, bubbles: true, button: 0, buttons: 1, pointerId: 2 });
+      const pts = ${JSON.stringify(pts)};
+      svg.dispatchEvent(mk('pointerdown', at(pts[0][0], pts[0][1])));
+      for (let i = 1; i < pts.length; i++) svg.dispatchEvent(mk('pointermove', at(pts[i][0], pts[i][1])));
+      const last = pts[pts.length - 1];
+      window.dispatchEvent(mk('pointerup', at(last[0], last[1])));
+      return true;
+    })()`);
+    await sleep(900);   /* 一笔一次 store.update + 落盘防抖 */
+  };
+
+  /* ★12 「地形」模式：画笔条出现（刷子 + 尺寸 + 撤销/清空） */
+  await ev(`(function () { const b = document.querySelector('.map-mode[data-mode="paint"]'); if (b) b.click(); return true; })()`);
+  await sleep(200);
+  const pm = await paneMode();
+  const brushBtns = await ev(`document.querySelectorAll('.map-brush').length + '/' + document.querySelectorAll('.map-brush-size').length`);
+  check('★12 进「地形」模式 ⇒ 画笔条出现（4 支刷子 + 4 档尺寸）',
+    pm.bar !== 'none' && pm.hint === '地形' && brushBtns === '4/4', { bar: pm.bar, hint: pm.hint, btns: brushBtns });
+
+  /* ★13 刷一笔 ⇒ 磁盘上多一笔（工具 + 尺寸 + 轨迹点，坐标都在世界里 0..1） */
+  const noteBefore = (await pane()).note;
+  const path = [[0.24, 0.36], [0.3, 0.42], [0.36, 0.46], [0.42, 0.5], [0.48, 0.52], [0.54, 0.56], [0.6, 0.6], [0.68, 0.64]];
+  await stroke('mountain', path, 'large');
+  const paint1 = diskMap()?.terrain?.paint ?? [];
+  const inRange = paint1.length === 1 && paint1[0].points.every((p) => p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1);
+  check('★13 刷一笔落盘：工具 + 尺寸 + 轨迹点（0..1 世界坐标）',
+    paint1.length === 1 && paint1[0].tool === 'mountain' && paint1[0].size === 'large' && paint1[0].points.length >= 5 && inRange,
+    { strokes: paint1.length, tool: paint1[0]?.tool, size: paint1[0]?.size, points: paint1[0]?.points?.length });
+
+  /* ★14 画布跟着重算：状态行（统计）变了 —— 证明笔迹真喂进了内核，不只是存了数据 */
+  const notePainted = (await pane()).note;
+  check('★14 刷完地形真的重算了（状态行变了）', notePainted !== noteBefore && !!notePainted,
+    { before: noteBefore.slice(0, 48), after: notePainted.slice(0, 48) });
+
+  /* ★15 ⭐ 重开页面（reload）之后笔迹还在、而且**重放出来的是同一片地**（这是"只存笔划"的根据） */
+  await send('Page.reload', {});
+  await sleep(5000);
+  await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); window.addEventListener('unhandledrejection', (e) => window.__errs.push('rej: ' + String(e.reason))); true`);
+  await sleep(800);
+  const pReload = await pane();
+  const paintReload = (diskMap()?.terrain?.paint ?? []).length;
+  check('★15 reload 后笔迹仍在且重放成同一片地（统计逐字一致）',
+    paintReload === 1 && pReload.hasCanvas && pReload.note === notePainted,
+    { strokes: paintReload, canvas: pReload.hasCanvas, same: pReload.note === notePainted, note: pReload.note.slice(0, 48) });
+
+  /* ★16 撤销最后一笔 ⇒ 盘上笔迹清空、状态行回到刷之前 */
+  await ev(`(function () { const b = document.querySelector('.map-mode[data-mode="paint"]'); if (b) b.click(); return true; })()`);
+  await sleep(200);
+  await ev(`(function () { const b = document.getElementById('map-paint-undo'); if (b) b.click(); return true; })()`);
+  await sleep(1000);
+  const afterUndo = (diskMap()?.terrain?.paint ?? []).length;
+  const noteUndo = (await pane()).note;
+  check('★16 撤销最后一笔 ⇒ 盘上 0 笔、状态行回到刷之前',
+    afterUndo === 0 && noteUndo === noteBefore, { strokes: afterUndo, same: noteUndo === noteBefore });
+
+  /* ★17 清空笔迹：刷两笔再一次清掉（顺带覆盖"多笔"） */
+  await stroke('ocean', [[0.2, 0.7], [0.3, 0.7], [0.4, 0.72]]);
+  await stroke('mountain', [[0.6, 0.3], [0.7, 0.28]]);
+  const twoStrokes = (diskMap()?.terrain?.paint ?? []).length;
+  await ev(`(function () { const b = document.getElementById('map-paint-clear'); if (b) b.click(); return true; })()`);
+  await sleep(1000);
+  const cleared = (diskMap()?.terrain?.paint ?? []).length;
+  const noteClear = (await pane()).note;
+  check('★17 清空笔迹 ⇒ 盘上 0 笔、状态行回到干净地形',
+    twoStrokes === 2 && cleared === 0 && noteClear === noteBefore,
+    { two: twoStrokes, cleared, same: noteClear === noteBefore });
+
+  /* ★18 ⭐ 再生成时的笔迹：**种子与档位没变 ⇒ 保住**（只调一个旋钮不该把刷过的清掉）；
+     换种子 ⇒ 就是另一片地了，笔迹作废 */
+  await stroke('mountain', [[0.35, 0.34], [0.42, 0.38], [0.5, 0.42]]);
+  const n18 = (diskMap()?.terrain?.paint ?? []).length;
+  const seedNow = diskMap()?.terrain?.seed;
+  const styleNow = diskMap()?.terrain?.style;
+  await gen(styleNow, seedNow, { ridges: 6, rivers: 2, ratio: 40 });          /* 同种子、只改旋钮 */
+  const kept18 = (diskMap()?.terrain?.paint ?? []).length;
+  await gen(styleNow, 'e2e换了一颗种子', { ridges: 6, rivers: 2, ratio: 40 }); /* 换种子 */
+  const gone18 = (diskMap()?.terrain?.paint ?? []).length;
+  check('★18 同一片地再生成 ⇒ 笔迹保住；换种子 ⇒ 作废',
+    n18 === 1 && kept18 === 1 && gone18 === 0, { painted: n18, kept: kept18, afterNewSeed: gone18 });
+
+  /* ★19 助手的 generate_map：图上已有地形 ⇒ 必须出卡片（不许悄悄换掉） */
   await ev(`document.querySelector('#lk-toolbar [data-tool="codex"]').click(); true`);
   await sleep(500);
   await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })); true`);
@@ -199,13 +297,13 @@ async function main() {
   })()`);
   await sleep(300);
   const sigAfter = JSON.stringify(diskMap()?.terrain ?? {});
-  check('★11 已有地形时 generate_map 出提议卡片、点之前数据没动',
+  check('★19 已有地形时 generate_map 出提议卡片、点之前数据没动',
     panelOpen && card.hasCard && sigAfter === sigBefore,
     { panelOpen, title: card.title, unchanged: sigAfter === sigBefore });
 
-  /* ★12 无未捕获异常 */
+  /* ★20 无未捕获异常 */
   const errs = await ev(`(window.__errs || []).slice(0, 8)`);
-  check('★12 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
+  check('★20 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);
 
   const pass = results.filter(Boolean).length;
   console.log(`\n${pass}/${results.length} PASS`);

@@ -14,13 +14,16 @@
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { uid } from '../store/ids';
-import type { MapData } from '../store/types';
+import type { MapData, MapPaintStroke } from '../store/types';
 import { escapeHtml } from './html';
 import { DEFAULT_MAP, polylinePath, smoothClosedPath } from './map-gen';
-import { mountTerrain, terrainStats } from './map-terrain';
+import {
+  mountTerrain, mapPointToWorld, resetTerrainPaint, terrainStats, type TerrainHandle,
+} from './map-terrain';
+import { DEFAULT_PAINT_SIZE, DEFAULT_PAINT_TOOL, beginPaintStroke, paintStep } from '../mapgen';
 import { openMapStudioFromToolbar } from './map-studio';
 
-type Mode = 'region' | 'marker' | 'move';
+type Mode = 'region' | 'marker' | 'move' | 'paint';
 
 /* 同 detail.ts：host 是长生命周期容器，重新渲染必须摘掉上一次的订阅，
    否则切到别的工具后旧订阅仍会往别人的界面里画东西。 */
@@ -68,9 +71,26 @@ export function renderMap(store: Store, host: HTMLElement): void {
         <span style="width:1px;height:16px;background:var(--border-soft);"></span>
         <button data-mode="region" class="map-mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">区域</button>
         <button data-mode="marker" class="map-mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">标记</button>
+        <button data-mode="paint" class="map-mode" title="手刷地形：造山 / 压谷 / 浅海 / 深海（在地形上直接刷）" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">地形</button>
         <button data-mode="move" class="map-mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">移动</button>
         <button id="map-clear" style="background:none;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);font-size:11px;padding:3px 10px;cursor:pointer;">清空标记</button>
         <span id="map-hint" style="font-size:var(--text-xs);color:var(--fg-2);">拖拽画区域（松开闭合）</span>
+        <span id="map-paint-bar" style="display:none;align-items:center;gap:4px;flex-wrap:wrap;row-gap:4px;width:100%;padding-top:4px;border-top:1px dashed var(--border-soft);">
+          <span style="font-size:var(--text-xs);color:var(--fg-2);">刷子</span>
+          <button class="map-brush" data-tool="mountain" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">造山</button>
+          <button class="map-brush" data-tool="valley" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">压谷</button>
+          <button class="map-brush" data-tool="shallow" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">浅海</button>
+          <button class="map-brush" data-tool="ocean" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">深海</button>
+          <span style="width:1px;height:14px;background:var(--border-soft);"></span>
+          <button class="map-brush-size" data-size="tiny" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">极细</button>
+          <button class="map-brush-size" data-size="small" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">细</button>
+          <button class="map-brush-size" data-size="medium" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">中</button>
+          <button class="map-brush-size" data-size="large" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">粗</button>
+          <span style="flex:1;"></span>
+          <span id="map-paint-note" style="font-size:var(--text-xs);color:var(--fg-2);"></span>
+          <button id="map-paint-undo" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">撤销最后一笔</button>
+          <button id="map-paint-clear" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2);font-size:11px;padding:2px 8px;cursor:pointer;">清空笔迹</button>
+        </span>
       </div>
       <div style="flex:1;position:relative;overflow:hidden;">
         <div id="map-stage" style="position:absolute;left:0;top:0;transform-origin:0 0;">
@@ -85,23 +105,83 @@ export function renderMap(store: Store, host: HTMLElement): void {
   const stage = host.querySelector('#map-stage') as HTMLElement;
   const terrainBox = host.querySelector('#map-terrain') as HTMLElement;
   let terrainCanvas: HTMLCanvasElement | null = null;
-  let disposeTerrain: (() => void) | null = null;
+  let terrainHandle: TerrainHandle | null = null;
   let terrainKey = '';
   const hint = host.querySelector('#map-hint') as HTMLElement;
   let labelSeq = 1;
 
+  /* ── 手刷地形（画笔）的状态：刷子 / 尺寸 / 正在刷的这一笔 ───────────────── */
+  let brushTool = DEFAULT_PAINT_TOOL;
+  let brushSize = DEFAULT_PAINT_SIZE;
+  let liveStroke: MapPaintStroke | null = null;
+  let lastPaint: { x: number; y: number } | null = null;
+  /** 世界坐标里两点比这还近就不记（≈半个约束格）：既省事，也让"重放"的点序列稳定 */
+  const PAINT_MIN_STEP = 0.004;
+  const paintBar = host.querySelector('#map-paint-bar') as HTMLElement;
+  const paintNote = host.querySelector('#map-paint-note') as HTMLElement;
+
+  function paintState(msg?: string) {
+    const m = curMap();
+    const n = m?.terrain?.paint?.length ?? 0;
+    paintNote.textContent = msg ?? (m?.terrain
+      ? (n ? `已刷 ${n} 笔` : '按住拖动就能刷 —— 每一笔单独一步撤销')
+      : '这片地还没有地形：先点「生成地形…」');
+  }
+
+  function brushUi() {
+    const mark = (el: HTMLElement, on: boolean) => {
+      el.style.background = on ? 'rgba(158,194,98,.2)' : 'none';
+      el.style.borderColor = on ? 'var(--accent)' : 'var(--border)';
+    };
+    host.querySelectorAll('.map-brush').forEach((b) => mark(b as HTMLElement, (b as HTMLElement).dataset.tool === brushTool));
+    host.querySelectorAll('.map-brush-size').forEach((b) => mark(b as HTMLElement, (b as HTMLElement).dataset.size === brushSize));
+  }
+
   function setMode(m: Mode) {
     mode = m;
     drawing = [];
+    liveStroke = null;
+    lastPaint = null;
     host.querySelectorAll('.map-mode').forEach((b) => (b as HTMLElement).style.background = 'none');
     const btn = host.querySelector(`.map-mode[data-mode="${m}"]`) as HTMLElement;
     if (btn) btn.style.background = 'rgba(158,194,98,.2)';
-    hint.textContent = m === 'region' ? '区域' : m === 'marker' ? '标记' : '平移';
-    hint.title = m === 'region' ? '拖拽画区域（松开闭合）' : m === 'marker' ? '点击放置标记' : '拖拽平移';
+    paintBar.style.display = m === 'paint' ? 'flex' : 'none';
+    /* 提示行两段：短名 + 悬停说明（照旧是中栏那行的写法，不加图标） */
+    const tips: Record<Mode, [string, string]> = {
+      region: ['区域', '拖拽画区域（松开闭合）'],
+      marker: ['标记', '点击放置标记'],
+      move: ['平移', '拖拽平移'],
+      paint: ['地形', '按住拖动 = 刷地形（造山 / 压谷 / 浅海 / 深海）；每一笔单独一步撤销'],
+    };
+    hint.textContent = tips[m][0];
+    hint.title = tips[m][1];
+    if (m === 'paint') { brushUi(); paintState(); }
   }
   host.querySelectorAll('.map-mode').forEach((b) =>
     (b as HTMLElement).addEventListener('click', () => setMode((b as HTMLElement).dataset.mode as Mode))
   );
+  host.querySelectorAll('.map-brush').forEach((b) =>
+    (b as HTMLElement).addEventListener('click', () => {
+      brushTool = (b as HTMLElement).dataset.tool ?? DEFAULT_PAINT_TOOL;
+      brushUi();
+    })
+  );
+  host.querySelectorAll('.map-brush-size').forEach((b) =>
+    (b as HTMLElement).addEventListener('click', () => {
+      brushSize = (b as HTMLElement).dataset.size ?? DEFAULT_PAINT_SIZE;
+      brushUi();
+    })
+  );
+  host.querySelector('#map-paint-undo')?.addEventListener('click', () => {
+    /* ⚠️ 光把笔划从数据里去掉是不够的：内核那个约束场里**那一笔还在**（重放会被"场里已有笔迹"
+       挡掉）⇒ 必须先让场回到干净状态，再让重建把剩下的笔划重放一遍。 */
+    resetTerrainPaint();
+    save((m) => { m.terrain?.paint?.pop(); });
+    terrainKey = '';
+    renderSvg();
+    paintState('已撤销最后一笔');
+  });
+  host.querySelector('#map-paint-clear')?.addEventListener('click', () => clearPaint());
   host.querySelector('#map-clear')?.addEventListener('click', () => {
     /* 必须走 save()：旧写法只改内存里的 map 再 renderSvg()，既不通知订阅者，
        也就不会触发 main.ts 的 400ms 防抖落盘 → 关掉窗口就丢。 */
@@ -150,7 +230,8 @@ export function renderMap(store: Store, host: HTMLElement): void {
   }
 
   /* ── 地形画布：只在**参数真的变了**的时候重建（生成一次约 30~60ms），
-     同一帧里手绘层的重画不影响它。参数键一样 ⇒ 什么都不做。 */
+     同一帧里手绘层的重画不影响它。参数键一样 ⇒ 什么都不做。
+     ⚠️ 键里**含手刷笔迹**：刷完一笔就是另一片地（内核的约束场是模块级单例）。 */
   function syncTerrain(m: MapData) {
     terrainBox.style.width = m.width + 'px';
     terrainBox.style.height = m.height + 'px';
@@ -159,21 +240,24 @@ export function renderMap(store: Store, host: HTMLElement): void {
       ? `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}% · 种子「${m.terrain.seed}」`
       : '还没有地形';
     const key = m.terrain
-      ? `${m.terrain.seed}|${m.terrain.style}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}`
+      ? `${m.terrain.seed}|${m.terrain.style}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}|${JSON.stringify(m.terrain.paint ?? [])}`
       : '';
     if (key === terrainKey) return;
     terrainKey = key;
-    disposeTerrain?.();
-    disposeTerrain = null;
-    if (!m.terrain) { terrainCanvas?.remove(); terrainCanvas = null; return; }
-    if (!terrainCanvas) {
-      terrainCanvas = document.createElement('canvas');
-      terrainCanvas.id = 'map-terrain-canvas';
-      terrainCanvas.setAttribute('data-terrain', '1');
-      terrainBox.appendChild(terrainCanvas);
-    }
+    terrainHandle?.dispose();
+    terrainHandle = null;
+    /* ⚠️ 重建前**换一块新画布**：`TerrainView.dispose()` 会 `loseContext()` 把那块画布永久作废，
+       在它上面再 `getContext('webgl2')` 只会拿到一个已丢失的上下文、静默画出空白
+       （第九十三轮缩略图踩过同一个坑）。 */
+    terrainCanvas?.remove();
+    terrainCanvas = null;
+    if (!m.terrain) { paintState(); return; }
+    terrainCanvas = document.createElement('canvas');
+    terrainCanvas.id = 'map-terrain-canvas';
+    terrainCanvas.setAttribute('data-terrain', '1');
+    terrainBox.appendChild(terrainCanvas);
     try {
-      disposeTerrain = mountTerrain(terrainCanvas, m.terrain, m.width, m.height);
+      terrainHandle = mountTerrain(terrainCanvas, m.terrain, m.width, m.height);
     } catch {
       /* 拿不到 WebGL（老机器/禁用显卡）⇒ 地图栏退化成"只有手绘层"，不炸整个沙盘 */
       genNote.textContent = '这台机器开不了 WebGL2，地形画不出来（手绘区域照常能用）';
@@ -181,6 +265,64 @@ export function renderMap(store: Store, host: HTMLElement): void {
       terrainCanvas = null;
       terrainKey = '';
     }
+    paintState();
+  }
+
+  /* ── 手刷地形：一笔 = 一次 `save()`（一步撤销）。刷的过程中**不落盘**，只在画布上重算
+     （`shape:false` 约 12ms ⇒ 跟手）。松手才写进数据，写完之后 store 通知会让 `syncTerrain`
+     按"新键"重建一次 —— 那次走**完整生成**（含重定海平面），所以屏上看到的和关掉重开算出来的
+     是同一张图。 */
+  function paintFrom(e: PointerEvent): void {
+    const m = curMap();
+    if (!m?.terrain || !terrainHandle) return;
+    const [mx, my] = local(e);
+    const p = mapPointToWorld(mx, my, m.width, m.height);
+    if (lastPaint) {
+      const dx = p.x - lastPaint.x, dy = p.y - lastPaint.y;
+      if (dx * dx + dy * dy < PAINT_MIN_STEP * PAINT_MIN_STEP) return;
+    }
+    lastPaint = p;
+    paintStep(brushTool, brushSize, p.x, p.y);
+    liveStroke?.points.push(p);
+    terrainHandle.regenerate({ shape: false });
+  }
+
+  function startPaint(e: PointerEvent): void {
+    const m = curMap();
+    if (!m?.terrain || !terrainHandle) { paintState('这片地还没有地形：先点「生成地形…」'); return; }
+    beginPaintStroke();
+    liveStroke = { tool: brushTool, size: brushSize, points: [] };
+    lastPaint = null;
+    paintFrom(e);
+  }
+
+  function endPaint(commit: boolean): void {
+    const s = liveStroke;
+    liveStroke = null;
+    lastPaint = null;
+    if (!s || !s.points.length) return;
+    if (!commit) {
+      /* 丢弃这一笔（外面松手/指针被抢走）：场里已经有了半笔，得把场重置回"只有已落盘笔划"的样子 */
+      resetTerrainPaint();
+      terrainKey = '';
+      renderSvg();
+      return;
+    }
+    save((m) => {
+      if (!m.terrain) return;
+      if (!m.terrain.paint) m.terrain.paint = [];
+      m.terrain.paint.push(s);
+    });
+    paintState();
+  }
+
+  /** 清空笔迹：数据里删掉笔划 + **内核的约束场也回到干净状态**
+     （`setElevationParam` 只在种子/岛屿度变了时才重新生成 ⇒ 不重置的话同种子重建时场里还留着旧笔迹）。 */
+  function clearPaint(): void {
+    resetTerrainPaint();
+    save((m) => { if (m.terrain) m.terrain.paint = []; });
+    renderSvg();
+    paintState('笔迹已清空');
   }
 
   let panning = false, panX = 0, panY = 0, panSX = 0, panSY = 0;
@@ -238,6 +380,8 @@ export function renderMap(store: Store, host: HTMLElement): void {
       renderSvg();
     } else if (mode === 'marker') {
       save((m) => { m.markers.push({ id: uid('mk'), x, y, label: `M${labelSeq++}` }); });
+    } else if (mode === 'paint') {
+      startPaint(e);
     } else {
       panning = true;
       panSX = e.clientX; panSY = e.clientY;
@@ -252,20 +396,31 @@ export function renderMap(store: Store, host: HTMLElement): void {
     /* 丢失 pointerup 的兜底：没按键却收到 move，说明收尾信号丢了
        （在窗口外松开 / pointercancel 没派发），就地收尾——否则会一直画下去或一直平移。 */
     if (e.buttons === 0) {
-      if (panning || drawing.length) endDrag(false);
+      if (panning || drawing.length || liveStroke) { endDrag(false); endPaint(false); }
       return;
     }
     if (mode === 'region' && drawing.length) {
       drawing.push(local(e));
       renderSvg();
+    } else if (mode === 'paint' && liveStroke) {
+      paintFrom(e);
     } else if (panning) {
       stage.style.left = panX + (e.clientX - panSX) + 'px';
       stage.style.top = panY + (e.clientY - panSY) + 'px';
     }
   };
-  const onUp = () => endDrag(true);
-  const onCancel = () => endDrag(false);
+  const onUp = () => { endDrag(true); endPaint(true); };
+  const onCancel = () => { endDrag(false); endPaint(false); };
   const onResize = () => fitView();
+  /* ⭐ 生成工作室（`src/ui/map-studio.ts`）与助手都靠这两个事件把地图栏切到"地形"模式 ——
+     面板负责说"要刷"，地图栏负责刷（画布与指针都在这儿）。 */
+  const onBrushEvt = (e: Event) => {
+    const d = (e as CustomEvent).detail as { on?: boolean; tool?: string; size?: string } | undefined;
+    if (d?.tool) brushTool = d.tool;
+    if (d?.size) brushSize = d.size;
+    setMode(d?.on === false ? 'move' : 'paint');
+  };
+  const onClearEvt = () => clearPaint();
   /* ⭐ 只监听 window.resize 是不够的：地图栏**自己**也会变高变矮 —— 上面那行状态文字一变长
      （生成地形后正是如此）就换行、工具栏变高、下面的格子变矮，而缩放还按老高度算 ⇒
      图被切掉一截（第九十三轮实测：格子 289→261，缩放仍按 289）。ResizeObserver 一并盯住。 */
@@ -276,14 +431,18 @@ export function renderMap(store: Store, host: HTMLElement): void {
   window.addEventListener('pointerup', onUp);
   window.addEventListener('pointercancel', onCancel);
   window.addEventListener('resize', onResize);
+  window.addEventListener('lingkuang-map-brush', onBrushEvt);
+  window.addEventListener('lingkuang-map-clear-paint', onClearEvt);
   mapCleanup = () => {
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
     window.removeEventListener('pointercancel', onCancel);
     window.removeEventListener('resize', onResize);
+    window.removeEventListener('lingkuang-map-brush', onBrushEvt);
+    window.removeEventListener('lingkuang-map-clear-paint', onClearEvt);
     ro?.disconnect();
-    disposeTerrain?.();   /* ⭐ 地形画布后面挂着 WebGL 上下文（4 张 2048² FBO）—— 必须销毁 */
-    disposeTerrain = null;
+    terrainHandle?.dispose();   /* ⭐ 地形画布后面挂着 WebGL 上下文（4 张 2048² FBO）—— 必须销毁 */
+    terrainHandle = null;
     terrainKey = '';
   };
 

@@ -29,6 +29,10 @@ import {choosePoints} from './vendor/generate-points';
 import MapGen from './vendor/map';
 import Geometry from './vendor/geometry';
 import Painting from './vendor/painting';
+import {
+  beginStroke as vendorBeginStroke, paintAt as vendorPaintAt,
+  resetPainting as vendorResetPainting, userHasPainted as vendorUserHasPainted,
+} from './vendor/painting';
 import Renderer from './vendor/render';
 
 /* ── 参数（字段名与上游 `mapgen4.ts` 的 initialParams 一致；默认值也照抄）────────── */
@@ -227,15 +231,73 @@ export function createEngineFor(seed: string, style: string, spec?: MapgenSpecIn
   return createEngine(params, merged.landRatio, 0.01 + 0.015 * rv);
 }
 
+/* ── 手刷地形（画笔）───────────────────────────────────────────────
+   上游 `painting.ts` 的高度约束场是**模块级单例**（128×128），笔迹只活在这一场里，换种子就被重新生成。
+   灵框的做法：**存笔划、不存场** —— `MapTerrainSpec.paint` 放一串笔划（工具 + 尺寸 + 归一化坐标点），
+   生成时按同样的顺序重放。这样数据文件只多几百字节（而不是 64KB 的场、更不是 base64 的几十 KB），
+   也和"只存参数、图现算"的既有理念一致。
+   ⚠️ 重放必须**逐点一致**：实时刷和重放都走同一个固定步长 `PAINT_DT`（不用真实帧间隔），
+   否则"刷完看到的图"和"关掉重开之后的图"会不一样。 */
+export const PAINT_DT = 60; /* ms/点（上游把 dt 钳在 100ms 内；这个值让"点一下"就有可见强度） */
+
+/** 世界坐标下的一个笔触点（0..1 ＝ 世界 1000 单位 /1000） */
+export interface PaintPoint { x: number; y: number }
+/** 一笔：工具 + 尺寸 + 轨迹点（`MapTerrainSpec.paint` 存的就是它） */
+export interface PaintStroke { tool: string; size: string; points: PaintPoint[] }
+
+export const PAINT_TOOLS: { id: string; label: string; hint: string }[] = [
+  { id: 'mountain', label: '造山', hint: '抬高：刷出山脊、高原' },
+  { id: 'valley', label: '压谷', hint: '微微抬一点：造丘陵与缓坡' },
+  { id: 'shallow', label: '浅海', hint: '压低：淹成浅海、内陆湖' },
+  { id: 'ocean', label: '深海', hint: '压到底：开海峡、深海沟' },
+];
+export const PAINT_SIZES: { id: string; label: string }[] = [
+  { id: 'tiny', label: '极细' },
+  { id: 'small', label: '细' },
+  { id: 'medium', label: '中' },
+  { id: 'large', label: '粗' },
+];
+export const DEFAULT_PAINT_TOOL = 'mountain';
+export const DEFAULT_PAINT_SIZE = 'small';
+
+/** 起一笔（上游的 `currentStroke` 会记下这一笔开始前的高度，混色时以它为底） */
+export function beginPaintStroke(): void { vendorBeginStroke(); }
+
+/** 实时刷一个点（固定步长；x/y 是 0..1 的世界坐标）
+ *  ⚠️ 上游的形参顺序是 `(toolId, x, y, sizeId, dtMs)` —— 别按"工具、尺寸、坐标"的直觉写。 */
+export function paintStep(tool: string, size: string, x: number, y: number): void {
+  vendorPaintAt(tool, x, y, size, PAINT_DT);
+}
+
+/** 重放一个世界的全部笔迹。⚠️ 场里**已经有笔迹**时直接返回 —— 同种子重复生成时场里已经含着它，
+    再重放一遍会双重叠加（山越刷越高）。 */
+export function replayPaint(strokes: PaintStroke[] | undefined): void {
+  if (!strokes?.length || vendorUserHasPainted()) return;
+  for (const s of strokes) {
+    if (!s?.points?.length) continue;
+    vendorBeginStroke();
+    for (const p of s.points) vendorPaintAt(s.tool, p.x, p.y, s.size, PAINT_DT);
+  }
+}
+
+/** 清空约束场（"清空笔迹"用：笔划从数据里删掉之后，场也得回到干净状态） */
+export function resetPaint(): void { vendorResetPainting(); }
+
+/** 这一场里有没有笔迹（护栏与测试用） */
+export function paintedSoFar(): boolean { return vendorUserHasPainted(); }
+
 /** 生成地形数据（高度 / 降雨 / 河流）。`shape = false` 时**不重定海平面**（只算一次，快一倍），
- *  给"边刷边重算"那条路用（画笔改的是高度约束，不需要每帧都重新定海平面）。 */
-export function runGeneration(engine: TerrainEngine, opts?: { shape?: boolean }): void {
+ *  给"边刷边重算"那条路用（画笔改的是高度约束，不需要每帧都重新定海平面）。
+ *  `strokes` = 这个世界的**手刷笔迹**：约束场是内核的模块级单例，换种子时会被重新生成 ⇒
+ *  这里在生成前把笔迹**重放**一遍（只在场子是"干净"的时候重放，见 `replayPaint` 的说明）。 */
+export function runGeneration(engine: TerrainEngine, opts?: { shape?: boolean; strokes?: PaintStroke[] }): void {
   const { map, params } = engine;
   const shape = opts?.shape !== false;
 
   /* ① 高度 + ② 重定海平面（要"陆地占 X%"就在这里定死）—— 必须排在降雨与河流之前：
      降雨的迎风坡/雨影看 elevation_r，河流的流向看 elevation_t。 */
   Painting.setElevationParam(params.elevation);
+  if (opts?.strokes?.length) replayPaint(opts.strokes);
   map.assignElevation(params.elevation, { size: Painting.size, constraints: Painting.constraints });
   if (shape && engine.targetLandRatio !== undefined) reseatSeaLevel(engine, engine.targetLandRatio);
   map.assignRainfall(params.biomes);

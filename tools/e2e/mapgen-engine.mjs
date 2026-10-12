@@ -136,6 +136,78 @@ const base = run('灵框测试', 'continent', { landRatio: 0.34, ridges: 4, rive
 /* ★9 耗时预算：建网格 + 生成 < 3s（面板上点一下就得出来） */
 check('★9 建网格+生成 < 3000ms', base.tMesh + base.tGen < 3000, { tMesh: base.tMesh, tGen: base.tGen });
 
+/* ── 手刷地形（画笔）：数据里只存**笔划**，生成时重放 ──────────────────────────
+   ⚠️ 内核的高度约束场是**模块级单例**（128×128）：换种子才会重新生成。
+   所以这一组测试的写法必须守两条：① 同种子的"没刷"那一跑必须排在"刷了"之前；
+   ② 要测"重放"就得先拿另一颗种子把场冲干净。 */
+const spec = { landRatio: 0.34, ridges: 4, rivers: 1 };
+/** 横着扫一遍的一条宽带（25 个点）：不赌"刷的那一点是海还是陆"，直接跨过去 */
+const band = (tool, y) => ({ tool, size: 'medium', points: Array.from({ length: 25 }, (_, i) => ({ x: 0.05 + i * 0.0375, y })) });
+/* ⚠️ 判据不能用 `landRatio`：**它被 `reseatSeaLevel()` 钉在目标值上**（重新定海平面 ⇒ 永远是 0.34）。
+   全局平均海拔也钝（水下被压成很窄一段）。看"刷的那一片变成什么了"最准 —— 取一条纬度窗口里的
+   水域占比：造山 ⇒ 那片变陆地（水域占比降），深海 ⇒ 那片变海（升）。 */
+const areaWater = (eng, y0, y1) => {
+  const e = eng.map.elevation_t, mesh = eng.mesh;
+  let w = 0, n = 0;
+  for (let t = 0; t < e.length; t++) {
+    const y = mesh.y_of_t(t) / 1000;
+    if (y < y0 || y > y1) continue;
+    n++;
+    if (e[t] < 0) w++;
+  }
+  return n ? w / n : 0;
+};
+
+/* ★10 造山 / 深海真的改地形（同种子、只差笔迹） */
+{
+  const a0 = run('笔迹A', 'continent', spec);
+  const wa0 = areaWater(a0.eng, 0.25, 0.35);
+  const a1 = run('笔迹A', 'continent', spec, { strokes: [band('mountain', 0.3)] });
+  const wa1 = areaWater(a1.eng, 0.25, 0.35);
+  const wb0 = areaWater(run('笔迹B', 'continent', spec).eng, 0.6, 0.7);
+  const wb1 = areaWater(run('笔迹B', 'continent', spec, { strokes: [band('ocean', 0.65)] }).eng, 0.6, 0.7);
+  check('★10 造山把那一带变陆地 / 深海把它淹掉', wa1 < wa0 - 0.1 && wb1 > wb0 + 0.1,
+    { mountain: { before: +wa0.toFixed(3), after: +wa1.toFixed(3) },
+      ocean: { before: +wb0.toFixed(3), after: +wb1.toFixed(3) } });
+}
+
+/* ★11 重放确定性：同一份笔迹 ⇒ 同一片地（这是"关掉重开还是这张图"的根据） */
+{
+  const strokes = [band('mountain', 0.4), { tool: 'shallow', size: 'small', points: [{ x: 0.2, y: 0.2 }, { x: 0.22, y: 0.21 }] }];
+  const s1 = run('笔迹R', 'continent', spec, { strokes });
+  run('冲干净', 'continent', spec);                       /* 换种子 ⇒ 约束场被重新生成 */
+  const s2 = run('笔迹R', 'continent', spec, { strokes }); /* 再重放一遍 */
+  const painted = E.paintedSoFar();
+  check('★11 笔迹重放逐位一致', core(s1) === core(s2) && painted,
+    { same: core(s1) === core(s2), painted, land: +s2.stats.landRatio.toFixed(3) });
+}
+
+/* ★12 同一块场里连跑两遍不能叠加（护栏 `paintedSoFar()`：场里已有笔迹就跳过重放） */
+{
+  const eng = E.createEngineFor('双刷', 'continent', spec);
+  const strokes = [band('mountain', 0.5)];
+  E.runGeneration(eng, { strokes });
+  const once = E.statsOf(eng);
+  E.runGeneration(eng, { strokes });
+  const twice = E.statsOf(eng);
+  check('★12 二次生成不叠笔迹', JSON.stringify(once) === JSON.stringify(twice),
+    { lands: once.lands, peak: once.peak, second: twice.peak });
+}
+
+/* ★13 清空笔迹：`resetPaint()` 之后回到没刷过的样子 */
+{
+  const strokes = [band('ocean', 0.5)];
+  const dirtyEng = run('笔迹C', 'continent', spec, { strokes });
+  const dirty = E.paintedSoFar();
+  const wDirty = areaWater(dirtyEng.eng, 0.45, 0.55);
+  E.resetPaint();                             /* = 界面上「清空笔迹」 */
+  const eng = E.createEngineFor('笔迹C', 'continent', spec);
+  E.runGeneration(eng);                       /* 场刚被 resetPaint 重新生成过 ⇒ 干净，不重放 */
+  const wClean = areaWater(eng, 0.45, 0.55);
+  check('★13 清空笔迹后回到干净地形', dirty && !E.paintedSoFar() && wDirty > wClean + 0.1,
+    { dirty, after: E.paintedSoFar(), painted: +wDirty.toFixed(3), cleared: +wClean.toFixed(3) });
+}
+
 const pass = results.filter(Boolean).length;
 console.log(`\n${pass}/${results.length} PASS`);
 process.exit(pass === results.length ? 0 : 1);

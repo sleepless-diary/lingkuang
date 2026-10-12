@@ -194,8 +194,13 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
   const before = currentWorld(store).maps?.[0];
   const w = before?.width ?? 900;
   const h = before?.height ?? 500;
+  /* ⭐ 手刷笔迹：**种子与档位都没变**时留着（那还是同一片地，只是重新算了一遍 —— 刷过的
+     地方照样有意义）；换种子/换档位就是另一片地了，笔迹自然作废。
+     ⚠️ 少了这一步，创作者刷了二十笔、去面板只调一个旋钮再「采用」，笔迹会被静默清掉。 */
+  const old = before?.terrain;
+  const keepPaint = old && old.seed === plan.seed && old.style === plan.style ? old.paint : undefined;
   const engine = createEngineFor(plan.seed, plan.style, plan.spec);
-  runGeneration(engine);
+  runGeneration(engine, { strokes: keepPaint });   /* 统计要跟画布看到的一致 ⇒ 笔迹一起算 */
   const s = statsOf(engine);
 
   let created = false;
@@ -205,9 +210,11 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
     if (!ws.maps?.length) { ws.maps = [DEFAULT_MAP()]; created = true; }
     const m = ws.maps[0];
     m.terrain = { seed: plan.seed, style: plan.style, spec: plan.spec };
+    if (keepPaint?.length) m.terrain.paint = keepPaint;
   });
 
   const what = plan.matched.length ? `（按你说的：${plan.matched.join('、')}）` : '';
+  const kept = keepPaint?.length ?? 0;
   return {
     ok: true,
     plan,
@@ -216,6 +223,7 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
       `${created ? '这个世界还没有地图，我顺手建了一张「默认地图」并' : `已在「${before?.name ?? '默认地图'}」上`}生成地形：` +
       `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m` +
       `（陆地占 ${Math.round(s.landRatio * 100)}%）${what}` +
+      (kept ? `（手刷的 ${kept} 笔保住了 —— 种子与档位没变）` : '') +
       `（种子「${plan.seed}」，Ctrl+Z 可撤销，生成后照样能手绘精修。` +
       `图是 ${w}×${h} 的现算图，不写进数据文件）`,
   };

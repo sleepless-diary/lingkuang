@@ -12,7 +12,7 @@
  *  渲染时现算（确定性：同一份参数永远同一片地）。 */
 
 import {
-  BAND, TerrainView, createEngineFor, runGeneration, statsOf,
+  BAND, TerrainView, createEngineFor, resetPaint, runGeneration, statsOf,
   type MapgenSpecInput, type TerrainEngine, type TerrainStats,
 } from '../mapgen';
 import type { MapTerrainSpec } from '../store/types';
@@ -31,15 +31,16 @@ const engines = new Map<string, Cached>();
 const MAX_ENGINES = 8;
 
 const keyOf = (t: MapTerrainSpec, w: number, h: number) =>
-  `${t.seed}|${t.style}|${JSON.stringify(t.spec ?? {})}|${w}x${h}`;
+  `${t.seed}|${t.style}|${JSON.stringify(t.spec ?? {})}|${w}x${h}|${JSON.stringify(t.paint ?? [])}`;
 
-/** 参数 → 引擎（含统计）。建一次网格约 30~70ms、生成约 30~60ms ⇒ 必须缓存。 */
+/** 参数 → 引擎（含统计）。建一次网格约 30~70ms、生成约 30~60ms ⇒ 必须缓存。
+ *  ⚠️ 缓存键**含手刷笔迹**：笔迹不同就是另一片地（内核的约束场是模块级单例，见 `src/mapgen`）。 */
 export function terrainEngine(t: MapTerrainSpec, w: number, h: number): Cached {
   const key = keyOf(t, w, h);
   const hit = engines.get(key);
   if (hit) return hit;
   const engine = createEngineFor(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput);
-  runGeneration(engine);
+  runGeneration(engine, { strokes: t.paint });
   const out: Cached = { engine, stats: statsOf(engine) };
   engines.set(key, out);
   if (engines.size > MAX_ENGINES) {
@@ -56,6 +57,13 @@ export function terrainStats(t: MapTerrainSpec | undefined, w: number, h: number
 }
 
 export function clearTerrainCache(): void {
+  engines.clear();
+}
+
+/** 「清空笔迹」：笔划从数据里删掉之后，**内核那个约束场也得回到干净状态** ——
+ *  否则同种子重建时场里还留着旧笔迹（`setElevationParam` 只在种子/岛屿度变了时才重新生成）。 */
+export function resetTerrainPaint(): void {
+  resetPaint();
   engines.clear();
 }
 
@@ -87,8 +95,16 @@ export function bandSource(): { sx: number; sy: number; sw: number; sh: number }
 
 /* ── 挂到界面上（地图栏那块画布）────────────────────────────────────────────── */
 
-/** 把一块画布变成"这个世界的地形"。返回卸载函数（换世界/关地图栏时必须调，否则 GL 上下文泄漏）。 */
-export function mountTerrain(canvas: HTMLCanvasElement, t: MapTerrainSpec, w: number, h: number): () => void {
+/** 挂上去之后拿到的句柄：`dispose()` 卸载（换世界/关地图栏时必须调，否则 GL 上下文泄漏）；
+ *  `regenerate()` 用同一块画布重跑生成（**手刷地形**那条路：每刷一个点就重算一次，
+ *  约 12ms，走 `shape:false` 不重定海平面 ⇒ 画面上只在刷的地方变）。 */
+export interface TerrainHandle {
+  dispose: () => void;
+  regenerate: (opts?: { shape?: boolean }) => void;
+}
+
+/** 把一块画布变成"这个世界的地形"。 */
+export function mountTerrain(canvas: HTMLCanvasElement, t: MapTerrainSpec, w: number, h: number): TerrainHandle {
   const { engine } = terrainEngine(t, w, h);
   const L = bandLayout(w, h);
   canvas.style.position = 'absolute';
@@ -99,7 +115,29 @@ export function mountTerrain(canvas: HTMLCanvasElement, t: MapTerrainSpec, w: nu
   canvas.style.pointerEvents = 'none';
   const view = new TerrainView(canvas, engine);
   view.update();
-  return () => view.dispose();
+  return {
+    dispose: () => view.dispose(),
+    regenerate: (opts) => {
+      /* ⚠️ 实时刷的时候场里**已经**有这一笔（`paintStep` 直接写进内核的约束场）⇒
+         `replayPaint` 会因为"场里有笔迹"而跳过重放，不会双重叠加。 */
+      runGeneration(engine, { shape: opts?.shape, strokes: t.paint });
+      view.update();
+    },
+  };
+}
+
+/** 地图格子坐标（0..w / 0..h）→ 世界归一化坐标（0..1）。
+ *  手刷地形要把指针位置换算成内核认识的世界坐标：横带 y∈[BAND.y0,BAND.y1] 铺满格子高，
+ *  方形画布比格子宽一点点（`bandLayout` 居中摆）⇒ 先换算到方形画布的比例再落回世界。 */
+export function mapPointToWorld(mx: number, my: number, w: number, h: number): { x: number; y: number } {
+  const L = bandLayout(w, h);
+  const px = (mx - L.left) / (L.size || 1);
+  const py = (my - L.top) / (L.size || 1);
+  const cl = (v: number) => Math.min(1, Math.max(0, v));
+  return {
+    x: cl((BAND.x0 + px * (BAND.x1 - BAND.x0)) / 1000),
+    y: cl((BAND.y0 + py * (BAND.y1 - BAND.y0)) / 1000),
+  };
 }
 
 /* ── 缩略图 / 预览（生成面板用）────────────────────────────────────────────── */

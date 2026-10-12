@@ -175,6 +175,14 @@ export interface MapLine {
   width?: number;
   color?: string;
 }
+/** ⭐ 手刷地形的一笔：工具 + 尺寸 + 轨迹点（**归一化世界坐标 0..1**）。
+ *  和地形本身一样是"存参数不存图"：128×128 的高度约束场**不落盘**，
+ *  生成时按同样的顺序重放这些笔划即可（所以数据文件只多几百字节）。 */
+export interface MapPaintStroke {
+  tool: string;   /* mountain | valley | shallow | ocean（见 src/mapgen/index.ts 的 PAINT_TOOLS） */
+  size: string;   /* tiny | small | medium | large */
+  points: { x: number; y: number }[];
+}
 /** ⭐ 生成的地形：**只存参数**（种子 / 档位 / 数量，几百字节）——
     地形图由 `src/ui/map-gen.ts` 现算现画（确定性：同一份参数永远同一片地），
     所以 worldbuilding.json 里不会塞进几百 KB 的 base64 图片。 */
@@ -182,6 +190,7 @@ export interface MapTerrainSpec {
   seed: string;
   style: string;
   spec?: { [k: string]: number | undefined };
+  paint?: MapPaintStroke[]; // 手刷笔迹（笔划，不是场；可选 ⇒ 旧数据照旧能读）
 }
 export interface MapData {
   id: string;

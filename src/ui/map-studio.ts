@@ -186,6 +186,14 @@ export function openMapStudio(store: Store): () => void {
           <input id="ms-seed" placeholder="留空 = 用「灵框」，同一颗种子永远同一片地">
           <button id="ms-reseed" class="lk-ms__btn" title="随机换一颗种子再预览">换一颗</button>
         </div>
+        <div class="lk-ms__sub">手绘地形（刷子）</div>
+        <div class="lk-ms__hint">生成出来的只是「底稿」—— 不满意的地方不用重新抽，去地图栏直接用刷子改：造山 / 压谷 / 浅海 / 深海。
+          每一笔都能单独撤销，笔迹存在地图数据里（关掉重开还在，同一颗种子算出来还是这张图）。</div>
+        <div class="lk-ms__row">
+          <button id="ms-brush" class="lk-ms__btn">在地图上刷</button>
+          <button id="ms-brush-clear" class="lk-ms__btn">清空笔迹</button>
+          <span id="ms-brush-n" class="lk-ms__dim"></span>
+        </div>
       </div>
 
       <div class="lk-ms__sec" data-sec="ai">
@@ -270,7 +278,10 @@ export function openMapStudio(store: Store): () => void {
   const previewOf = async (p: MapPlan) => {
     cur = p;
     const { w, h } = dims();
-    const t: MapTerrainSpec = { seed: p.seed, style: p.style, spec: p.spec };
+    /* 预览要跟"采用之后的样子"一致 ⇒ 种子与档位没变时把手刷笔迹也带上（同 `generateIntoMap`） */
+    const old = hostStore ? currentWorld(hostStore).maps?.[0]?.terrain : undefined;
+    const keepPaint = old && old.seed === p.seed && old.style === p.style ? old.paint : undefined;
+    const t: MapTerrainSpec = { seed: p.seed, style: p.style, spec: p.spec, ...(keepPaint?.length ? { paint: keepPaint } : {}) };
     const seq = ++previewSeq;
     const url = await terrainThumbUrl(t, w, h, PREVIEW_W, PREVIEW_H);
     if (seq !== previewSeq || !openEl) return;
@@ -294,7 +305,30 @@ export function openMapStudio(store: Store): () => void {
     if (!cur || !hostStore) { setState('先出一张预览，再采用。'); return; }
     const r = generateIntoMap(hostStore, { seed: cur.seed, style: cur.style, spec: cur.spec });
     setState(r.note);
+    syncBrush();
   };
+
+  /* ── 手绘地形（刷子）：面板只负责"把地图栏切到地形模式" —— 画布与指针都在地图栏
+     （`src/ui/map.ts` 监听 `lingkuang-map-brush` / `lingkuang-map-clear-paint`）。
+     用户定下的分工：**地形拿来看，文化分区拿来动手**；刷子就是"在看得见的底稿上动手"的另一半。 */
+  const brushN = q<HTMLElement>('#ms-brush-n');
+  function syncBrush(): void {
+    const m = hostStore ? currentWorld(hostStore).maps?.[0] : undefined;
+    const n = m?.terrain?.paint?.length ?? 0;
+    brushN.textContent = m?.terrain ? (n ? `${n} 笔笔迹` : '还没有笔迹') : '这片地还没有地形';
+  }
+  q<HTMLButtonElement>('#ms-brush').addEventListener('click', () => {
+    const m = hostStore ? currentWorld(hostStore).maps?.[0] : undefined;
+    if (!m?.terrain) { setState('先在这边抽一张、点「采用到地图」，才有地可刷。'); return; }
+    /* 面板 560px 宽，摆在地图栏上面 ⇒ 先把面板收掉再切刷子，否则看不到自己刷了什么 */
+    window.dispatchEvent(new CustomEvent('lingkuang-map-brush', { detail: { on: true } }));
+    closeMapStudio();
+  });
+  q<HTMLButtonElement>('#ms-brush-clear').addEventListener('click', () => {
+    window.dispatchEvent(new CustomEvent('lingkuang-map-clear-paint'));
+    syncBrush();
+    setState('笔迹已清空');
+  });
 
   const randomSeed = () => '灵框-' + Math.random().toString(36).slice(2, 7);
   const ri = (a: number, b: number) => a + Math.floor(Math.random() * (b - a + 1));
@@ -451,6 +485,7 @@ export function openMapStudio(store: Store): () => void {
      ⚠️ `MapTerrainSpec.style` 在 `src/store/types.ts` 里是宽 `string`（数据层不许反向依赖
      `src/ui/map-gen.ts` 的 `MapStyle`）⇒ 读回来这里收窄一次。 */
   const m = currentWorld(store).maps?.[0];
+  syncBrush();
   if (m?.terrain) {
     const t = { seed: m.terrain.seed, style: m.terrain.style as MapStyle, spec: m.terrain.spec ?? {} };
     fillForm(t.style, t.spec);
