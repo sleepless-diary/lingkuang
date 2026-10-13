@@ -207,10 +207,11 @@ async function main() {
     new Set([paneShots.relief, paneShots.contour, paneShots.flat]).size === 3 && paneShots.relief !== 0,
     paneShots);
 
-  /* ★9 这条偏好随地图持久化：只调这一档 ⇒ 地形参数一个都没变 */
+  /* ★9 这条偏好随地图持久化：只调这一档 ⇒ 地形参数一个都没变
+     （`form` 是第九十八轮加的「形态」字段 —— 同样是"只存参数"的显示/生成开关，一起列进来）*/
   const t9 = diskMap()?.terrain ?? {};
   check('★9 只改了「看的方式」：种子/档位/数量一个都没动',
-    !!t9.seed && !!t9.style && JSON.stringify(Object.keys(t9).sort()) === JSON.stringify(['seed', 'spec', 'style', 'view']),
+    !!t9.seed && !!t9.style && JSON.stringify(Object.keys(t9).sort()) === JSON.stringify(['form', 'seed', 'spec', 'style', 'view']),
     { keys: Object.keys(t9).sort(), view: t9.view, seed: t9.seed });
 
   /* ★10 刷新后还是那一档（存的是数据，不是内存里的临时状态）*/

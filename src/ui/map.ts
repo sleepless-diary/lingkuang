@@ -20,10 +20,14 @@ import { DEFAULT_MAP, polylinePath, smoothClosedPath } from './map-gen';
 import {
   mountTerrain, mapPointToWorld, resetTerrainPaint, terrainStats, type TerrainHandle,
 } from './map-terrain';
+import { PLANET_VIEW_H, mountGlobeView, mountPlanet, planetStats } from './planet-view';
 import { DEFAULT_PAINT_SIZE, DEFAULT_PAINT_TOOL, TERRAIN_STYLES, beginPaintStroke, paintStep, terrainStyleLabel, terrainStyleOf } from '../mapgen';
+import { MAP_FORMS, mapFormLabel, mapFormOf } from '../mapgen/planet';
 import { openMapStudioFromToolbar } from './map-studio';
 
 type Mode = 'region' | 'marker' | 'move' | 'paint';
+/** 两套内核的句柄**同形**（dispose / setStyle / regenerate）—— 地图栏不关心底下是哪一个 */
+type TerrainLayer = TerrainHandle | ReturnType<typeof mountPlanet>;
 
 /* 同 detail.ts：host 是长生命周期容器，重新渲染必须摘掉上一次的订阅，
    否则切到别的工具后旧订阅仍会往别人的界面里画东西。 */
@@ -68,6 +72,8 @@ export function renderMap(store: Store, host: HTMLElement): void {
         <span id="map-gen-note" style="font-size:var(--text-xs);color:var(--fg-2);"></span>
         <span style="flex:1;"></span>
         <button id="map-gen" title="打开地图生成面板：自己一个个调参数 / AI 直出 / 抽卡" style="background:none;border:1px solid var(--accent);color:var(--accent);border-radius:var(--radius-sm);font-size:11px;padding:3px 10px;cursor:pointer;">生成地形…</button>
+        <select id="map-form" title="形态：局部 = 一片地区的地形（能手刷精修）；星球 = 整颗星球（经度无缝、有两极，能贴到球上看）" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${MAP_FORMS.map((f) => `<option value="${f.id}" title="${escapeHtml(f.hint)}">${escapeHtml(f.label)}</option>`).join('')}</select>
+        <button id="map-globe" title="球体看：把星球图贴到一颗真球上（拖动旋转、滚轮缩放）—— 只在星球形态下出现" style="display:none;background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">球体看</button>
         <select id="map-view" title="看的方式：地形怎么画（立体 / 等高线 / 平面）—— 只换画法，不重算地形" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${TERRAIN_STYLES.map((s) => `<option value="${s.id}" title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}</option>`).join('')}</select>
         <span style="width:1px;height:16px;background:var(--border-soft);"></span>
         <button data-mode="region" class="map-mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">区域</button>
@@ -106,10 +112,12 @@ export function renderMap(store: Store, host: HTMLElement): void {
   const stage = host.querySelector('#map-stage') as HTMLElement;
   const terrainBox = host.querySelector('#map-terrain') as HTMLElement;
   let terrainCanvas: HTMLCanvasElement | null = null;
-  let terrainHandle: TerrainHandle | null = null;
+  let terrainHandle: TerrainLayer | null = null;
   let terrainKey = '';
   /* ⭐ 「看的方式」：上一次已经推给 GPU 的那一档（与 `terrainKey` 分开 —— 换风格不重建画布）*/
   let terrainStyleKey = '';
+  /* ⭐ 「球体看」（第九十八轮）：星球形态下的第二个视图（平面图 ⇄ 真球），只对星球有效 */
+  let globeOn = false;
   const hint = host.querySelector('#map-hint') as HTMLElement;
   let labelSeq = 1;
 
@@ -198,6 +206,8 @@ export function renderMap(store: Store, host: HTMLElement): void {
      与助手的 `generate_map` 动作共用它，一次 store.update ⇒ 一步 Ctrl+Z 就能撤销回去。 */
   const genNote = host.querySelector('#map-gen-note') as HTMLElement;
   const viewSel = host.querySelector('#map-view') as HTMLSelectElement;
+  const formSel = host.querySelector('#map-form') as HTMLSelectElement;
+  const globeBtn = host.querySelector('#map-globe') as HTMLButtonElement;
   host.querySelector('#map-gen')?.addEventListener('click', () => { openMapStudioFromToolbar(store); });
   /* ⭐ 「看的方式」（第九十七轮）：改了**只重画**（`syncTerrain` 里换渲染参数），不重算地形。
      落盘照走 `save()`（一步撤销）—— 与面板「采用到地图」同一条路，不留第二份状态。 */
@@ -206,12 +216,30 @@ export function renderMap(store: Store, host: HTMLElement): void {
     if (!curMap()?.terrain) return;
     save((mm) => { if (mm.terrain) mm.terrain.view = v; });
   });
+  /* ⭐ 「形态」（第九十八轮）：局部 ⇄ 星球。两套内核**共用**同一份种子/档位/数量/看的方式
+     ⇒ 切过去只是换了一套渲染，参数还在；落盘照走 `save()`（一步撤销）。 */
+  formSel.addEventListener('change', () => {
+    const v = formSel.value;
+    if (!curMap()?.terrain) return;
+    save((mm) => { if (mm.terrain) mm.terrain.form = v; });
+  });
+  globeBtn.addEventListener('click', () => {
+    globeOn = !globeOn;
+    if (globeOn) setMode('move');        /* 球体上看不了手绘：切回平移档 */
+    terrainKey = '';                     /* 逼 syncTerrain 重挂（平面画布 ⇄ 球体） */
+    renderSvg();
+  });
   setMode('move');
 
   function renderSvg() {
     const m = curMap();
     if (!m) { svg.innerHTML = ''; return; }   /* maps 瞬时缺失（worldsets 被整体替换中）→ 这一帧不画 */
     syncTerrain(m);
+    /* 球体上看不了手绘：区域/标记是**地图平面坐标**，要投到球面上得另做一遍投影（本轮不做）
+       ⇒ 藏起来 + 关掉指针，免得笔画在旋转的球上对不上位置。切回平面就恢复。 */
+    const onGlobe = mapFormOf(m.terrain?.form) === 'planet' && globeOn;
+    svg.style.opacity = onGlobe ? '0' : '1';
+    svg.style.pointerEvents = onGlobe ? 'none' : '';
     const regions = m.regions
       .map(
         (r) =>
@@ -240,23 +268,37 @@ export function renderMap(store: Store, host: HTMLElement): void {
     svg.innerHTML = regions + lines + markers + drawingPath;
   }
 
-  /* ── 地形画布：只在**参数真的变了**的时候重建（生成一次约 30~60ms），
-     同一帧里手绘层的重画不影响它。参数键一样 ⇒ 什么都不做。
-     ⚠️ 键里**含手刷笔迹**：刷完一笔就是另一片地（内核的约束场是模块级单例）。 */
+  /* ── 地形画布：只在**参数真的变了**的时候重建。
+     两种形态两条路：
+       · **局部**（`local`）：内核的 WebGL 渲染器（`mountTerrain`）—— 正方形画布只露中间横带，
+         生成约 30~70ms、支持手刷（`regenerate`）；
+       · **星球**（`planet`）：等距圆柱图直接铺进 2D 画布（`mountPlanet`），或者贴到一颗真球上
+         （`mountGlobeView`）—— 场算一次约 450ms，之后换「看的方式」只是重新上色（约 45ms）。
+     ⚠️ 局部那条键里**含手刷笔迹**：刷完一笔就是另一片地（内核的约束场是模块级单例）。 */
   function syncTerrain(m: MapData) {
     terrainBox.style.width = m.width + 'px';
     terrainBox.style.height = m.height + 'px';
-    const s = terrainStats(m.terrain, m.width, m.height);
+    const form = mapFormOf(m.terrain?.form);
+    const s = form === 'planet'
+      ? planetStats(m.terrain, PLANET_VIEW_H)
+      : terrainStats(m.terrain, m.width, m.height);
     /* ⭐ 「看的方式」（第九十七轮）：只决定**怎么画**。控件跟着数据走（在别处改了这里也同步），
        没有地形时置灰 —— 还没生成出来的地，谈不上用哪种画法。 */
     const style = terrainStyleOf(m.terrain?.view);
     if (viewSel.value !== style) viewSel.value = style;
     viewSel.disabled = !m.terrain;
+    /* ⭐ 「形态」（第九十八轮）：控件跟着数据走；星球形态才显示「球体看」，画笔在星球下不适用 */
+    if (formSel.value !== form) formSel.value = form;
+    formSel.disabled = !m.terrain;
+    globeBtn.style.display = m.terrain && form === 'planet' ? '' : 'none';
+    globeBtn.style.background = globeOn ? 'rgba(158,194,98,.2)' : 'none';
+    if (m.terrain && form === 'planet' && mode === 'paint') setMode('move');
     genNote.textContent = s && m.terrain
-      ? `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}% · 种子「${m.terrain.seed}」 · ${terrainStyleLabel(style)}`
+      ? `${mapFormLabel(form)} · ${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}% · 种子「${m.terrain.seed}」 · ${terrainStyleLabel(style)}${form === 'planet' && globeOn ? ' · 球体' : ''}`
       : '还没有地形';
     const key = m.terrain
-      ? `${m.terrain.seed}|${m.terrain.style}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}|${JSON.stringify(m.terrain.paint ?? [])}`
+      ? `${form}|${m.terrain.seed}|${m.terrain.style}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}|${JSON.stringify(m.terrain.paint ?? [])}`
+        + (form === 'planet' ? `|${globeOn ? 'globe' : 'equirect'}|${style}` : '')
       : '';
     if (key === terrainKey) {
       /* 地形没变，但「看的方式」可能变了（面板采用 / 助手改了数据）⇒ **只换渲染参数、不重建画布** */
@@ -269,16 +311,26 @@ export function renderMap(store: Store, host: HTMLElement): void {
     terrainHandle = null;
     /* ⚠️ 重建前**换一块新画布**：`TerrainView.dispose()` 会 `loseContext()` 把那块画布永久作废，
        在它上面再 `getContext('webgl2')` 只会拿到一个已丢失的上下文、静默画出空白
-       （第九十三轮缩略图踩过同一个坑）。 */
+       （第九十三轮缩略图踩过同一个坑；球体那条同理）。 */
     terrainCanvas?.remove();
     terrainCanvas = null;
     if (!m.terrain) { paintState(); return; }
     terrainCanvas = document.createElement('canvas');
     terrainCanvas.id = 'map-terrain-canvas';
     terrainCanvas.setAttribute('data-terrain', '1');
+    if (form === 'planet') terrainCanvas.setAttribute('data-planet', globeOn ? 'globe' : 'equirect');
     terrainBox.appendChild(terrainCanvas);
     try {
-      terrainHandle = mountTerrain(terrainCanvas, m.terrain, m.width, m.height);
+      if (form === 'planet') {
+        const g = globeOn ? mountGlobeView(terrainCanvas, m.terrain, m.width, m.height, style) : null;
+        if (g) terrainHandle = g;
+        else {
+          if (globeOn) globeOn = false;   /* 没 WebGL ⇒ 退回平面图（按钮下次会跟着复位） */
+          terrainHandle = mountPlanet(terrainCanvas, m.terrain, m.width, m.height, style);
+        }
+      } else {
+        terrainHandle = mountTerrain(terrainCanvas, m.terrain, m.width, m.height);
+      }
     } catch {
       /* 拿不到 WebGL（老机器/禁用显卡）⇒ 地图栏退化成"只有手绘层"，不炸整个沙盘 */
       genNote.textContent = '这台机器开不了 WebGL2，地形画不出来（手绘区域照常能用）';
@@ -311,6 +363,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
   function startPaint(e: PointerEvent): void {
     const m = curMap();
     if (!m?.terrain || !terrainHandle) { paintState('这片地还没有地形：先点「生成地形…」'); return; }
+    if (mapFormOf(m.terrain.form) === 'planet') { paintState('星球形态暂不支持手刷 —— 想刷局部地形就切回「局部」'); return; }
     beginPaintStroke();
     liveStroke = { tool: brushTool, size: brushSize, points: [] };
     lastPaint = null;
@@ -439,6 +492,8 @@ export function renderMap(store: Store, host: HTMLElement): void {
     const d = (e as CustomEvent).detail as { on?: boolean; tool?: string; size?: string } | undefined;
     if (d?.tool) brushTool = d.tool;
     if (d?.size) brushSize = d.size;
+    /* 星球形态没有手刷（笔刷那条路只通 mapgen4 的局部地形）⇒ 别把界面切进画笔档 */
+    if (d?.on !== false && mapFormOf(curMap()?.terrain?.form) === 'planet') return;
     setMode(d?.on === false ? 'move' : 'paint');
   };
   const onClearEvt = () => clearPaint();

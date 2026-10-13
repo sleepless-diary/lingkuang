@@ -22,6 +22,7 @@ import { currentWorld } from '../store/store';
 import type { Entity, PropValue, Timeline, TimelineNode, Worldset } from '../store/types';
 import { fsAddRoot, fsAvailable, fsBatchAvailable, fsDefaultPath, fsDelete, fsImportStatus, fsList, fsPrompt, fsRead, fsReadMany, fsRootOf, fsRootsCached, fsSearch, fsSetRootWrite, fsWrite } from './agent-fs';
 import { MAP_STYLES, generateIntoMap, planGeneration, type MapStyle } from './map-gen';
+import { mapFormLabel, type MapForm } from '../mapgen/planet';
 import { webAvailable, webFetch, webPrompt, webSearch } from './agent-web';
 import { setAgentAsk, setAgentScope } from './agent-perm';
 import { stepsPrompt, type AgentMode } from './agent-mode';
@@ -117,7 +118,7 @@ const WRITE_TOOLS: ToolSpec[] = [
      翻成档位与数量（群岛 / 大陆 / 盘古、几块陆、几座岛、几条山、几条河、几个湖），
      描述本身当种子 ⇒ 同样的描述永远是同一张图。⚠️ 这一步会**整张换掉**当前地图上的地形
      （手绘的也会换掉，落地后 Ctrl+Z 可撤销）⇒ 图上有内容时 `needsConfirm`（一定出卡片）。 */
-  { name: 'generate_map', title: '生成地图', desc: '按创作者的话生成一张地图底稿（**会替换**当前地图上的地形；手绘的内容会被换掉、可撤销）。描述里可以直接带档位与数量，比如「一片群岛，中间一个湖，三条大河」', args: '{ description?: 创作者的原话, seed?: 种子, style?: "continent"|"archipelago"|"pangaea" }' },
+  { name: 'generate_map', title: '生成地图', desc: '按创作者的话生成一张地图底稿（**会替换**当前地图上的地形；手绘的内容会被换掉、可撤销）。描述里可以直接带形态、档位与数量，比如「一整颗星球，一片群岛」「一片地区，中间一个湖，三条大河」', args: '{ description?: 创作者的原话, seed?: 种子, style?: "continent"|"archipelago"|"pangaea", form?: "local"|"planet" }' },
   /* ⭐ 片 3（2026-10-12）：**删除**。用户当天问「你没给AI配置删除和创建的工具吗」——
      创建早有（create_entity / create_node / write_file / append_file），删除一条都没有。
      全部走回收站：灵框库里那三个由 `src/store/actions.ts` 的 removeXxx 把 .md 移进 `vault/.trash/`，
@@ -1417,25 +1418,34 @@ export function planWrite(call: ToolCall, store: Store, mode: AgentMode = 'agent
       if (wantStyle && !style) {
         return { ok: false, note: `档位只有 continent（大陆）/ archipelago（群岛）/ pangaea（盘古），不认「${wantStyle}」—— 也可以干脆用一句人话描述。` };
       }
-      const plan = planGeneration({ description: desc, seed: str(a.seed), style });
+      /* ⭐ 形态（第九十八轮）：local 局部（一片地区，能手刷）/ planet 星球（整颗，能贴到球上）。
+         不给就让 `planGeneration()` 从描述里认（「生成一颗星球」）。 */
+      const wantForm = str(a.form);
+      const form = (['local', 'planet'] as MapForm[]).find((f) => f === wantForm);
+      if (wantForm && !form) {
+        return { ok: false, note: `形态只有 local（局部：一片地区，能手刷）/ planet（星球：整颗，经度无缝、能贴到球上），不认「${wantForm}」。` };
+      }
+      const plan = planGeneration({ description: desc, seed: str(a.seed), style, form });
       const map = ws?.maps?.[0];
       /* ⭐ 地形是**独立一层**（只存参数、图现算）⇒ 生成/重生成都不碰手绘的区域与标记，
          所以这里只管"是不是要换掉已经生成过的那片地形"。 */
       const again = !!map?.terrain;
       const styleName = MAP_STYLES.find((s) => s.id === plan.style)?.label ?? plan.style;
+      const formName = mapFormLabel(plan.form);
       return {
         ok: true,
         proposal: {
           tool: call.tool,
-          title: `生成地形：${plan.matched.length ? plan.matched.join('、') : styleName}`,
+          title: `生成${plan.form === 'planet' ? '星球' : '地形'}：${plan.matched.length ? plan.matched.join('、') : styleName}`,
           detail:
-            `${desc ? `你描述的：「${desc}」` : '没给描述'} → 档位「${styleName}」，种子「${plan.seed}」；` +
+            `${desc ? `你描述的：「${desc}」` : '没给描述'} → 形态「${formName}」，档位「${styleName}」，种子「${plan.seed}」；` +
+            (plan.form === 'planet' ? '（等距圆柱 2:1：经度无缝、有两极，生成后在地图栏点「球体看」能贴到球上）' : '') +
             (again
               ? '⚠️ 这张图已经有一片地形了，会**整片换成新的**（手绘的区域/标记不受影响；换完 Ctrl+Z 可撤销）'
               : '这张图还没有地形，生成不会覆盖任何手绘的东西'),
           needsConfirm: again,
           apply: () => {
-            const r = generateIntoMap(store, { description: desc, seed: str(a.seed), style });
+            const r = generateIntoMap(store, { description: desc, seed: str(a.seed), style, form });
             return { ok: r.ok, note: r.note };
           },
         },

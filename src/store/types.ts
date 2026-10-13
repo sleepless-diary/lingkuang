@@ -195,6 +195,10 @@ export interface MapTerrainSpec {
      （见 `src/mapgen/index.ts` 的 `TERRAIN_STYLES`）。可选 ⇒ 旧数据照旧能读；
      改它**不重算地形**，只重画（所以它不是生成参数，是显示参数）。 */
   view?: string;
+  /* ⭐ 形态（第九十八轮）：`local` 局部地形（mapgen4 内核，默认）/ `planet` 整颗星球
+     （`src/mapgen/planet.ts` 的球面生成，等距圆柱 2:1 ⇒ 能贴到球上）。
+     可选 ⇒ 旧数据照旧能读（缺省当局部）。两个形态**共用**种子 / 档位 / 数量 / 看的方式。 */
+  form?: string;
 }
 export interface MapData {
   id: string;

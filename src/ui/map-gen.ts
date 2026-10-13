@@ -23,6 +23,8 @@ import {
   runGeneration, statsOf, terrainStyleLabel,
   type MapgenSpecInput, type MapgenStyle, type TerrainStats,
 } from '../mapgen';
+import { DEFAULT_MAP_FORM, isMapForm, mapFormLabel, type MapForm } from '../mapgen/planet';
+import { PLANET_VIEW_H, planetField } from './planet-view';
 
 export type MapStyle = MapgenStyle;
 
@@ -96,9 +98,17 @@ function pickNum(text: string, re: RegExp): number | undefined {
 export interface MapPromptParse {
   style?: MapStyle;
   spec: MapSpec;
+  /** ⭐ 形态（第九十八轮）：描述里点了「星球 / 整颗 / 全球」就出星球，点了「局部 / 一片」就出局部 */
+  form?: MapForm;
   /** 认出来的词（面板上显示"按你说的：…"） */
   matched: string[];
 }
+
+/** 形态关键词。⚠️ 「星球」排在前面：一句里两个词都出现时，具体的那条优先。 */
+const FORM_WORDS: [RegExp, MapForm, string][] = [
+  [/星球|球面|球体|整颗|全球|行星|一整颗|planet/i, 'planet', '星球'],
+  [/局部|一片地区|一片区域|地区地图|局部地图|local/i, 'local', '局部'],
+];
 
 /** 档位关键词。⚠️ 顺序即优先级：先问"群岛"，再"盘古"，最后才是"大陆"
  *  （"一片群岛"里也含"陆"字，所以具体的必须排在前面）。 */
@@ -122,7 +132,11 @@ const SPEC_WORDS: [RegExp, (s: MapSpec) => void, string][] = [
 export function parseMapPrompt(text: string): MapPromptParse {
   const t = String(text ?? '');
   let style: MapStyle | undefined;
+  let form: MapForm | undefined;
   const matched: string[] = [];
+  for (const [re, id, label] of FORM_WORDS) {
+    if (re.test(t)) { form = id; matched.push(label); break; }
+  }
   for (const [re, id, label] of STYLE_WORDS) {
     if (re.test(t)) { style = id; matched.push(label); break; }
   }
@@ -140,7 +154,7 @@ export function parseMapPrompt(text: string): MapPromptParse {
     spec.landRatio = Math.max(0.15, Math.min(0.6, ratio / 100));
     matched.push(`陆地 ${ratio}%`);
   }
-  return { style, spec, matched };
+  return { style, spec, form, matched };
 }
 
 /* ── 计划与落盘 ───────────────────────────────────────────────────────────── */
@@ -153,12 +167,16 @@ export interface MapGenInput {
   /** ⭐ 「看的方式」（第九十七轮）：relief 立体 / contour 等高线 / flat 平面。
    *  不给 = 沿用这张地图原来那档（换地形不该重置创作者的显示偏好）。 */
   view?: string;
+  /** ⭐ 「形态」（第九十八轮）：local 局部（mapgen4）/ planet 星球（球面生成）。
+   *  不给 = 从描述里认（「星球」「一片地区」…），还认不出就沿用这张地图原来那个形态。 */
+  form?: string;
 }
 
 export interface MapPlan {
   seed: string;
   style: MapStyle;
   spec: MapSpec;
+  form: MapForm;
   matched: string[];
 }
 
@@ -170,10 +188,12 @@ export function planGeneration(input: MapGenInput): MapPlan {
   const seed = String(input.seed ?? '').trim() || desc || '灵框';
   const rawStyle = String(input.style ?? '') as MapStyle;
   const style = MAPGEN_STYLES.includes(rawStyle) ? rawStyle : (parsed.style ?? 'continent');
+  const form: MapForm = isMapForm(input.form) ? input.form : (parsed.form ?? DEFAULT_MAP_FORM);
   return {
     seed,
     style,
     spec: { ...parsed.spec, ...(input.spec ?? {}) },
+    form,
     matched: parsed.matched,
   };
 }
@@ -200,6 +220,7 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
   const h = before?.height ?? 500;
   /* ⭐ 手刷笔迹：**种子与档位都没变**时留着（那还是同一片地，只是重新算了一遍 —— 刷过的
      地方照样有意义）；换种子/换档位就是另一片地了，笔迹自然作废。
+     ⚠️ 星球形态**不画**笔迹（它不支持手刷），但笔迹仍留在数据里 —— 切回「局部」就回来了。
      ⚠️ 少了这一步，创作者刷了二十笔、去面板只调一个旋钮再「采用」，笔迹会被静默清掉。 */
   const old = before?.terrain;
   const keepPaint = old && old.seed === plan.seed && old.style === plan.style ? old.paint : undefined;
@@ -209,9 +230,23 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
   const view = isTerrainStyle(input.view)
     ? input.view
     : (isTerrainStyle(old?.view) ? old!.view! : DEFAULT_TERRAIN_STYLE);
-  const engine = createEngineFor(plan.seed, plan.style, plan.spec);
-  runGeneration(engine, { strokes: keepPaint });   /* 统计要跟画布看到的一致 ⇒ 笔迹一起算 */
-  const s = statsOf(engine);
+  /* ⭐ 「形态」（第九十八轮）优先级：显式参数 > 描述里的词（「生成一颗星球」）> 这张地图原来那个
+     > 默认「局部」。与 view 同一个道理：助手换一片地时不该悄悄把形态换掉。 */
+  const form: MapForm = isMapForm(input.form)
+    ? input.form
+    : (parseMapPrompt(String(input.description ?? '')).form
+      ?? (isMapForm(old?.form) ? (old!.form as MapForm) : DEFAULT_MAP_FORM));
+  plan.form = form;
+
+  /* 统计：两种形态各问各的内核（星球那条不碰 mapgen4 的引擎，也就不会白建一次网格）*/
+  let s: TerrainStats;
+  if (form === 'planet') {
+    s = planetField({ seed: plan.seed, style: plan.style, spec: plan.spec }, PLANET_VIEW_H).stats;
+  } else {
+    const engine = createEngineFor(plan.seed, plan.style, plan.spec);
+    runGeneration(engine, { strokes: keepPaint });   /* 统计要跟画布看到的一致 ⇒ 笔迹一起算 */
+    s = statsOf(engine);
+  }
 
   let created = false;
   store.update((d) => {
@@ -219,22 +254,26 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
     if (!ws) return;
     if (!ws.maps?.length) { ws.maps = [DEFAULT_MAP()]; created = true; }
     const m = ws.maps[0];
-    m.terrain = { seed: plan.seed, style: plan.style, spec: plan.spec, view };
+    m.terrain = { seed: plan.seed, style: plan.style, spec: plan.spec, view, form };
     if (keepPaint?.length) m.terrain.paint = keepPaint;
   });
 
   const what = plan.matched.length ? `（按你说的：${plan.matched.join('、')}）` : '';
   const kept = keepPaint?.length ?? 0;
+  const isPlanet = form === 'planet';
   return {
     ok: true,
     plan,
     summary: s,
     note:
-      `${created ? '这个世界还没有地图，我顺手建了一张「默认地图」并' : `已在「${before?.name ?? '默认地图'}」上`}生成地形：` +
+      `${created ? '这个世界还没有地图，我顺手建了一张「默认地图」并' : `已在「${before?.name ?? '默认地图'}」上`}` +
+      `生成${isPlanet ? '了一颗星球' : '地形'}：` +
       `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m` +
       `（陆地占 ${Math.round(s.landRatio * 100)}%）${what}` +
-      (kept ? `（手刷的 ${kept} 笔保住了 —— 种子与档位没变）` : '') +
-      `（种子「${plan.seed}」，看的方式「${terrainStyleLabel(view)}」，Ctrl+Z 可撤销，生成后照样能手绘精修。` +
-      `图是 ${w}×${h} 的现算图，不写进数据文件）`,
+      (isPlanet
+        ? `。形态「星球」= 等距圆柱 2:1：**经度无缝、有两极**，地图栏点「球体看」就能贴到球上转着看；手刷只对「局部」形态有效`
+        : (kept ? `（手刷的 ${kept} 笔保住了 —— 种子与档位没变）` : '')) +
+      `（种子「${plan.seed}」，形态「${mapFormLabel(form)}」，看的方式「${terrainStyleLabel(view)}」，` +
+      `Ctrl+Z 可撤销，生成后照样能手绘精修。图是 ${w}×${h} 的现算图，不写进数据文件）`,
   };
 }
