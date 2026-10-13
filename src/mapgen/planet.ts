@@ -220,6 +220,128 @@ function pruneSmall(w: number, h: number, mask: Uint8Array, minSize: number): nu
   return removed;
 }
 
+/* ── 大陆核 / 山体核（2026-10-13 第九十九轮）──────────────────────────────────
+   ⭐ 用户原话：「**大陆没有大陆的感觉**」（对照小森邻 OCity 的制图示例 —— 见
+   `F:\knowledge-base\projects\world-map\OCITY-RECON.md`：他们那张图是 **1 块大而连续的
+   陆块 + 4~5 座岛**，内部 **1~2 个主山体**，色带一圈圈退开）。
+   旧版陆块 = fBm 的等值线 ⇒ 必然切出一堆**大小相近的碎块**（实测大陆档最大一块只占陆地
+   两成多、"大陆"数出七八块），而且各向同性噪声**撒满全图**，看不出哪儿是"主峰"。
+   现在改成**先放核**：
+     · **大陆核** = 球面上一块陆地的"胚胎"（椭圆 + 方位角，`ra/rb` 是切平面上的正弦半径）；
+       核**重叠就自动连成大陆**（`max` 融合）⇒ 少数大而连续的陆块；
+     · **山体核** = 放在核内部（离核心一点距离）的 1~2 个主山体 ⇒ 同心色带的主峰；
+     · 核外只有一点低频扰动 + 负基准 ⇒ 大洋连成一片，不会撒满小岛。
+   核的个数/大小/方位、山体位置全部由种子推出来 ⇒ 同种子仍逐字节一致。 */
+type V3 = [number, number, number];
+interface Kernel { c: V3; e1: V3; e2: V3; ra: number; rb: number; amp: number }
+
+/** 球面随机单位向量（纬度用 `2u−1` ⇒ 面积均匀，两极不会扎堆）。
+ *  ⭐ 纬度**收在 ±66°以内**：等距圆柱投影下，极区一格经度只有赤道的 1/6 宽 ——
+ *  一块极地陆地在图上会被拉成**横贯全图的条带**（真机首跑就是这样：顶上一条细丝、
+ *  底下一条大抹痕），像 bug 不像大陆。核不往极区放，再加 `POLAR_LAT` 那道收口。 */
+function randDir(rnd: () => number): V3 {
+  const z = 0.913 * (2 * rnd() - 1), phi = 2 * Math.PI * rnd(), r = Math.sqrt(Math.max(0, 1 - z * z));
+  return [r * Math.cos(phi), r * Math.sin(phi), z];
+}
+
+/** 极区收口：`|lat| ≥ 72°` 一律海洋、58°~72° 之间渐隐（开放极海 ⇒ 没有拉伸条带）。
+ *  ⚠️ 别拿余纬去减（第一版写成 `(90 − |lat| − 72)/14` ⇒ **|lat| ≥ 18° 就被收口**，
+ *  83% 的星球被钉在同一个常数上；直方图求分位撞上这根尖峰 + float32 抖动 ⇒ 陆地占比 0.92）。 */
+const POLAR_LAT = 72, POLAR_FADE = 14;
+function polarTaper(lat: number): number {
+  const t = (POLAR_LAT - Math.abs(lat)) / POLAR_FADE;
+  return t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);
+}
+
+/** 以 `c` 为法向、方位角 `az` 的切平面正交基（椭圆的长轴方向由它定）*/
+function basisOf(c: V3, az: number): [V3, V3] {
+  const t: V3 = Math.abs(c[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+  let e1: V3 = [c[1] * t[2] - c[2] * t[1], c[2] * t[0] - c[0] * t[2], c[0] * t[1] - c[1] * t[0]];
+  const il = 1 / (Math.hypot(e1[0], e1[1], e1[2]) || 1);
+  e1 = [e1[0] * il, e1[1] * il, e1[2] * il];
+  const e2: V3 = [c[1] * e1[2] - c[2] * e1[1], c[2] * e1[0] - c[0] * e1[2], c[0] * e1[1] - c[1] * e1[0]];
+  const ca = Math.cos(az), sa = Math.sin(az);
+  return [
+    [e1[0] * ca + e2[0] * sa, e1[1] * ca + e2[1] * sa, e1[2] * ca + e2[2] * sa],
+    [e2[0] * ca - e1[0] * sa, e2[1] * ca - e1[1] * sa, e2[2] * ca - e1[2] * sa],
+  ];
+}
+
+/** 椭圆核的"角距比"：0 = 核心、1 = 核边界（**真球面角距** ⇒ 远侧半球不会被镜像）。
+ *  ⚠️ 不能用切平面投影直接当距离：`u²+v² = sin²θ`，在**对跖点** θ=180° 时 `u=v=0`
+ *  ⇒ 投影塌成 0 ⇒ 对跖点被当成核心正中心，每块陆地的背面又长出一块 ——
+ *  真机实测陆地占比冲到 **0.98**（整颗星球连成一整块）。`d > 0` 这道闸就是治它的。 */
+function kernelQ(x: number, y: number, z: number, k: Kernel): number {
+  const d = x * k.c[0] + y * k.c[1] + z * k.c[2];
+  if (d <= 0) return 2;                                   /* 远侧半球：算作外部 */
+  const th = Math.acos(clamp(d, -1, 1));
+  const u = x * k.e1[0] + y * k.e1[1] + z * k.e1[2];
+  const v = x * k.e2[0] + y * k.e2[1] + z * k.e2[2];
+  const st = Math.sqrt(Math.max(0, 1 - d * d));           /* = sinθ */
+  if (st < 1e-6) return th / k.ra;                        /* 正对核心：方位无意义 */
+  const a = u / st / k.ra, b = v / st / k.rb;             /* 该方位上的单位方向 ÷ 两个半径 */
+  return th * Math.sqrt(a * a + b * b);                   /* θ / 该方位的椭圆半径 */
+}
+
+/** 三档的核排布（`sep` 是核之间的最小角距 —— 大于两个核的半径和就会**连成一块**）。
+ *  ⚠️ 别把大陆档的核撒得太开：那样会得到 4 块各占一成多的小大陆，"没有大陆的感觉"
+ *  正是这么来的。0.78 rad ≈ 45°、核半径 ≈ 0.55~0.80（≈ 33°~53°）⇒ 少数核**互相咬合**，
+ *  出来是 2~4 块大小悬殊的陆块。 */
+const CORE_PLAN: Record<PlanetStyle, {
+  n: number; ra: [number, number]; sep: number;
+  isl: number; islRa: [number, number]; islSep: number;
+}> = {
+  continent:   { n: 4,  ra: [0.60, 0.80], sep: 1.00, isl: 9,  islRa: [0.09, 0.17], islSep: 0.28 },
+  archipelago: { n: 8,  ra: [0.26, 0.42], sep: 0.42, isl: 12, islRa: [0.07, 0.14], islSep: 0.22 },
+  pangaea:     { n: 3,  ra: [0.78, 1.00], sep: 0.50, isl: 4,  islRa: [0.12, 0.20], islSep: 0.36 },
+};
+
+/** 撒核：大陆核（amp 1）+ 岛核（amp 乘 0.44 ⇒ 又矮又小）*/
+function placeCores(rnd: () => number, style: string): Kernel[] {
+  const p = CORE_PLAN[(isPlanetStyle(style) ? style : 'continent') as PlanetStyle];
+  const out: Kernel[] = [];
+  const add = (count: number, raMin: number, raMax: number, amp: number, sep: number) => {
+    for (let tries = 0, made = 0; made < count && tries < count * 80; tries++) {
+      const c = randDir(rnd);
+      let ok = true;
+      for (const k of out) {
+        if (c[0] * k.c[0] + c[1] * k.c[1] + c[2] * k.c[2] > Math.cos(sep)) { ok = false; break; }
+      }
+      if (!ok) continue;
+      const ra = raMin + (raMax - raMin) * rnd();
+      const [e1, e2] = basisOf(c, rnd() * Math.PI);
+      out.push({ c, e1, e2, ra, rb: ra * (0.58 + 0.42 * rnd()), amp });
+      made++;
+    }
+  };
+  add(p.n, p.ra[0], p.ra[1], 1, p.sep);
+  add(p.isl, p.islRa[0], p.islRa[1], 0.44, p.islSep);
+  return out;
+}
+
+/** 每个核里放 1~2 个主山体（离核心一点距离 ⇒ 山体不在正中心、大陆看起来才有"重心"）*/
+function placeMassifs(rnd: () => number, cores: Kernel[], ridges: number): Kernel[] {
+  const out: Kernel[] = [];
+  for (const k of cores) {
+    const island = k.amp < 0.7;
+    const cnt = island ? 1 : (rnd() < 0.6 ? 2 : 1);
+    for (let i = 0; i < cnt; i++) {
+      const d = k.ra * (0.06 + 0.42 * rnd());
+      const [t1] = basisOf(k.c, rnd() * Math.PI);
+      const c: V3 = [k.c[0] + t1[0] * d, k.c[1] + t1[1] * d, k.c[2] + t1[2] * d];
+      const il = 1 / (Math.hypot(c[0], c[1], c[2]) || 1);
+      const cc: V3 = [c[0] * il, c[1] * il, c[2] * il];
+      const ra = k.ra * (island ? 0.55 : 0.34 + 0.20 * rnd());
+      const [e1, e2] = basisOf(cc, rnd() * Math.PI);
+      out.push({
+        c: cc, e1, e2, ra, rb: ra * (0.50 + 0.45 * rnd()),
+        amp: (island ? 0.50 : 0.82) * (0.86 + 0.035 * ridges + 0.18 * rnd()),
+      });
+    }
+  }
+  return out;
+}
+
 /** **生成一颗星球**（纯函数：同参数逐字节同结果）。
  *  `h` 是网格高（宽 = 2h），默认 `PLANET_H`；预览可以给更小的值换速度。 */
 export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecInput, h: number = PLANET_H): PlanetField {
@@ -232,6 +354,10 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
   const nM = createNoise3D(mulberry32(seedInt(String(seed) + '|山脉')));
   const nD = createNoise3D(mulberry32(seedInt(String(seed) + '|细节')));
   const nW = createNoise3D(mulberry32(seedInt(String(seed) + '|湿度')));
+
+  /* 陆核 / 山体核（各自的随机流：与上面五个噪声域互不相关，同种子仍确定） */
+  const cores = placeCores(mulberry32(seedInt(String(seed) + '|陆核')), style);
+  const mounts = placeMassifs(mulberry32(seedInt(String(seed) + '|山体')), cores, sp.ridges);
 
   const mtnAmp = 0.5 + sp.ridges * 0.16;          /* ridges 1..8 → 0.66 .. 1.78 */
   const ridgeFreq = 2.0 + sp.ridges * 0.18;
@@ -260,11 +386,24 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
       const inv = 1 / (Math.sqrt(px * px + py * py + pz * pz) || 1);
       x = px * inv; y = py * inv; z = pz * inv;
 
-      /* ① 大陆度：**低频为主**的 fBm + `tanh` 锐化。
-         锐化这一步是"大陆 vs 星系"的分界：不锐化时 fBm 的等值线切出一堆细长条（真机首跑
-         就是这样 —— 满屏蠕虫状陆地与内海），锐化把中间值推向两端 ⇒ 陆块成团、洋面变整。 */
-      const c0 = fbm3(nC, x, y, z, 1.15, 4, 0.45);
-      const c = Math.tanh(c0 * 1.7);
+      /* ① 陆块：**核的高度场取最大** —— 核重叠就自动连成大陆（这是"少数大而连续的陆块"
+         与"一堆碎块"的分界）。`1−q²` 是连续抛物线（核外自然为负），阈值一动就是一圈圈
+         缩放的椭圆 ⇒ 海岸永远平滑、不会切出碎块。 */
+      let cw = -10;
+      for (let q = 0; q < cores.length; q++) {
+        const kv = cores[q].amp * (1 - kernelQ(x, y, z, cores[q]) ** 2);
+        if (kv > cw) cw = kv;
+      }
+      /* 海岸的"湾岬"：**两档**扰动加在陆块场上（低频 2.15 给大尺度湾岬，中频 6.5 给小半岛 /
+         小海湾）。只有低频时海岸是"肥圆的波浪"，一眼就看得出底下是个椭圆核。
+         末尾乘 `polarTaper`：极区收成海（否则极地陆地在等距圆柱下会拉成横贯全图的条带）。 */
+      const shore = fbm3(nC, x, y, z, 2.15, 2) * 0.13 + fbm3(nC, x, y, z, 6.5, 2) * 0.032;
+      /* 极区收口：`pt=1` 原样；`pt=0` 压到 −1.1 附近。⭐ ① 扰动 `shore` 放在**收口外面**
+         —— 若写成乘进去，极区那 2% 的格子会取到同一个常数，直方图求分位就废了；
+         ② 地板要**足够低**：盘古档海平面能低到 −0.68，地板只给 −0.75 的话
+         `shore` 的 +0.18 会把极区顶回海平面以上（实测极区仍有 7.4% 陆地点）。 */
+      const pt = polarTaper(lat);
+      const c = cw * pt + shore - (1 - pt) * 1.1;
       /* ② 板缘带：低频场的零交叉线 ⇒ 山系成"带/链"，不是满地疙瘩 */
       const pl = fbm3(nM, x, y, z, 1.05, 2);
       const band = Math.max(0, 1 - Math.abs(pl) / 0.16);
@@ -277,13 +416,26 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
       const det = fbm3(nD, x, y, z, 8, 3);
       const fine = fbm3(nD, x, y, z, 22, 2);
 
+      /* ⑤ 主山体：每个核里那 1~2 个 —— **这一条是"有没有主峰"的分界**。旧版只有各向同性
+         的板缘带噪声，山是撒满全图的疙瘩 ⇒ 没有重心、色带乱、看着不像大陆。 */
+      let mf = 0;
+      for (let q = 0; q < mounts.length; q++) {
+        const mq = kernelQ(x, y, z, mounts[q]);
+        if (mq >= 1) continue;
+        mf += mounts[q].amp * Math.pow(1 - mq, 1.35);
+      }
+
       const kk = i * w + j;
       raw[kk] = c;
-      /* ⭐ 高度**必须另起一套场**：大陆度被 `tanh` 锐化过（为了陆块成团），它在内陆
-         一片饱和 —— 直接拿它当高度，整块内陆会顶成高原/雪线（真机第二跑就是这样：
-         "内陆惨白"）。这里只留"底 + 分区基准 + 板缘山带 + 细节"四样，
-         海岸那圈由下面的**沿海压低**处理（dist 越近越矮 ⇒ 海岸平原 + 内陆抬升）。 */
-      hraw[kk] = 0.26 + (prov - 0.5) * 0.5 + mtnAmp * rg * band * provRelief * 0.8 + det * 0.08 + fine * 0.05;
+      /* ⭐ 高度**另起一套场**：陆块场只决定海陆（它的等值线就是海岸线），高度是
+         "底 + 分区基准 + **主山体** + 山脊 + 板缘山带 + 细节"。主山体 `mf` 是绝对主角，
+         板缘带 `band` 降到配角 —— 旧版只有板缘带，山是撒满全图的疙瘩、没有主峰。
+         海岸那圈仍由下面的**沿海压低**处理（dist 越近越矮 ⇒ 海岸平原 + 内陆抬升）。 */
+      hraw[kk] = 0.14 + (prov - 0.5) * 0.34
+        + mf * (0.82 + 0.42 * provRelief)
+        + mf * rg * mtnAmp * 0.42
+        + mtnAmp * rg * band * provRelief * 0.20
+        + det * 0.07 + fine * 0.045;
       deta[kk] = det;
       if (c < lo) lo = c;
       if (c > hi) hi = c;

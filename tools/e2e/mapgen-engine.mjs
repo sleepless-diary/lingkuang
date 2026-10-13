@@ -37,6 +37,21 @@ await build({
 const require = createRequire(import.meta.url);
 const E = require(path.join(outDir, 'engine.cjs'));
 
+/* 星球形态（`src/mapgen/planet.ts`）也在这里量 —— 它同样**纯计算**，不用起实例。
+   ⚠️ 同一个 outDir ⇒ `emptyOutDir: false`，否则会把刚打好的 engine.cjs 删掉。 */
+await build({
+  configFile: false,
+  logLevel: 'error',
+  build: {
+    lib: { entry: path.join(PROJ, 'src/mapgen/planet.ts'), formats: ['cjs'], fileName: () => 'planet.cjs' },
+    outDir,
+    emptyOutDir: false,
+    minify: false,
+    target: 'node18',
+  },
+});
+const P = require(path.join(outDir, 'planet.cjs'));
+
 function run(seed, style, spec, opts) {
   const t0 = Date.now();
   const eng = E.createEngineFor(seed, style, spec);
@@ -230,6 +245,86 @@ const areaWater = (eng, y0, y1) => {
     && E.terrainStyleLabel('contour') === '等高线' && E.terrainStyleLabel(undefined) === '立体';
   check('★14 风格三档是一组渲染参数（缺省/认不出都落回立体）', ok,
     { relief: r, contour: c, flat: f, unknownFallsBack: JSON.stringify(unknown) === JSON.stringify(r) });
+}
+
+/* ── 星球形态：**大陆感**（第九十九轮）──────────────────────────────────────────
+   用户原话「**大陆没有大陆的感觉**」。判据全是"像不像大陆"里可量化那部分：
+   · 陆块数 + 最大陆块占比 ⇒ 少数大而连续的陆块 vs 一堆大小相近的碎块（旧版 = 后者）；
+   · 海岸碎度（与海相邻的格 ÷ 陆地格）⇒ 海岸平滑 vs 满边毛刺；
+   · 极区陆地占比 ⇒ 开放极海（有极地陆地时，等距圆柱投影会把它拉成**横贯全图的条带**）；
+   · 主峰集中度（峰值 ÷ 陆地平均海拔）⇒ 有主山体 vs 满地山包。
+   ⚠️ 这些数字**跨种子漂**（5 种子实测大陆档：lands 1~3、largest 0.41~0.94、coast 0.05~0.07），
+   所以阈值取的是"**新构建必过、旧构建必挂**"，不是贴着实测均值 —— 别按某一颗种子的读数往紧里调。 */
+function planetComps(w, h, mask) {
+  const n = w * h, seen = new Uint8Array(n), st = new Int32Array(n), out = [];
+  for (let s = 0; s < n; s++) {
+    if (seen[s] || !mask[s]) continue;
+    let top = 0; st[top++] = s; seen[s] = 1; let size = 0;
+    while (top) {
+      const i = st[--top]; size++;
+      const y = (i / w) | 0, x = i - y * w;
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = y + dy; if (yy < 0 || yy >= h) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const j = yy * w + ((x + dx + w) % w);
+          if (!seen[j] && mask[j]) { seen[j] = 1; st[top++] = j; }
+        }
+      }
+    }
+    out.push(size);
+  }
+  return out.sort((a, b) => b - a);
+}
+function planetMetrics(f) {
+  const cs = planetComps(f.w, f.h, f.land);
+  const tot = cs.reduce((a, b) => a + b, 0);
+  const big = Math.max(60, Math.round(tot * 0.03));
+  let edge = 0, peak = 0, sum = 0, landN = 0, polar = 0, pn = 0;
+  for (let i = 0; i < f.h; i++) for (let j = 0; j < f.w; j++) {
+    const k = i * f.w + j;
+    if (i < 3 || i >= f.h - 3) { pn++; if (f.land[k]) polar++; }
+    if (!f.land[k]) continue;
+    landN++; sum += f.elev[k]; if (f.elev[k] > peak) peak = f.elev[k];
+    let hit = false;
+    for (let dy = -1; dy <= 1 && !hit; dy++) {
+      const yy = i + dy; if (yy < 0 || yy >= f.h) { hit = true; break; }
+      for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy) continue;
+        if (!f.land[yy * f.w + ((j + dx + f.w) % f.w)]) { hit = true; break; }
+      }
+    }
+    if (hit) edge++;
+  }
+  return {
+    lands: cs.filter((s) => s >= big).length,
+    largest: tot ? cs[0] / tot : 0,
+    coast: edge / Math.max(1, landN),
+    peakRatio: peak / Math.max(1, sum / Math.max(1, landN)),
+    polar: polar / Math.max(1, pn),
+  };
+}
+{
+  const m = {};
+  for (const style of ['continent', 'archipelago', 'pangaea']) {
+    m[style] = planetMetrics(P.buildPlanetField('lk-大陆感', style, undefined, 256));
+  }
+  const brief = (s) => ({
+    lands: m[s].lands, largest: +m[s].largest.toFixed(3),
+    coast: +m[s].coast.toFixed(3), peakRatio: +m[s].peakRatio.toFixed(2), polar: +m[s].polar.toFixed(3),
+  });
+  check('★15 大陆档：少数大而连续的陆块（碎块 / 毛刺都挂）',
+    m.continent.lands <= 4 && m.continent.largest >= 0.36 && m.continent.coast <= 0.09, brief('continent'));
+  check('★16 盘古档：连成一整块',
+    m.pangaea.lands <= 2 && m.pangaea.coast <= 0.09, brief('pangaea'));
+  check('★17 群岛档：多而小，海岸一样平滑',
+    m.archipelago.lands >= 4 && m.archipelago.coast <= 0.155, brief('archipelago'));
+  check('★18 极区是海（三档都查：防极地陆地被投影拉成横贯全图的条带）',
+    ['continent', 'archipelago', 'pangaea'].every((s) => m[s].polar <= 0.02),
+    { continent: +m.continent.polar.toFixed(3), archipelago: +m.archipelago.polar.toFixed(3), pangaea: +m.pangaea.polar.toFixed(3) });
+  check('★19 主峰集中：峰值 ÷ 陆地平均海拔 ≥ 5.9（有主山体，不是满地山包）',
+    ['continent', 'archipelago', 'pangaea'].every((s) => m[s].peakRatio >= 5.9),
+    { continent: +m.continent.peakRatio.toFixed(2), archipelago: +m.archipelago.peakRatio.toFixed(2), pangaea: +m.pangaea.peakRatio.toFixed(2) });
 }
 
 const pass = results.filter(Boolean).length;
