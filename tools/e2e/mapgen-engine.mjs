@@ -327,6 +327,43 @@ function planetMetrics(f) {
     { continent: +m.continent.peakRatio.toFixed(2), archipelago: +m.archipelago.peakRatio.toFixed(2), pangaea: +m.pangaea.peakRatio.toFixed(2) });
 }
 
+{
+  /* ★20 / ★21（2026-10-13 用户「**分辨率和细节都不够**」）：
+     河网要像河（细线），不能糊成一片蓝须；等高线要真画得出来（低地也得有线）。
+     ⚠️ 两条都是**比例阀值**，与分辨率无关 —— 换 `PLANET_H` 不用改它们。 */
+  const f = P.buildPlanetField('lk-detail', 'continent', { landRatio: 0.34, ridges: 4, rivers: 4 }, 256);
+  let landN = 0, riverN = 0;
+  for (let k = 0; k < f.w * f.h; k++) if (f.land[k]) { landN++; if (f.river[k]) riverN++; }
+  const dens = riverN / Math.max(1, landN);
+  check('★20 河网是线不是草：河格 ≤ 2% 陆地格（旧版 2.4% ⇒ 铺满全陆地的蓝色短须）',
+    dens > 0.0004 && dens <= 0.02, { riverCells: riverN, landCells: landN, density: +dens.toFixed(4) });
+
+  /* ★21 用**视口分辨率的一半**（512）量，并且与「10 档」那条老口径**现场比** ——
+     只有这样才钉得住「线比从前细、低地也有线」，而不是把一个绝对密度写死。 */
+  const f512 = P.buildPlanetField('lk-detail', 'continent', { landRatio: 0.34, ridges: 4, rivers: 4 }, 512);
+  const cl = (v, a, b) => (v < a ? a : v > b ? b : v);
+  let cross10 = 0, landPx = 0;
+  for (let i = 0; i < f512.h; i++) for (let j = 0; j < f512.w; j++) {
+    const k = i * f512.w + j;
+    if (!f512.land[k]) continue;
+    landPx++;
+    const b = cl((f512.e01[k] * 10) | 0, 0, 9);
+    const kl = i * f512.w + (j + f512.w - 1) % f512.w;
+    const ku = (i > 0 ? i - 1 : 0) * f512.w + j;
+    if (b !== cl((f512.e01[kl] * 10) | 0, 0, 9) || b !== cl((f512.e01[ku] * 10) | 0, 0, 9)) cross10++;
+  }
+  const rgba2 = P.renderPlanet(f512, 'contour');
+  let dark = 0;
+  for (let k = 0; k < f512.w * f512.h; k++) {
+    if (!f512.land[k]) continue;
+    const o = k * 4;
+    if (rgba2[o] < 150 && rgba2[o + 1] < 150) dark++;    /* 两种线色（#777a62 / #4a4e3a）都远深于十档浅色底 */
+  }
+  check('★21 等高线真画出来了，而且比「10 档」那版细（线像素 ≥ 1.3× 老口径，且不是糊成一片）',
+    landPx > 0 && dark >= cross10 * 1.3 && dark / landPx >= 0.02 && dark / landPx <= 0.45,
+    { darkPct: +(dark / landPx * 100).toFixed(1), cross10, vs10: +(dark / Math.max(1, cross10)).toFixed(2) });
+}
+
 const pass = results.filter(Boolean).length;
 console.log(`\n${pass}/${results.length} PASS`);
 process.exit(pass === results.length ? 0 : 1);

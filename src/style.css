@@ -1425,12 +1425,19 @@ details.lk-agent__tools[open] > .lk-agent__tools-h::before { content: '▾'; }
   border-radius: var(--radius-sm); width: 24px; height: 24px; line-height: 1; font-size: 15px; cursor: pointer; flex-shrink: 0;
 }
 .lk-ms__x:hover { color: var(--accent); border-color: var(--accent); }
-.lk-ms__body { flex: 1; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+/* `scrollbar-gutter: stable`：卡片区一多就出滚动条，**滚动条一出来会吃掉 5px 宽度**，
+   而预览按 9:5 算高 ⇒ 那 5px 立刻变成"预览矮了一点"（★7b 实测 294 → 289）。常驻留位即可。 */
+.lk-ms__body { flex: 1; overflow: auto; scrollbar-gutter: stable; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
 .lk-ms__stage {
   position: relative; width: 100%; aspect-ratio: 9 / 5; overflow: hidden;
+  /* ⭐ `flex-shrink: 0`（2026-10-13 用户「**抽卡会把顶部的主视图给顶矮**」）：
+     `.lk-ms__body` 是纵向 flex，默认 `flex-shrink: 1` ⇒ 抽卡把下面卡片区撑高之后，
+     预览这一格被压扁。定住它，让下面的内容自己滚。 */
+  flex: 0 0 auto;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
-.lk-ms__stage img { width: 100%; height: 100%; display: block; }
+/* `contain`：星球图是 2:1、这一格是 9:5 ⇒ 不 contain 会被横向拉宽（局部图正好 9:5，不受影响）*/
+.lk-ms__stage img { width: 100%; height: 100%; display: block; object-fit: contain; }
 .lk-ms__stage svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .lk-ms__empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: var(--text-xs); }
 .lk-ms__note { font-size: var(--text-xs); color: var(--fg-2); line-height: 1.6; }

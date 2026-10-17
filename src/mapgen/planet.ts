@@ -103,8 +103,8 @@ export function mapFormLabel(v: unknown): string {
 
 /* ── 参数 ───────────────────────────────────────────────────────────────────── */
 
-/** 生成网格高（宽 = 2 倍 ⇒ 1024×512 = 52.4 万格）。再高收益很小、生成时间线性涨。 */
-export const PLANET_H = 512;
+/** 生成网格高（宽 = 2 倍 ⇒ 1536×768 ≈ 118 万格）。再高生成时间与缓存内存都成倍涨。 */
+export const PLANET_H = 768;
 /** 归一化时用的最高峰 / 最深海沟（km） */
 export const MAX_ELEV_KM = 8.8;
 export const MAX_DEPTH_KM = 8.5;
@@ -412,7 +412,10 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
       /* ④ 分区：每区自己的基准高度与起伏（高原 / 丘陵 / 平原 —— 用户要的"随机分区"） */
       const prov = fbm3(nP, x, y, z, 2.2, 3) * 0.5 + 0.5;
       const provRelief = 0.55 + 0.9 * prov;
-      /* ⑤ 细节颗粒：两档频率 —— 中频给"丘陵/沟谷"，高频给"别像塑料"的表面质感 */
+      /* ⑤ 细节颗粒：两档频率 —— 中频给"丘陵/沟谷"，高频给"别像塑料"的表面质感。
+         ⚠️ 2026-10-13 试过再加一档 freq 48 的高频：**看着更"细"，但代价太大** ——
+         高频抖动在高度场上造出成千上万个比格子还小的洼地，汇流被切成几格就断的短沟
+         （渲染出来是一片蓝色抓痕），等高线也跟着发毛。细颗粒留给「看的方式」去表现。 */
       const det = fbm3(nD, x, y, z, 8, 3);
       const fine = fbm3(nD, x, y, z, 22, 2);
 
@@ -435,7 +438,7 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
         + mf * (0.82 + 0.42 * provRelief)
         + mf * rg * mtnAmp * 0.42
         + mtnAmp * rg * band * provRelief * 0.20
-        + det * 0.07 + fine * 0.045;
+        + det * 0.075 + fine * 0.05;
       deta[kk] = det;
       if (c < lo) lo = c;
       if (c > hi) hi = c;
@@ -596,7 +599,10 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
   const landFlow: number[] = [];
   for (let k = 0; k < n; k++) if (land[k]) landFlow.push(flow[k]);
   landFlow.sort((a, b) => b - a);
-  const riverFraction = 0.004 + 0.005 * sp.rivers;     /* rivers 0..4 → 0.4% .. 2.4% 的格 */
+  /* 河网密度：`rivers 0..4` ⇒ 0.1% .. 0.58% 的**陆地格**。
+     ⚠️ 2026-10-13 从 0.4%~2.4% 收下来：2.4% 在这个分辨率下是 9,600 格，
+     画出来是铺满全陆地的蓝色短须（真机截图），而真地图上一颗星球也就几十条主河。 */
+  const riverFraction = 0.001 + 0.0012 * sp.rivers;
   const thr = landFlow.length ? landFlow[Math.min(landFlow.length - 1, Math.floor(landFlow.length * riverFraction))] : Infinity;
   for (let k = 0; k < n; k++) if (land[k] && flow[k] >= thr && flow[k] > 1.5) river[k] = 1;
   /* ⭐ 把河补成 **4 连通**：最陡下降常常走对角格，1px 路径于是成了"只在角上相接"的阶梯 ——
@@ -615,6 +621,31 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
     const j2 = yd * w + x;
     if (land[j1]) river[j1] = 1;
     if (land[j2]) river[j2] = 1;
+  }
+  /* ⭐ 碎河清理（2026-10-13）：高度场里比格子还小的洼地会把汇流切成一堆**几格就断**的短沟，
+     画出来不是河、是一片蓝色抓痕（用户「细节都不够」那一轮真机截图就是这样）。
+     只留 ≥ `RIVER_MIN_CELLS` 格的河网；统计那边 `riverComps >= 12` 本来就是同一口径。 */
+  {
+    const RIVER_MIN_CELLS = 10;
+    const seen = new Uint8Array(n);
+    const stack: number[] = [];
+    const cells: number[] = [];
+    for (let k0 = 0; k0 < n; k0++) {
+      if (!river[k0] || seen[k0]) continue;
+      stack.length = 0; cells.length = 0;
+      stack.push(k0); seen[k0] = 1;
+      while (stack.length) {
+        const c = stack.pop() as number;
+        cells.push(c);
+        const y = (c / w) | 0, x = c - y * w;
+        const nb = [y > 0 ? c - w : -1, y < h - 1 ? c + w : -1,
+          y * w + ((x + w - 1) % w), y * w + ((x + 1) % w)];
+        for (const j of nb) {
+          if (j >= 0 && river[j] && !seen[j]) { seen[j] = 1; stack.push(j); }
+        }
+      }
+      if (cells.length < RIVER_MIN_CELLS) for (const c of cells) river[c] = 0;
+    }
   }
   /* 湖：陆地上"水出不去"的洼地（`down < 0`），且**集水区够大**才算湖。
      ⚠️ 首版把**每一个**洼地都当湖画（深色海水色）—— 真机放大一看：河谷里全是深色点串，
@@ -705,12 +736,35 @@ const OCITY_COAST = hex('#444a4a');
 const OCITY_RIVER = hex('#7fa9c6');
 const SNOW = hex('#f2f4f2');
 const COAST_DARK: RGB = [58, 58, 52];
+/** 河的三档颜色（提出来：像素循环里每格都要用，别在循环里现 hex()）*/
+const RIVER_RELIEF = hex('#6f9fc4');
+const RIVER_CONTOUR = hex('#6f8fa8');
+
+/** 3×3 盒滤（x 环绕、y 夹边）—— 抽等高线前先过一遍。
+ *  真实制图也是从**平滑过的 DEM** 抽等高线的：不平滑时，海拔恰好压在档位线附近的地方
+ *  会因逐格噪声反复跨档 ⇒ 画出来是一团团碎毛（用户 2026-10-13 真机截图上的低地就是这样）。 */
+function boxFilter(src: Float32Array, w: number, h: number): Float32Array {
+  const out = new Float32Array(src.length);
+  for (let i = 0; i < h; i++) {
+    const yu = (i > 0 ? i - 1 : 0) * w;
+    const yc = i * w;
+    const yd = (i < h - 1 ? i + 1 : h - 1) * w;
+    for (let j = 0; j < w; j++) {
+      const jm = (j + w - 1) % w, jp = (j + 1) % w;
+      out[yc + j] = (src[yu + jm] + src[yu + j] + src[yu + jp]
+        + src[yc + jm] + src[yc + j] + src[yc + jp]
+        + src[yd + jm] + src[yd + j] + src[yd + jp]) / 9;
+    }
+  }
+  return out;
+}
 
 /** 把场画成 RGBA（`w*h*4`，可直接进 canvas / WebGL 贴图）。`view` 认不出就按立体档。 */
 export function renderPlanet(f: PlanetField, view: unknown): Uint8ClampedArray {
   const v = view === 'contour' || view === 'flat' ? view : 'relief';
   const { w, h, elev, e01, land, river, lake, moist, temp } = f;
   const out = new Uint8ClampedArray(w * h * 4);
+  const sm = v === 'contour' ? boxFilter(e01, w, h) : null;   /* 等高线用平滑后的高度 */
   const dyKm = Math.PI * R_KM / h;
   /* ⚠️ 行索引必须**夹在 0..h-1**（极点外面没有行）。不夹的话 i=0 那一行的"上一行"是负下标：
      · `land[负数]` 读到 `undefined` ⇒ 极地**每一格陆地都被当成海岸线**（整行压上深色边）；
@@ -740,13 +794,14 @@ export function renderPlanet(f: PlanetField, view: unknown): Uint8ClampedArray {
           /* OCity：陆按高度分 5 档浅色（不分阴影、不画等高线）*/
           col = OCITY_LAND[clamp((t * 5) | 0, 0, 4)];
         } else if (v === 'contour') {
-          const band = clamp((t * 10) | 0, 0, 9);
-          col = ATLAS_LAND[band];
-          /* 等高线：与左/上邻**档位不同**就画一条线（250 m 等高距 = 10 档 / 8.8 km 的近似；
-             每 4 档（≈1 km）加深加粗 —— 就是地图上的"计曲线"）*/
-          const bl = clamp((e01[at(j - 1, i)] * 10) | 0, 0, 9);
-          const bu = clamp((e01[at(j, i - 1)] * 10) | 0, 0, 9);
-          if (band !== bl || band !== bu) col = band % 4 === 0 ? CONTOUR_INDEX : CONTOUR_LINE;
+          /* 色带只 10 档（图上要"少而干净"），但**等高线按 24 档切**（≈ 峰值/24 ≈ 260 m），
+             而且用的是**平滑过的高度**（`sm`）。 */
+          const s = sm as Float32Array;
+          const cb = clamp((s[k] * 24) | 0, 0, 23);
+          col = ATLAS_LAND[clamp((t * 10) | 0, 0, 9)];
+          const bl = clamp((s[at(j - 1, i)] * 24) | 0, 0, 23);
+          const bu = clamp((s[at(j, i - 1)] * 24) | 0, 0, 23);
+          if (cb !== bl || cb !== bu) col = cb % 4 === 0 ? CONTOUR_INDEX : CONTOUR_LINE;
         } else {
           const band = clamp((t * 9) | 0, 0, 8);
           col = RELIEF_LAND[band];
@@ -775,7 +830,13 @@ export function renderPlanet(f: PlanetField, view: unknown): Uint8ClampedArray {
         if (nb) col = v === 'flat' ? OCITY_COAST : (v === 'contour' ? CONTOUR_INDEX : mix(col, COAST_DARK, 0.55));
       }
       if (lake[k]) col = v === 'flat' ? OCITY_SEA : (v === 'contour' ? ATLAS_SEA[2] : RELIEF_SEA[1]);
-      if (river[k]) col = v === 'flat' ? OCITY_RIVER : (v === 'contour' ? hex('#6f8fa8') : hex('#6f9fc4'));
+      /* 河：本格画实色，**四邻淡淡晕一指宽** —— 1px 的线缩到面板尺寸就成了一串点
+         （用户「细节不够」的另一半）；只在陆地上晕，免得把海染脏。 */
+      const riverCol = v === 'flat' ? OCITY_RIVER : (v === 'contour' ? RIVER_CONTOUR : RIVER_RELIEF);
+      if (river[k]) col = riverCol;
+      else if (isLand && (river[at(j - 1, i)] || river[at(j + 1, i)] || river[at(j, i - 1)] || river[at(j, i + 1)])) {
+        col = mix(col, riverCol, 0.25);
+      }
       const o = k * 4;
       out[o] = col[0]; out[o + 1] = col[1]; out[o + 2] = col[2]; out[o + 3] = 255;
     }

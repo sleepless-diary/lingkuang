@@ -14,14 +14,17 @@ import type { MapgenSpecInput, TerrainStats } from '../mapgen';
 import type { MapTerrainSpec } from '../store/types';
 import { mountGlobe, type GlobeHandle } from './globe';
 
-/** 地图栏与球体贴图用的分辨率（1024×512，约 450ms —— 只在换星球/换档位时算一次）*/
+/** 地图栏与球体贴图用的分辨率（1536×768 ≈ 1.2s —— 只在换星球/换档位时算一次）。
+ *  ⭐ 2026-10-13 用户「**分辨率和细节都不够**」：从 512 抬到 768（1024×512 → 1536×768）。
+ *  再往上（1024 ⇒ 2048×1024）生成时间与场缓存都要翻倍，收益却只在高倍放大时才看得见。 */
 export const PLANET_VIEW_H = PLANET_H;
-/** 预览与抽卡用的分辨率（384×192，约 65ms —— 一次抽 6 张也跟得上）*/
-export const PLANET_PREVIEW_H = 192;
+/** 预览与抽卡用的分辨率（512×256，约 150ms —— 一次抽 6 张也跟得上）*/
+export const PLANET_PREVIEW_H = 256;
 
 const fields = new Map<string, PlanetField>();
 const colors = new Map<string, Uint8ClampedArray>();
-const MAX_FIELDS = 4;
+/* 场缓存从 4 降到 3：768 高时一张场约 27 MB（8 个数组），4 张就上 100 MB 了 */
+const MAX_FIELDS = 3;
 const MAX_COLORS = 6;
 
 const fieldKeyOf = (t: MapTerrainSpec, h: number) =>

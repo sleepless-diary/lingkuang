@@ -132,6 +132,7 @@ async function main() {
     { tabAi, tabDraw });
 
   /* ★7 抽卡：6 张，一张一张出图 */
+  const stageH0 = await ev(`(function () { const el = document.querySelector('.lk-ms__stage'); return el ? Math.round(el.getBoundingClientRect().height) : 0; })()`);
   await click('#ms-roll-same');
   await sleep(1000);
   const mid = await panel();
@@ -140,6 +141,12 @@ async function main() {
   check('★7 抽卡出 6 张、全部真出图（先占位再一张张填）',
     mid.cards === 6 && rolled.cards === 6 && rolled.withImg === 6,
     { mid: { n: mid.cards, withImg: mid.withImg }, done: { n: rolled.cards, withImg: rolled.withImg } });
+
+  /* ★7b（2026-10-13 用户「**抽卡会把顶部的主视图给顶矮**」）：卡片区撑高之后，
+     预览那一格必须一点不缩 —— `.lk-ms__stage` 少了 `flex: 0 0 auto` 就会被压扁。 */
+  const stageH1 = await ev(`(function () { const el = document.querySelector('.lk-ms__stage'); return el ? Math.round(el.getBoundingClientRect().height) : 0; })()`);
+  check('★7b 抽卡之后预览没被顶矮（卡片区自己滚）',
+    stageH0 > 40 && stageH1 === stageH0, { before: stageH0, after: stageH1 });
 
   /* ★8 点第 2 张 → 大图换成那张 */
   const before2 = (await panel()).imgLen;
