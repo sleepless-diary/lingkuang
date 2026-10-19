@@ -72,7 +72,7 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
         '<div style="padding:8px 14px 12px;display:flex;gap:6px;">' +
           `<textarea id="ai-input" rows="2" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）" style="flex:1;min-width:0;resize:none;${INPUT}"></textarea>` +
           `<button id="ai-stop" style="${BTN}color:var(--danger);border-color:var(--danger);display:none;">停</button>` +
-          `<button id="ai-send" style="${BTN}color:var(--accent);border-color:var(--accent);">发送</button>` +
+          `<button id="ai-send" style="${BTN}color:var(--accent-ink);border-color:var(--accent-ink);">发送</button>` +
         '</div>' +
       '</div>' +
     '</div>';
@@ -155,7 +155,7 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
        ⚠️ 必须在改 innerHTML **之前**量 —— 整块重建已经把新的高度算进去了，那时再量永远"不在底部"。 */
     const keepBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight <= 24;
     if (!s || !s.history.length) {
-      logEl.innerHTML = '<div style="font-size:12px;color:var(--fg-2);line-height:1.9;">还没有对话。<br>直接说点什么，或者先给这个会话写一段「角色设定」。</div>';
+      logEl.innerHTML = '<div class="lk-empty"><div class="lk-empty__title">还没有对话</div><div class="lk-empty__hint">在下面输入框说点什么；或者先在「人设」里选一条设定库里的角色，让 AI 代入它回答。</div></div>';
       return;
     }
     /* ⭐ 一轮里**连续多条**工具结果收成一块（用户 2026-10-13）—— 与助手浮层 `historyHtml()` 同一规矩：
@@ -243,8 +243,8 @@ export function renderAiWorkbench(store: Store, host: HTMLElement): void {
       return '<div data-s="' + s.id + '" style="display:flex;align-items:center;gap:4px;padding:5px 7px;border-radius:var(--radius-sm);cursor:pointer;' +
         (on ? 'background:var(--surface-2);' : '') + '">' +
         `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:${on ? 'var(--fg)' : 'var(--fg-2)'};">${esc(s.name)}</span>` +
-        `<span style="font-size:10px;color:var(--fg-2);">${roleOfLabel(s)}</span>` +
-        (s.role === 'main' ? '' : `<button data-act="link" title="连进当前会话 / 断开" style="${BTN}padding:0 5px;${linked ? 'color:var(--accent);border-color:var(--accent);' : ''}">${linked ? '断' : '连'}</button>`) +
+        `<span style="font-size:11px;color:var(--fg-2);">${roleOfLabel(s)}</span>` +
+        (s.role === 'main' ? '' : `<button data-act="link" title="连进当前会话 / 断开" style="${BTN}padding:0 5px;${linked ? 'color:var(--accent-ink);border-color:var(--accent-ink);' : ''}">${linked ? '断' : '连'}</button>`) +
         (s.role === 'main' ? '' : `<button data-act="del" title="删除会话" style="${BTN}padding:0 5px;">×</button>`) +
         '</div>';
     }).join('');

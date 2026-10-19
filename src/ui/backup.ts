@@ -69,8 +69,6 @@ const TARGETS = [
   { id: 'lib', title: '角色词库', file: 'character_lib.json', note: '灵感触发器与联想图用的词条' },
 ];
 
-const BTN = 'border:1px solid var(--border);background:var(--surface-2);color:var(--fg);border-radius:var(--radius-sm);padding:3px 10px;font-size:11px;cursor:pointer;';
-const BTN_MAIN = 'border:none;background:var(--accent);color:var(--accent-on);border-radius:var(--radius-sm);padding:3px 10px;font-size:11px;cursor:pointer;';
 
 export function renderBackup(_store: Store, host: HTMLElement): () => void {
   const a = api();
@@ -79,7 +77,7 @@ export function renderBackup(_store: Store, host: HTMLElement): () => void {
   let disposed = false;
 
   host.innerHTML = `
-    <div style="max-width:680px;margin:0 auto;padding:18px 16px 30px;display:flex;flex-direction:column;gap:16px;">
+    <div class="lk-page lk-page--sm" style="padding:18px 16px 30px;display:flex;flex-direction:column;gap:16px;">
       <div>
         <div style="font-size:17px;font-weight:600;color:var(--fg);">备份管理</div>
         <div style="font-size:var(--text-xs);color:var(--fg-2);line-height:1.8;margin-top:6px;">
@@ -88,7 +86,7 @@ export function renderBackup(_store: Store, host: HTMLElement): () => void {
         </div>
       </div>
       <div id="bk-body" style="display:flex;flex-direction:column;gap:16px;"></div>
-      <div id="bk-msg" style="font-size:var(--text-xs);color:var(--accent);min-height:17px;line-height:1.7;word-break:break-all;"></div>
+      <div id="bk-msg" style="font-size:var(--text-xs);color:var(--accent-ink);min-height:17px;line-height:1.7;word-break:break-all;"></div>
     </div>`;
 
   const body = host.querySelector('#bk-body') as HTMLElement;
@@ -107,9 +105,9 @@ export function renderBackup(_store: Store, host: HTMLElement): () => void {
         <div style="display:flex;align-items:center;gap:10px;padding:7px 11px;border-top:1px solid var(--border);">
           <span style="width:150px;flex-shrink:0;font-size:var(--text-xs);color:${e.kind === 'current' ? 'var(--accent)' : 'var(--fg-2)'};" title="${escapeHtml(KIND_NOTE[e.kind] ?? '')}">${escapeHtml(e.label)}</span>
           <span style="flex:1;min-width:0;font-family:var(--font-mono);font-size:11px;color:var(--fg-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(e.path)}">${fmtTime(e.mtime)} · ${fmtBytes(e.bytes)}</span>
-          ${e.restorable ? `<button class="lk-bk-restore" data-target="${t.id}" data-path="${escapeHtml(e.path)}" data-label="${escapeHtml(e.label)}" style="${BTN}">恢复</button>` : ''}
+          ${e.restorable ? `<button class="lk-btn lk-btn--sm lk-bk-restore" data-target="${t.id}" data-path="${escapeHtml(e.path)}" data-label="${escapeHtml(e.label)}">恢复</button>` : ''}
         </div>`).join('')
-      : `<div style="padding:10px 11px;border-top:1px solid var(--border);font-size:var(--text-xs);color:var(--fg-2);">还没有任何备份。</div>`;
+      : `<div class="lk-empty lk-empty--sm" style="border-top:1px solid var(--border);"><div class="lk-empty__title">还没有可回退的备份</div><div class="lk-empty__hint">灵框每次保存前会自动轮换 3 份；想立刻留一份就点上面的「立即备份」。</div></div>`;
     return `
       <section style="border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;">
         <div style="padding:11px 12px;display:flex;align-items:center;gap:10px;background:var(--surface-2);">
@@ -117,11 +115,11 @@ export function renderBackup(_store: Store, host: HTMLElement): () => void {
             <div style="font-size:var(--text-sm);font-weight:600;color:var(--fg);">${t.title}</div>
             <div style="font-size:11px;color:var(--fg-2);margin-top:2px;">${t.note}</div>
             ${t.caveat ? `<div style="font-size:11px;color:var(--fg-2);line-height:1.7;margin-top:4px;">${t.caveat}</div>` : ''}
-            <div style="font-family:var(--font-mono);font-size:10px;color:var(--fg-2);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(info.file || '')}">${escapeHtml(info.file || '（文件还没生成）')}</div>
+            <div style="font-family:var(--font-mono);font-size:11px;color:var(--fg-2);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(info.file || '')}">${escapeHtml(info.file || '（文件还没生成）')}</div>
           </div>
-          <button class="lk-bk-create" data-target="${t.id}" style="${BTN}">立即备份</button>
-          <button class="lk-bk-export" data-target="${t.id}" style="${BTN}">导出到文件</button>
-          <button class="lk-bk-import" data-target="${t.id}" style="${BTN_MAIN}">从文件导入</button>
+          <button class="lk-bk-create lk-btn lk-btn--sm" data-target="${t.id}">立即备份</button>
+          <button class="lk-bk-export lk-btn lk-btn--sm" data-target="${t.id}">导出到文件</button>
+          <button class="lk-bk-import lk-btn lk-btn--sm lk-btn--primary" data-target="${t.id}">从文件导入</button>
         </div>
         ${rows}
       </section>`;
@@ -129,7 +127,7 @@ export function renderBackup(_store: Store, host: HTMLElement): () => void {
 
   async function refresh(): Promise<void> {
     if (!a?.backupList) {
-      body.innerHTML = `<div style="font-size:var(--text-sm);color:var(--fg-2);">备份功能需要 Electron 环境。</div>`;
+      body.innerHTML = '<div class="lk-empty"><div class="lk-empty__title">备份功能需要 Electron 环境</div><div class="lk-empty__hint">在桌面版灵框里打开这一段。</div></div>';
       return;
     }
     const infos = await Promise.all(TARGETS.map((t) => a.backupList(t.id).catch(() => ({ ok: false } as BackupInfo))));

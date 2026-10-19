@@ -1,56 +1,15 @@
 /* 灵框 · AE 风主题：圆角少、工具感强、阈限梦核底色（自定义变量，可换主题） */
+/* 这里**只留应用自己的几何与字体**：
+   颜色 / 字号尺度 / 间距 / 动效 / 阴影，全部来自 `design-system/tokens.css`
+   （`src/main.ts` 先 import 本文件前一行 import 了 tokens）。以前两处各写一份，
+   漂移出 4 处不一致（surface、fg、sidebar 宽、radius），且 --danger / --warn /
+   --meta / --space-1 / --space-2 只写在没人 import 的 tokens 里 ⇒ 运行时 undefined，
+   `color: var(--danger)` 静默继承父色。要换主题只改 tokens.css。 */
 :root {
-  --bg: #c5c2ba;
-  --surface: #d8d5cc;
-  --surface-2: #c9c6bd;
-  --chrome: #17171a;
-  --chrome-2: #232327;
-  --fg: #232324;
-  --fg-2: #5a5852;
-  /* ⚠️ 这一档原来**漏抄**了（`design-system/tokens.css` 里有 `--muted: #9b998c`），
-     而 `src/style.css` 里有 6 处 `var(--muted)` ⇒ 用到 `color` 的那几处因为**颜色是继承属性**、
-     悄悄退回父级颜色，看着"没事"；用到 `background` 的两处就成了 `transparent`（初值）：
-       · `.lk-think.is-live > .lk-think__sum::after`（思考中那颗点 ⇒ 整颗消失）
-       · `::-webkit-scrollbar-thumb:hover`（悬停滚动条 ⇒ 缩略条整个隐形）
-     2026-09-26 补齐令牌（值取自 design-system）。 */
-  --muted: #9b998c;
-  --fg-inverse: #e8e7df;
-  --accent: #9ec262;
-  --accent-on: #17181a;
-  --border: #9a978e;
-  --border-soft: rgba(58, 58, 52, 0.14);
-  --radius: 2px;          /* AE 风：圆角小 */
-  --radius-sm: 2px;
+  --radius: 2px;          /* AE 风：圆角小（设计系统给网页产物用 8px 凹龛） */
+  --radius-sm: 2px;       /* 应用侧覆盖，同上 */
   --font: "Microsoft YaHei UI", "Segoe UI", sans-serif;
   --font-mono: "Cascadia Mono", Consolas, monospace;
-  --text-xs: 11px;
-  --text-sm: 12.5px;
-  --text-base: 14px;
-  /* legacy 画布依赖（还原旧版时间线 UI） */
-  /* 动效令牌以 `design-system/tokens.css` 为准（DESIGN.md 第 7 节：慢、呼吸感、不 snappy）。
-     原来这里是 fast 100ms / base 160ms —— 比设计系统快一倍，正好落在 DESIGN.md:182 明令禁止的
-     「snappy developer tool」档（"The dream registers at 300ms+, not 150ms"）；动效层要复现的是
-     设计语言，故取值对齐设计系统（`--motion-slow` 以前在这个文件里根本没定义）。 */
-  --motion-fast: 180ms;
-  --motion-base: 320ms;
-  --motion-slow: 640ms;
-  /* 入场时长单列一档：设计系统只给了 base(320)/slow(640)，而 DESIGN.md:157 的 Waking fade 用的正是
-     640ms。用户 2026-09-12 两次反馈都嫌快（「稍微慢一点」→「算了直接再调慢一点」），故直接取 640ms
-     ＝设计系统 slow 档 ＝DESIGN.md 自己给的 Waking fade 时长，不再自造中间值。 */
-  --motion-enter: 640ms;
-  --ease-standard: cubic-bezier(0.22, 0.75, 0.25, 1);
-  --border-strong: #6f6d66;
-  --radius-pill: 999px;
-  /* legacy 工具内部卡片（大圆角/浮雕，还原旧版灵感/编辑器） */
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 24px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
-  --elev-raised: inset 0 1px 2px rgba(58, 58, 52, 0.1), 0 0 0 1px var(--border);
-  --elev-bloom: 0 0 24px rgba(158, 194, 98, 0.28);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -144,6 +103,7 @@ body {
   border-radius: var(--radius-sm);
   white-space: nowrap;
 }
+.lk-tool-btn > span { white-space: nowrap; }
 .lk-tool-btn:hover { opacity: 1; background: var(--chrome-2); }
 .lk-tool-btn.is-active { opacity: 1; color: var(--accent); background: var(--chrome-2); }
 .lk-tool-btn.is-ph { opacity: 0.4; }
@@ -158,7 +118,7 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  width: 48px;
+  width: 72px;   /* 48px 时 9px 的工具名已经贴边；抬到 11px 后 5 个汉字要 72px 才不折行 */
   background: var(--chrome);
   color: var(--fg-inverse);
   border-right: 1px solid var(--chrome-2);
@@ -174,11 +134,11 @@ body {
   border: none;
   color: var(--fg-inverse);
   opacity: 0.7;
-  font-size: 9px;
+  font-size: 11px;
   padding: 6px 2px;
   cursor: pointer;
   border-radius: var(--radius-sm);
-  width: 44px;
+  width: 68px;
   white-space: nowrap;
 }
 .lk-tool-btn:hover { opacity: 1; background: var(--chrome-2); }
@@ -219,8 +179,9 @@ body {
   background: none;
   border: 1px solid transparent;
   color: var(--fg-2);
-  font-size: 11px;
-  padding: 2px 8px;
+  font-size: 12px;
+  min-height: 24px;
+  padding: 2px 9px;
   cursor: pointer;
   border-radius: var(--radius-sm);
   display: flex;
@@ -231,10 +192,15 @@ body {
 }
 .lk-tl-tab:hover { background: var(--surface); color: var(--fg); }
 .lk-tl-tab.is-active { background: var(--chrome); color: var(--accent); }
-.lk-tl-tab .cnt { font-family: var(--font-mono); font-size: 9px; opacity: 0.6; }
+.lk-tl-tab .cnt { font-family: var(--font-mono); font-size: 11px; opacity: 0.75; }
+/* 0 节点的时间线：名字压低、计数写「空」——「0」在密集的页签里几乎看不见，
+   而「这条是空壳」恰恰是最该一眼认出的信息（真实数据里三条空时间线都叫得出名字）。 */
+.lk-tl-tab.is-empty:not(.is-active) .nm { color: var(--fg-2); opacity: .78; }
+.lk-tl-tab.is-empty .cnt { font-style: italic; opacity: .65; }
+.lk-tl-tab.is-active .cnt { opacity: .85; }
 .lk-tl-tab.is-new { font-weight: 600; color: var(--fg-2); }
 .lk-tl-tab.is-new:hover { color: var(--fg); }
-.lk-ph { color: var(--fg); font-size: 10px; }
+.lk-ph { color: var(--fg); font-size: 11px; }
 .lk-pane-body { flex: 1; min-height: 0; overflow: auto; }
 .lk-placeholder {
   display: flex;
@@ -243,12 +209,23 @@ body {
   color: var(--fg-2);
   font-size: var(--text-sm);
 }
+/* 工具宿主（节点详情 / 时间线设置 / 新建节点表单都往这里写）：
+   评审时实测它**无条件占 300px** —— 开机、切工具、沙盘无选中时都空着一条竖栏，
+   右侧时间线因此少了 300px 画布。现在空的时候自己收成 0（`:empty` 是纯 CSS，
+   不用在每个写入点加 JS），写入内容自动展开，过渡 320ms 与设计系统同档。 */
 .lk-tool-host {
   width: 300px;
   background: var(--surface);
   border-left: 1px solid var(--border);
   min-height: 0;
   overflow: auto;
+  transition: width var(--motion-base) var(--ease-standard),
+              border-left-width var(--motion-base) var(--ease-standard);
+}
+.lk-tool-host:empty {
+  width: 0;
+  border-left-width: 0;
+  overflow: hidden;
 }
 .lk-module-view {
   flex: 1;
@@ -326,7 +303,7 @@ body {
 .assoc__node.is-new { border-style: dashed; color: var(--fg-2); }
 .assoc__node .store {
   margin-left: 6px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--fg);
   border-left: 1px solid var(--border-soft);
   padding: 6px 10px 6px 5px;   /* 扩大点击热区（视觉文字不变，Padding 撑开命中面积便于浮动时点中） */
@@ -367,7 +344,7 @@ body {
   top: 22px;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--fg);
   white-space: nowrap;
   pointer-events: none;
@@ -403,7 +380,7 @@ body {
   position: absolute;
   top: 2px;
   right: 0;
-  font-size: 9px;
+  font-size: 11px;
   font-family: var(--font-mono);
   color: var(--fg);
   background: var(--chrome);
@@ -443,9 +420,9 @@ body {
   position: absolute;
   top: 1px;
   font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 10px;
-  color: var(--accent);
+  font-size: 11px;
+  line-height: 11px;
+  color: var(--accent-ink);   /* accent 当文字只有 1.19:1，断口省略号用深橄榄绿 */
   transform: translateX(-50%);
   pointer-events: none;
   z-index: 2;
@@ -491,7 +468,7 @@ body {
 .tl__axis-tick--major .tl__axis-prev {
   position: absolute;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 11px;
   white-space: nowrap;
 }
 .tl__axis-tick--major .tl__axis-prev {
@@ -511,7 +488,7 @@ body {
   top: 3px;
   left: 4px;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 11px;
   color: var(--fg-2);
   white-space: nowrap;
 }
@@ -527,7 +504,7 @@ body {
   text-align: center;
 }
 .tl__ghost .cap { position: absolute; left: 8px; top: 8px; width: 10px; height: 10px; border-radius: 50%; background: var(--fg); border: 1px dashed var(--accent); }
-.tl__ghost .tl__name { position: absolute; top: 22px; left: 50%; transform: translateX(-50%); font-size: 9px; color: var(--fg-2); white-space: nowrap; }
+.tl__ghost .tl__name { position: absolute; top: 22px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--fg-2); white-space: nowrap; }
 
 /* ── tiptap 所见即所得编辑器（简洁无框，撑满可点即输）── */
 #ed-doc { padding: 0; border: none !important; outline: none; box-shadow: none; }
@@ -629,8 +606,19 @@ body {
 .ed-ttype { font-weight: 600; }
 .ed-ttype .ed-tlabel { color: var(--fg); }
 /* 计数（小字，右侧）*/
-.ed-tcount { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--fg-2); }
-.ed-tyear { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--fg-2); }
+.ed-tcount { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--fg-2); }
+.ed-tyear { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--fg-2); }
+/* 实体行的「副类型」（`properties['类型']`）：树按 typeId 分组，可数据里大量条目的 typeId 都是
+   「角色」，真实类别（人物 / 力量体系 / 设定 / 历史…）只写在字段里 —— 挂在行尾，排到右边缘。 */
+.ed-tsub {
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-2xs);
+  color: var(--fg-2);
+  flex-shrink: 0;
+}
 /* `_设定`（实体）那一层：它是**世界下面的一层**（跟时间线平级、不是跟世界平级），
    所以缩进必须与 `.ed-ttl` 一致（18px）—— 用户 2026-09-13：「设定文件夹和世界观文件夹处于同一缩进」 */
 .ed-tset { padding-left: 18px; margin-top: 2px; }
@@ -642,25 +630,25 @@ body {
 /* 「刚建出来还没填」的条目：名字用强调色 + 后面挂一个「待填」小药丸（改名/填了字段就自动消失）。
    批量新建时一眼能看出哪几条还没动过（用户 2026-09-13：「我希望能同时创建多个未填数据的
    实体或者节点（**强调显示一下就行**）」）。样式与帧条的 `.lk-rail__tag` 同款。 */
-.ed-tnode-item.is-stub .ed-tlabel { color: var(--accent); }
+.ed-tnode-item.is-stub .ed-tlabel { color: var(--accent-ink); }
 .ed-tnode-item.is-stub.is-on .ed-tlabel { color: var(--fg-inverse); }
 .ed-ttag {
   margin-left: 5px;
   padding: 0 4px;
   border: 1px solid var(--accent);
   border-radius: var(--radius-pill);
-  color: var(--accent);
-  font-size: 9px;
+  color: var(--accent-ink);
+  font-size: 11px;
   vertical-align: 1px;
 }
 /* 空文件夹展开后的那句人话 */
-.ed-tempty { padding: 2px 8px 2px 36px; font-size: 10px; color: var(--fg-2); opacity: .7; }
+.ed-tempty { padding: 2px 8px 2px 36px; font-size: 11px; color: var(--fg-2); opacity: .7; }
 
 /* ── 设定库顶栏那组「新建」控件（用户 2026-09-14）────────────────────────────
    ① `.lk-newlbl`：那两个控件（下拉 / 数量框）原来长得像按钮，没人知道是干什么的 ——
       各配一个说明性小标签（类型 / 时间线 / 数量）。字号最小档、颜色用 --fg-2，
       高度不参与行高（那行的高度由下拉与按钮决定，换类别时必须恒定）。 */
-.lk-newlbl { font-size: 10px; color: var(--fg-2); flex-shrink: 0; }
+.lk-newlbl { font-size: 11px; color: var(--fg-2); flex-shrink: 0; }
 /* ② `.lk-roll`：「＋新建实体 ↔ ＋新建节点」换字时像老虎机一样上下滚一格。
       外层是**裁切盒**（overflow:hidden，高度 = 一行），里层 `.lk-roll__t` 是真标签，
       滚出去的旧字是临时克隆的 `.lk-roll__prev`（绝对定位盖在原处）。
@@ -863,7 +851,7 @@ body {
 .lk-rail__title { font-size: var(--text-sm); font-weight: 600; color: var(--fg); }
 .lk-rail__mode {
   margin-left: auto;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--fg-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
@@ -936,8 +924,8 @@ body {
   padding: 0 4px;
   border: 1px solid var(--accent);
   border-radius: var(--radius-pill);
-  color: var(--accent);
-  font-size: 9px;
+  color: var(--accent-ink);
+  font-size: 11px;
   vertical-align: 1px;
 }
 /* 「改这里」：写目标的标签，比「记到」更实（底色铺满），一眼分得清哪个是"会写进去" */
@@ -947,7 +935,7 @@ body {
    `.lk-rail__mode` 有 `margin-left:auto`，所以按钮贴在标题边上、模式胶囊仍然靠右。 */
 .lk-rail__toggle {
   font: inherit;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
   color: var(--fg-2);
   background: transparent;
@@ -957,14 +945,14 @@ body {
   cursor: pointer;
   white-space: nowrap;
 }
-.lk-rail__toggle:hover { color: var(--accent); border-color: var(--accent); }
+.lk-rail__toggle:hover { color: var(--accent-ink); border-color: var(--accent); }
 .lk-rail__row:hover { background: var(--surface); }
 .lk-rail__row.is-on { background: var(--surface); border-left-color: var(--accent); }
-.lk-rail__t { font-size: 10px; color: var(--fg-2); }
+.lk-rail__t { font-size: 11px; color: var(--fg-2); }
 .lk-rail__n,
 .lk-rail__s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lk-rail__n { font-size: var(--text-xs); color: var(--fg); }
-.lk-rail__s { font-size: 10px; color: var(--fg-2); }
+.lk-rail__s { font-size: 11px; color: var(--fg-2); }
 .lk-rail__foot {
   display: flex;
   flex-direction: column;
@@ -984,17 +972,17 @@ body {
   transition: border-color var(--motion-fast) var(--ease-standard),
               color var(--motion-fast) var(--ease-standard);
 }
-.lk-rail__add { border-color: var(--accent); color: var(--accent); }
+.lk-rail__add { border-color: var(--accent); color: var(--accent-ink); }
 .lk-rail__del { border-color: var(--danger); color: var(--danger); }
 .lk-rail__add:disabled { border-color: var(--border); color: var(--fg-2); cursor: default; }
-.lk-rail__hint { font-size: 10px; color: var(--fg-2); line-height: 1.4; }
+.lk-rail__hint { font-size: 11px; color: var(--fg-2); line-height: 1.4; }
 /* 帧条只列"有版本的节点"（用户 2026-09-13 上午），建版本的入口改到这个下拉：
    「记到哪个事件」。标签 + 下拉一行，宽度不够就压下拉（min-width:0 是 flex 里的老规矩）。 */
 .lk-rail__pick { display: flex; align-items: center; gap: 5px; }
 /* 两个动作竖着排、各自占满宽度（并排写会把字挤到被裁）：
    「记一帧」永远在（它是现在唯一的建版本入口），「删掉这一帧」只在正站在某一版上时多一行。 */
 .lk-rail__acts { display: flex; flex-direction: column; gap: 4px; }
-.lk-rail__lbl { font-size: 10px; color: var(--fg-2); flex-shrink: 0; }
+.lk-rail__lbl { font-size: 11px; color: var(--fg-2); flex-shrink: 0; }
 .lk-rail__sel {
   flex: 1;
   min-width: 0;
@@ -1041,7 +1029,7 @@ body {
   font-size: var(--text-xs); color: var(--fg-2); white-space: nowrap;
   max-width: 190px; overflow: hidden; text-overflow: ellipsis;
 }
-.lk-agent__chip.is-focus { color: var(--accent); border-color: var(--accent); }
+.lk-agent__chip.is-focus { color: var(--accent-ink); border-color: var(--accent); }
 /* 「最近在看」：工作台已切走，焦点降级保留（AI 仍看得见你刚才开的那一条）—— 用中性色，不抢眼 */
 .lk-agent__chip.is-stale { color: var(--fg-2); border-color: var(--border-strong); border-style: dashed; }
 .lk-agent__x {
@@ -1094,7 +1082,7 @@ body {
 .lk-md li { margin: 2px 0; }
 .lk-md blockquote { margin: 4px 0; padding: 2px 0 2px 9px; border-left: 2px solid var(--border); color: var(--fg-2); }
 .lk-md hr { margin: 8px 0; border: none; border-top: 1px solid var(--border-soft); }
-.lk-md a { color: var(--accent); text-decoration: none; }
+.lk-md a { color: var(--accent-ink); text-decoration: none; }
 .lk-md a:hover { text-decoration: underline; }
 .lk-md__wait { color: var(--fg-2); }
 /* 流式光标：末尾一条闪的竖条（系统开了「减少动态效果」就不闪，只留一条实线） */
@@ -1125,7 +1113,7 @@ body {
 }
 .lk-think__sum { cursor: pointer; padding: 3px 8px; user-select: none; list-style: none; }
 .lk-think__sum::-webkit-details-marker { display: none; }
-.lk-think__sum::before { content: '▸'; display: inline-block; width: 12px; color: var(--muted); }
+.lk-think__sum::before { content: '▸'; display: inline-block; width: 12px; color: var(--fg-2); }
 .lk-think[open] > .lk-think__sum::before { content: '▾'; }
 .lk-think__body {
   padding: 2px 10px 6px 20px; max-height: 240px; overflow-y: auto;
@@ -1244,7 +1232,7 @@ body {
   background: transparent; color: var(--fg-2);
   font-size: var(--text-xs); font-family: var(--font-body); cursor: pointer;
 }
-.lk-agent__mem-btn:hover { color: var(--accent); border-color: var(--accent); }
+.lk-agent__mem-btn:hover { color: var(--accent-ink); border-color: var(--accent); }
 /* 文件夹（片 1，2026-09-28）：助手能碰哪些目录 —— 权限那行的第二半（权限 = 能改到什么程度，
    文件夹 = 能碰到哪儿）。一行一个文件夹：名字 + 「灵框库 / 不见了」小标签 + 只读⇄可写 + ×。 */
 .lk-agent__fs { border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
@@ -1260,10 +1248,10 @@ body {
   font-size: var(--text-xs); color: var(--fg);
 }
 /* 清单里那条指向的文件夹已经不在磁盘上了（被改名/删掉）：划掉 + 变暗，别让它看着还能用 */
-.lk-agent__fs-item.is-missing .lk-agent__fs-name { color: var(--muted); text-decoration: line-through; }
+.lk-agent__fs-item.is-missing .lk-agent__fs-name { color: var(--fg-2); text-decoration: line-through; }
 .lk-agent__fs-tag {
   flex: none; padding: 1px 5px; border: 1px solid var(--border); border-radius: var(--radius-sm);
-  font-size: 10px; color: var(--fg-2);
+  font-size: 11px; color: var(--fg-2);
 }
 .lk-agent__fs-tag.is-warn { color: var(--danger); border-color: var(--danger); }
 .lk-agent__fs-btn {
@@ -1271,13 +1259,13 @@ body {
   background: transparent; color: var(--fg-2);
   font-size: var(--text-xs); font-family: var(--font-body); cursor: pointer;
 }
-.lk-agent__fs-btn:hover { color: var(--accent); border-color: var(--accent); }
+.lk-agent__fs-btn:hover { color: var(--accent-ink); border-color: var(--accent); }
 .lk-agent__fs-x {
   width: 18px; height: 18px; flex: none; border: 0; border-radius: var(--radius-sm);
   background: transparent; color: var(--fg-2); font-size: 13px; line-height: 1; cursor: pointer;
 }
 .lk-agent__fs-x:hover { color: var(--danger); background: var(--surface-2); }
-.lk-agent__fs-note { padding: 0 8px 4px; font-size: 10px; color: var(--fg-2); line-height: 1.6; }
+.lk-agent__fs-note { padding: 0 8px 4px; font-size: 11px; color: var(--fg-2); line-height: 1.6; }
 .lk-agent__fs-acts { display: flex; gap: 6px; padding: 0 8px 8px; }
 /* 拖进会话的附件（片 4，2026-09-29）：把草稿/素材文件夹直接拖进输入框上面那条，材料跟这一问一起交出去。
    ⚠️ 空的时候**不能是 0 高** —— 0 高的 div 根本拖不中（拖放目标得有个可命中的面），所以留一条 18px 的
@@ -1285,7 +1273,7 @@ body {
    拖进来时输入框不会往下跳。 */
 .lk-agent__attach { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .lk-agent__attach:empty { min-height: 18px; }
-.lk-agent__attach:empty::before { content: '把文件或文件夹拖到这里，当这一问的材料'; font-size: 10px; color: var(--muted); }
+.lk-agent__attach:empty::before { content: '把文件或文件夹拖到这里，当这一问的材料'; font-size: 11px; color: var(--fg-2); }
 .lk-agent__attach.is-drop { outline: 1px dashed var(--accent); outline-offset: 2px; border-radius: var(--radius-sm); }
 .lk-attach-chip {
   display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%;
@@ -1298,7 +1286,7 @@ body {
 }
 .lk-attach-chip__tag {
   flex: none; padding: 1px 5px; border: 1px solid var(--border); border-radius: var(--radius-sm);
-  font-size: 10px; color: var(--fg-2);
+  font-size: 11px; color: var(--fg-2);
 }
 /* 灵框外的材料：发出去之后助手用之前还要创作者点一下授权 —— 这句得看得见（与 `.lk-agent__fs-tag.is-warn` 同款） */
 .lk-attach-chip__tag.is-warn { color: var(--danger); border-color: var(--danger); }
@@ -1308,12 +1296,12 @@ body {
 }
 .lk-attach-x:hover { color: var(--danger); background: var(--surface-2); }
 /* 动作（片 3）：调用写成一行小字、结果缩成一块说明、写入是一张要你点头的提议卡片 */
-.lk-agent__call { align-self: flex-start; font-size: var(--text-xs); color: var(--muted); padding: 0 2px; }
+.lk-agent__call { align-self: flex-start; font-size: var(--text-xs); color: var(--fg-2); padding: 0 2px; }
 .lk-agent__tool {
   border-left: 2px solid var(--border-strong); padding: 2px 0 2px 8px;
   font-size: var(--text-xs); color: var(--fg-2);
 }
-.lk-agent__tool-h { color: var(--muted); margin-bottom: 2px; }
+.lk-agent__tool-h { color: var(--fg-2); margin-bottom: 2px; }
 .lk-agent__tool pre {
   margin: 0; white-space: pre-wrap; word-break: break-word;
   font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-2);
@@ -1328,7 +1316,7 @@ details.lk-agent__tool > .lk-agent__tool-h::-webkit-details-marker,
 details.lk-agent__prop-d > summary::-webkit-details-marker { display: none; }
 details.lk-agent__tool > .lk-agent__tool-h::before,
 details.lk-agent__prop-d > summary::before {
-  content: '▸'; display: inline-block; width: 12px; color: var(--muted);
+  content: '▸'; display: inline-block; width: 12px; color: var(--fg-2);
 }
 details.lk-agent__tool[open] > .lk-agent__tool-h::before,
 details.lk-agent__prop-d[open] > summary::before { content: '▾'; }
@@ -1336,10 +1324,10 @@ details.lk-agent__prop-d[open] > summary::before { content: '▾'; }
 /* 一轮里**连续多条**工具结果收成一块（用户 2026-10-13：「连续多条工具调用做一下折叠吧」）。
    折叠块里每一条仍是 `.lk-agent__tool`（套件按它数回执），只是不再各自折一层。 */
 details.lk-agent__tools { flex: 0 0 auto; font-size: var(--text-xs); color: var(--fg-2); }
-details.lk-agent__tools > .lk-agent__tools-h { cursor: pointer; user-select: none; list-style: none; color: var(--muted); }
+details.lk-agent__tools > .lk-agent__tools-h { cursor: pointer; user-select: none; list-style: none; color: var(--fg-2); }
 details.lk-agent__tools > .lk-agent__tools-h::-webkit-details-marker { display: none; }
 details.lk-agent__tools > .lk-agent__tools-h::before {
-  content: '▸'; display: inline-block; width: 12px; color: var(--muted);
+  content: '▸'; display: inline-block; width: 12px; color: var(--fg-2);
 }
 details.lk-agent__tools[open] > .lk-agent__tools-h::before { content: '▾'; }
 .lk-agent__tools-body {
@@ -1363,7 +1351,7 @@ details.lk-agent__tools[open] > .lk-agent__tools-h::before { content: '▾'; }
 .lk-agent__prop-btn:hover { color: var(--fg); border-color: var(--accent); }
 .lk-agent__prop-btn.is-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
 .lk-agent__prop-btn.is-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-on); }
-.lk-agent__prop-note { font-size: var(--text-xs); color: var(--muted); }
+.lk-agent__prop-note { font-size: var(--text-xs); color: var(--fg-2); }
 
 /* ── 滚动条（用户 2026-09-18：「对话里面的滚动条不要用原生的，或者换一下风格，与我们的风格匹配」）──
    全应用统一一套：细、圆角、无箭头、无轨道底色，颜色只走 tokens（深 chrome 滑块 + 透明轨道）。
@@ -1394,12 +1382,12 @@ details.lk-agent__tools[open] > .lk-agent__tools-h::before { content: '▾'; }
   color: var(--fg-2); font-size: 11px; line-height: 1; padding: 1px 6px; cursor: pointer;
 }
 .lk-agent__cut:hover .lk-agent__cut-x, .lk-agent__cut-x:focus-visible { opacity: 1; }
-.lk-agent__cut-x:hover { color: var(--accent); border-color: var(--accent); }
+.lk-agent__cut-x:hover { color: var(--accent-ink); border-color: var(--accent); }
 .lk-agent__split {
   background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   color: var(--fg-2); font-size: 11px; padding: 2px 7px; cursor: pointer; white-space: nowrap; margin-left: auto;
 }
-.lk-agent__split:hover { color: var(--accent); border-color: var(--accent); }
+.lk-agent__split:hover { color: var(--accent-ink); border-color: var(--accent); }
 
 /* ── 地图生成工作室（`src/ui/map-studio.ts`）────────────────────────────────
    用户 2026-10-14：「生成做成一个独立的面板吧，两种，创作者自己一个个调参数或者 AI 直出，
@@ -1419,12 +1407,12 @@ details.lk-agent__tools[open] > .lk-agent__tools-h::before { content: '▾'; }
   color: var(--fg-2); font-size: var(--text-xs); padding: 3px 10px; cursor: pointer; font-family: inherit;
 }
 .lk-ms__tab:hover { color: var(--fg); }
-.lk-ms__tab.is-on { border-color: var(--accent); color: var(--accent); background: rgba(158,194,98,.14); }
+.lk-ms__tab.is-on { border-color: var(--accent); color: var(--accent-ink); background: rgba(158,194,98,.14); }
 .lk-ms__x {
   margin-left: auto; background: transparent; border: 1px solid var(--border); color: var(--fg-2);
   border-radius: var(--radius-sm); width: 24px; height: 24px; line-height: 1; font-size: 15px; cursor: pointer; flex-shrink: 0;
 }
-.lk-ms__x:hover { color: var(--accent); border-color: var(--accent); }
+.lk-ms__x:hover { color: var(--accent-ink); border-color: var(--accent); }
 /* `scrollbar-gutter: stable`：卡片区一多就出滚动条，**滚动条一出来会吃掉 5px 宽度**，
    而预览按 9:5 算高 ⇒ 那 5px 立刻变成"预览矮了一点"（★7b 实测 294 → 289）。常驻留位即可。 */
 .lk-ms__body { flex: 1; overflow: auto; scrollbar-gutter: stable; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
@@ -1439,10 +1427,10 @@ details.lk-agent__tools[open] > .lk-agent__tools-h::before { content: '▾'; }
 /* `contain`：星球图是 2:1、这一格是 9:5 ⇒ 不 contain 会被横向拉宽（局部图正好 9:5，不受影响）*/
 .lk-ms__stage img { width: 100%; height: 100%; display: block; object-fit: contain; }
 .lk-ms__stage svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.lk-ms__empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: var(--text-xs); }
+.lk-ms__empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--fg-2); font-size: var(--text-xs); }
 .lk-ms__note { font-size: var(--text-xs); color: var(--fg-2); line-height: 1.6; }
 .lk-ms__hint { font-size: var(--text-xs); color: var(--fg-2); line-height: 1.6; }
-.lk-ms__dim { font-size: var(--text-xs); color: var(--muted); line-height: 1.6; }
+.lk-ms__dim { font-size: var(--text-xs); color: var(--fg-2); line-height: 1.6; }
 .lk-ms__sec { display: flex; flex-direction: column; gap: 8px; }
 /* 小节标题（手绘地形那一段）：一条细分隔线上面顶一个小标题 */
 .lk-ms__sub {
@@ -1463,8 +1451,8 @@ details.lk-agent__tools[open] > .lk-agent__tools-h::before { content: '▾'; }
   background: none; border: 1px solid var(--border); border-radius: var(--radius-sm);
   color: var(--fg); font-size: var(--text-xs); padding: 4px 10px; cursor: pointer; font-family: inherit;
 }
-.lk-ms__btn:hover { color: var(--accent); border-color: var(--accent); }
-.lk-ms__btn.is-primary { border-color: var(--accent); color: var(--accent); }
+.lk-ms__btn:hover { color: var(--accent-ink); border-color: var(--accent); }
+.lk-ms__btn.is-primary { border-color: var(--accent); color: var(--accent-ink); }
 .lk-ms__cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .lk-ms__card {
   border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;
@@ -1473,10 +1461,99 @@ details.lk-agent__tools[open] > .lk-agent__tools-h::before { content: '▾'; }
 .lk-ms__card:hover { border-color: var(--border-strong); }
 .lk-ms__card.is-on { border-color: var(--accent); }
 .lk-ms__card img { width: 100%; aspect-ratio: 9 / 5; display: block; }
-.lk-ms__wait { width: 100%; aspect-ratio: 9 / 5; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: var(--text-xs); }
-.lk-ms__card-meta { display: flex; align-items: center; gap: 3px; padding: 3px 5px; font-size: 10px; color: var(--fg-2); }
+.lk-ms__wait { width: 100%; aspect-ratio: 9 / 5; display: flex; align-items: center; justify-content: center; color: var(--fg-2); font-size: var(--text-xs); }
+.lk-ms__card-meta { display: flex; align-items: center; gap: 3px; padding: 3px 5px; font-size: 11px; color: var(--fg-2); }
 .lk-ms__card-meta > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lk-ms__mini { background: none; border: none; color: var(--fg-2); font-size: 10px; padding: 0 2px; cursor: pointer; font-family: inherit; }
-.lk-ms__mini:hover { color: var(--accent); }
+.lk-ms__mini { background: none; border: none; color: var(--fg-2); font-size: 11px; padding: 0 2px; cursor: pointer; font-family: inherit; }
+.lk-ms__mini:hover { color: var(--accent-ink); }
 .lk-ms__foot { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
 .lk-ms__state { flex: 1; font-size: var(--text-xs); color: var(--fg-2); line-height: 1.5; }
+
+/* ══════════ 页面宽度档（工具根容器共用）══════════
+   评审实测：每个工具各写死一个 max-width（codex 1020 / schema 940 / trash 880 /
+   backup 680 / inspire 1430），窗口宽到 1488 时右侧留下大小不一的白边、工具之间
+   切换会"横向跳一下"。统一三档，按内容密度选（值在 design-system/tokens.css）。 */
+.lk-page { margin: 0 auto; width: 100%; }
+.lk-page--sm { max-width: var(--content-max-sm); }
+.lk-page--md { max-width: var(--content-max-md); }
+.lk-page--lg { max-width: var(--content-max-lg); }
+/* 设定库三栏（树 250 + 中栏 + 演变帧条 176）：窗口窄到 1100 以下时三栏必然互挤
+   —— 实测 960px 时帧条里的行 right 超出 innerWidth，被裁掉还要横向滚。
+   窄窗让**最可选的**那一栏（演变帧条）先让位，树的导航和中栏正文都保住。 */
+@media (max-width: 1100px) {
+  #cx-rail { display: none; }
+}
+
+/* ══════════ 组件原语 ══════════
+   以前同一颗按钮在各工具里各写一遍内联样式（全仓 style.cssText 96 处、硬编码
+   font-size 112 处），圆角/边距/颜色三代并存。这里给一套最小原语；**只收
+   「长得一样、只是各处重抄」的那几个形状**，业务特有的仍留在模块内联里。
+   新代码优先用这些类，别再往 `style="..."` 里抄第三份。 */
+.lk-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-family: inherit;
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.lk-btn:hover { border-color: var(--border-strong); }
+.lk-btn:disabled { opacity: .45; cursor: default; }
+.lk-btn--primary { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
+.lk-btn--primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.lk-btn--ghost { background: transparent; }
+.lk-btn--ghost:hover { background: var(--surface); }
+.lk-btn--danger { background: transparent; border-color: var(--danger); color: var(--danger); }
+.lk-btn--danger:hover { background: var(--surface-2); }
+.lk-btn--sm { padding: 1px 7px; font-size: var(--text-2xs); }
+.lk-input,
+.lk-select {
+  font-family: inherit;
+  font-size: var(--text-xs);
+  padding: 3px 7px;
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+.lk-input:focus,
+.lk-select:focus { border-color: var(--accent); }
+.lk-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-2xs);
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+/* 空态：一句目的 + 一个主操作 + 一条示例/快捷键。以前空面板只有一行灰字
+   （「暂无会话」），人不知道下一步该点什么。 */
+.lk-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--fg-2);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+}
+.lk-empty__title { font-size: var(--text-sm); font-weight: 600; color: var(--fg); }
+.lk-empty__hint { font-size: var(--text-2xs); color: var(--fg-2); }
+.lk-empty > .lk-btn { margin-top: 4px; }
+/* 窄栏里的空态（助手记忆 / 文件夹清单）：同一套话术，留白收一半 */
+.lk-empty--sm { padding: 10px 6px; gap: 3px; }

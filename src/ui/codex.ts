@@ -921,10 +921,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
    *  并成工作台后搬到这里（实体与节点共用同一份）。 */
   const docBar = (label: string): string => `
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-      <span style="font-size:10px;color:var(--fg-2);">${label}</span>
+      <span style="font-size:11px;color:var(--fg-2);">${label}</span>
       <span style="margin-left:auto;display:flex;gap:4px;flex-shrink:0;">
-        <button id="cx-h1" title="把光标所在段落设为一级标题" style="background:transparent;border:1px solid var(--border);color:var(--fg-2);border-radius:var(--radius-sm);padding:1px 8px;font-size:10px;cursor:pointer;">H1</button>
-        <button id="cx-img" title="插入图片（存进 vault 的 assets）" style="background:transparent;border:1px solid var(--border);color:var(--fg-2);border-radius:var(--radius-sm);padding:1px 8px;font-size:10px;cursor:pointer;">图片</button>
+        <button id="cx-h1" title="把光标所在段落设为一级标题" style="background:transparent;border:1px solid var(--border);color:var(--fg-2);border-radius:var(--radius-sm);padding:1px 8px;font-size:11px;cursor:pointer;">H1</button>
+        <button id="cx-img" title="插入图片（存进 vault 的 assets）" style="background:transparent;border:1px solid var(--border);color:var(--fg-2);border-radius:var(--radius-sm);padding:1px 8px;font-size:11px;cursor:pointer;">图片</button>
       </span>
     </div>`;
 
@@ -959,7 +959,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     const kinds = Object.keys(types());
     if (mode === 'entity') {
       const st = viewState();
-      if (!st) return '<div style="font-size:var(--text-xs);color:var(--fg-2);">左边选一个实体看图。</div>';
+      if (!st) return '<div class="lk-empty lk-empty--sm"><div class="lk-empty__title">左边选一个实体</div><div class="lk-empty__hint">树里按类型分组；点一行就能在这里改字段和正文。</div></div>';
       /* 类型取**实体自己**的（不是这一版的）—— 类型是身份、不进版本差异，见 commitState 里那段 */
       const curType = active()?.typeId ?? st.typeId;
       return `
@@ -980,7 +980,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     }
     const t = nodeTarget;
     const n = activeNode();
-    if (!t || !n) return '<div style="font-size:var(--text-xs);color:var(--fg-2);">左边选一个时间线节点看图。</div>';
+    if (!t || !n) return '<div class="lk-empty lk-empty--sm"><div class="lk-empty__title">左边选一个时间线节点</div><div class="lk-empty__hint">节点 = 你世界里的一个事件；中栏改属性与正文，右栏看它改变过谁。</div></div>';
     const tlName = store.data.worldsets[t.world]?.timelines[t.tlId]?.name ?? t.tlId;
     const kind = n.kind || '事件';
     return `
@@ -1093,7 +1093,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       <span class="lk-newlbl">数量</span><input id="cx-new-node-count" type="number" min="1" max="${NEW_MAX}" step="1" value="1" title="一次建几个（最多 ${NEW_MAX}）" style="${NEWNUM}"/>`;
 
     host.innerHTML = `
-      <div style="max-width:1020px;margin:0 auto;padding:14px 16px 12px;display:flex;flex-direction:column;gap:8px;height:100%;overflow:auto;" id="cx-root">
+      <div class="cx-root lk-page lk-page--lg" style="padding:14px 16px 12px;display:flex;flex-direction:column;gap:8px;height:100%;overflow:auto;" id="cx-root">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <div style="font-size:17px;font-weight:600;color:var(--fg);">设定库</div>
           <span style="font-size:var(--text-xs);color:var(--fg-2);">「${escapeHtml(store.activeWorld || '（未选世界）')}」的条目 · 字段由模板决定（在左栏「结构体管理」里改模板）</span>
@@ -1640,11 +1640,17 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
             if (!t.list.length) { frag.appendChild(keep(emptyRow('这个类型还没有实体'), 'empty|' + tKey, inType)); continue; }
             for (const e of t.list) {
               const on = mode === 'entity' && store.activeWorld === wName && e.id === activeId;
+              /* 副类型（用户 2026-10-17 评审：「112 个实体全挂在『角色』下，真实类别写在
+                 properties['类型'] 里，树里看不出谁是谁」）—— 把那个字段当小药丸挂在行尾。
+                 与文件夹同名就不重复画（那只是同一件事的两种写法）。 */
+              const subRaw = e.properties?.['类型'];
+              const sub = typeof subRaw === 'string' ? subRaw.trim() : '';
+              const folderName = typeNameOf(wName, e.typeId);
               /* `cx-id` / `cx-type` 是给测试与将来拖拽用的稳定抓手（树上不显示类型 —— 上一层文件夹
                  已经写着它了）；`[data-cx-id]` 这个属性名是历史约定，十几条 e2e 都按它找实体行。 */
               frag.appendChild(keep(treeRow(itemCls(on, e.name),
-                `<span class="ed-tlabel">${escapeHtml(e.name)}</span>${stubTag(e.name)}`,
-                { act: 'entity', nw: wName, nid: e.id, 'cx-id': e.id, 'cx-type': typeNameOf(wName, e.typeId) }),
+                `<span class="ed-tlabel">${escapeHtml(e.name)}</span>${stubTag(e.name)}${sub && sub !== folderName ? `<span class="ed-tsub" title="这条的「类型」字段（结构体里的分类口径，与所在文件夹不一定是同一个词）">${escapeHtml(sub)}</span>` : ''}`,
+                { act: 'entity', nw: wName, nid: e.id, 'cx-id': e.id, 'cx-type': folderName }),
                 'entity|' + wName + '::' + e.id, inType));
             }
           }

@@ -73,7 +73,7 @@ export function renderRoleplay(_store: Store, host: HTMLElement): void {
       history.push({ role: 'assistant', content: sp.body });
     } catch (e) {
       live.remove();
-      bubble('⚠️ AI 调用失败：' + (e instanceof Error ? e.message : String(e)), 'ai');
+      bubble('AI 调用失败：' + (e instanceof Error ? e.message : String(e)), 'ai');
     } finally {
       status.textContent = 'AI 代入角色对话 · ' + providerSummary(activeProviderProfile());
     }

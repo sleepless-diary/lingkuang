@@ -55,7 +55,7 @@ export function renderTrash(store: Store, host: HTMLElement): () => void {
   const api = (window as unknown as { lingkuangAPI?: TrashAPI }).lingkuangAPI;
   host.style.overflow = 'auto';
   host.innerHTML = `
-    <div style="max-width:880px;margin:0 auto;padding:20px 16px;display:flex;flex-direction:column;gap:14px;">
+    <div class="lk-page lk-page--md" style="padding:20px 16px;display:flex;flex-direction:column;gap:14px;">
       <div>
         <div style="font-size:17px;font-weight:600;color:var(--fg);">回收站</div>
         <div style="font-size:var(--text-xs);color:var(--fg-2);line-height:var(--leading-body);margin-top:4px;">
@@ -63,9 +63,9 @@ export function renderTrash(store: Store, host: HTMLElement): () => void {
         </div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <button id="tr-refresh" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:5px 12px;font-size:var(--text-sm);cursor:pointer;">刷新</button>
-        <button id="tr-purge-all" style="background:transparent;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2);padding:5px 12px;font-size:var(--text-sm);cursor:pointer;">清空回收站</button>
-        <span id="tr-msg" style="font-size:var(--text-xs);color:var(--accent);"></span>
+        <button id="tr-refresh" class="lk-btn">刷新</button>
+        <button id="tr-purge-all" class="lk-btn lk-btn--ghost">清空回收站</button>
+        <span id="tr-msg" style="font-size:var(--text-xs);color:var(--accent-ink);"></span>
       </div>
       <div id="tr-list"></div>
     </div>`;
@@ -86,12 +86,12 @@ export function renderTrash(store: Store, host: HTMLElement): () => void {
 
   const rowStyle =
     'display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2);';
-  const btnStyle =
-    'background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 10px;font-size:var(--text-xs);cursor:pointer;flex-shrink:0;';
 
   function renderRows(entries: TrashEntry[], orphans: TrashEntry[]): void {
     if (!entries.length && !orphans.length) {
-      listEl.innerHTML = `<div style="font-size:var(--text-sm);color:var(--fg-2);">回收站是空的。</div>`;
+      /* 空态模板（2026-10-17）：一句目的 + 一句「怎么会来到这里」——
+         原来只有「回收站是空的」，读完不知道这功能干什么、东西去哪了。 */
+      listEl.innerHTML = '<div class="lk-empty"><div class="lk-empty__title">回收站是空的</div><div class="lk-empty__hint">删除的节点 / 时间线 / 世界观会先移到这里，可以随时恢复（vault 的 .trash 目录，文件没有被真正删除）。</div></div>';
       return;
     }
     listEl.innerHTML = '';
@@ -124,14 +124,14 @@ export function renderTrash(store: Store, host: HTMLElement): () => void {
 
       const restore = document.createElement('button');
       restore.textContent = '恢复';
-      restore.style.cssText = btnStyle;
+      restore.className = 'lk-btn lk-btn--sm';
       restore.addEventListener('click', () => {
         void doRestore([{ trashName: it.trashName }]);
       });
 
       const purge = document.createElement('button');
       purge.textContent = '彻底删除';
-      purge.style.cssText = btnStyle + 'color:var(--danger);border-color:var(--danger);';
+      purge.className = 'lk-btn lk-btn--sm lk-btn--danger';
       purge.addEventListener('click', () => {
         void confirmDialog({
           title: `彻底删除「${it.title || it.trashName}」？`,
@@ -201,14 +201,14 @@ export function renderTrash(store: Store, host: HTMLElement): () => void {
 
         const restore = document.createElement('button');
         restore.textContent = '恢复';
-        restore.style.cssText = btnStyle;
+        restore.className = 'lk-btn lk-btn--sm';
         restore.addEventListener('click', () => {
           void doRestore([{ trashName: it.trashName, world: wSel.value, timeline: tlInput.value.trim(), nodeKind: kSel.value }]);
         });
 
         const purge = document.createElement('button');
         purge.textContent = '彻底删除';
-        purge.style.cssText = btnStyle + 'color:var(--danger);border-color:var(--danger);';
+        purge.className = 'lk-btn lk-btn--sm lk-btn--danger';
         purge.addEventListener('click', () => {
           void confirmDialog({
             title: `彻底删除「${it.trashName}」？`,
@@ -233,7 +233,7 @@ export function renderTrash(store: Store, host: HTMLElement): () => void {
     const r = await api!.trashList!();
     if (!host.isConnected) return;   /* 期间切走了工具 */
     if (!r.ok) {
-      listEl.innerHTML = `<div style="font-size:var(--text-sm);color:var(--danger);">读取失败：${escapeHtml(r.error ?? '未知错误')}</div>`;
+      listEl.innerHTML = `<div class="lk-empty"><div class="lk-empty__title">读取失败</div><div class="lk-empty__hint">${escapeHtml(r.error ?? '未知错误')}</div></div>`;
       return;
     }
     renderRows(r.entries ?? [], r.orphans ?? []);

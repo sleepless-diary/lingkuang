@@ -119,11 +119,11 @@ export function renderNodeDetail(
         <div style="display:flex;align-items:baseline;gap:8px;">
           <span id="d-t" style="font-size:15px;font-weight:600;color:var(--fg);cursor:text;">${escapeHtml(cur.title)}</span>
           <span id="d-tm" style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);cursor:text;">${timeText}</span>
-          <button id="d-del" style="margin-left:auto;background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;align-self:baseline;">删除</button>
+          <button id="d-del" style="margin-left:auto;background:transparent;border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;align-self:baseline;">删除</button>
         </div>
         <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
-          <span id="d-ty" style="font-size:10px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;cursor:pointer;">${cur.type === 'story_event' ? '剧情事件' : cur.type === 'world_event' ? '世界事件' : cur.type === 'loop-boundary' ? '循环边界' : '节点'}</span>
-          <span id="d-kind" title="种类（模板）：决定这个节点有哪些属性字段，在左栏「结构体管理」里定义" style="font-size:10px;color:var(--fg-2);background:var(--surface-2);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;">${escapeHtml(kind)}</span>
+          <span id="d-ty" style="font-size:11px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;cursor:pointer;">${cur.type === 'story_event' ? '剧情事件' : cur.type === 'world_event' ? '世界事件' : cur.type === 'loop-boundary' ? '循环边界' : '节点'}</span>
+          <span id="d-kind" title="种类（模板）：决定这个节点有哪些属性字段，在左栏「结构体管理」里定义" style="font-size:11px;color:var(--fg-2);background:var(--surface-2);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;">${escapeHtml(kind)}</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
           <span style="font-size:var(--text-xs);color:var(--fg-2);">精度</span>
@@ -132,7 +132,7 @@ export function renderNodeDetail(
         <div id="d-d" style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;cursor:text;min-height:18px;">${cur.desc ? mdRender(cur.desc) : '<span style="color:var(--fg-2);">(无描述)</span>'}</div>
         ${tmplFields.length
           ? `<div id="d-props" style="display:flex;flex-direction:column;gap:5px;border-top:1px dashed var(--border-soft);padding-top:8px;">
-               <div style="font-size:10px;color:var(--fg-2);">${escapeHtml(kind)} · 模板字段（在左栏「结构体管理」里增删字段）</div>
+               <div style="font-size:11px;color:var(--fg-2);">${escapeHtml(kind)} · 模板字段（在左栏「结构体管理」里增删字段）</div>
                ${tmplFields.map((f) => propRow(f, cur)).join('')}
              </div>`
           : ''}
@@ -269,7 +269,7 @@ export function renderNodeDetail(
       `<div style="display:flex;flex-wrap:wrap;gap:4px;">` +
       ((latest().causes ?? []).map((id) =>
         `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:2px 8px;font-size:var(--text-xs);color:var(--fg);">
-          <span style="color:var(--accent);">◈</span>${escapeHtml(nameOf(id))}
+          <span style="color:var(--accent-ink);">◈</span>${escapeHtml(nameOf(id))}
           <button data-cid="${escapeHtml(id)}" style="border:none;background:none;color:var(--fg-2);cursor:pointer;font-size:12px;line-height:1;">×</button>
         </span>`).join('')
       ) +
@@ -361,5 +361,5 @@ export function mdRender(src: string): string {
     .join('')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/`(.+?)`/g, '<code style="background:var(--surface-2);padding:0 4px;border-radius:2px;font-family:var(--font-mono);font-size:12px;">$1</code>')
-    .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" style="color:var(--accent);text-decoration:underline;">$1</a>');
+    .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" style="color:var(--accent-ink);text-decoration:underline;">$1</a>');
 }

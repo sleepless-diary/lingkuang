@@ -53,7 +53,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
         <span id="assoc-status" style="font-size:11px;color:var(--fg-2);font-family:var(--font-mono);">点词条展开联想</span>
         <span style="flex:1;"></span>
         <button id="assoc-export" title="把暂存词按「当前在用」的 AI 供应商归类写入词库" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:3px 10px;font-size:11px;cursor:pointer;">导出暂存词（<span id="assoc-staged-cnt">0</span>）</button>
-        <span style="font-size:10px;color:var(--fg-2);">左键拖节点/拖空白 · 中键轮盘移动 · Alt+滚轮缩放</span>
+        <span style="font-size:11px;color:var(--fg-2);">左键拖节点/拖空白 · 中键轮盘移动 · Alt+滚轮缩放</span>
       </div>
       <div id="assoc-stage" style="flex:1;position:relative;overflow:hidden;cursor:default;background:var(--surface);">
         <div id="assoc-world" style="position:absolute;top:0;left:0;width:${HOME_W}px;height:${HOME_H}px;transform-origin:0 0;">

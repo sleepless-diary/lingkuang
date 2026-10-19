@@ -257,7 +257,7 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
                 <div style="display:flex;gap:6px;">
                   <button id="set-model-btn" type="button" title="点开：列出端点提供的模型" style="flex:1;min-width:0;display:flex;align-items:center;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:5px 8px;font-size:var(--text-sm);cursor:pointer;text-align:left;">
                     <span id="set-model-cur" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
-                    <span style="color:var(--fg-2);font-size:10px;flex-shrink:0;">▾</span>
+                    <span style="color:var(--fg-2);font-size:11px;flex-shrink:0;">▾</span>
                   </button>
                   <button id="set-model-refresh" type="button" title="问端点要一份最新清单" style="flex-shrink:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2);padding:5px 10px;font-size:var(--text-xs);cursor:pointer;">刷新</button>
                 </div>
@@ -300,7 +300,7 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
               </div>
             </div>
 
-            <div style="font-size:var(--text-xs);color:var(--fg-2);">⚠️ 灵框本体免费开源。AI 联想为可选能力——本地部署（自付电费）或第三方 API（费用由提供商收取），均与灵框无关。</div>
+            <div style="font-size:var(--text-xs);color:var(--fg-2);line-height:1.7;">灵框本体免费开源。AI 联想是可选能力：本地部署（自付电费）或第三方 API（费用由提供商收取），均与灵框无关。</div>
           </section>
 
           <!-- ② 画布 -->
@@ -372,7 +372,7 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
 
         <div style="flex-shrink:0;border-top:1px solid var(--border);padding:10px 16px;display:flex;align-items:center;gap:10px;">
           <button id="set-save" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:7px 16px;font-size:var(--text-sm);cursor:pointer;">保存设置</button>
-          <div id="set-msg" style="font-size:var(--text-xs);color:var(--accent);"></div>
+          <div id="set-msg" style="font-size:var(--text-xs);color:var(--accent-ink);"></div>
         </div>
       </div>
     </div>`;
@@ -552,7 +552,7 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
     const local = localCatalog;
     if (local && local.models.length) {
       addMenu.appendChild(el('div',
-        'font-size:10px;color:var(--fg-2);padding:6px 6px 2px;margin-top:2px;border-top:1px solid var(--border);',
+        'font-size:11px;color:var(--fg-2);padding:6px 6px 2px;margin-top:2px;border-top:1px solid var(--border);',
         '本机模型（' + local.models.length + ' 个 · ' + hhmm(local.at) + ' 拉的）· 点一下＝加一家并切过去（模型已选好）'));
       for (const m of local.models) {
         const owner = localOwner(m.id);

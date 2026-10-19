@@ -7,6 +7,11 @@ import { ensureEntityTypes, ensureEntityFields } from './store/entities';
 import { showShellAlert, removeShellAlert } from './ui/alert';
 import { watchActivity } from './ui/agent-activity';
 import { restoreSession, watchSession } from './ui/session';
+/* 颜色/间距/字号的**唯一来源**：先 tokens、后 style.css。
+   style.css 只覆盖「几何 + 应用字体 + AE 风小圆角」，不再自己抄一份颜色——
+   以前两处各写一份，值漂移出 4 处不一致，且 --danger/--warn/--meta/--space-1/2
+   只存在于本文件而没人 import ⇒ 运行时 undefined，静默继承父色。 */
+import '../design-system/tokens.css';
 import './style.css';
 
 /** JSON 缓存判损信息（主进程 `data:load` 回传）。null = 正常。

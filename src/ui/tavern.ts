@@ -93,7 +93,7 @@ export function renderTavern(store: Store, host: HTMLElement): void {
     } catch (e) {
       live.remove();
       think.remove();
-      bubble('⚠️ 推演失败：' + (e instanceof Error ? e.message : String(e)), 'ai');
+      bubble('推演失败：' + (e instanceof Error ? e.message : String(e)), 'ai');
     } finally {
       status.textContent = '酒馆剧情推演 · ' + providerSummary(activeProviderProfile());
     }

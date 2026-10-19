@@ -20,38 +20,42 @@ Contrast it against the v2 "科技蓝" (tech-blue) dark theme: v3 removes the co
 
 ## 2. Color Palette & Roles
 
+> **数值唯一来源 = `tokens.css`。** 2026-10-17 把本文件里的色值按应用**实际在跑**的值重写了一遍
+> （此前 `tokens.css` 没被 import，本文与代码各写一份，漂了 4 处；见 `docs/UI-REVIEW-2026-10-17.md`）。
+
 All colors are defined as desaturated, warm-washed tones. None exceed ~65% saturation; most hover in the 20–45% range. Nothing uses pure `#000`.
 
 ### Surface & Background (the "old hallway")
 - **--bg / Canvas — 褪色的殿堂 `#c5c2ba`** — the faded-beige background that anchors the liminal look. It is *light*, not dark: the app feels like a bright-but-abandoned lobby where the light has burnt out the color. Text on it is a deep warm iron.
-- **--surface / Panel — 蒙灰玻璃 `#cecbc7`** — cardinal surfaced panel, slightly recessed and blurred (see tokens).
-- **--surface-2 / 内墙 `#d6d3ca`** — a step-lighter interior surface for nested cards.
+- **--surface / Panel — 蒙灰玻璃 `#d8d5cc`** — cardinal surfaced panel, slightly recessed and blurred (see tokens).
+- **--surface-2 / 内墙 `#c9c6bd`** — a step-lighter interior surface for nested cards.
 - **--surface-warm / 走廊暖壁 `#cfcec7`** — tertiary warm tier (aliases to surface in flat builds).
-- **--chrome / 荧光框 `#0f0f11`** — the *only* true dark element: the sidebar rail and top command strip, acting as the "seam between rooms." Deep charcoal with a faint warm undertone, never pure black.
-- **--chrome-2 / 暗房 `#1a1a1d`** — elevated dark surface (command palette, dialogs, floating AI window).
+- **--chrome / 荧光框 `#17171a`** — the *only* true dark element: the sidebar rail and top command strip, acting as the "seam between rooms." Deep charcoal with a faint warm undertone, never pure black.
+- **--chrome-2 / 暗房 `#232327`** — elevated dark surface (command palette, dialogs, floating AI window).
 
 ### Foreground / Text
-- **--fg / 锈铅 `#3a3a34`** — primary text on the light liminal canvas: a deep desaturated warm olive-black. Almost brown, almost green, always warm.
-- **--fg-2 / 晕影 `#6b6a5f`** — secondary tier (aliases to muted in flat builds).
-- **--muted / 尘埃 `#9b998c`** — subtext / captions on light canvas; warm gray.
-- **--meta / 裂纹 `#7c7a6f`** — tertiary / metadata tier.
+- **--fg / 锈铅 `#232324`** — primary text on the light liminal canvas: a deep desaturated warm olive-black. Almost brown, almost green, always warm.
+- **--fg-2 / 晕影 `#4e4c47`** — secondary tier.
+- **--muted / 尘埃 `#9b998c`** — **装饰专用**（分隔线 / 滚动条 / 光晕）：亮底上只有 1.95:1，**不要用来写字**；文字的第二层级用 --fg-2。
+- **--meta / 裂纹 `#514f47`** — tertiary / metadata tier（亮底 5.6:1）。
 - **--fg-inverse / 荧光白 `#e8e7df`** — text on dark chrome surfaces; a VHS-pure, slightly warm white.
 
 ### Accent (the "fluor tube green" — the living thing in the liminal space)
 - **--accent / 冷荧光绿 `#9ec262`** — the life-sign. A desaturated fluorescent-tube green (like old signage, like a glow-in-the-dark keychain). Used *sparingly*: the AI voice, the active nav indicator, the primary send/confirm action, selectable highlights. ≤2 visible uses per screen.
+- **--accent-ink / 深橄榄绿 `#40601c`** — --accent 的**文字版**：亮底上 4.9:1（--accent 本身当文字只有 1.38:1）。链接、`color:var(--accent)` 的强调文字一律用它；--accent 只做底色/描边/进度。
 - **--accent-2 / 后室黄 `#dfc073`** — the second, rarer living color: the yellow-wash of a backroom that's about to be discovered. Reserved for the AI avatar, "new" badges, and points of narrative emphasis.
-- **--accent-on / 荧光白 `#20241c`** — foreground when --accent is the background (a deep mossy ink for contrast against the green).
+- **--accent-on / 荧光白 `#17181a`** — foreground when --accent is the background (a deep mossy ink for contrast against the green).
 - **--accent-hover / 荧光绿hover `#aecf76`** — slightly lifted fluorescent green.
 - **--accent-active / 荧光绿active `#8cb455`** — slightly sunk fluorescent green.
 
 ### Semantic
 - **--success / 苔痕绿 `#6f9e6f`** — success: deep, muted, moss-adjacent.
 - **--warn / 锈黄 `#c9a24b`** — warning: the backrooms yellow, muted down.
-- **--danger / 锈棕 `#a8603f`** — danger: a rust brown rather than alarm red; stays inside the warm-washed palette.
+- **--danger / 锈棕 `#833f24`** — danger: a rust brown rather than alarm red; stays inside the warm-washed palette（亮底文字 5.3:1，AA 过线）。
 
 ### Border
-- **--border / 阈线 `rgba(58,58,52,0.16)`** — default threshold line: a soft dark-ink line at low opacity.
-- **--border-strong / 深阈线 `rgba(58,58,52,0.30)`** — stronger edge for focus / active states.
+- **--border / 阈线 `#9a978e`** — default threshold line: a soft dark-ink line at low opacity.
+- **--border-strong / 深阈线 `#6f6d66`** — stronger edge for focus / active states.
 - **--border-soft / 淡阈线 `rgba(58,58,52,0.10)`** — inner divider that shouldn't compete.
 
 ### The "Under-Construction" note
@@ -72,7 +76,7 @@ Type philosophy: **the interface whispers, the serif is the memory.** Body/UI co
 | Product wordmark | display (serif) | 22px | 500 | 1.2 | Letter-spacing 0.06em, slight all-caps optional |
 | Plugin / window title | body (sans) | 15px | 500 | 1.3 | The quiet workhorse label |
 | Section eyebrow | mono | 11px | 400 | 1.4 | Uppercase, letter-spacing 0.14em — the "machine whisper" |
-| Body / copy | body (sans) | 13.5px | 400 | 1.65 | Default chat + descriptions |
+| Body / copy | body (sans) | 13px | 400 | 1.65 | Default chat + descriptions |
 | Caption / meta | body (sans) | 12px | 400 | 1.5 | Colors via --muted / --meta |
 | AI nameplate | display (serif) | 16px | 500 | 1.3 | For the AI persona moments |
 | Keycap / kbd | mono | 11px | 400 | 1 | Recessed pill background |

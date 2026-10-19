@@ -114,7 +114,7 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
         </div>`;
       }).join('');
       return `<div class="tool-card">
-        <h3 style="display:flex;align-items:center;">${g.t}<select class="insp-count" data-g="${gi}" style="margin-left:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--fg);font-size:10px;padding:1px 4px;">${countOptions(g, groupCounts[gi])}</select></h3>
+        <h3 style="display:flex;align-items:center;">${g.t}<select class="insp-count" data-g="${gi}" style="margin-left:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--fg);font-size:11px;padding:1px 4px;">${countOptions(g, groupCounts[gi])}</select></h3>
         ${rows}</div>`;
     }).join('');
     bindEvents();
@@ -197,8 +197,8 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
        而 chip 文案恒为「组合 N ✕」→ 点任何一次都走删除分支，加载分支永远不可达。 */
     savesBox.innerHTML = saves.length
       ? saves.map((_c, i) => `<span style="display:inline-flex;align-items:stretch;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;">
-          <button data-si="${i}" title="加载组合 ${i + 1}" style="background:none;border:none;color:var(--fg);font-size:10px;padding:2px 7px;cursor:pointer;">组合 ${i + 1}</button>
-          <button data-del="${i}" title="删除组合 ${i + 1}" style="background:none;border:none;border-left:1px solid var(--border);color:var(--fg-2);font-size:10px;padding:2px 6px;cursor:pointer;">✕</button>
+          <button data-si="${i}" title="加载组合 ${i + 1}" style="background:none;border:none;color:var(--fg);font-size:11px;padding:2px 7px;cursor:pointer;">组合 ${i + 1}</button>
+          <button data-del="${i}" title="删除组合 ${i + 1}" style="background:none;border:none;border-left:1px solid var(--border);color:var(--fg-2);font-size:11px;padding:2px 6px;cursor:pointer;">✕</button>
         </span>`).join('')
       : '';
     savesBox.querySelectorAll('[data-del]').forEach((el) => {

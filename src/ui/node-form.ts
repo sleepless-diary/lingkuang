@@ -151,7 +151,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
       <div style="display:flex;flex-direction:column;gap:4px;">
         <label style="${LBL}" for="nf-time">年份（默认 = 时间指针）</label>
         <input id="nf-time" type="text" value="${escapeHtml(defaultYear)}" placeholder="312 或 312年7月 / 312年7月15日 / 312-7-15" style="${INP}"/>
-        <div id="nf-time-hint" style="font-size:10px;color:var(--fg-2);font-family:var(--font-mono);min-height:14px;"></div>
+        <div id="nf-time-hint" style="font-size:11px;color:var(--fg-2);font-family:var(--font-mono);min-height:14px;"></div>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;">
         <label style="${LBL}" for="nf-kind">种类（模板 · 在左栏「结构体管理」里定义）</label>
@@ -159,7 +159,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
       </div>
       <div id="nf-props" style="display:flex;flex-direction:column;gap:6px;border-top:1px dashed var(--border-soft);padding-top:8px;"></div>
       <div id="nf-causes" style="display:flex;flex-direction:column;gap:6px;border-top:1px dashed var(--border-soft);padding-top:8px;"></div>
-      <div id="nf-err" style="font-size:var(--text-xs);color:#c0392b;display:none;"></div>
+      <div id="nf-err" style="font-size:var(--text-xs);color:var(--danger);display:none;"></div>
       <div style="display:flex;flex-direction:column;gap:10px;border-top:1px dashed var(--border-soft);padding-top:8px;">
           <div style="display:flex;flex-direction:column;gap:4px;">
             <label style="${LBL}" for="nf-type">类型</label>
@@ -238,7 +238,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
     for (const cid of causes) {
       const chip = document.createElement('span');
       chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:2px 8px;font-size:var(--text-xs);color:var(--fg);';
-      chip.innerHTML = `<span style="color:var(--accent);">◈</span>${escapeHtml(nodes.find((n) => n.id === cid)?.title ?? cid)}`;
+      chip.innerHTML = `<span style="color:var(--accent-ink);">◈</span>${escapeHtml(nodes.find((n) => n.id === cid)?.title ?? cid)}`;
       const del = document.createElement('button');
       del.type = 'button';
       del.textContent = '×';
@@ -316,9 +316,9 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
     const raw = time.value.trim();
     if (!raw) { timeHint.textContent = ''; return; }
     const p = parseTimeText(raw, cal);
-    if (!p) { timeHint.textContent = '⚠ 无法识别（支持 年月日时分秒 或任意分隔符）'; timeHint.style.color = 'var(--fg-2)'; return; }
+    if (!p) { timeHint.textContent = '识别不了（支持 年月日时分秒 或任意分隔符）'; timeHint.style.color = 'var(--fg-2)'; return; }
     const precLabel = PRECISION_LABELS[p.precision] ?? p.precision;
-    timeHint.textContent = `✅ 精度：${precLabel}（内部年=${p.year}）`;
+    timeHint.textContent = `精度：${precLabel}（内部年=${p.year}）`;
     timeHint.style.color = 'var(--accent)';
   }
 

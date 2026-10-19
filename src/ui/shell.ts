@@ -32,8 +32,8 @@ export function renderShell(store: Store, host: HTMLElement): void {
               <div class="lk-pane-body lk-placeholder">时间线视图</div>
             </div>
             <div class="lk-pane lk-pane-map" id="lk-pane-map">
-              <div class="lk-pane-head">地图 <span class="lk-ph">（占位）</span></div>
-              <div class="lk-pane-body lk-placeholder">地图视图 · Leaflet 重构</div>
+              <div class="lk-pane-head">地图 <span class="lk-ph">手绘 / 生成地形</span></div>
+              <div class="lk-pane-body lk-placeholder">地图视图</div>
             </div>
           </section>
         </div>
@@ -192,6 +192,28 @@ function renderTimelineTabs(store: Store): void {
     timelineTabsIds = [];
     timelineTabsActive = '';
   }
+  /* 页签可辨性（用户 2026-10-17 评审）：真实数据里有两条时间线都叫「主线」、三条 0 节点，
+     原来五个页签肉眼分不出谁是谁。⇒ 同名加序号 `·2`；0 节点不再显示一个不显眼的 `0`，
+     改「空」+ `.is-empty`（低饱和/斜体）。计数与名字仍然**就地更新**，不重建 DOM。 */
+  const nameTotals = new Map<string, number>();
+  for (const id of ids) {
+    const n = ws.timelines[id]?.name ?? '?';
+    nameTotals.set(n, (nameTotals.get(n) ?? 0) + 1);
+  }
+  const tabLabels = (): Map<string, { name: string; empty: boolean }> => {
+    const seen = new Map<string, number>();
+    const out = new Map<string, { name: string; empty: boolean }>();
+    for (const id of ids) {
+      const raw = ws.timelines[id]?.name ?? '?';
+      const seq = (seen.get(raw) ?? 0) + 1;
+      seen.set(raw, seq);
+      out.set(id, {
+        name: (nameTotals.get(raw) ?? 0) > 1 ? `${raw}·${seq}` : raw,
+        empty: (ws.timelines[id]?.nodes.length ?? 0) === 0,
+      });
+    }
+    return out;
+  };
   /* 撤销/重做按钮的可用态：随每次 store 通知刷新（这里在早退之前，签名不变也要刷） */
   syncHistoryButtons(store);
   /* 只更新 tabs 容器内容（不覆盖整个 head，保留沙盘工具 appendChild 节点） */
@@ -207,11 +229,12 @@ function renderTimelineTabs(store: Store): void {
       timelineTabsBuilt = true;
       timelineTabsIds = [...ids];
       timelineTabsActive = activeKey;
+      const labels = tabLabels();
       const tabsHtml = ids
-        .map(
-          (id) =>
-            `<button class="lk-tl-tab${id === active ? ' is-active' : ''}" data-tl="${escapeHtml(id)}"><span class="nm">${escapeHtml(ws.timelines[id]?.name ?? '?')}</span><span class="cnt">${ws.timelines[id]?.nodes.length ?? 0}</span></button>`
-        )
+        .map((id) => {
+          const l = labels.get(id)!;
+          return `<button class="lk-tl-tab${id === active ? ' is-active' : ''}${l.empty ? ' is-empty' : ''}" data-tl="${escapeHtml(id)}" title="${escapeHtml(l.name)}${l.empty ? '（还没有节点）' : ''}"><span class="nm">${escapeHtml(l.name)}</span><span class="cnt">${l.empty ? '空' : (ws.timelines[id]?.nodes.length ?? 0)}</span></button>`;
+        })
         .join('');
       tabs.innerHTML = tabsHtml + `<button class="lk-tl-tab is-new" id="lk-tl-new" title="新建时间线">＋</button>`;
       staggerIn(tabs);   /* 页签错峰入场：只有「页签集合变了」这一条路会重建 DOM */
@@ -232,16 +255,18 @@ function renderTimelineTabs(store: Store): void {
       });
       tabs.querySelector('#lk-tl-new')?.addEventListener('click', () => addTimeline(store, '新时间线'));
     } else {
-      /* 集合没变：名字 / 计数 / 选中态**就地更新**（不重建 ⇒ 不重播入场） */
+      /* 集合没变：名字 / 计数 / 选中态 / 空态**就地更新**（不重建 ⇒ 不重播入场） */
+      const labels = tabLabels();
       tabs.querySelectorAll<HTMLElement>('.lk-tl-tab[data-tl]').forEach((el) => {
         const id = el.dataset.tl as string;
-        const tl = ws.timelines[id];
-        const label = tl?.name ?? '?';
+        const l = labels.get(id);
+        const label = l?.name ?? '?';
         const nm = el.querySelector('.nm');
         if (nm && nm.textContent !== label) nm.textContent = label;
-        const n = String(tl?.nodes.length ?? 0);
+        const cntText = l?.empty ? '空' : String(ws.timelines[id]?.nodes.length ?? 0);
         const cnt = el.querySelector('.cnt');
-        if (cnt && cnt.textContent !== n) cnt.textContent = n;
+        if (cnt && cnt.textContent !== cntText) cnt.textContent = cntText;
+        el.classList.toggle('is-empty', !!l?.empty);
         if (id === active) el.classList.add('is-active');
         else el.classList.remove('is-active');
       });

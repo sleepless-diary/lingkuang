@@ -122,7 +122,7 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
         const imp = impact(k);
         return `<button data-kind="${escapeHtml(k)}" style="display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:${k === activeKind ? 'var(--surface-2)' : 'transparent'};border:1px solid ${k === activeKind ? 'var(--border)' : 'transparent'};border-radius:var(--radius-sm);color:var(--fg);padding:5px 8px;font-size:var(--text-sm);cursor:pointer;">
           <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(k)}</span>
-          <span style="font-size:10px;color:var(--fg-2);font-family:var(--font-mono);">${draft[k].fields.length} 字段 · ${imp.nodes} 节点</span>
+          <span style="font-size:11px;color:var(--fg-2);font-family:var(--font-mono);">${draft[k].fields.length} 字段 · ${imp.nodes} 节点</span>
         </button>`;
       })
       .join('');
@@ -141,7 +141,7 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
 
     const imp = activeKind ? impact(activeKind) : { nodes: 0, filled: 0 };
     host.innerHTML = `
-      <div style="max-width:940px;margin:0 auto;padding:18px 16px;display:flex;flex-direction:column;gap:12px;" id="sc-root">
+      <div class="lk-page lk-page--md" style="padding:18px 16px;display:flex;flex-direction:column;gap:12px;" id="sc-root">
         <div>
           <div style="font-size:17px;font-weight:600;color:var(--fg);">结构体管理</div>
           <div style="display:flex;gap:6px;margin-top:8px;">

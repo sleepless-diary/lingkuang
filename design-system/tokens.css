@@ -2,6 +2,13 @@
  * 灵框 LingKuang v3 — 阈限梦核 (Liminal Dreamcore)
  * tokens.css  ·  canonical compiled custom-property tokens
  *
+ * **唯一颜色来源**（2026-10-17 起）：`src/main.ts` 第一行 import 本文件，
+ * `src/style.css` 里不再声明颜色变量。以前是「双 token 源」——值各写一份、
+ * 互相漂移（`--surface` 一边 #cecbc7 一边 #d8d5cc，`--fg` 一边 #3a3a34
+ * 一边 #232324，`--danger` / `--warn` / `--meta` / `--space-1` / `--space-2`
+ * 只在被 import 却没人 import 的本文件里 ⇒ 运行时**未定义**、静默继承）。
+ * 现在本文件的取值 = 应用**实际在用的**取值（零视觉漂移），要改主题只改这里。
+ *
  * Conforms to the Open Design token schema: every A1-identity,
  * A1-structure, A2, and B-slot token is declared. C-extension tokens
  * for the dreamcore brand are declared at the bottom with the --lingkuang-
@@ -16,47 +23,55 @@
   /* 褪色的殿堂 — the faded warm lobby that anchors the liminal look */
   --bg:           #c5c2ba;
   /* 蒙灰玻璃 — recessed panel, slightly blurred (niche in the wall) */
-  --surface:      #cecbc7;
+  --surface:      #d8d5cc;
   /* 内墙 — a step-lighter interior surface for nested cards */
-  --surface-2:    #d6d3ca;
+  --surface-2:    #c9c6bd;
 
   /* ── A1-identity · foreground ──────────────────────────────── */
   /* 锈铅 — primary text on the light canvas (warm mossy iron) */
-  --fg:           #3a3a34;
-  /* 晕影 — secondary tier on light canvas */
+  --fg:           #232324;
+  /* 晕影 — 只做**装饰性**用途（分隔线、滚动条、光晕）。
+     文字不要用它（亮底上约 2:1，远低于 AA）；文字的次要层级用 --fg-2。 */
   --muted:        #9b998c;
   /* 荧光白 — inverse text on dark chrome surfaces */
   --fg-inverse:   #e8e7df;
 
   /* ── B-slot · aliases on the light theme ───────────────────── */
   --surface-warm: #cfcec7;   /* 走廊暖壁 — tertiary warm tier */
-  --fg-2:         #6b6a5f;   /* 晕影 — second fg tier */
-  --meta:         #7c7a6f;   /* 裂纹 — metadata tier */
+  /* 晕影 — 次要文字。2026-10-17 从 #6b6a5f 调深到 #4e4c47：
+     在 --surface-2 #c9c6bd 上 4.16:1 → 5.3:1，小字过 AA。 */
+  --fg-2:         #4e4c47;
+  --meta:         #514f47;   /* 裂纹 — metadata tier（亮底 5.6:1，surface-2 上 4.8:1） */
   --border-soft:  rgba(58,58,52,0.10);  /* 淡阈线 — quiet inner divider */
 
   /* ── A1-identity · border ──────────────────────────────────── */
   /* 阈线 — the threshold line between walls */
-  --border:       rgba(58,58,52,0.16);
-  --border-strong:rgba(58,58,52,0.30);
+  --border:       #9a978e;
+  --border-strong:#6f6d66;
 
   /* ── A1-identity · accent (the living fluorescent thing) ───── */
-  /* 冷荧光绿 — flat/tube-green; the ONLY living color for interactions */
+  /* 冷荧光绿 — flat/tube-green; the ONLY living color for interactions.
+     ⚠️ 它**只能做底色/描边/进度**（亮底上当文字只有 1.19:1）。
+     亮底上的强调文字/链接用 --accent-ink。 */
   --accent:       #9ec262;
+  /* 深橄榄绿 — accent 的「文字版」。亮底（--surface #d8d5cc）上 4.9:1，
+     过 AA；看上去仍是同一族的苔绿，不引入第二强调色。 */
+  --accent-ink:   #40601c;
   --accent-2:     #dfc073;   /* 后室黄 — AI avatar / narrative accent (C) */
 
   /* ── A1-identity · dark chrome (the seam between rooms) ────── */
-  --chrome:       #0f0f11;   /* 荧光框 — sidebar / top command strip */
-  --chrome-2:     #1a1a1d;   /* 暗房 — dialogs / floating windows (C) */
+  --chrome:       #17171a;   /* 荧光框 — sidebar / top command strip */
+  --chrome-2:     #232327;   /* 暗房 — dialogs / floating windows (C) */
 
   /* ── A2 · accent states ────────────────────────────────────── */
-  --accent-on:      #20241c;                       /* mossy ink on green */
+  --accent-on:      #17181a;                       /* mossy ink on green */
   --accent-hover:   #aecf76;                       /* lifted fluor green */
   --accent-active:  #8cb455;                       /* sunk fluor green */
 
   /* ── A2 · semantic (muted, warm, inside the washed palette) ── */
   --success:  #6f9e6f;   /* 苔痕绿 — moss */
-  --warn:     #c9a24b;   /* 锈黄 — backrooms yellow */
-  --danger:   #a8603f;   /* 锈棕 — rust, never alarm red */
+  --warn:     #c9a24b;   /* 锈黄 — backrooms yellow（只做条/点，不做文字） */
+  --danger:   #833f24;   /* 锈棕 — rust, never alarm red（亮底文字 5.3:1、surface-2 上 4.55:1） */
 
   /* ── A1-identity · typography ──────────────────────────────── */
   --font-display: "Songti SC", "Noto Serif SC", Georgia, "Times New Roman", serif;
@@ -64,9 +79,13 @@
   --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", "Courier New", monospace;
 
   /* ── A1-structure · type scale ─────────────────────────────── */
-  --text-xs:   0.75rem;   /* 12px */
-  --text-sm:   0.8438rem; /* 13.5px */
-  --text-base: 0.9375rem; /* 15px */
+  /* 桌面应用实测：9/10px 的信息字（左栏工具名、标尺刻度、节点名、帧条）
+     在 100% 缩放下已经读不动 ⇒ 底部两档抬到 11/12px，并保留 2xs 给
+     只能 11px 的极窄处（如时间线循环徽标）。 */
+  --text-2xs:  11px;
+  --text-xs:   12px;
+  --text-sm:   13px;
+  --text-base: 14px;
   --text-lg:   1.125rem;  /* 18px */
   --text-xl:   1.375rem;  /* 22px — wordmark tier */
   --text-2xl:  1.75rem;   /* 28px — one remembered heading */
@@ -95,6 +114,8 @@
   --section-y-phone:   28px;
 
   /* ── A2 · radius (recessed niches, gentle corners) ─────────── */
+  /* 应用侧是 AE 风：`src/style.css` 把 --radius / --radius-sm 覆盖成 2px。
+     这里保留设计系统原本的「凹龛」圆角，供网页类产物使用。 */
   --radius-sm:   8px;
   --radius-md:   8px;
   --radius-lg:   12px;
@@ -116,6 +137,7 @@
   --motion-fast:   180ms;
   --motion-base:   320ms;
   --motion-slow:   640ms;
+  --motion-enter:  640ms;   /* 入场（Waking fade）单列一档，见 DESIGN.md:157 */
   --ease-standard: cubic-bezier(0.22, 0.75, 0.25, 1);
 
   /* ── A1-structure · layout (desktop-first; app is Electron) ── */
@@ -124,8 +146,16 @@
   --container-gutter-tablet:  24px;
   --container-gutter-phone:   16px;
 
+  /* ── 页面内容宽度档（工具面板根容器用）───────────────────────
+     以前每个工具各自写死一个 max-width（codex 1020 / schema 940 /
+     trash 880 / backup 680 / inspire 1430），窗口一宽就留出大小不一的
+     两侧空白。统一成三档 + 按内容密度选。 */
+  --content-max-sm: 720px;   /* 表单/列表类：备份、设置 */
+  --content-max-md: 960px;   /* 中等：结构体管理、回收站 */
+  --content-max-lg: 1200px;  /* 工作台：设定库 */
+
   /* ── C-extensions · brand-specific (lingkuang) ─────────────── */
-  --lk-sidebar-width:    220px;
+  --lk-sidebar-width:     72px;   /* 左工具栏实测宽度（48px 时 9px 标签已挤） */
   --lk-sidebar-collapsed: 56px;
   --lk-cell:             40px;                 /* recessed icon tile */
   --lk-grain-opacity:    0.06;                 /* VHS fug overlay */
@@ -141,5 +171,6 @@
     --motion-fast: 120ms;
     --motion-base: 160ms;
     --motion-slow: 200ms;
+    --motion-enter: 200ms;
   }
 }

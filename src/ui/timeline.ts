@@ -33,7 +33,7 @@ export function mountTimeline(
       <div class="tl-cursor" style="position:absolute;top:0;bottom:0;width:0;pointer-events:none;display:none;z-index:5;">
         <div style="position:absolute;top:38px;bottom:0;left:-1px;width:2px;background:var(--accent);opacity:.55;"></div>
         <div class="tl-cursor-handle" style="position:absolute;top:4px;left:-9px;width:18px;height:18px;border-radius:50%;background:var(--chrome);border:1px solid var(--accent);cursor:ew-resize;pointer-events:auto;box-shadow:0 2px 6px rgba(0,0,0,.4);"></div>
-        <div class="tl-cursor-time" style="position:absolute;top:32px;left:6px;font-family:var(--font-mono);font-size:9px;color:var(--accent);background:rgba(15,15,17,.8);padding:1px 5px;border-radius:3px;white-space:nowrap;"></div>
+        <div class="tl-cursor-time" style="position:absolute;top:32px;left:6px;font-family:var(--font-mono);font-size:11px;color:var(--accent);background:rgba(15,15,17,.8);padding:1px 5px;border-radius:3px;white-space:nowrap;"></div>
       </div>
     </div>`;
 
@@ -1402,14 +1402,14 @@ export function mountTimeline(
       `<div style="font-size:15px;font-weight:600;color:var(--fg);">${escapeHtml(ln.name)}</div>`,
       '<div style="display:flex;align-items:center;gap:6px;font-size:var(--text-xs);color:var(--fg-2);">',
       `<span>${ln.segments.length} 段</span>`,
-      brushing ? '<span style="color:var(--accent);">正在拾取…</span><button id="seg-cancel" class="lk-tl-tab">取消</button>' : '',
+      brushing ? '<span style="color:var(--accent-ink);">正在拾取…</span><button id="seg-cancel" class="lk-tl-tab">取消</button>' : '',
       '<button id="seg-add" class="lk-tl-tab is-new" title="在时间线上拖动框出一段（Alt 拖 = 擦除；靠近节点会吸附）" style="margin-left:auto;">＋ 添加一段</button>',
       '</div>',
       `<div style="display:flex;flex-direction:column;gap:4px;">${(ln.segments.length ? ln.segments.map((s, i) => [
         '<div style="display:flex;align-items:center;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 8px;">',
-        `<input data-sv="${i}" data-k="start" value="${s.start}" title="开始（年）" style="width:66px;background:none;border:none;color:var(--accent);font-family:var(--font-mono);font-size:var(--text-xs);" />`,
+        `<input data-sv="${i}" data-k="start" value="${s.start}" title="开始（年）" style="width:66px;background:none;border:none;color:var(--accent-ink);font-family:var(--font-mono);font-size:var(--text-xs);" />`,
         '<span style="color:var(--fg-2);font-size:var(--text-xs);">→</span>',
-        `<input data-sv="${i}" data-k="end" value="${s.end === null ? '' : s.end}" placeholder="∞" title="结束（年；留空＝一直延续）" style="width:66px;background:none;border:none;color:var(--accent);font-family:var(--font-mono);font-size:var(--text-xs);" />`,
+        `<input data-sv="${i}" data-k="end" value="${s.end === null ? '' : s.end}" placeholder="∞" title="结束（年；留空＝一直延续）" style="width:66px;background:none;border:none;color:var(--accent-ink);font-family:var(--font-mono);font-size:var(--text-xs);" />`,
         `<button data-si="${i}" title="删除这一段" style="margin-left:auto;background:none;border:none;color:var(--danger);cursor:pointer;font-size:12px;">✕</button>`,
         '</div>',
       ].join('')).join('') : '<div style="font-size:var(--text-xs);color:var(--fg-2);">（还没有段）</div>')}</div>`,
@@ -1504,9 +1504,9 @@ export function mountTimeline(
     if (!toolHost || !newLinePanelOpen) return;
     const segRow = (s: { start: number; end: number | null }, i: number): string => [
       '<div style="display:flex;align-items:center;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 8px;">',
-      `<input data-nv="${i}" data-k="start" value="${s.start}" title="开始（年）" style="width:66px;background:none;border:none;color:var(--accent);font-family:var(--font-mono);font-size:var(--text-xs);" />`,
+      `<input data-nv="${i}" data-k="start" value="${s.start}" title="开始（年）" style="width:66px;background:none;border:none;color:var(--accent-ink);font-family:var(--font-mono);font-size:var(--text-xs);" />`,
       '<span style="color:var(--fg-2);font-size:var(--text-xs);">→</span>',
-      `<input data-nv="${i}" data-k="end" value="${s.end === null ? '' : s.end}" placeholder="∞" title="结束（年；留空＝一直延续）" style="width:66px;background:none;border:none;color:var(--accent);font-family:var(--font-mono);font-size:var(--text-xs);" />`,
+      `<input data-nv="${i}" data-k="end" value="${s.end === null ? '' : s.end}" placeholder="∞" title="结束（年；留空＝一直延续）" style="width:66px;background:none;border:none;color:var(--accent-ink);font-family:var(--font-mono);font-size:var(--text-xs);" />`,
       `<button data-ni="${i}" title="删除这一段" style="margin-left:auto;background:none;border:none;color:var(--danger);cursor:pointer;font-size:12px;">✕</button>`,
       '</div>',
     ].join('');
@@ -1519,7 +1519,7 @@ export function mountTimeline(
       '</div>',
       '<div style="display:flex;align-items:center;gap:6px;font-size:var(--text-xs);color:var(--fg-2);">',
       `<span>${pendingSegs.length} 段（单位：年）</span>`,
-      brushing ? '<span style="color:var(--accent);">在时间线上拖出一段…</span>' : '',
+      brushing ? '<span style="color:var(--accent-ink);">在时间线上拖出一段…</span>' : '',
       '<button id="nl-add" class="lk-tl-tab is-new" title="在时间线上拖动框出一段（Alt 拖 = 擦除；靠近节点会吸附）" style="margin-left:auto;">＋ 添加一段</button>',
       '</div>',
       `<div style="display:flex;flex-direction:column;gap:4px;">${pendingSegs.length ? pendingSegs.map(segRow).join('') : '<div style="font-size:var(--text-xs);color:var(--fg-2);">（还没有段：点「＋ 添加一段」在时间线上拖）</div>'}</div>`,
@@ -1652,10 +1652,10 @@ export function mountTimeline(
         <div style="display:flex;align-items:center;gap:8px;">
           <span style="font-size:var(--text-xs);color:var(--fg-2);">循环次数</span>
           <button id="lp-minus" style="width:24px;height:24px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);cursor:pointer;">−</button>
-          <span id="lp-count" style="font-size:var(--text-sm);color:var(--accent);min-width:24px;text-align:center;">${L.count ?? 1}</span>
+          <span id="lp-count" style="font-size:var(--text-sm);color:var(--accent-ink);min-width:24px;text-align:center;">${L.count ?? 1}</span>
           <button id="lp-plus" style="width:24px;height:24px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);cursor:pointer;">＋</button>
         </div>
-        <button id="lp-del" style="background:transparent;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);padding:6px;font-size:var(--text-sm);cursor:pointer;">删除循环</button>
+        <button id="lp-del" style="background:transparent;border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius-sm);padding:6px;font-size:var(--text-sm);cursor:pointer;">删除循环</button>
 
       </div>`;
     toolHost.querySelector('#lp-minus')?.addEventListener('click', () => {

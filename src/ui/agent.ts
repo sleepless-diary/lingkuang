@@ -553,7 +553,7 @@ export function cardsHtml(): string {
 export function agentCallRow(m: ChatMsg): string | null {
   if (!isCallMsg(m)) return null;
   const label = callLabelOf(m) ?? '?';
-  return '<div data-k="call" style="max-width:78%;font-size:12px;color:var(--accent);background:var(--surface-2);' +
+  return '<div data-k="call" style="max-width:78%;font-size:12px;color:var(--accent-ink);background:var(--surface-2);' +
     'border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:5px 9px;">' +
     '用到动作：' + escapeHtml(label) + '</div>';
 }
@@ -662,7 +662,7 @@ function renderMemory(): void {
   const sum = openEl?.querySelector('#lk-agent-mem-summary');
   if (sum) sum.textContent = `长期记忆（${mem.length} 条偏好）`;
   const html = mem.map((it) => memRowHtml(it.id, it.text, it.src)).join('') + (draft ? memRowHtml('', '', 'manual') : '');
-  list.innerHTML = html || '<div class="lk-agent__mem-empty">还没记住什么。聊几轮后点「从对话里总结」，或者手动加一条。</div>';
+  list.innerHTML = html || '<div class="lk-empty lk-empty--sm"><div class="lk-empty__hint">还没记住什么。聊几轮后点「从对话里总结」，或者手动加一条。</div></div>';
   if (draft) list.querySelector<HTMLInputElement>('.lk-agent__mem-item:last-child .lk-agent__mem-input')?.focus();
 }
 
@@ -718,7 +718,7 @@ function renderFs(): void {
       : '文件夹（这个版本还没接上文件通道）';
   }
   const list = openEl.querySelector('#lk-agent-fs-list');
-  if (list) list.innerHTML = all.map(fsRowHtml).join('') || '<div class="lk-agent__fs-empty">还没有能碰的文件夹。</div>';
+  if (list) list.innerHTML = all.map(fsRowHtml).join('') || '<div class="lk-empty lk-empty--sm"><div class="lk-empty__hint">还没有能碰的文件夹。点「添加文件夹」选一个素材目录；默认只读。</div></div>';
 }
 
 /* 模式：`chat`（默认）⇄ `agent`。切进 agent 是**显式授权**，所以状态必须看得见

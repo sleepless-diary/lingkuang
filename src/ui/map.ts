@@ -71,32 +71,32 @@ export function renderMap(store: Store, host: HTMLElement): void {
         <span style="font-size:var(--text-xs);font-weight:600;color:var(--fg);">地图 · ${escapeHtml(curMap()?.name ?? '默认地图')}</span>
         <span id="map-gen-note" style="font-size:var(--text-xs);color:var(--fg-2);"></span>
         <span style="flex:1;"></span>
-        <button id="map-gen" title="打开地图生成面板：自己一个个调参数 / AI 直出 / 抽卡" style="background:none;border:1px solid var(--accent);color:var(--accent);border-radius:var(--radius-sm);font-size:11px;padding:3px 10px;cursor:pointer;">生成地形…</button>
+        <button id="map-gen" title="打开地图生成面板：自己一个个调参数 / AI 直出 / 抽卡" style="background:none;border:1px solid var(--accent);color:var(--accent-ink);border-radius:var(--radius-sm);font-size:11px;padding:3px 10px;cursor:pointer;">生成地形…</button>
         <select id="map-form" title="形态：局部 = 一片地区的地形（能手刷精修）；星球 = 整颗星球（经度无缝、有两极，能贴到球上看）" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${MAP_FORMS.map((f) => `<option value="${f.id}" title="${escapeHtml(f.hint)}">${escapeHtml(f.label)}</option>`).join('')}</select>
-        <button id="map-globe" title="球体看：把星球图贴到一颗真球上（拖动旋转、滚轮缩放）—— 只在星球形态下出现" style="display:none;background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">球体看</button>
+        <button id="map-globe" class="lk-btn lk-btn--ghost lk-btn--sm" title="球体看：把星球图贴到一颗真球上（拖动旋转、滚轮缩放）—— 只在星球形态下出现" style="display:none;background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">球体看</button>
         <select id="map-view" title="看的方式：地形怎么画（立体 / 等高线 / 平面）—— 只换画法，不重算地形" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${TERRAIN_STYLES.map((s) => `<option value="${s.id}" title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}</option>`).join('')}</select>
         <span style="width:1px;height:16px;background:var(--border-soft);"></span>
-        <button data-mode="region" class="map-mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">区域</button>
-        <button data-mode="marker" class="map-mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">标记</button>
-        <button data-mode="paint" class="map-mode" title="手刷地形：造山 / 压谷 / 浅海 / 深海（在地形上直接刷）" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">地形</button>
-        <button data-mode="move" class="map-mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">移动</button>
-        <button id="map-clear" style="background:none;border:1px solid #c0392b;color:#c0392b;border-radius:var(--radius-sm);font-size:11px;padding:3px 10px;cursor:pointer;">清空标记</button>
+        <button data-mode="region" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" >区域</button>
+        <button data-mode="marker" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" >标记</button>
+        <button data-mode="paint" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" title="手刷地形：造山 / 压谷 / 浅海 / 深海（在地形上直接刷）" >地形</button>
+        <button data-mode="move" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" >移动</button>
+        <button id="map-clear" class="lk-btn lk-btn--danger lk-btn--sm" >清空标记</button>
         <span id="map-hint" style="font-size:var(--text-xs);color:var(--fg-2);">拖拽画区域（松开闭合）</span>
         <span id="map-paint-bar" style="display:none;align-items:center;gap:4px;flex-wrap:wrap;row-gap:4px;width:100%;padding-top:4px;border-top:1px dashed var(--border-soft);">
           <span style="font-size:var(--text-xs);color:var(--fg-2);">刷子</span>
-          <button class="map-brush" data-tool="mountain" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">造山</button>
-          <button class="map-brush" data-tool="valley" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">压谷</button>
-          <button class="map-brush" data-tool="shallow" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">浅海</button>
-          <button class="map-brush" data-tool="ocean" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">深海</button>
+          <button class="map-brush lk-btn lk-btn--ghost lk-btn--sm" data-tool="mountain" >造山</button>
+          <button class="map-brush lk-btn lk-btn--ghost lk-btn--sm" data-tool="valley" >压谷</button>
+          <button class="map-brush lk-btn lk-btn--ghost lk-btn--sm" data-tool="shallow" >浅海</button>
+          <button class="map-brush lk-btn lk-btn--ghost lk-btn--sm" data-tool="ocean" >深海</button>
           <span style="width:1px;height:14px;background:var(--border-soft);"></span>
-          <button class="map-brush-size" data-size="tiny" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">极细</button>
-          <button class="map-brush-size" data-size="small" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">细</button>
-          <button class="map-brush-size" data-size="medium" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">中</button>
-          <button class="map-brush-size" data-size="large" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">粗</button>
+          <button class="map-brush-size lk-btn lk-btn--ghost lk-btn--sm" data-size="tiny" >极细</button>
+          <button class="map-brush-size lk-btn lk-btn--ghost lk-btn--sm" data-size="small" >细</button>
+          <button class="map-brush-size lk-btn lk-btn--ghost lk-btn--sm" data-size="medium" >中</button>
+          <button class="map-brush-size lk-btn lk-btn--ghost lk-btn--sm" data-size="large" >粗</button>
           <span style="flex:1;"></span>
           <span id="map-paint-note" style="font-size:var(--text-xs);color:var(--fg-2);"></span>
-          <button id="map-paint-undo" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 8px;cursor:pointer;">撤销最后一笔</button>
-          <button id="map-paint-clear" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2);font-size:11px;padding:2px 8px;cursor:pointer;">清空笔迹</button>
+          <button id="map-paint-undo" class="lk-btn lk-btn--ghost lk-btn--sm" >撤销最后一笔</button>
+          <button id="map-paint-clear" class="lk-btn lk-btn--ghost lk-btn--sm" >清空笔迹</button>
         </span>
       </div>
       <div style="flex:1;position:relative;overflow:hidden;">
@@ -258,7 +258,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
         (mk) =>
           `<g transform="translate(${mk.x},${mk.y})" style="cursor:pointer;">
             <circle r="6" fill="var(--accent)" stroke="var(--accent-on)" stroke-width="1"/>
-            <text y="-10" text-anchor="middle" style="font-size:10px;fill:var(--fg);">${escapeHtml(mk.label)}</text>
+            <text y="-10" text-anchor="middle" style="font-size:11px;fill:var(--fg);">${escapeHtml(mk.label)}</text>
           </g>`
       )
       .join('');
