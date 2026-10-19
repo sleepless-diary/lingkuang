@@ -350,19 +350,21 @@ async function main() {
     !!cont && !cont.fatal && cont.pairs >= 20 && cont.differ === 0 && cont.changed >= 3,
     { pairs: cont.pairs, worst: cont.worst, worstAt: cont.worstAt, differ: cont.differ, changed: cont.changed, N: cont.N, firstN: cont.firstN, lastN: cont.lastN, focused: cont.focused });
 
-  /* ── ★7（第 ⑥ 轮新功能）换档**不是硬切**：邻居档会按缩放值淡入淡出（用户 2026-09-26 拍板选的 A）──
-     "两套"用产品自己的记号判：邻居档 = `.tl__axis-tick--ghost`（当前档 = 没这个类的）。
-     ⚠️ 第一版按**单位文字**判两套（年/月/日/时/分），实测 61 格里只有 3 格能撞到 ——
-     因为绝大多数换档是**同一个单位的嵌套网格**（年↔年 的 1/2/5/10 阶梯），按文字判根本看不见；
-     而且撞不撞得上取决于干净 fit 落在档位区间的哪儿（换了夹具/多播一个 seed 就换一条轨迹）⇒ 假 FAIL。
-     现在按 ghost 类判：任何一格都能读到"当前档最亮多少 / 邻居档最亮多少"。
-     三条判据：
-       · `mixed ≥ 1` —— 某一帧上邻居档确实在"半亮"（`gMax ∈ [0.15, 0.9)`）而当前档也可见；
-       · `minTop ≥ 0.45` —— 任何一帧中间段至少有一套 ≥0.45（**不许出现"两边都看不见"的空白**）；
-       · `twoFull === 0` —— 从不出现两套都 ≥0.9（= 第四十二轮那个"两个重叠的标尺"）；
+  /* ── ★7（第 ⑥ 轮新功能，2026-10-19 第 ⑨ 轮**换判据**）换档后屏上只许有**一套**数字 ──
+     病史：第 ⑥ 轮的做法是"新旧两套各约 50% 同时上屏"（交叉淡化），前提是**邻居档要半亮**，
+     所以旧判据是 `mixed ≥ 1`。用户 2026-10-19 报「不同颗粒度的标尺没对齐，有时候会出现不同间距的
+     情况」，拍板「只要两个颗粒度的标尺公用一部分刻度就行了吧」⇒ 现在的规则是：**邻居档独占的刻度
+     一律不亮**（`w = 0`），只有两档**共有时刻**的数字留下来（取并集权重）。于是"邻居半亮"从要求
+     变成**违规**，`mixed ≥ 1` 也随之作废 —— 现在判据翻过来：`mixed === 0`（邻居档独占的数字没上屏）。
+     其余三条不变：
+       · `minTop ≥ 0.45` —— 任何一帧中间段至少有一套 ≥0.45（**不许出现"两边都看不见"的空白**：
+         共用时刻给了并集权重，交接点上数字仍然亮着、只是变稀）；
+       · `twoFull === 0` —— 从不出现两套都 ≥0.9（= 第四十二轮那两把重叠的尺子）；
        · `animFrames === 0` —— 全程没有任何刻度在播动画（不透明度是算出来的，不是演出来的）。
-     ⚠️ A/B：旧构建换档是**硬切**（旧档当帧消失、新档满不透明度出现）⇒ 屏上压根没有 ghost 档 ⇒
-     `mixed = 0` ⇒ 本条必然 FAIL。 */
+     ⚠️ A/B：第 ⑦/⑧ 轮的构建 `mixed` 是 16（邻居档半亮）⇒ 按今天的判据它是 FAIL；
+     用户看到的"一宽一窄"就是 `mixed > 0` 的直接后果（两套相位交错）。
+     ⚠️ 邻居档 = `.tl__axis-tick--ghost`（产品自己的记号）；绝大多数换档是**同一单位的嵌套网格**
+     （年↔年 的 1/2/5/10 阶梯），按单位文字判看不见 —— 所以判据仍走 ghost 类，别按文字判。 */
   const hand = await ev(`(async () => {
     const scale = document.querySelector('#lk-pane-timeline .tl-scale');
     if (!scale) return { fatal: 'no .tl-scale' };
@@ -438,8 +440,8 @@ async function main() {
     return { mixed: mixed, mixedAt: mixedAt, twoFull: twoFull, worstSum: Math.round(worstSum * 100) / 100, minTop: Math.round(minTop * 1000) / 1000, animFrames: animFrames, frames: frames, noMid: noMid, maxOver: Math.round(maxOver * 10) / 10, overAt: overAt };
   })()`);
   console.log('hand =', JSON.stringify(hand));
-  check('★7 换档不是硬切：邻居档按缩放值淡入淡出（且永不出现"两套都满"的两把尺子/两边都看不见的空白）',
-    !!hand && !hand.fatal && hand.mixed >= 1 && hand.twoFull === 0 && hand.animFrames === 0 && hand.minTop >= 0.45,
+  check('★7 换档只留共用刻度：邻居档独占的数字不上屏（不许一宽一窄）+ 不许两套都满 + 零动画 + 中间段不许空白',
+    !!hand && !hand.fatal && hand.mixed === 0 && hand.twoFull === 0 && hand.animFrames === 0 && hand.minTop >= 0.45,
     { mixed: hand.mixed, mixedAt: hand.mixedAt, twoFull: hand.twoFull, worstSum: hand.worstSum, minTop: hand.minTop, animFrames: hand.animFrames, frames: hand.frames, noMid: hand.noMid });
 
   /* ── ★8（第 ⑥ 轮补）**粗刻度不许重叠**（用户 2026-09-26：「标尺上面的粗刻度改成不可重叠的

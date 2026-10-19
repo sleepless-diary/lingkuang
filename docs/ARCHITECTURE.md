@@ -202,6 +202,29 @@
   它的线本来就隐身）。间距阈值 `TICK_MIN_GAP = 3`px；元素**一律留着**（不增删 DOM）⇒ 仍是纯函数、不闪。
   文字宽度走 `textW: Map<string, number>`（**按文字缓存实测宽度**，一段只量一次）；两根 span 由
   `scaleSpans: WeakMap<HTMLElement, {cur, prev}>` 在 `rememberLabels()` 里记账（顺带免掉每帧 DOM 查询）。
+- **换档只留「共用刻度」（2026-10-19 第 ⑨ 轮，接第四十九轮用户报的「不同颗粒度的标尺没对齐，
+  有时候会出现不同间距」）**：`gridItems()` 的返回值多一个 `t: number`（主/小刻度 `t = s`，断口
+  `t = (a + b) / 2`），`renderScale()` 据此建三张表 —— `activeTimes`（**当前档**产出的时刻）、
+  `otherTimes`（邻居档产出的时刻）、`timeW`（同一时刻被几套网格产出的**并集权重** `1-(1-w1)(1-w2)`）。
+  收尾规则三条，顺序不能换：
+  ① 不在 `activeTimes` 里的 ⇒ `w = 0`（**邻居独占的数字根本不上屏**；旧行为是它照常画，于是不重合的
+  数字落在当前档两根线之间 ⇒ 一宽一窄）；② 在 `otherTimes` 里的 ⇒ `w = timeW.get(t)`（**交接点上两档
+  共同的时刻取并集，不闪**）；③ 其余 ⇒ `w = 2w - 1`（当前档独占的按原权重淡出/淡入，平台期恒 1）。
+  用户原话写进了注释：**「只要两个颗粒度的标尺公用一部分刻度就行了吧」**。取舍：交接点附近只剩
+  公倍数那批数字（变稀），换来屏上永远只有**一套**等距数字。实测（真实数据 1488 宽、46 个缩放档）：
+  间距不均匀帧 **9 → 0**（最大比 2.45 → 1.00）、邻档 ghost 数字 **12 帧 / 单帧最多 15 个 → 0**；
+  探针 `.review/ruler-probe.cjs`（扫档算 gapRatio）+ `.review/ruler-state.cjs`（单帧 dump 刻度）。
+  回归（每套件单独起实例 + 清 userdata + **先起一次应用让数据自建、再播种、再起**）：
+  timeline-scale 12/12（连跑两次）、scale-motion 10/10、scale-hidden-mount 5/5、storyline-focus 13/13、
+  causes-line 7/7、nonlinear-pan 7/7、motion-switch 25/25。
+  ⚠️ `tools/e2e/timeline-scale.cjs` 的 `★4`（平移后同一标签位移一致）曾**长期红**：`deltas` 一致但
+  量到 `309` 而非 `180`。不是产品 bug —— 基准取在「切回全览」的 fit 缓动**半路**，于是
+  「剩余 129px + 滚轮 180px」被算成一次 309px 的平移（`git checkout HEAD -- src/ui/timeline.ts`
+  重建后同样 309；直接从刻度元素派发 `WheelEvent('wheel',{deltaY:-180})` 实测是 **1:1**：
+  480 → 660 → 840、-100 → 940）。修法 = 取基准前与平移后各**静置 1.5s** 再复采
+  （`await sleep(1500)` 进了守卫），现在 12/12 且连跑两次一致。
+  `scale-motion` 的 `★7` 同步**换判据**：旧判据要求「邻居档必须半亮」（`mixed ≥ 1`，第 ⑥ 轮交叉淡化
+  的前提），第 ⑨ 轮之后"邻居独占上屏"就是违规 ⇒ 改成 `mixed === 0`。
 - **视图缓动（`kickEase()`）的兜底是"看门狗"、不是定时落值**（2026-09-26 修「缩放时标尺轻微卡顿 +
   在缩放尺度边缘缓动没生效」，同一个病根）：`easeWatchdog` / `lastFrameAt` / `EASE_STALL_MS = 250` ——
   `step()` 每帧刷新 `lastFrameAt`，看门狗**只在 250ms 内一帧都没出**时才

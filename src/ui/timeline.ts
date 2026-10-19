@@ -236,7 +236,7 @@ export function mountTimeline(
       差别只有 `unit` / `stepSec`。
       `majorOnly` = 邻居网格只画主刻度：它的**线**一律隐身（只有数字在淡），小刻度画了也看不见，
       纯粹白占 DOM 和每帧写样式的开销。 */
-  function gridItems(unit: string, stepSec: number, majorOnly: boolean): { key: string; cls: string; left: number; html: string }[] {
+  function gridItems(unit: string, stepSec: number, majorOnly: boolean): { key: string; cls: string; left: number; html: string; t: number }[] {
     const s0 = Math.round(xToTime(0));                 /* 左边缘 epoch 秒（xToTime 已返回 epoch 秒） */
     const s1 = Math.round(xToTime(wrap.clientWidth));   /* 右边缘 epoch 秒 */
     /* 主刻度间距 stepSec；细分出小刻度（每主刻度间 subDiv 个小竖线，如尺子副刻度） */
@@ -315,7 +315,7 @@ export function mountTimeline(
        （线的相位没变，落在原来的位置上）。
        现在换档时"还在的那些刻度"复用同一元素（原地不动、数字不重建）。
        小刻度/断口同理：位置或区间变了就是新元素（取整仍用 `Math.round(s)`）。 */
-    const items: { key: string; cls: string; left: number; html: string }[] = [];
+    const items: { key: string; cls: string; left: number; html: string; t: number }[] = [];
     for (let i = 0; i < ticks.length; i++) {
       const s = ticks[i];
       const x = timeToX(s);
@@ -330,7 +330,7 @@ export function mountTimeline(
       else if (unit === '分') showPrev = tpNow.values.hour !== tpPrev.values.hour; /* 跨小时才显示「时」 */
       else showPrev = !!(t.prev && tpNow.values.month !== tpPrev.values.month);
       const prev = showPrev ? `<span class="tl__axis-prev">${t.prev}</span>` : '';
-      items.push({ key: `M|${unit}|${s}`, cls: 'tl__axis-tick tl__axis-tick--major', left: x, html: `${prev}<span class="tl__axis-label">${t.cur}</span>` });
+      items.push({ key: `M|${unit}|${s}`, cls: 'tl__axis-tick tl__axis-tick--major', left: x, html: `${prev}<span class="tl__axis-label">${t.cur}</span>`, t: s });
     }
     if (majorOnly) return items;             /* 邻居网格只要数字（它的线一律隐身） */
     /* 小刻度：在**相邻主刻度之间**等分插（旧代码用 start + k*subStep，年档会累计漂移） */
@@ -339,12 +339,12 @@ export function mountTimeline(
       /* 接缝：相邻两个主刻度之间只要「压缩轴上的距离 < 真实距离」，就说明中间隔着被截断的区段
          —— 那里既不插小刻度（插出来是假的密度），也不假装连续，画一个断口标记。 */
       if (warpSegs && (year2w(b / SEC_PER_YEAR) - year2w(a / SEC_PER_YEAR)) < (b - a) / SEC_PER_YEAR - 1e-9) {
-        items.push({ key: `C|${unit}|${a}|${b}`, cls: 'tl__axis-cut', left: Math.round((timeToX(a) + timeToX(b)) / 2), html: '⋯' });
+        items.push({ key: `C|${unit}|${a}|${b}`, cls: 'tl__axis-cut', left: Math.round((timeToX(a) + timeToX(b)) / 2), html: '⋯', t: (a + b) / 2 });
         continue;
       }
       for (let k = 1; k < subDiv; k++) {
         const s = a + (b - a) * (k / subDiv);
-        items.push({ key: `m|${unit}|${Math.round(s)}`, cls: 'tl__axis-tick tl__axis-tick--minor', left: timeToX(s), html: '' });
+        items.push({ key: `m|${unit}|${Math.round(s)}`, cls: 'tl__axis-tick tl__axis-tick--minor', left: timeToX(s), html: '', t: s });
       }
     }
     return items;
@@ -426,20 +426,45 @@ export function mountTimeline(
         cand.push({ unit: g.unit, stepSec: g.stepSec, inside: sp });
       }
     }
-    const merged = new Map<string, { key: string; cls: string; left: number; html: string; w: number; line: boolean }>();
+    /* ⭐ 共用刻度（2026-10-19 用户：「只要两个颗粒度的标尺公用一部分刻度就行了吧」）—————
+       两套网格的刻度位置只有一部分重合：同 unit 的嵌套网格（1年 ⊂ 2年）**全重合**，
+       跨档/跨 unit 的（2年 vs 5年、10日 vs 1月）只重合在公倍数上（2 与 5 → 10 的倍数）。
+       旧行为把邻档**全部**数字按权重亮起来 ⇒ 不重合的那些落在当前档两根线**之间**，
+       屏上就是「间距一会儿一宽一窄」（用户报的现象）。
+       现在只有**同一批位置**会亮（详见下面 paintScale 前的收尾）。 */
+    const activeTimes = new Set<number>();      /* 当前档的刻度（epoch 秒） */
+    const otherTimes = new Set<number>();       /* 邻居档的刻度 */
+    const timeW = new Map<number, number>();    /* 同一时刻被几套网格产出 ⇒ 并集权重（交接点上不闪） */
+    const merged = new Map<string, { key: string; cls: string; left: number; html: string; w: number; line: boolean; t: number }>();
     for (const g of cand) {
       const isActive = g.unit === active.unit && g.stepSec === active.stepSec;
       const gw = gridWeight(g.unit, g.stepSec, g.inside, view.spacing);
       if (gw < GRID_MIN_W) continue;
+      const tSet = isActive ? activeTimes : otherTimes;
       for (const it of gridItems(g.unit, g.stepSec, !isActive)) {
+        if (it.cls.includes('tl__axis-tick--major')) {
+          tSet.add(it.t);
+          timeW.set(it.t, 1 - (1 - (timeW.get(it.t) ?? 0)) * (1 - gw));
+        }
         const prev = merged.get(it.key);
-        if (!prev) { merged.set(it.key, { key: it.key, cls: it.cls, left: it.left, html: it.html, w: gw, line: isActive }); continue; }
+        if (!prev) { merged.set(it.key, { key: it.key, cls: it.cls, left: it.left, html: it.html, w: gw, line: isActive, t: it.t }); continue; }
         /* 同一个 key 被两套网格都产出（同 unit 内的嵌套网格，如 1年 ⊂ 2年）⇒ 取**并集**
            `1−(1−w₁)(1−w₂)`，不是 max：1980 年在两套里都成立，交接点上两套各 0.5 时它该是 0.75
            而不是 0.5（那个数字并没有"要走了"，不需要变暗）。跨 unit 的交接没有共享 key ⇒ 不受影响。 */
         prev.w = 1 - (1 - prev.w) * (1 - gw);
         if (isActive) prev.line = true;
       }
+    }
+    /* ⭐ 收尾：只让「共用刻度」亮起来。三种情况——
+       ① 邻档独占的时刻：`w = 0`（元素留着当占位、保持 DOM 身份，线本来也隐身）⇒ 屏上永不多出隔一根的半档数字；
+       ② 当前档独占的时刻：`w = 2w−1` —— 平台期 w=1 全亮，交接点 w=0.5 正好归零。
+          于是「淡出/淡入」仍然连续（还是缩放值的纯函数、无动画），只是撒手的时候永远落在共用那批位置上；
+       ③ 共用时刻（两套都产出，key 可能相同也可能不同）：取并集权重 —— 交接点 0.75、不闪。
+       副作用（已知且接受）：交接点附近数字会变稀（只剩公倍数那批），换来任何缩放位置上间距都均匀。 */
+    for (const it of merged.values()) {
+      if (!activeTimes.has(it.t)) { it.w = 0; continue; }
+      if (otherTimes.has(it.t)) { it.w = timeW.get(it.t) ?? it.w; continue; }
+      it.w = Math.max(0, 2 * it.w - 1);
     }
     /* ⚠️ 必须**按屏幕位置排序**再排 DOM：换档交接点上有两套网格的数字交错，而 map 的插入顺序
        = 候选网格顺序（"每套内部有序、两套前后相接"）⇒ 排出来的 DOM 顺序**不是从左到右**：

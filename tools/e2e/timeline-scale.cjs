@@ -169,6 +169,9 @@ async function main() {
     s.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   })()`);
+  /* 深放大（★2b 连滚 60 格）之后 fit 的缓动尾巴很长；先静置 1.5s 再取基准，
+     否则基准落在半路，「剩余 129px + 滚轮 180px」会被量成一次 309px 的平移。 */
+  await sleep(1500);
   const panBase = await stableTicks();
   const baseGaps = [];
   for (let i = 1; i < panBase.length; i++) baseGaps.push(panBase[i].x - panBase[i - 1].x);
@@ -182,6 +185,7 @@ async function main() {
     el.dispatchEvent(new WheelEvent('wheel', { deltaY: -${PAN_PX}, bubbles: true, cancelable: true }));
     return true;
   })()`);
+  await sleep(1500);   /* 同上：等这次平移的缓动收尾再读 */
   const after = await stableTicks();
   const mapA = new Map(panBase.map((t) => [t.label, t.x]));
   const common = after.filter((t) => mapA.has(t.label)).map((t) => ({ label: t.label, dx: t.x - mapA.get(t.label) }));
