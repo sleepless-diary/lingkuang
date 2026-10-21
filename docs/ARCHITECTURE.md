@@ -885,3 +885,17 @@
     `main.js` 的 `win.loadFile` 指向 `app-dist/index.html`，`build.files` 必须含 `app-dist/**/*`。
   - **改完代码要先 `vite build` 再启动**（桌面快捷方式直接跑 `electron .`，不会自己构建）。
 - **语法检查**：`node --check <file>.js`；TS 由 `tsc` 走 strict
+
+## 2026-10-19 · 工作流四项改造（评审见 `docs/WORKFLOW-REVIEW-2026-10-19.md`）
+
+| 新增/改动 | 说明 |
+|---|---|
+| `src/ui/intake.ts` | **「选中词条」工作栏**（挂在联想画布工具条下方）：`readStaged()` / `writeStaged()` / `pushStaged(words)`（去重 + 广播 `lingkuang-staged`）/ `notifyStaged()` / `pickTypeId()` / `uniqueEntityName()` / `createEntityFromWords()` / `createEntityFromCard()` / `DISTILL_SYS` / `parseDistilled()` / `mountIntake(host, store, { words, addWord, removeWord }) → { refresh }`。用户 2026-10-19 的原始口径写在文件头：「联想不是剔除已有设定，是**选择部分设定变成实体**，还可以**自主添加词条**，再加一个 **AI 总结**把已选设定提炼成完整角色」。⚠️ 不要在这里做「查重剔除」—— 查重只属于「导出暂存词 → 词库」（`assoc.ts`）。⚠️ `parseDistilled()` 必须容忍 ```json 围栏 / 前后散文 / 尾逗号（本地 7B 模型三种都会出） |
+| `src/ui/palette.ts` | **命令面板**（`Ctrl+P`）：`togglePalette(store)` / `closePalette()` / `isPaletteOpen()`。覆盖设定条目（名字/别名/类型/世界）、时间线节点（标题/描述/种类/时间线名）、工具、世界集。跳条目 = `rememberTarget()` + 点左栏 `#lk-toolbar [data-tool="codex"]`（**复用整条切工具的路**，不自己 `openTool`，否则面板型工具的清理与右侧隐藏会漏）。`window` 上的 Esc 兜底 vs（焦点不在输入框时也要能关） |
+| `src/ui/library.ts` | **素材库实装**（原 `placeholder: true`）：词库浏览器（61 分类 / 4669 词条）。⚠️ 加载顺序 `lingkuangAPI.loadCharLib()` **优先**、`fetch('data/character_lib.json')` 兜底 —— 生产 `app-dist/` 里没有 `data/`（vite 只打 src），只写 fetch 打包后必定空白 |
+| `src/ui/type-migrate.ts` | **类别整理**（结构体管理页的「整理类型…」）：`primaryCategory()`（多值写法归一化，类型名要进 vault 目录名，斜杠会造嵌套目录）、`planTypeSplit()`（纯函数，不点按钮不写盘）、`typeSplitSummary()` / `typeSplitLines()`、`applyTypeSplit()`。⭐ **类型 id 直接用类别名**（老数据 `id = 名字`）；造 `et_1` 会让 vault 目录 / frontmatter `type` / 重扫 `typeId` 三处对不上（实测类型行在、85 条实体全归不进去）。⭐ 执行顺序：`backup:create('data')` → 改 typeId → `vault:delete-entity`（按 id 把旧目录那份移进回收站）→ `vault:write-entity`（写新目录）；**反了会把刚写的新文件当旧的删掉**。⭐ `properties['类型']` 不删只标；单条类别（<2 条）不建类型 |
+| `src/ui/shell.ts` | ① **助手热键改 `Ctrl+J`**（`Ctrl+K` 保作别名；用户 2026-10-19：「ctrl+k 一只手有点难按」）；② **`Ctrl+P` 调 `import('./palette')`**；③ `newTimelineFlow()`：`＋` 先问名字、重名直接切到已有那条（不再堆同名页签）；④ 时间线页签的**空线收纳**（0 节点且非当前选中 → 折进「空线 N」，localStorage `lingkuang-show-empty-tl`） |
+| `src/ui/codex.ts` | ① **「草稿」药丸**（`.ed-ttag.is-draft`，正文 <20 字）+ 左栏**「待补稿 N」chip**（把空正文实体摊平成清单，复用搜索那一支的扁平行 + FLIP）；② 实体面板 **「它出现在哪些事件」**（`#cx-events`，读 `frames[].nodeId`、按时间排、点行跳到事件；与节点侧 `#cx-changed` 互为镜像）。⚠️ 后者**只读 + 跳**：帧必须携带真实差异，不要加"一键造空帧"按钮 |
+| `src/main.ts` | **修**：写 vault / `flushSync` 时把 `typeId` 当类型名用了（`vaultWriteEntity(wsName, e.typeId, e)`）。老数据 `typeId === 中文名` 所以一直没暴露；机器 id 一出现就会在 vault 里长出 `et_1/`。两处改成 `entityTypes[typeId].name ?? typeId` |
+| `src/ui/inspire.ts` / `assoc.ts` | 抽卡两个出口：「整组→暂存词」（`pushStaged`）与「整组存为设定」（`createEntityFromCard`）；`mountAssocCanvas(host, getWord, store?)` 多收一个 store 用来挂工作栏，并监听 `lingkuang-staged` 回读（两处写同一个 localStorage 键 `lingkuang-char-staged`） |
+| `src/style.css` | 新原语：`.lk-intake*`、`.lk-palette*`、`.lk-lib-*`、`.ed-ttag.is-draft`、`button.lk-chip`（含 `.is-on`）。颜色一律走 `design-system/tokens.css` |

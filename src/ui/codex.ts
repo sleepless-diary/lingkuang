@@ -65,6 +65,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   host.style.overflow = 'hidden';
   let mode: 'entity' | 'node' = 'entity';
   let query = '';               /* 搜索词：实体按名字过滤，节点按标题过滤（非空时树摊平成命中列表） */
+  /* 「待补稿」过滤（用户 2026-10-19 工作流评审：112 条实体里 106 条正文是空的，树上看不出来，
+     于是永远想不起来补）。点搜索框右边那颗 chip 打开：左列换成一张「正文还空着」的清单。 */
+  let draftOnly = false;
   /* 左栏就是**一棵文件夹树**，时间线节点与设定条目同框，跟硬盘目录一一对应：
        世界 → 时间线 → 种类 → 节点   （= `<世界>/<时间线>/<种类>/<节点>.md`）
        世界 → `_设定` → 类型 → 实体  （= `<世界>/_设定/<类型>/<实体>.md`）
@@ -375,6 +378,15 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   const isStub = (name: string | undefined): boolean => /^新(?:实体|节点)(?:[ ]?\d+)?$/.test(String(name ?? '').trim());
   /** 名字后面那个「待填」小标 —— 强调「这一条是刚建出来还没填的」 */
   const stubTag = (name: string | undefined): string => (isStub(name) ? '<span class="ed-ttag">待填</span>' : '');
+  /** 正文（Markdown 本体）去掉标记后的字数 —— 只回答「有没有内容」，不追求精确字数。 */
+  const docLen = (e: Entity): number => String(e.doc ?? '').replace(/[\s#>*_`~\-\[\]()!|]/g, '').length;
+  /** 「还只是张卡」：正文不到 20 字。判据与 `.ed-tsub` 那轮一致 —— 字段填满但正文空 = 没成稿。 */
+  const isDraft = (e: Entity): boolean => docLen(e) < 20;
+  const draftTag = (e: Entity): string => (isDraft(e)
+    ? '<span class="ed-ttag is-draft" title="正文还空着（不足 20 字）：点开补稿，或点搜索框右边的「待补稿」看全部">草稿</span>'
+    : '');
+  /** 左列 chip 上的数字：当前世界正文还空着的实体数 */
+  const draftCount = (): number => entities().filter(isDraft).length;
   /** 条目行的类名：选中 + 待填，四处置（搜索命中两处 / 树上两处）都用它，免得各写一份 */
   const itemCls = (on: boolean, name: string | undefined): string =>
     'ed-tnode-item' + (on ? ' is-on' : '') + (isStub(name) ? ' is-stub' : '');
@@ -887,6 +899,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       fillEntityFields(fieldsEl, st);
       const vn = host.querySelector<HTMLElement>('#cx-vnote');
       if (vn) vn.textContent = versionNoteText();
+      /* 同一实体停留时，别处新记的帧也要出现在「它出现在哪些事件」里 */
+      const evEl = host.querySelector<HTMLElement>('#cx-events');
+      if (evEl) renderEntityEvents(evEl);
       next = { kind: 'entity', id: activeId };
       md = st.doc ?? '';
     } else {
@@ -970,6 +985,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
           <button id="cx-del" style="margin-left:auto;flex-shrink:0;background:transparent;border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;">删除</button>
         </div>
         <div id="cx-vnote" data-cx-row style="font-size:var(--text-xs);color:var(--fg-2);margin-top:4px;">${escapeHtml(versionNoteText())}</div>
+        <div id="cx-events" data-cx-row style="margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;"></div>
         <div style="display:flex;flex-direction:column;gap:5px;margin-top:10px;border-top:1px dashed var(--border-soft);padding-top:10px;">
           <div id="cx-fields" style="display:flex;flex-direction:column;gap:5px;"></div>
         </div>
@@ -1016,6 +1032,60 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     /* 改得多的排前面（摘要长说明动得多），同长按名字 —— "这件事影响最大的是谁"一眼可见 */
     out.sort((a, b) => b.note.length - a.note.length || String(a.e.name ?? '').localeCompare(String(b.e.name ?? '')));
     return out;
+  }
+
+  /** 实体 → 事件：这条设定在哪些事件里被改过（= 它的 `frames[].nodeId` 挂在哪些节点上）。
+   *  与上面 `changedRows()` 正好互为镜像：那边站在事件上看改过谁，这边站在设定上看被哪些事件改过。
+   *  数据同样现成（不新增字段），所以这块只读 + 跳。
+   *  ⚠️ 2026-10-19 评审实测：112 条实体 **0 条有帧** ⇒ 这块默认是空的，所以空态必须给一句人话 +
+   *  一个明确去处，否则又是一个「看起来坏掉的空白区」。 */
+  interface EntityEventRow { world: string; tlId: string; tlName: string; nodeId: string; title: string; note: string; epoch: number }
+  function entityEventRows(): EntityEventRow[] {
+    const e = active();
+    if (!e) return [];
+    const out: EntityEventRow[] = [];
+    for (const [wName, w] of Object.entries(store.data.worldsets)) {
+      const epochMap = epochOfNodes(w);
+      for (const [tlId, tl] of Object.entries((w.timelines ?? {}) as Record<string, { name?: string; nodes?: TimelineNode[] }>)) {
+        for (const n of tl.nodes ?? []) {
+          const fr = (e.frames ?? []).find((f) => f.nodeId === n.id);
+          if (!fr) continue;
+          out.push({
+            world: wName,
+            tlId,
+            tlName: tl.name ?? tlId,
+            nodeId: n.id,
+            title: n.title || '（未命名事件）',
+            note: patchSummary(fr.patch) || (fr.note ?? ''),
+            epoch: epochMap.get(n.id) ?? 0,
+          });
+        }
+      }
+    }
+    /* 按时间排（同一刻就按标题）：这块读起来应该像「它的编年史」 */
+    out.sort((a, b) => a.epoch - b.epoch || a.title.localeCompare(b.title, 'zh'));
+    return out;
+  }
+
+  /** 只填 `#cx-events` 的 innerHTML（监听同样只在 `wireBody()` 里挂一次）。 */
+  function renderEntityEvents(el: HTMLElement): void {
+    if (!active()) { el.innerHTML = ''; return; }
+    const rows = entityEventRows();
+    const head = '<div style="display:flex;align-items:center;gap:6px;font-size:var(--text-xs);color:var(--fg-2);margin-bottom:2px;">'
+      + '<span>它出现在哪些事件</span>'
+      + (rows.length ? `<span style="opacity:.7;">${rows.length} 个</span>` : '')
+      + '</div>';
+    if (!rows.length) {
+      el.innerHTML = head + '<div class="ed-tempty" style="padding-left:0;">还没有挂在任何事件上。要让这条设定随时间变化：在右栏那条竖线上「＋ 记一帧」，或在某个事件的「这件事改变了谁」里反向改它 —— 两种做法都会在这里留下一行。</div>';
+      return;
+    }
+    el.innerHTML = head + rows.map((r) => `
+      <button data-cx-evt="${escapeHtml(r.world + '|' + r.tlId + '|' + r.nodeId)}" title="跳到这个事件"
+        style="display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:var(--radius-sm);padding:4px 7px;margin-top:4px;cursor:pointer;color:var(--fg);font-size:var(--text-xs);font-family:inherit;">
+        <span style="font-weight:600;flex-shrink:0;max-width:46%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(r.title)}</span>
+        <span style="color:var(--fg-2);flex-shrink:0;">${escapeHtml(r.tlName)}</span>
+        <span style="color:var(--fg-2);opacity:.85;margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(r.note || '记了一版')}</span>
+      </button>`).join('');
   }
 
   /** 只填 `#cx-changed` 的 innerHTML。⚠️ 点击监听**在 `wireBody()` 里只挂一次** ——
@@ -1106,7 +1176,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         <div id="cx-hint" style="display:none;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:rgba(217,101,92,.12);font-size:var(--text-xs);color:var(--fg);line-height:1.5;"></div>
         <div style="display:flex;gap:12px;align-items:flex-start;">
           <div style="width:250px;flex-shrink:0;display:flex;flex-direction:column;gap:6px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;">
-            <input id="cx-search" placeholder="搜索设定与事件…" style="${INP}" value="${escapeHtml(query)}"/>
+            <div style="display:flex;gap:4px;align-items:center;">
+              <input id="cx-search" placeholder="搜索设定与事件…" style="${INP};flex:1;min-width:0;" value="${escapeHtml(query)}"/>
+              <button id="cx-draft" class="lk-chip${draftOnly ? ' is-on' : ''}" data-on="${draftOnly ? '1' : ''}" title="只看正文还空着的条目（不足 20 字）" style="flex-shrink:0;cursor:pointer;background:none;">待补稿 ${draftCount()}</button>
+            </div>
             <div id="cx-list" style="display:flex;flex-direction:column;gap:1px;"></div>
           </div>
           <div id="cx-body" style="flex:1;min-width:0;border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;position:relative;">
@@ -1172,6 +1245,13 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     /* 搜索：只重画左列（**不重建整块**）—— 否则每敲一个字都会被重建的输入框丢焦点 */
     host.querySelector('#cx-search')?.addEventListener('input', (ev) => {
       query = (ev.target as HTMLInputElement).value;
+      renderList();
+    });
+    /* 「待补稿」开关：只重画左列（骨架不动），chip 自己记着开没开 */
+    host.querySelector('#cx-draft')?.addEventListener('click', () => {
+      draftOnly = !draftOnly;
+      const chip = host.querySelector<HTMLElement>('#cx-draft');
+      chip?.classList.toggle('is-on', draftOnly);
       renderList();
     });
     /* 实体态那个「＋新建实体」：类型默认跟着**你正在编的那条**（`syncNewType()`），
@@ -1298,6 +1378,23 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         const b = (ev.target as HTMLElement).closest<HTMLElement>('[data-cx-goto]');
         const id = b?.dataset.cxGoto;
         if (id) jumpToEntityVersion(id);
+      });
+    }
+    /* 「它出现在哪些事件」（实体侧的反向视图，与上面那块互为镜像）：
+       点一行跳到那个事件（跨世界/跨时间线都认，因为行里带着 world|tlId|nodeId）。 */
+    const eventsEl = host.querySelector<HTMLElement>('#cx-events');
+    if (eventsEl) {
+      renderEntityEvents(eventsEl);
+      eventsEl.addEventListener('click', (ev) => {
+        const b = (ev.target as HTMLElement).closest<HTMLElement>('[data-cx-evt]');
+        const raw = b?.dataset.cxEvt;
+        if (!raw) return;
+        const parts = raw.split('|');
+        const [w, tl, nid] = parts;
+        if (!w || !tl || !nid) return;
+        nodeTarget = { world: w, tlId: tl, nodeId: nid };
+        switchTarget(() => { mode = 'node'; });
+        say('已跳到那个事件 ✓');
       });
     }
     /* 正文：真编辑器（tiptap）。**写回 docTarget 当时指着的目标**（不是"当前选中的那个"按值捕获）——
@@ -1545,6 +1642,35 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       syncGhostLayers(boxAfter);              /* 幽灵的裁切层跟着外框一起缩，不然后半段又会露到框外 */
     };
 
+    /* 待补稿：把所有世界「正文还空着」的实体摊平成一张清单（搜索优先，两者互斥）。
+       渲染复用搜索那一支的扁平行 + FLIP，所以收/展的动画行为跟搜索完全一致。 */
+    if (draftOnly && !query) {
+      const hits: { world: string; entity: Entity }[] = [];
+      for (const [wName, w] of Object.entries(store.data.worldsets)) {
+        for (const e of Object.values((w.entities ?? {}) as Record<string, Entity>)) {
+          if (!w.entityTypes?.[e.typeId] && !wName) continue;
+          if (isDraft(e)) hits.push({ world: wName, entity: e });
+        }
+      }
+      hits.sort((a, b) => (a.world.localeCompare(b.world, 'zh') || (a.entity.name || '').localeCompare(b.entity.name || '', 'zh')));
+      if (!hits.length) {
+        listEl.innerHTML = '<div style="font-size:var(--text-xs);color:var(--fg-2);padding:4px;">没有待补稿的条目：每条实体的正文都写过了。</div>';
+        rowTops = new Map();
+        smoothBoxHeight(listEl, boxBefore);
+        return;
+      }
+      hits.forEach((h) => {
+        const on = mode === 'entity' && store.activeWorld === h.world && h.entity.id === activeId;
+        const meta = typeNameOf(h.world, h.entity.typeId);
+        frag.appendChild(keep(treeRow(itemCls(on, h.entity.name),
+          `<span class="ed-tlabel">${escapeHtml(h.entity.name)}</span>${stubTag(h.entity.name)}<span class="ed-tcount">${escapeHtml(meta)}</span>`,
+          { act: 'entity', nw: h.world, nid: h.entity.id, 'cx-id': h.entity.id, 'cx-type': meta }),
+          'entity|' + h.world + '::' + h.entity.id));
+      });
+      done();
+      return;
+    }
+
     if (query) {
       /* 搜索：节点与实体一起摊平（非空时不分层，跟列表视图节点的做法一致） */
       const nodeHits = searchNodes();
@@ -1564,7 +1690,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       entHits.forEach((h) => {
         const on = mode === 'entity' && store.activeWorld === h.world && h.entity.id === activeId;
         frag.appendChild(keep(treeRow(itemCls(on, h.entity.name),
-          `<span class="ed-tlabel">${escapeHtml(h.entity.name)}</span>${stubTag(h.entity.name)}<span class="ed-tcount">${escapeHtml(typeNameOf(h.world, h.entity.typeId))}</span>`,
+          `<span class="ed-tlabel">${escapeHtml(h.entity.name)}</span>${stubTag(h.entity.name)}${draftTag(h.entity)}<span class="ed-tcount">${escapeHtml(typeNameOf(h.world, h.entity.typeId))}</span>`,
           { act: 'entity', nw: h.world, nid: h.entity.id, 'cx-id': h.entity.id, 'cx-type': typeNameOf(h.world, h.entity.typeId) }),
           'entity|' + h.world + '::' + h.entity.id));
       });
@@ -1649,7 +1775,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
               /* `cx-id` / `cx-type` 是给测试与将来拖拽用的稳定抓手（树上不显示类型 —— 上一层文件夹
                  已经写着它了）；`[data-cx-id]` 这个属性名是历史约定，十几条 e2e 都按它找实体行。 */
               frag.appendChild(keep(treeRow(itemCls(on, e.name),
-                `<span class="ed-tlabel">${escapeHtml(e.name)}</span>${stubTag(e.name)}${sub && sub !== folderName ? `<span class="ed-tsub" title="这条的「类型」字段（结构体里的分类口径，与所在文件夹不一定是同一个词）">${escapeHtml(sub)}</span>` : ''}`,
+                `<span class="ed-tlabel">${escapeHtml(e.name)}</span>${stubTag(e.name)}${draftTag(e)}${sub && sub !== folderName ? `<span class="ed-tsub" title="这条的「类型」字段（结构体里的分类口径，与所在文件夹不一定是同一个词）">${escapeHtml(sub)}</span>` : ''}`,
                 { act: 'entity', nw: wName, nid: e.id, 'cx-id': e.id, 'cx-type': folderName }),
                 'entity|' + wName + '::' + e.id, inType));
             }

@@ -1,6 +1,7 @@
 /** 灵感触发器——随机角色生成（词库 58 分类；照抄 legacy 生成/锁定/组数逻辑）+ 词义联想画布 */
 import type { Store } from '../store/store';
 import { cascadeIn, childHeights, smoothHeights, stopCascade } from './motion';
+import { createEntityFromCard, pushStaged } from './intake';
 
 interface Group { t: string; keys: string[]; n: number; }
 type Lib = Record<string, string[]>;
@@ -32,7 +33,7 @@ function shuffle<T>(arr: T[]): T[] {
 
 /** 返回清理函数（联想画布的卸载函数），由 tools/register.ts 的 open 交回 registry：
  *  registry.openTool 在切走工具时调用它，摘掉画布的 window 监听 + 两个 requestAnimationFrame 循环。 */
-export async function renderInspire(_store: Store, host: HTMLElement): Promise<void | (() => void)> {  let lib: Lib | null = null;
+export async function renderInspire(store: Store, host: HTMLElement): Promise<void | (() => void)> {  let lib: Lib | null = null;
   let locks: Record<string, string> = {};
   const groupCounts: Record<number, string> = {};
   let activeCombo: Combo | null = null;
@@ -48,6 +49,8 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
         <span id="insp-status" style="font-size:var(--text-xs);color:var(--fg-2);">加载词库…</span>
         <span style="flex:1;"></span>
         <div id="insp-saves" style="display:flex;flex-wrap:wrap;gap:4px;"></div>
+        <button id="insp-to-staged" class="lk-btn lk-btn--sm lk-btn--ghost" title="把这一组 13 张卡的词条都放进联想画布的「选中词条」，之后可建实体或让 AI 提炼">整组→暂存词</button>
+        <button id="insp-to-entity" class="lk-btn lk-btn--sm" title="把这一整组词条直接落成一条设定（正文给骨架）">整组存为设定</button>
         <button id="insp-save" style="background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 12px;font-size:var(--text-sm);cursor:pointer;">保存组合</button>
         <button id="insp-roll" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:6px 14px;font-size:var(--text-sm);cursor:pointer;">重新生成</button>
       </div>
@@ -58,6 +61,22 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
   const status = host.querySelector('#insp-status') as HTMLElement;
   const result = host.querySelector('#insp-result') as HTMLElement;
   const savesBox = host.querySelector('#insp-saves') as HTMLElement;
+
+  /* 抽卡的出口有两个（用户 2026-10-19 工作流评审）：
+     ① 「整组→暂存词」：把这一把词送进联想画布的「选中词条」，再在那边决定怎么成稿
+     ② 「整组存为设定」：直接落成一条实体（词条名当字段名，正文按分组给骨架） */
+  host.querySelector('#insp-to-staged')?.addEventListener('click', () => {
+    const combo = collectCombo();
+    const words: string[] = [];
+    for (const picks of Object.values(combo)) for (const v of Object.values(picks)) if (String(v ?? '').trim()) words.push(String(v).trim());
+    const n = pushStaged(words);
+    statusMsg(n ? `已把 ${n} 个词条放进「选中词条」（在下面的联想画布）` : '这些词条已经在暂存里了');
+  });
+  host.querySelector('#insp-to-entity')?.addEventListener('click', () => {
+    const id = createEntityFromCard(store, collectCombo());
+    const nm = id ? (store.data.worldsets[store.activeWorld]?.entities?.[id]?.name ?? '') : '';
+    statusMsg(nm ? `已存入设定库：${nm}` : '没建成：当前没有打开的世界');
+  });
 
   function persistLocks() {
     localStorage.setItem('lingkuang-inspire-locks', JSON.stringify(locks));
@@ -275,7 +294,7 @@ export async function renderInspire(_store: Store, host: HTMLElement): Promise<v
   window.addEventListener('resize', fitAssocHeight);
 
   const m = await import('./assoc');
-  const disposeAssoc = m.mountAssocCanvas(canvasHost, () => '');
+  const disposeAssoc = m.mountAssocCanvas(canvasHost, () => '', store);
   return () => {
     if (barRO) barRO.disconnect();
     window.removeEventListener('resize', fitAssocHeight);

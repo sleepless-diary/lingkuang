@@ -6,6 +6,8 @@ import { activeProviderProfile } from './settings';
 import { probeCfgOf, providerProblem } from './ai-providers';
 import { aiChat, type ChatMsg } from './ai';
 import { escapeHtml } from './html';
+import { mountIntake, readStaged, type IntakeHandle } from './intake';
+import type { Store } from '../store/store';
 
 interface AssocNode {
   id: number; word: string; isRoot: boolean; parent: number | null;
@@ -43,7 +45,7 @@ function scrollParent(el: HTMLElement | null): HTMLElement | null {
 /** 挂载联想画布。返回清理函数：摘掉全部 window 监听 + 停掉两个 requestAnimationFrame 循环。
  *  调用方（inspire.ts → tools/register.ts 的 open）必须把它交回 registry，
  *  否则工具切走后监听与帧循环会一直留在 window 上，每点一次工具积一份。 */
-export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () => void {
+export function mountAssocCanvas(host: HTMLElement, getWord: () => string, store?: Store): () => void {
   host.style.overflow = 'hidden';
   host.innerHTML = `
     <div style="display:flex;flex-direction:column;height:100%;">
@@ -55,6 +57,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
         <button id="assoc-export" title="把暂存词按「当前在用」的 AI 供应商归类写入词库" style="background:var(--accent);color:var(--accent-on);border:none;border-radius:var(--radius-sm);padding:3px 10px;font-size:11px;cursor:pointer;">导出暂存词（<span id="assoc-staged-cnt">0</span>）</button>
         <span style="font-size:11px;color:var(--fg-2);">左键拖节点/拖空白 · 中键轮盘移动 · Alt+滚轮缩放</span>
       </div>
+      <div id="assoc-intake" style="border-bottom:1px solid var(--border-soft);background:var(--surface-2);"></div>
       <div id="assoc-stage" style="flex:1;position:relative;overflow:hidden;cursor:default;background:var(--surface);">
         <div id="assoc-world" style="position:absolute;top:0;left:0;width:${HOME_W}px;height:${HOME_H}px;transform-origin:0 0;">
           <svg class="assoc__lines" style="position:absolute;top:0;left:0;width:${HOME_W}px;height:${HOME_H}px;pointer-events:none;"></svg>
@@ -101,6 +104,29 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
   function persistStaged() {
     try { localStorage.setItem(STAGED_KEY, JSON.stringify(staged)); } catch { /* ignore */ }
   }
+
+  /* ── 「选中词条」工作栏（用户 2026-10-19：「联想不是剔除已有设定，是**选择部分设定变成实体**，
+     除此之外**还可以自主添加词条**，再加一个 **AI 总结**，能把已选择的设定提炼成一个完整角色」）──
+     暂存词仍归本文件管（上面 staged / persistStaged），工作栏只借四个动作：
+     列出来 / 自己补一条 / 删一条 / 建实体或让 AI 提炼。
+     灵感触发器卡片写的是**同一个 localStorage 键**，靠 'lingkuang-staged' 事件通知这里回读。 */
+  let intake: IntakeHandle | null = null;
+  const intakeHost = host.querySelector<HTMLElement>('#assoc-intake');
+  if (intakeHost && store) {
+    intake = mountIntake(intakeHost, store, {
+      words: () => staged,
+      addWord: (w) => { if (staged.indexOf(w) === -1) { staged.push(w); persistStaged(); updateStagedCnt(); } },
+      removeWord: (w) => { const i = staged.indexOf(w); if (i >= 0) { staged.splice(i, 1); persistStaged(); updateStagedCnt(); } },
+    });
+  }
+  const syncStaged = (): void => {
+    const next = readStaged();
+    staged.length = 0;
+    next.forEach((w) => staged.push(w));
+    updateStagedCnt();
+    intake?.refresh();
+  };
+  window.addEventListener('lingkuang-staged', syncStaged);
 
   /* ── 平移 + 缩放 ── */
   let assocPanX = 0, assocPanY = 0, assocZoom = 1;
@@ -358,7 +384,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
       node.selected = true;
       parent.focusChildId = id;
       /* 思维链上的词自动存进暂存表（不用手动点「存」） */
-      if (staged.indexOf(node.word) === -1) { staged.push(node.word); persistStaged(); updateStagedCnt(); }
+      if (staged.indexOf(node.word) === -1) { staged.push(node.word); persistStaged(); updateStagedCnt(); intake?.refresh(); }
       (node as any)._staged = true;
       expandNode(id);
       return;
@@ -871,6 +897,7 @@ export function mountAssocCanvas(host: HTMLElement, getWord: () => string): () =
      不返这个函数，window 监听与 simRAF/rockerRAF 就会每点一次工具积一份、且永不退场。 */
   return () => {
     unbindEvents();          /* 摘掉 3 个 window 监听 + stage 上的按下/滚轮/点击 */
+    window.removeEventListener('lingkuang-staged', syncStaged);
     stopSim();               /* 停力导向帧循环 */
     stopRockerLoop();        /* 停轮盘帧循环（内部会 cancelAnimationFrame） */
     stopAutoPan();           /* 停贴边推视窗的帧循环 */

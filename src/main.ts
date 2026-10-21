@@ -385,7 +385,10 @@ async function main() {
   window.addEventListener('lingkuang-formats-changed', () => {
     try { ensureAllFormatFields(store); ensureEntityLayer(store); } catch (e) { console.error('[lingkuang] 模板变更后补全失败：', e); }
   });
-  /** 把所有世界的实体写成 vault 的 .md（`<世界>/_设定/<类型id>/<名字>.md`），Obsidian 才能看/改。
+  /** 把所有世界的实体写成 vault 的 .md（`<世界>/_设定/<类型名>/<名字>.md`），Obsidian 才能看/改。
+   *  ⚠️ 目录名要用**类型名**而不是类型 id：老数据里 `typeId` 恰好等于中文名（「角色」「地点」），
+   *  所以传 id 一直没出事；一旦出现 `et_1` 这种机器 id（「结构体管理」的类别整理就会造），
+   *  vault 里就会多出一堆 `et_1/`、`et_2/` 文件夹。
    *  ⚠️ 循环必须在**世界循环之外**（不能塞进上面写节点的那个循环里）：否则每个世界都会把
    *  全世界的实体各写一遍 —— W 个世界 = W² 次 IPC 写盘 + W² 轮 vault 监听回调，多世界时明显卡。 */
   async function writeAllEntities(): Promise<void> {
@@ -393,7 +396,8 @@ async function main() {
     if (!api?.vaultWriteEntity) return;
     for (const [wsName, ws] of Object.entries(store.data.worldsets)) {
       for (const e of Object.values((ws.entities ?? {}))) {
-        try { await api.vaultWriteEntity(wsName, (e as any).typeId, e); } catch (err) { /* 单实体失败忽略 */ }
+        const typeName = String((ws.entityTypes ?? {})[String((e as any).typeId)]?.name ?? (e as any).typeId);
+        try { await api.vaultWriteEntity(wsName, typeName, e); } catch (err) { /* 单实体失败忽略 */ }
       }
     }
   }
@@ -447,7 +451,10 @@ async function main() {
     /* 实体也要同步落盘（未失焦的正文在 doc-editor 的 flush 里已交给 store） */
     const entities: { wsName: string; typeName: string; entity: unknown }[] = [];
     for (const [wsName, ws] of Object.entries(store.data.worldsets)) {
-      for (const e of Object.values((ws.entities ?? {}))) entities.push({ wsName, typeName: (e as any).typeId, entity: e });
+      for (const e of Object.values((ws.entities ?? {}))) {
+        const typeName = String((ws.entityTypes ?? {})[String((e as any).typeId)]?.name ?? (e as any).typeId);
+        entities.push({ wsName, typeName, entity: e });
+      }
     }
     const { formats: _fmt, ...rest } = store.data;
     try { api.flushSync({ data: rest, nodes, entities }); pendingWrite = false; } catch (e) { /* 下一次启动还有 JSON 备份 */ }

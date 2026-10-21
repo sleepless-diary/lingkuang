@@ -641,6 +641,9 @@ body {
   font-size: 11px;
   vertical-align: 1px;
 }
+/* 「草稿」标记：正文还空着的实体（用户 2026-10-19 评审：106/112 条正文空着，树上看不出来）。
+   与「待填」同款药丸但用中性色 —— 待填是「名字还没起」，草稿是「名字有了、正文没写」，两件事。 */
+.ed-ttag.is-draft { border-color: var(--border); color: var(--fg-2); }
 /* 空文件夹展开后的那句人话 */
 .ed-tempty { padding: 2px 8px 2px 36px; font-size: 11px; color: var(--fg-2); opacity: .7; }
 
@@ -1538,6 +1541,110 @@ details.lk-agent__tools[open] > .lk-agent__tools-h::before { content: '▾'; }
   color: var(--fg-2);
   white-space: nowrap;
 }
+button.lk-chip { font-family: inherit; line-height: 1.6; }
+button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
+.lk-chip.is-on { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
+
+/* ── 「选中词条」工作栏（联想画布工具条下方，2026-10-19 工作流评审）────────────
+   一行标题 + 一排可删 chip + 一个补词输入框。它下面是画布 ⇒ 高度必须收敛，
+   所以 chips 只占一行、横向溢出时自己滚，不换行把画布挤没。 */
+.lk-intake { display: flex; flex-direction: column; gap: 5px; padding: 6px 12px 7px; }
+.lk-intake__head { display: flex; align-items: center; gap: 6px; }
+.lk-intake__title { font-size: var(--text-2xs); font-weight: 600; color: var(--fg); }
+.lk-intake__cnt { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--fg-2); }
+.lk-intake__chips { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 1px; }
+.lk-intake__chip {
+  display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0;
+  padding: 1px 3px 1px 7px; border: 1px solid var(--border); border-radius: var(--radius-pill);
+  background: var(--surface); font-size: var(--text-2xs); color: var(--fg); white-space: nowrap;
+}
+.lk-intake__x {
+  border: none; background: none; color: var(--fg-2); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0 3px; border-radius: var(--radius-pill);
+}
+.lk-intake__x:hover { color: var(--danger); background: var(--surface-2); }
+.lk-intake__empty { font-size: var(--text-2xs); color: var(--fg-2); }
+.lk-intake__add { height: 24px; font-size: var(--text-2xs); }
+.lk-intake__msg { font-size: var(--text-2xs); color: var(--fg-2); }
+.lk-intake__msg:empty { display: none; }
+.lk-intake__preview[hidden] { display: none; }
+.lk-intake__pv { display: flex; flex-direction: column; gap: 5px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 9px; background: var(--surface); }
+.lk-intake__pv-h { display: flex; align-items: baseline; gap: 8px; font-size: var(--text-xs); color: var(--fg); }
+.lk-intake__pv-h span { color: var(--fg-2); font-size: var(--text-2xs); }
+.lk-intake__pv-fields { display: flex; flex-wrap: wrap; gap: 4px; }
+.lk-intake__pv-doc { margin: 0; max-height: 132px; overflow: auto; white-space: pre-wrap; font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--fg-2); line-height: 1.5; }
+.lk-intake__pv-btns { display: flex; gap: 6px; }
+
+/* ── 命令面板 / 全局检索（Ctrl+P，2026-10-19 工作流评审 C 项）────────────────
+   遮罩压暗但不发黑（暖灰底、透明度低）：面板本身是亮底，用深 chrome 会像营销弹窗。 */
+.lk-palette {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(40, 38, 34, .34);
+  display: flex; justify-content: center; align-items: flex-start;
+  padding-top: 12vh;
+}
+.lk-palette__box {
+  width: min(620px, 82vw); max-height: 62vh;
+  display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); box-shadow: 0 12px 40px rgba(20, 20, 18, .3);
+  overflow: hidden;
+}
+.lk-palette__input {
+  height: 40px; padding: 0 12px; border: none; border-bottom: 1px solid var(--border);
+  background: var(--surface); color: var(--fg);
+  font-size: var(--text-base); font-family: inherit; outline: none;
+}
+.lk-palette__list { overflow: auto; padding: 4px; }
+.lk-palette__row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: var(--radius-sm); cursor: pointer;
+}
+.lk-palette__row.is-on { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent); }
+.lk-palette__kind { flex-shrink: 0; width: 40px; font-size: var(--text-2xs); color: var(--fg-2); }
+.lk-palette__label {
+  font-size: var(--text-sm); color: var(--fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46%;
+}
+.lk-palette__sub {
+  font-size: var(--text-2xs); color: var(--fg-2); margin-left: auto;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lk-palette__empty { padding: 10px 12px; font-size: var(--text-xs); color: var(--fg-2); line-height: 1.6; }
+.lk-palette__foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px; border-top: 1px solid var(--border-soft);
+  font-size: var(--text-2xs); color: var(--fg-2);
+}
+.lk-palette__cnt { margin-left: auto; }
+.lk-palette__foot kbd {
+  font-family: var(--font-mono); font-size: 10px;
+  border: 1px solid var(--border); border-radius: 2px; padding: 0 3px; margin-right: 2px;
+}
+
+/* ── 素材库（词库浏览器，2026-10-19 起不再是占位）──────────────────────────── */
+.lk-lib-cat {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 3px 6px; border: none; border-left: 2px solid transparent;
+  background: none; color: var(--fg-2); font-family: inherit;
+  font-size: var(--text-xs); text-align: left; cursor: pointer; border-radius: 0;
+}
+.lk-lib-cat:hover { background: var(--surface-2); color: var(--fg); }
+.lk-lib-cat.is-on { background: var(--surface-2); color: var(--fg); font-weight: 600; border-left-color: var(--accent); }
+.lk-lib-cat.has-hit span:first-child { color: var(--fg); }
+.lk-lib-cat__n { margin-left: auto; font-family: var(--font-mono); font-size: var(--text-2xs); opacity: .7; }
+.lk-lib-words { display: flex; flex-wrap: wrap; gap: 4px; }
+.lk-lib-word {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 1px 3px 1px 7px; border: 1px solid var(--border); border-radius: var(--radius-pill);
+  font-size: var(--text-xs); color: var(--fg); white-space: nowrap;
+}
+.lk-lib-add {
+  border: none; background: none; color: var(--fg-2); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0 3px; border-radius: var(--radius-pill);
+}
+.lk-lib-add:hover { color: var(--accent-ink); background: var(--surface-2); }
+.lk-lib-more { margin-top: 8px; font-size: var(--text-2xs); color: var(--fg-2); }
 /* 空态：一句目的 + 一个主操作 + 一条示例/快捷键。以前空面板只有一行灰字
    （「暂无会话」），人不知道下一步该点什么。 */
 .lk-empty {

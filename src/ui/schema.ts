@@ -14,6 +14,7 @@ import type { Store } from '../store/store';
 import type { FieldType, WorldFormat } from '../store/types';
 import { confirmDialog, promptDialog } from './confirm';
 import { escapeHtml } from './html';
+import { applyTypeSplit, planTypeSplit, typeSplitLines, typeSplitSummary } from './type-migrate';
 
 /** 字段类型的中文名（面板里只显示中文，值仍用 FieldType 的字面量） */
 const TYPE_LABEL: Record<FieldType, string> = {
@@ -140,6 +141,9 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
           .join('');
 
     const imp = activeKind ? impact(activeKind) : { nodes: 0, filled: 0 };
+    /* 类别整理（2026-10-19 工作流评审 D 项）：只在实体类型页签算计划 —— 节点种类没有这个问题。
+       计划是纯函数（`planTypeSplit`），不点按钮什么都不会写。 */
+    const splitPlan = tab === 'etype' ? planTypeSplit(store) : null;
     host.innerHTML = `
       <div class="lk-page lk-page--md" style="padding:18px 16px;display:flex;flex-direction:column;gap:12px;" id="sc-root">
         <div>
@@ -154,6 +158,15 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
               : `类型=模板（定义有哪些字段），<b>设定库里的实体</b>按模板填内容；这套类型属于<b>「${escapeHtml(worldName())}」</b>这个世界的设定体系。`}
             <br/>加字段 → 该${tab === 'kind' ? '种类' : '类型'}下的所有${tab === 'kind' ? '节点' : '实体'}自动补空值；<b>删字段 → 已填的值会被清掉</b>（保存时会先让你确认）。
           </div>
+          ${tab === 'etype' && splitPlan ? (splitPlan.rows.length
+            ? `<div style="margin-top:10px;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:8px 10px;display:flex;flex-direction:column;gap:6px;">
+                 <div style="font-size:var(--text-xs);font-weight:600;color:var(--fg);">类别整理：把字段「类型」的值变成真正的类型</div>
+                 <div style="font-size:var(--text-xs);color:var(--fg-2);line-height:1.6;">这一批条目把真实类别写在字段「类型」里，却都挂在同一个模板下 —— 所以左树全挤在一个文件夹里。这一步会：新建缺少的类型、把条目的 typeId 改过去、并把它们的 <code>.md</code> 一起搬到新类型目录（执行前自动备份；字段「类型」保留不删）。</div>
+                 <div style="font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);white-space:pre-wrap;line-height:1.6;">${escapeHtml(typeSplitSummary(splitPlan))}</div>
+                 <button id="sc-split-run" class="lk-btn lk-btn--sm" style="align-self:flex-start;">整理类型…</button>
+               </div>`
+            : `<div style="margin-top:10px;font-size:var(--text-xs);color:var(--fg-2);">类别已经对齐：没有需要整理的条目（检查过 ${splitPlan.skipped} 条）。</div>`)
+            : ''}
         </div>
         <div style="display:flex;gap:12px;align-items:flex-start;">
           <div style="width:250px;flex-shrink:0;display:flex;flex-direction:column;gap:4px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;">
@@ -191,6 +204,28 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
     };
     host.querySelector('#sc-tab-kind')?.addEventListener('click', () => switchTab('kind'));
     host.querySelector('#sc-tab-etype')?.addEventListener('click', () => switchTab('etype'));
+    /* 「整理类型…」：确认 → 备份 → 改 typeId + 搬 vault 文件（顺序见 `type-migrate.ts` 顶部注释）。
+       ⚠️ 这是一次**写用户数据**的动作，所以文案里必须把「备份」和「旧文件进回收站」都说清楚。 */
+    host.querySelector('#sc-split-run')?.addEventListener('click', () => {
+      if (!splitPlan || !splitPlan.rows.length) return;
+      void confirmDialog({
+        title: '整理类别？',
+        message: typeSplitSummary(splitPlan),
+        detail: typeSplitLines(splitPlan) + '\n\n会先自动备份 worldbuilding.json；vault 里的旧 .md 移进回收站后，再写到新类型目录。',
+        confirmText: '整理',
+      }).then((okClean) => {
+        if (!okClean) return;
+        void applyTypeSplit(store, splitPlan).then((res) => {
+          render();
+          const m = host.querySelector('#sc-msg') as HTMLElement | null;
+          if (!m) return;
+          m.textContent = res.ok
+            ? `已整理：${res.moved} 条实体换了类型目录，新建 ${res.created} 个类型。`
+            : `整理中途出问题：${res.error ?? '未知原因'}（已搬 ${res.moved} 条）。可从「备份管理」回到整理前。`;
+          m.style.color = res.ok ? 'var(--accent-ink)' : 'var(--danger)';
+        });
+      });
+    });
     host.querySelectorAll<HTMLElement>('[data-kind]').forEach((el) => {
       el.addEventListener('click', () => { activeKind = el.dataset.kind ?? ''; render(); });
     });

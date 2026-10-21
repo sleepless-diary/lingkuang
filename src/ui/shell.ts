@@ -160,13 +160,41 @@ let timelineTabsIds: string[] = [];
 let timelineTabsActive = '';
 let timelineTabsBuilt = false;
 
+/** 新建时间线：先问名字。
+ *  2026-10-19 工作流评审：真实数据里两条都叫「主线」、三条 0 节点 —— 重名是「新建太便宜 + 不拦」的后果，
+ *  拦在建的那一刻最省事；重名时不再默默堆第二条，而是直接切到已有的那条（与 AI 侧 `create_timeline` 同名复用同一口径）。 */
+async function newTimelineFlow(store: Store): Promise<void> {
+  const ws = currentWorld(store);
+  const existing = new Set(Object.values(ws?.timelines ?? {}).map((t) => String(t.name ?? '').trim()));
+  let base = '新时间线';
+  for (let i = 2; existing.has(base); i++) base = `新时间线 ${i}`;
+  const name = await promptDialog({
+    title: '新建时间线',
+    message: '给它起个名字 —— 一条时间线就是一个「世界」。',
+    value: base,
+    confirmText: '创建',
+  });
+  if (name === null) return;
+  const nm = name.trim() || base;
+  const dup = Object.values(ws?.timelines ?? {}).find((t) => String(t.name ?? '').trim() === nm);
+  if (dup) { store.setActiveTimeline(dup.id); return; }
+  store.setActiveTimeline(addTimeline(store, nm));
+}
+
 /** 时间线 tabs（沙盘 pane-head）：切换时间线 + 新建 */
 function renderTimelineTabs(store: Store): void {
   const head = document.getElementById('lk-pane-timeline')?.querySelector('.lk-pane-head');
   if (!head) return;
   const ws = currentWorld(store);
-  const ids = (ws.order ?? []).filter((id) => ws.timelines[id]);
+  const allIds = (ws.order ?? []).filter((id) => ws.timelines[id]);
   const active = activeTimelineId(store);
+  /* 空线收纳（2026-10-19 工作流评审）：真实数据 5 条时间线里 3 条 0 节点（AI 建的、名字还重），
+     全摊在标题栏里，把真正在用的那两条挤到换行。默认把「0 节点且不是当前选中」的折成一颗
+     「空线 N」按钮，点一下展开/收起；状态记在 localStorage（不写数据文件）。
+     当前选中那条**永远可见** —— 刚点「＋」建出来的空线不会一建出来就消失。 */
+  const showEmpty = localStorage.getItem('lingkuang-show-empty-tl') === '1';
+  const emptyIds = allIds.filter((id) => (ws.timelines[id]?.nodes?.length ?? 0) === 0 && id !== active);
+  const ids = showEmpty ? allIds : allIds.filter((id) => emptyIds.indexOf(id) === -1);
   /* 首次构建完整 head（含 tabs 容器 + 撤销/重做/节点按钮）；之后只更新 tabs，不清掉沙盘工具的 appendChild 节点 */
   let tabs = head.querySelector('.lk-tl-tabs') as HTMLElement | null;
   let undoBtn = head.querySelector('#lk-undo') as HTMLElement | null;
@@ -236,7 +264,8 @@ function renderTimelineTabs(store: Store): void {
           return `<button class="lk-tl-tab${id === active ? ' is-active' : ''}${l.empty ? ' is-empty' : ''}" data-tl="${escapeHtml(id)}" title="${escapeHtml(l.name)}${l.empty ? '（还没有节点）' : ''}"><span class="nm">${escapeHtml(l.name)}</span><span class="cnt">${l.empty ? '空' : (ws.timelines[id]?.nodes.length ?? 0)}</span></button>`;
         })
         .join('');
-      tabs.innerHTML = tabsHtml + `<button class="lk-tl-tab is-new" id="lk-tl-new" title="新建时间线">＋</button>`;
+      tabs.innerHTML = tabsHtml + `<button class="lk-tl-tab is-new" id="lk-tl-new" title="新建时间线">＋</button>`
+        + (emptyIds.length || showEmpty ? `<button class="lk-tl-tab is-new" id="lk-tl-empty" title="${showEmpty ? '收起 0 节点的时间线' : '展开 0 节点的时间线'}">${showEmpty ? '收起空线' : `空线 ${emptyIds.length}`}</button>` : '');
       staggerIn(tabs);   /* 页签错峰入场：只有「页签集合变了」这一条路会重建 DOM */
       tabs.querySelectorAll('.lk-tl-tab[data-tl]').forEach((el) => {
         const id = (el as HTMLElement).dataset.tl!;
@@ -253,7 +282,13 @@ function renderTimelineTabs(store: Store): void {
           }).then((okDel) => { if (okDel) removeTimeline(store, id); });
         });
       });
-      tabs.querySelector('#lk-tl-new')?.addEventListener('click', () => addTimeline(store, '新时间线'));
+      tabs.querySelector('#lk-tl-new')?.addEventListener('click', () => { void newTimelineFlow(store); });
+      /* 「空线 N」：展开/收起（只重画页签，不碰 sandbox 挂在 head 尾巴上的工具位） */
+      tabs.querySelector('#lk-tl-empty')?.addEventListener('click', () => {
+        localStorage.setItem('lingkuang-show-empty-tl', showEmpty ? '0' : '1');
+        timelineTabsIds = [];   /* 可见集合变了 ⇒ 下一次强制重建 DOM */
+        renderTimelineTabs(store);
+      });
     } else {
       /* 集合没变：名字 / 计数 / 选中态 / 空态**就地更新**（不重建 ⇒ 不重播入场） */
       const labels = tabLabels();
@@ -367,7 +402,17 @@ function bindPanelEvents(): void {
      再按一次收起；只认单按 Ctrl/Cmd+K（带 Shift/Alt 的组合让给别人）。 */
   window.addEventListener('keydown', (e: KeyboardEvent) => {
     if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
-    if (e.key !== 'k' && e.key !== 'K') return;
+    /* 2026-10-19 用户：「ctrl+k 一只手有点难按」⇒ 主键改 **Ctrl+J**（J 在右手食指位，左手也够得着），
+        Ctrl+K 留作老习惯的别名；带 Shift/Alt 的组合仍旧让给别人。 */
+    const key = e.key.toLowerCase();
+    /* Ctrl/Cmd+P = 命令面板 / 全局检索（2026-10-19 工作流评审 C 项：11 个工具 + 132 条条目，
+       没有一处能「按名字跳过去」）。面板自己管开/关与 Esc。 */
+    if (key === 'p') {
+      e.preventDefault();
+      if (shellStore) void import('./palette').then((m) => m.togglePalette(shellStore as Store)).catch(() => { /* 打不开不影响主流程 */ });
+      return;
+    }
+    if (key !== 'j' && key !== 'k') return;
     const t = listTools().find((x) => x.id === 'agent');
     if (!t?.panel) return;
     e.preventDefault();
