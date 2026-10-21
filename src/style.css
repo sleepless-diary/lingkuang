@@ -1645,6 +1645,28 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
 }
 .lk-lib-add:hover { color: var(--accent-ink); background: var(--surface-2); }
 .lk-lib-more { margin-top: 8px; font-size: var(--text-2xs); color: var(--fg-2); }
+/* vault 文件页签的行：文件夹在前、文件在后，同一行四段（类型/名字/大小/时间） */
+.lk-lib-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 3px 6px; border: none; border-radius: var(--radius-sm);
+  background: none; color: var(--fg); font-family: inherit; cursor: pointer;
+}
+.lk-lib-row:hover { background: var(--surface-2); }
+.lk-lib-row__kind {
+  flex-shrink: 0; width: 16px; text-align: center;
+  font-size: var(--text-2xs); color: var(--fg-2);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); line-height: 1.4;
+}
+.lk-lib-row__name {
+  flex-shrink: 0; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--text-xs);
+}
+.lk-lib-row__line { font-family: var(--font-mono); color: var(--fg-2); }
+.lk-lib-row__meta {
+  margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--text-2xs); color: var(--fg-2);
+}
+.lk-lib-row__time { flex-shrink: 0; width: 108px; text-align: right; font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--fg-2); opacity: .85; }
 /* 空态：一句目的 + 一个主操作 + 一条示例/快捷键。以前空面板只有一行灰字
    （「暂无会话」），人不知道下一步该点什么。 */
 .lk-empty {

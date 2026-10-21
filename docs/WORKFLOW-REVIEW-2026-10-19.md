@@ -76,6 +76,16 @@
      `vault:delete-entity`（按 id 把旧目录那份移进回收站）→ `vault:write-entity`（写新目录）。
      顺序不能反，反了会把刚写的新文件当成旧的删掉。
   4. `properties['类型']` **一律保留**（不删只标）。
+- **素材库第二页签「vault 文件」**（同 `src/ui/library.ts`）：素材库本来是「上游词库」的只读浏览器，
+  但真实写作时人真正要找的是**自己 vault 里那 137 个 `.md`**。这页签把 vault 变成可浏览的：
+  1. **列目录**：`lingkuangAPI.fs.list(dir)`，只列**文件夹 + `.md/.markdown/.txt/.json`**（`.obsidian/.trash` 这类不进列表）；
+     面包屑取 `r.root.label` + 相对路径（`【灵框库（vault）】维斯莱特/_设定`），计数写「N 个文件 · M 个文件夹」。
+  2. **进子目录 / 上一级**：`#lib-up` 到根就停住，不会跳出 vault。
+  3. **全库内容搜索**：`lingkuangAPI.fs.search(vaultRoot, q)` 一次扫全库，命中行显示 `文件:行号` + 该行原文；
+     实测真实副本「设定」→ `36 处命中 · 扫了 137 个文件`。
+  4. **预览**：点命中行读 `fs.read(file)`，从命中行起显示 **≤220 行**，头上有文件名、完整路径、`850 B · 19 行 · 命中第 3 行`、
+     「复制路径」；点普通文件则从头显示。
+  - 这页**只读、不写盘**（要编条目请去设定库 / Obsidian）—— 与「素材库不做编辑」的口径一致。
 - **时间线重名拦截**：`＋` 改成先问名字（默认 `新时间线 2/3…`），同名不再 silently 堆第二条，
   而是直接切到已有那条（与 AI 侧 `create_timeline` 同名复用同一口径）。
 - **空线收纳**：0 节点且**不是当前选中**的时间线折进一颗「空线 N」按钮（状态记 localStorage）。
@@ -105,12 +115,17 @@
   它要「测试世界观 + 银发少女 + 王国的建立」那套种子数据，而副本是真实世界「维斯莱特」；
   ★5 的 `地理 18 / 灵技 12 / 设定 10 …` 恰好证明整理后按真实类别分组已生效）。
 - 截图：`.review/shots-flow/`（00-boot、10-tabs、20-codex、21-draft-only、22-entity-events、
-  30-inspire-intake、31-intake-add、40-library、41-library-add、50-schema-types、
-  55/56/57-typesplit-*、58-codex-after-split、60/61-palette、70-agent-j）。
+  30-inspire-intake、31-intake-add、40-library、41-library-add、42-library-vault、43-library-preview、
+  50-schema-types、55/56/57-typesplit-*、58-codex-after-split、60/61-palette、70-agent-j）。
+- 素材库 vault 页签（`node .review/probe-vault.cjs 9361` / `probe-vault2.cjs 9361`，真实副本）：
+  根 `0 个文件 · 1 个文件夹`（`维斯莱特`）→ 进去 `2 行`（`_设定`、`主线`，与磁盘一致，其余 3 条时间线 0 节点本来没目录）→
+  搜「设定」`36 处命中 · 扫了 137 个文件` → 搜「世界底层」`1 处命中` 并点开预览：
+  `850 B · 19 行 · 命中第 3 行`，正文 514 字正常渲染。
 
 ## 4 刻意没做 / 留给下一轮
 
-- **命令面板没覆盖 vault 散篇笔记、地图**（理由见 C）。
+- **命令面板没覆盖 vault 散篇笔记、地图**（理由见 C）。vault 现在能在素材库里浏览/搜索了，
+  但仍**没进命令面板的条目表**（`Ctrl+P` 跳的是实体/事件/工具/世界集）。
 - **`Entity.frames` 仍无"一键"入口**：帧必须有真实差异，U I 上只能引导（见 A 的 ⚠️）。
 - **类别整理的单条类别（10 个）先不动**：要治它们得先定「要不要给单条开类型」的产品口径。
 - **素材库不做编辑**：词库是 CC BY-NC-SA 上游产物，编辑它牵扯许可证与合并，不在本轮范围。
