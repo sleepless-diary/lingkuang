@@ -81,6 +81,35 @@
    `drawDrape()` 里走 `uniformLoc()` 兜一层，直接写 `program.u_land_ramp` 会拿到 undefined。
    **地形/降雨/河流的数学仍然一字未改**（只动"怎么看"）。
 
+10. **地形复杂度 + 生物群系 + 立体度开关（第一百零四轮灵框追加）**。
+    用户 2026-10-21：「这个地图还是太简单了。山很少，而且看不出不同地形之间有什么区别，
+    只能看出山脉和平原两种地形」+「还有一件事，能不能用多重噪声增加复杂度」+「山好像有顶部边缘，
+    能不能做成开关，一种是顶视图，一种是现在这种有一点立体感的」。
+    · **新文件 `src/mapgen/noise.ts`（不是上游文件）**：32 位整数哈希 → 2D 值噪声 → 4 octave fBm，
+      另有 `1 - |2fbm-1|` 山脊噪声；全部确定性（`Math.imul`，跨平台逐位一致）。
+    · **`index.ts`**（生成层，改的都是灵框自己的参数/步骤，上游数学没动）：
+      - `DEFAULT_PARAMS.elevation.hill_height` 0.02 → 0.07、`elevation.mountain_folds` 0.05 → 0.18
+        （folds 只进 `geometry.ts` 的**渲染**高度，不改 `elevation_t` 统计）；
+      - `biomes.raininess` 0.9 → 0.55、`rain_shadow` 0.5 → 0.7（上游降雨挤在 0.47..0.94、
+        一半以上 > 0.8 ⇒ 整张图一个气候，生物群系只能上一种绿）；
+      - `render.mountain_height` 50 → 72、`slope` 2 → 2.6（小尺寸缩略图里山要看得见）；
+      - `paramsFromSeed()`：`mountainSpacing = round(50 - ridges*5)`（ridge 4 → 30，上游 35）、
+        `hill_height = 0.05 + ridges*0.0055`；
+      - **新步骤 `applyTerrainNoise()`**（`assignElevation` 之后、`reseatSeaLevel` 之前）：
+        按高度加权叠 fBm + 山脊噪声（海平面附近权重 0 ⇒ 海岸线仍平滑；山脚 35%、山腰以上满幅）；
+      - **新步骤 `normalizeRainfall()`**（`assignRivers` 之后）：陆地降雨换成**分位数排名** 0..1
+        （`0.7*rank + 0.3*line`），着色器的湿度轴才能铺满四个湿度档；
+      - 重定海平面 / 河流 / 降雨的**数学一字未改**（只是多了两个后处理步骤）。
+    · **`render.ts`**：`frag_drape` 新增 `uniform sampler2D u_biome` + `uniform float u_biome_amt`。
+      气候表是 **4×3 纹理**（x = 湿度、y = 温度，`styles.ts` 的 `climateFloats()` 生成，线性过滤），
+      `drawDrape()` 里 48 字节 `texSubImage2D` 按 `biomeKey` 比对后重传（换风格不重建纹理）。
+      温度 = 世界 y 的纬度（乘 3.8 让可见横带上下缘正好落到寒带）+ 海拔递减；湿度 = `v_em.y`
+      （归一化降雨，再向两端拉 1.35 倍）。低地按气候上色、`landT > 0.42` 起渐回高程色带（岩/雪）、
+      陡坡再压一层岩色。采样点取**纹素中心**（`0.125 + m*0.75` / `0.1667 + t*0.6667`）。
+    · **立体度开关**（顶视 / 立体）落在 `MapTerrainSpec.lift`（`solid` 缺省 / `flat`），
+      映射为 `mountain_height = 0`（顶视）——纯渲染参数，不重算地形；由 `src/ui/map-terrain.ts`
+      的 `terrainRenderParams()` 合进 `setStyle()`。
+
 ## 怎么用
 
 只看 `src/mapgen/index.ts`（`createEngine` / `runGeneration` / `statsOf` / `TerrainView`）。

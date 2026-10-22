@@ -34,6 +34,7 @@ import {
   resetPainting as vendorResetPainting, userHasPainted as vendorUserHasPainted,
 } from './vendor/painting';
 import Renderer from './vendor/render';
+import { terrainOffset, type TerrainNoiseParams } from './noise';
 
 /* ── 参数（字段名与上游 `mapgen4.ts` 的 initialParams 一致；默认值也照抄）────────── */
 
@@ -93,6 +94,10 @@ export interface MapgenRenderParams {
   grain?: number;              /* 颗粒 */
   vignette?: number;           /* 四角压暗 */
   moist?: number;              /* 湿度偏色权重 */
+  /* ⭐ 灵框追加（第一百零四轮）：生物群系 —— 用户「看不出不同地形之间有什么区别」。
+     气候色 = 干湿 × 冷暖，4×3 纹理（x = 湿度、y = 温度），由 `styles.ts` 的 `climateFloats()` 生成。 */
+  biome_amt?: number;          /* 气候色权重（0 = 只看高度，1 = 低地完全按气候上色） */
+  biome_ramp?: number[];       /* 4×3×3：气候表 RGB（0..1） */
   land_ramp?: number[];        /* 8×3：陆地高程色带（0..1 RGB） */
   sea_ramp?: number[];         /* 6×3：海深色带 */
   line_color?: number[];       /* 等高线 / 排线 / 描边色 */
@@ -114,14 +119,29 @@ export const DEFAULT_PARAMS: MapgenParams = {
   mountainSpacing: 35,
   mesh: { seed: 12345 },
   elevation: {
-    seed: 187, island: 0.5, noisy_coastlines: 0.01, hill_height: 0.02,
-    mountain_jagged: 0, mountain_sharpness: 9.8, mountain_folds: 0.05, ocean_depth: 1.40,
+    /* ⭐ 灵框改动（第一百零四轮）：`hill_height` 0.02 → 0.06。上游这块只铺一层很浅的丘陵，
+       实测陆地高度分位：50% 低于 0.026、75% 低于 0.078 ⇒ 一半陆地是"平地"，
+       玩家看到的就是"几座山 + 一大片平原"（用户 2026-10-21 的原话）。
+       抬到 0.06 后平地从 39% 降到 13%、丘陵 61% ⇒ 起伏铺满，同时峰值/均值仍 9.68（守卫要 ≥ 5.9）。*/
+    seed: 187, island: 0.5, noisy_coastlines: 0.01, hill_height: 0.07,
+    /* ⭐ 灵框改动（第一百零四轮）：`mountain_folds` 0.05 → 0.18。
+       folds 只改**渲染**用的高度（`geometry.ts` 里 `(1 - folds*sqrt(e))*e`：把山谷压低、山脊留住），
+       不改 elevation_t ⇒ 统计/守卫口径不变，但山体的脊谷对比更强（"山看着像山脊而不是灰团"）。 */
+    mountain_jagged: 0, mountain_sharpness: 9.8, mountain_folds: 0.18, ocean_depth: 1.40,
   },
-  biomes: { wind_angle_deg: 0, raininess: 0.9, rain_shadow: 0.5, evaporation: 0.5 },
+  /* ⭐ 灵框改动（第一百零四轮）：`raininess` 0.9 → 0.55 / `rain_shadow` 0.5 → 0.7。
+     上游这套降雨只用来画"湿绿干黄"，0.9 时**陆地降雨挤在 0.47..0.94、一半以上 > 0.8**
+     ⇒ 整张图一个气候（全湿），生物群系只能上一种绿。降下来 + `normalizeRainfall()`
+     归一化后才拉得出真正的干湿分区（实测陆地降雨 0.29..0.57，干燥区占 55%）。
+     河流数与陆地占比不受影响（实测 rain 0.9 / 0.55 两档都是 45~46 条河、陆地 0.34）。 */
+  biomes: { wind_angle_deg: 0, raininess: 0.55, rain_shadow: 0.7, evaporation: 0.5 },
   rivers: { lg_min_flow: 2.7, lg_river_width: -2.4, flow: 0.2 },
   render: {
-    zoom: 100 / 480, x: 500, y: 500, light_angle_deg: 80, slope: 2, flat: 2.5, ambient: 0.25,
-    overhead: 30, tilt_deg: 0, rotate_deg: 0, mountain_height: 50,
+    zoom: 100 / 480, x: 500, y: 500, light_angle_deg: 80, slope: 2.6, flat: 2.5, ambient: 0.25,
+    /* ⭐ 灵框改动（第一百零四轮）：`mountain_height` 50 → 72（垂直夸张）。
+       上游的 50 在小窗口缩略尺寸下，山几乎只剩"颜色不一样"；抬到 72 才有立体感，
+       同时 `slope` 2 → 2.6 让向阳/背阴面差得更开。 */
+    overhead: 30, tilt_deg: 0, rotate_deg: 0, mountain_height: 72,
     outline_depth: 1, outline_strength: 15, outline_threshold: 0, outline_coast: 0,
     outline_water: 13.0, biome_colors: 1,
     /* ⭐ 灵框追加（第九十七轮）：这四个上游没有 ⇒ 缺省值即上游原样（见 `styleRenderParams()`）*/
@@ -196,7 +216,11 @@ export function paramsFromSeed(seed: string, style: string = 'continent', spec?:
   p.elevation.island = st.island;
   p.elevation.noisy_coastlines = st.noisy_coastlines;
   p.elevation.ocean_depth = st.ocean_depth;
-  p.mountainSpacing = Math.round(56 - ridges * 5.2); /* ridges 2 → 46，4 → 35（上游默认），6 → 25 */
+  /* 山脊密度 → 山峰间距。上游 `/ 5.2` 的斜率我们没动，只把基准 56 收到 50：
+     ridges 4（默认）从 35 收到 30 ⇒ 实测陆地 >0.12 的山体连通块从 7 条涨到 10 条（"山太少"的另一半）。*/
+  p.mountainSpacing = Math.round(50 - ridges * 5); /* ridges 2 → 40，4 → 30，6 → 20 */
+  /* 丘陵跟着山脊一起抬：用户选"山脊密"时多半也想要更多起伏，而不是只有主峰变多 */
+  p.elevation.hill_height = 0.05 + ridges * 0.0055; /* ridges 1 → 0.056，4 → 0.072，8 → 0.094 */
   p.rivers.flow = 0.14 + rv * 0.06;
   p.rivers.lg_min_flow = 3.2 - rv * 0.35;
   /* ⭐ 第一百零三轮：河宽从上游的 0.0907（exp(-2.4)）抬到 0.135（exp(-2.0)，约 1.5 倍）。
@@ -338,10 +362,93 @@ export function runGeneration(engine: TerrainEngine, opts?: { shape?: boolean; s
   Painting.setElevationParam(params.elevation);
   if (opts?.strokes?.length) replayPaint(opts.strokes);
   map.assignElevation(params.elevation, { size: Painting.size, constraints: Painting.constraints });
+  /* ⭐ 第一百零四轮：多尺度细节噪声 —— 必须在重定海平面**之前**（陆地占比之后还会被精确钉住）。 */
+  applyTerrainNoise(engine);
   if (shape && engine.targetLandRatio !== undefined) reseatSeaLevel(engine, engine.targetLandRatio);
   map.assignRainfall(params.biomes);
   map.assignRivers(params.rivers);
+  /* ⭐ 第一百零四轮：降雨归一化必须排在河流之后（河流用得上原始降雨/流量口径）。 */
+  normalizeRainfall(engine);
   engine.landRatio = landRatioOf(engine);
+}
+
+/** ⭐ 灵框加的一步（第一百零四轮）：把陆地降雨换成**分位数排名**（0..1）。
+ *
+ *  着色器拿 `v_em.y`（= region/三角形降雨）当湿度轴去查气候表，它必须是**这一张图里的相对干湿**。
+ *  ⚠️ 只做 min-max 归一化不够：上游降雨分布极偏（中位数就吃掉 70%+ 的量程）⇒ 归一化后
+ *  仍有八成陆地挤在"湿"那两列，整张图还是一色绿。改成**排名**：每块陆地按降雨大小取百分位，
+ *  0..1 均匀铺满 ⇒ 沙漠 / 草原 / 温带林 / 雨林四列各占约 1/4，气候带一眼能分开。
+ *  排名与线性各混 7:3（纯排名的分界线太"刀切"，掺一点原始梯度会自然些）。
+ *  只取陆地（`elevation_r >= 0`）定标尺，海洋不参与；确定性：纯排序，无随机。 */
+function normalizeRainfall(engine: TerrainEngine): void {
+  const { map, mesh } = engine;
+  const rain: Float32Array = map.rainfall_r;
+  if (!rain || !rain.length) return;
+  const nr = mesh.numRegions ?? rain.length;
+  const landIdx: number[] = [];
+  let lo = Infinity, hi = -Infinity;
+  for (let r = 0; r < nr; r++) {
+    if (map.elevation_r[r] < 0) continue;
+    const v = rain[r];
+    if (!Number.isFinite(v)) continue;
+    landIdx.push(r);
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  if (landIdx.length < 4 || !(hi - lo > 1e-6)) return;
+  const sorted = landIdx.map((r) => rain[r]).sort((a, b) => a - b);
+  const n = sorted.length;
+  /* 名次用二分找左下界（并列值给同一个名次 ⇒ 同湿度的两块陆地一样绿） */
+  const rankOf = (v: number) => {
+    let a = 0, b = n;
+    while (a < b) { const m = (a + b) >> 1; if (sorted[m] < v) a = m + 1; else b = m; }
+    return a / (n - 1);
+  };
+  const lin = 1 / (hi - lo);
+  for (const r of landIdx) {
+    rain[r] = 0.7 * rankOf(rain[r]) + 0.3 * (rain[r] - lo) * lin;
+  }
+  for (let r = 0; r < rain.length; r++) {
+    if (map.elevation_r[r] >= 0) continue;
+    const v = (rain[r] - lo) * lin;
+    rain[r] = v < 0 ? 0 : (v > 1 ? 1 : v);
+  }
+}
+
+/** ⭐ 灵框加的一步（第一百零四轮）：把多尺度噪声叠进高度场（细节 fBm + 山脊噪声）。
+ *
+ *  用户原话：「还有一件事，能不能用多重噪声增加复杂度」。
+ *  上游的形貌 = 平滑插值的网格 + 泊松盘撒点 ⇒ 山是"光滑的包"、平原是"一整片均匀面"。
+ *  这里按高度加权叠三层：海平面附近 0（海岸线保持平滑）、山脚 35%、山腰以上满幅；
+ *  噪声本身见 `src/mapgen/noise.ts`（4 octave fBm + 3 octave 山脊，全部确定性）。
+ *
+ *  ⚠️ 只改高度场，且调用点在 `reseatSeaLevel()` 之前 ⇒ 陆地占比仍精确等于目标（守卫 ★2）；
+ *  确定性由整数哈希保证（守卫 ★3「同种子一致 + 换种子不同」）。 */
+function applyTerrainNoise(engine: TerrainEngine): void {
+  const { mesh, map } = engine;
+  const p: TerrainNoiseParams = {
+    frequency: 1 / 95,
+    detailAmp: 0.045,
+    ridgeAmp: 0.10,
+    octaves: 4,
+    seed: (engine.params.elevation.seed | 0) ^ 0x2f1b3c5d,
+  };
+  const eT: Float32Array = map.elevation_t;
+  if (eT) {
+    for (let t = 0; t < eT.length; t++) {
+      const e = eT[t];
+      if (e <= 0) continue;
+      eT[t] = e + terrainOffset(mesh.x_of_t(t), mesh.y_of_t(t), e, p);
+    }
+  }
+  const eR: Float32Array = map.elevation_r;
+  if (eR) {
+    for (let r = 0; r < eR.length; r++) {
+      const e = eR[r];
+      if (e <= 0) continue;
+      eR[r] = e + terrainOffset(mesh.x_of_r(r), mesh.y_of_r(r), e, p);
+    }
+  }
 }
 
 /** ⭐ 灵框加的一步（上游没有）：**按目标陆地占比重定海平面**。

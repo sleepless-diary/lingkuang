@@ -254,7 +254,10 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
     if (!ws) return;
     if (!ws.maps?.length) { ws.maps = [DEFAULT_MAP()]; created = true; }
     const m = ws.maps[0];
+    /* 立体度是**显示参数**，换地形时沿用（用户挑过"顶视"就别给他弹回立体） */
+    const lift = m.terrain?.lift;
     m.terrain = { seed: plan.seed, style: plan.style, spec: plan.spec, view, form };
+    if (lift) m.terrain.lift = lift;
     if (keepPaint?.length) m.terrain.paint = keepPaint;
   });
 

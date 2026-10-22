@@ -253,6 +253,28 @@ async function main() {
     afterAgent.seed !== seedBefore && afterAgent.view === 'minimal',
     { seedBefore, seedAfter: afterAgent.seed, view: afterAgent.view });
 
+  /* ★13 立体度开关（第一百零四轮）：立体 ⇄ 顶视只存一个字段，不碰地形数字 */
+  {
+    const before = diskMap()?.terrain ?? {};
+    const setLift = async (v) => ev(`(function () {
+      const s = document.getElementById('map-lift');
+      if (!s) return 'none';
+      s.value = ${JSON.stringify(v)};
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return s.value;
+    })()`);
+    const gotFlat = await setLift('flat');
+    await sleep(1200);
+    const flat = diskMap()?.terrain ?? {};
+    const gotSolid = await setLift('solid');
+    await sleep(1200);
+    const solid = diskMap()?.terrain ?? {};
+    check('★13 立体度开关：顶视 / 立体都落盘，且种子、档位、看的方式一个都没动',
+      gotFlat === 'flat' && flat.lift === 'flat' && gotSolid === 'solid' && solid.lift === 'solid'
+        && solid.seed === before.seed && solid.style === before.style && solid.view === before.view,
+      { flat: flat.lift, solid: solid.lift, seedSame: solid.seed === before.seed, viewSame: solid.view === before.view });
+  }
+
   /* ★12 无未捕获异常 */
   const errs = await ev(`(window.__errs || []).slice(0, 8)`);
   check('★12 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

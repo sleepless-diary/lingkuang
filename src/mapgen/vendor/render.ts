@@ -366,6 +366,9 @@ const frag_drape = `
     uniform vec3 u_land_ramp[8];
     uniform vec3 u_sea_ramp[6];
     uniform vec3 u_line_color, u_river_color;
+    /* ⭐ 灵框追加（第一百零四轮）：生物群系 —— 气候色表（x = 湿度、y = 温度）+ 权重 */
+    uniform sampler2D u_biome;
+    uniform float u_biome_amt;
     in vec2 v_uv, v_xy, v_em;
     in float v_z;
     out vec4 out_fragcolor;
@@ -485,6 +488,31 @@ const frag_drape = `
             landC *= mix(vec3(1.03, 0.99, 0.94), vec3(0.96, 1.04, 0.97), clamp(v_em.y, 0.0, 1.0) * u_moist);
             /* 细节噪声给陆地加一层斑驳（幅度小，不把色带打乱） */
             landC *= 1.0 + detailN * 0.04 * u_detail;
+            /* ⭐ 灵框追加（第一百零四轮）：生物群系 —— 用户「只能看出山脉和平原两种地形」。
+               高程色带只管"多高"，管不了"多干 / 多冷"；这张 4×3 气候表（干湿 × 冷暖）补上后，
+               低地会按气候分成荒漠 / 草原 / 温带林 / 雨林 / 苔原 / 针叶林，高处再交回高程色带（岩 / 雪）。
+               · 温度：南北纬度（v_uv.y 离中线越远越冷）+ 海拔递减（每升高 0.1 掉约 1 个温度档）；
+               · 湿度：内核降雨 rainfall_r（实测陆地 0.53..0.92）拉宽到 0..1 —— 不拉宽就全是"湿"。
+               · 陡坡再压一层岩色：山脊不会因为"气候绿"而绿成一片草坪。 */
+            if (u_biome_amt > 0.0) {
+                /* 纬度用 **3.8 倍**放大：可见横带（世界 y 234..766）的上下缘正好压到"寒带"，
+                   中线是"暖带" —— 否则 0..0.53 的纬度只用到气候表最上面两行，看不到极地/荒漠。 */
+                float lat = clamp(abs(v_uv.y - 0.5) * 3.8, 0.0, 1.0);
+                float temp01 = clamp(1.0 - lat * 0.92 - max(0.0, zLand - 0.5) * 2.0, 0.0, 1.0);
+                /* 湿度 = 生成阶段 normalizeRainfall() 归一化过的陆地降雨（0..1 铺满），
+                   再向两端拉 1.35 倍：排名后仍有一半落在中间两列（都是绿），拉开才有荒漠/雨林。 */
+                float moist01 = clamp(0.5 + (v_em.y - 0.5) * 1.35, 0.0, 1.0);
+                /* 采样点落在 4×3 纹理的**纹素中心**之间（0.125..0.875 / 0.1667..0.8333），
+                   这样 0 和 1 两端也真的取到首末两档颜色，不会因为 clamp 卡在边上。 */
+                vec3 climateC = texture(u_biome, vec2(0.125 + moist01 * 0.75, 0.1667 + temp01 * 0.6667)).rgb;
+                /* 低地按气候上色；t > 0.42 起逐渐让位给高程色带（岩石 / 雪线） */
+                float rockMix = smoothstep(0.42, 0.78, landT);
+                landC = mix(mix(landC, climateC, u_biome_amt), landC, rockMix);
+                /* 陡坡露岩（色带中段 ≈ 灰褐岩），权重压一半，避免山体全变灰 */
+                float steep = clamp(1.0 - slope_vector.z, 0.0, 1.0);
+                vec3 rockC = mix(u_land_ramp[3], u_land_ramp[5], 0.35);
+                landC = mix(landC, rockC, smoothstep(0.30, 0.65, steep) * 0.5 * u_biome_amt);
+            }
             biome_color = mix(biome_color, mix(seaC, landC, step(0.5, z0)), u_grade);
             water_color.rgb = mix(water_color.rgb, u_river_color, u_grade);
 
@@ -630,6 +658,10 @@ export default class Renderer {
     webgl: WebGLWrapper;
 
     texture_colormap: Texture;
+    /* ⭐ 灵框追加（第一百零四轮）：气候色表（4×3，x = 湿度、y = 温度）—— 生物群系上色。
+       只有 48 字节，换档/换风格时改内容不重建纹理。 */
+    texture_biome: Texture;
+    biomeKey: string = '';
 
     fbo_river: Framebuffer;
     fbo_land: Framebuffer;
@@ -686,6 +718,7 @@ export default class Renderer {
         this.buffer_river_xyww = this.webgl.createBuffer({update: 'dynamic', data: this.a_river_xyww});
 
         this.texture_colormap = this.webgl.createTexture({data: colormap.data, width: colormap.width, height: colormap.height, filter: 'nearest'});
+        this.texture_biome = this.webgl.createTexture({width: 4, height: 3, data: new Uint8Array(4 * 3 * 4), filter: 'linear'});
 
         this.fbo_land  = this.webgl.createFramebuffer(fbo_texture_size, fbo_texture_size, {depth: false, internalFormat: this.webgl.gl.R16F, filter: 'linear'});
         this.fbo_depth = this.webgl.createFramebuffer(fbo_texture_size, fbo_texture_size, {depth: true, internalFormat: this.webgl.gl.R16F, filter: 'nearest'}); // NOTE: linear requires adjusting parameters
@@ -834,6 +867,24 @@ export default class Renderer {
             gl.uniform1f(program.u_grain, renderParam.grain ?? 0);
             gl.uniform1f(program.u_vignette, renderParam.vignette ?? 0);
             gl.uniform1f(program.u_moist, renderParam.moist ?? 0);
+            /* ⭐ 灵框追加（第一百零四轮）：气候表 —— 48 字节，内容变了才重传 */
+            gl.uniform1f(program.u_biome_amt, renderParam.biome_amt ?? 0);
+            const biome = renderParam.biome_ramp;
+            if (biome && biome.length >= 36) {
+                const key = biome.length + ':' + biome.join(',');
+                if (key !== this.biomeKey) {
+                    this.biomeKey = key;
+                    const px = new Uint8Array(4 * 3 * 4);
+                    for (let i = 0; i < 12; i++) {
+                        px[i * 4] = Math.round((biome[i * 3] ?? 0) * 255);
+                        px[i * 4 + 1] = Math.round((biome[i * 3 + 1] ?? 0) * 255);
+                        px[i * 4 + 2] = Math.round((biome[i * 3 + 2] ?? 0) * 255);
+                        px[i * 4 + 3] = 255;
+                    }
+                    gl.bindTexture(gl.TEXTURE_2D, this.texture_biome.id);
+                    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 4, 3, gl.RGBA, gl.UNSIGNED_BYTE, px);
+                }
+            }
             const uniformLoc = (name: string) => program[name] ?? program[`${name}[0]`];
             gl.uniform3fv(uniformLoc('u_land_ramp'), renderParam.land_ramp ?? ZERO_LAND_RAMP);
             gl.uniform3fv(uniformLoc('u_sea_ramp'), renderParam.sea_ramp ?? ZERO_SEA_RAMP);
@@ -844,6 +895,7 @@ export default class Renderer {
             this.fbo_land.texture.activate(gl.TEXTURE1, program.u_elevation);
             this.fbo_river.texture.activate(gl.TEXTURE2, program.u_water);
             this.fbo_depth.texture.activate(gl.TEXTURE3, program.u_depth);
+            this.texture_biome.activate(gl.TEXTURE4, program.u_biome);
 
             gl.drawElements(gl.TRIANGLES, this.quad_elements_length, gl.UNSIGNED_INT, 0);
         });

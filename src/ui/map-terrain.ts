@@ -13,11 +13,23 @@
 
 import {
   BAND, TerrainView, createEngineFor, resetPaint, runGeneration, statsOf, styleRenderParams,
-  type MapgenSpecInput, type TerrainEngine, type TerrainStats,
+  type MapgenRenderParams, type MapgenSpecInput, type TerrainEngine, type TerrainStats,
 } from '../mapgen';
 import type { MapTerrainSpec } from '../store/types';
 
 export type { TerrainStats };
+
+/** 立体度：`flat` = 顶视（垂直夸张归零 ⇒ 看不到山坡侧壁），其余 = 立体。
+ *  用户 2026-10-21：「山好像有顶部边缘，能不能做成开关」—— 这就是那个开关的取值。 */
+export function liftOf(t: MapTerrainSpec | undefined): 'solid' | 'flat' {
+  return t?.lift === 'flat' ? 'flat' : 'solid';
+}
+
+/** 「看的方式」+ 立体度 → 渲染参数（缺省 = 立体：不动 `mountain_height`，沿用内核默认的垂直夸张） */
+export function terrainRenderParams(t: MapTerrainSpec): Partial<MapgenRenderParams> {
+  const p = styleRenderParams(t.view);
+  return liftOf(t) === 'flat' ? { ...p, mountain_height: 0 } : p;
+}
 
 /** 内核位图边长（`render.ts` 的 `fbo_texture_size`；改那里就得改这里） */
 export const TERRAIN_BITMAP = 2048;
@@ -116,11 +128,11 @@ export function mountTerrain(canvas: HTMLCanvasElement, t: MapTerrainSpec, w: nu
   canvas.style.height = L.size + 'px';
   canvas.style.pointerEvents = 'none';
   const view = new TerrainView(canvas, engine);
-  view.setStyle(styleRenderParams(t.view));   /* 风格在构造后立刻定下来（缺省 = 立体）*/
+  view.setStyle(terrainRenderParams(t));   /* 风格 + 立体度在构造后立刻定下来（缺省 = 立体）*/
   view.update();
   return {
     dispose: () => view.dispose(),
-    setStyle: (v) => view.setStyle(styleRenderParams(v)),
+    setStyle: (v) => view.setStyle(terrainRenderParams({ ...t, view: v })),
     regenerate: (opts) => {
       /* ⚠️ 实时刷的时候场里**已经**有这一笔（`paintStep` 直接写进内核的约束场）⇒
          `replayPaint` 会因为"场里有笔迹"而跳过重放，不会双重叠加。 */
@@ -173,7 +185,7 @@ export async function terrainThumbUrl(
     const view = thumbViewFor(t, w, h);
     /* ⭐ 风格是渲染参数（不在缓存键里）⇒ 每次出图前按这份 spec 重设一次：
        同一块地切「等高线」「平面」时，缩略图才跟着变（而不是永远第一档）。 */
-    view.setStyle(styleRenderParams(t.view));
+    view.setStyle(terrainRenderParams(t));
     const shot = await view.snapshot();
     const out = document.createElement('canvas');
     out.width = Math.max(16, Math.round(outW));

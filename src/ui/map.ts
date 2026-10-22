@@ -18,7 +18,7 @@ import type { MapData, MapPaintStroke } from '../store/types';
 import { escapeHtml } from './html';
 import { DEFAULT_MAP, polylinePath, smoothClosedPath } from './map-gen';
 import {
-  mountTerrain, mapPointToWorld, resetTerrainPaint, terrainStats, type TerrainHandle,
+  mountTerrain, mapPointToWorld, resetTerrainPaint, terrainStats, liftOf, type TerrainHandle,
 } from './map-terrain';
 import { PLANET_VIEW_H, mountGlobeView, mountPlanet, planetStats } from './planet-view';
 import { DEFAULT_PAINT_SIZE, DEFAULT_PAINT_TOOL, TERRAIN_STYLES, beginPaintStroke, paintStep, terrainStyleLabel, terrainStyleOf } from '../mapgen';
@@ -75,8 +75,9 @@ export function renderMap(store: Store, host: HTMLElement): void {
         <select id="map-form" title="形态：局部 = 一片地区的地形（能手刷精修）；星球 = 整颗星球（经度无缝、有两极，能贴到球上看）" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${MAP_FORMS.map((f) => `<option value="${f.id}" title="${escapeHtml(f.hint)}">${escapeHtml(f.label)}</option>`).join('')}</select>
         <button id="map-globe" class="lk-btn lk-btn--ghost lk-btn--sm" title="球体看：把星球图贴到一颗真球上（拖动旋转、滚轮缩放）—— 只在星球形态下出现" style="display:none;background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">球体看</button>
         <select id="map-view" title="看的方式：地形怎么画（八档：自然 / 地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简）—— 只换画法，不重算地形" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${TERRAIN_STYLES.map((s) => `<option value="${s.id}" title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}</option>`).join('')}</select>
-        <span style="width:1px;height:16px;background:var(--border-soft);"></span>
+        <select id="map-lift" title="立体度：立体 = 山有厚度（能看到山坡侧面）；顶视 = 从正上方看（没有侧壁，只有色带与明暗）—— 只换看法，不重算地形" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;"><option value="solid" title="山有厚度：能看见山坡侧面与投影（默认）">立体</option><option value="flat" title="正上方俯视：山只靠色带与明暗表达高度，没有侧壁">顶视</option></select>
         <button data-mode="region" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" >区域</button>
+        <span style="width:1px;height:16px;background:var(--border-soft);"></span>
         <button data-mode="marker" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" >标记</button>
         <button data-mode="paint" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" title="手刷地形：造山 / 压谷 / 浅海 / 深海（在地形上直接刷）" >地形</button>
         <button data-mode="move" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" >移动</button>
@@ -207,6 +208,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
   const genNote = host.querySelector('#map-gen-note') as HTMLElement;
   const viewSel = host.querySelector('#map-view') as HTMLSelectElement;
   const formSel = host.querySelector('#map-form') as HTMLSelectElement;
+  const liftSel = host.querySelector('#map-lift') as HTMLSelectElement;
   const globeBtn = host.querySelector('#map-globe') as HTMLButtonElement;
   host.querySelector('#map-gen')?.addEventListener('click', () => { openMapStudioFromToolbar(store); });
   /* ⭐ 「看的方式」（第九十七轮）：改了**只重画**（`syncTerrain` 里换渲染参数），不重算地形。
@@ -222,6 +224,13 @@ export function renderMap(store: Store, host: HTMLElement): void {
     const v = formSel.value;
     if (!curMap()?.terrain) return;
     save((mm) => { if (mm.terrain) mm.terrain.form = v; });
+  });
+  /* ⭐ 「立体度」（第一百零四轮）：立体（山有厚度、能看到山坡侧面）⇄ 顶视（正上方看，没有侧壁）。
+     只改渲染的垂直夸张（`mountain_height`），**不重算地形**；落盘照走 `save()`（一步撤销）。 */
+  liftSel.addEventListener('change', () => {
+    const v = liftSel.value;
+    if (!curMap()?.terrain) return;
+    save((mm) => { if (mm.terrain) mm.terrain.lift = v; });
   });
   globeBtn.addEventListener('click', () => {
     globeOn = !globeOn;
@@ -290,6 +299,11 @@ export function renderMap(store: Store, host: HTMLElement): void {
     /* ⭐ 「形态」（第九十八轮）：控件跟着数据走；星球形态才显示「球体看」，画笔在星球下不适用 */
     if (formSel.value !== form) formSel.value = form;
     formSel.disabled = !m.terrain;
+    /* ⭐ 「立体度」（第一百零四轮）：控件跟着数据走；星球形态是 CPU 画的平面图，没有立体度这回事 ⇒ 藏起来 */
+    const lift = liftOf(m.terrain);
+    if (liftSel.value !== lift) liftSel.value = lift;
+    liftSel.disabled = !m.terrain;
+    liftSel.style.display = m.terrain && form === 'planet' ? 'none' : '';
     globeBtn.style.display = m.terrain && form === 'planet' ? '' : 'none';
     globeBtn.style.background = globeOn ? 'rgba(158,194,98,.2)' : 'none';
     if (m.terrain && form === 'planet' && mode === 'paint') setMode('move');
@@ -297,7 +311,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
       ? `${mapFormLabel(form)} · ${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}% · 种子「${m.terrain.seed}」 · ${terrainStyleLabel(style)}${form === 'planet' && globeOn ? ' · 球体' : ''}`
       : '还没有地形';
     const key = m.terrain
-      ? `${form}|${m.terrain.seed}|${m.terrain.style}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}|${JSON.stringify(m.terrain.paint ?? [])}`
+      ? `${form}|${m.terrain.seed}|${m.terrain.style}|${lift}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}|${JSON.stringify(m.terrain.paint ?? [])}`
         + (form === 'planet' ? `|${globeOn ? 'globe' : 'equirect'}|${style}` : '')
       : '';
     if (key === terrainKey) {

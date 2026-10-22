@@ -951,3 +951,57 @@
 - `tools/e2e/mapgen-engine.mjs` ★14 换成八档契约（每档都必须带色带；旧 id 走别名），★21 仍是"等高线真画出来了"（★21 的判据没改，靠把 `topo` 的 `contourScale` 定在 20 过）；
 - `tools/e2e/map-style.cjs` 从三档改八档（★8 先点开沙盘工具并 `scrollIntoView`：元素在视口外时 clip 截图是空的，曾假红）。
 - 实测：`mapgen-engine` 22/22、`map-style` 13/13、`map-planet` 13/13。
+
+---
+
+## 2026-10-21 · 地形复杂度 + 生物群系 + 立体度开关
+
+用户三连反馈：①「这个地图还是太简单了。山很少，而且看不出不同地形之间有什么区别，只能看出山脉和平原两种地形」；②「还有一件事，能不能用多重噪声增加复杂度」；③「山好像有顶部边缘，能不能做成开关，一种是顶视图，一种是现在这种有一点立体感的」。
+
+### 一、为什么「只有山脉和平原」（量出来的根因）
+
+在真实种子（present-2 / 大陆档 / 陆地 34%）上量：
+
+| 指标 | 改前 | 改后 |
+| --- | --- | --- |
+| 陆地高度 5/25/50/75/95 分位 | 0.003 / 0.014 / 0.026 / 0.078 / 0.265 | 0.011 / 0.042 / 0.074 / 0.126 / 0.327 |
+| 平地（<0.02）占比 | 39% | 10% |
+| 山体（>0.1）连通块 | 7 条 | 46 块（含支脉） |
+| 陆地降雨分位 | 0.53 / 0.75 / 0.835 / 0.884 / 0.921（一半以上 > 0.8） | 0.11 / 0.36 / 0.58 / 0.78 / 0.92 |
+
+两条根因：**高度场一半陆地贴着海平面**（上游 `hill_height = 0.02`）；**降雨几乎全湿**（`raininess = 0.9`），而生物群系要靠「干湿 × 冷暖」才能分带 —— 只有一个气候自然只有一种绿。
+
+### 二、生成层：多尺度噪声（新文件 `src/mapgen/noise.ts`）
+
+- **值噪声**：32 位整数哈希（`Math.imul`，跨平台逐位一致）→ 双线性 + smoothstep 插值；`fbm2D()` 4 octave（频率 ×2.03、幅度 ×0.5）；`ridgeNoise2D()` = `1 - |2·fbm - 1|`（脊线取 1，形成连成串的支脉）。
+- **叠加**：`applyTerrainNoise()` 在 `runGeneration()` 里排在 `assignElevation()` 之后、`reseatSeaLevel()` 之前，同时改 `elevation_t` 与 `elevation_r`；权重 = 海岸掩码（`min(1, e/0.05)`，海平面附近 0 ⇒ 守卫 ★15「海岸一样平滑」）× 高度增益（山脚 0.35 → 山腰以上 1.0）。参数：`frequency = 1/95`、`detailAmp = 0.045`、`ridgeAmp = 0.10`、`octaves = 4`。
+- **降雨归一化**：`normalizeRainfall()` 在 `assignRivers()` 之后，把陆地 `rainfall_r` 换成**分位数排名**（`0.7·rank + 0.3·线性`）⇒ 湿度轴铺满 0..1（只 min-max 归一化时八成陆地仍挤在「湿」那两列）。
+
+### 三、生成层：参数偏离上游（都记在 `src/mapgen/NOTICE.md` 第 10 条）
+
+- `elevation.hill_height` 0.02 → 0.07（`paramsFromSeed` 里再按山脊密度 `0.05 + ridges*0.0055`）；
+- `elevation.mountain_folds` 0.05 → 0.18（只影响 `geometry.ts` 渲染高度，统计不变 ⇒ 守卫口径稳定）；
+- `biomes.raininess` 0.9 → 0.55、`rain_shadow` 0.5 → 0.7；
+- `render.mountain_height` 50 → 72、`slope` 2 → 2.6；
+- `paramsFromSeed()`：`mountainSpacing = round(50 - ridges*5)`（山脊 4 档从 35 收到 30）。
+
+### 四、渲染层：气候色表（生物群系）
+
+- `styles.ts` 新增 `CLIMATE_BASE`（3 温度带 × 4 湿度档；行 = 冷/温/暖，列 = 干→湿）+ `climateFloats(treat)`（4×3 纹理，12×3 分量）+ `climateHex(treat, temp01, moist01)`（星球逐像素用）；八档各有一个 `treat`（natural / vivid / dream / sepia / ink / blue / pale / muted），把基准表染成自己的调子。
+- 着色器：`u_biome`（sampler）+ `u_biome_amt`；温度 = `|v_uv.y - 0.5| × 3.8` 的纬度 + `(zLand-0.5)×2.0` 的海拔递减，湿度 = `0.5 + (v_em.y-0.5)×1.35`；采样取纹素中心（`0.125 + m×0.75`、`0.1667 + t×0.6667`）。
+- 混合顺序：低地 = `mix(高程色, 气候色, amt)` → 高处 `landT > 0.42` 渐回高程色带（岩/雪）→ 陡坡再压一层岩色（权重 0.5·amt）。
+- 纹理更新：`drawDrape()` 里 48 字节 `texSubImage2D`，`biomeKey` 字符串比对 ⇒ 换风格不重建纹理。
+
+### 五、立体度开关（顶视 / 立体）
+
+- 数据：`MapTerrainSpec.lift`（`solid` 缺省 / `flat`），只存这一个字符串；
+- 渲染：`src/ui/map-terrain.ts` 的 `terrainRenderParams(t)` = `styleRenderParams(t.view)` + `lift === 'flat' ? { mountain_height: 0 } : {}`；`flat` 时地形垂直夸张归零 ⇒ **山坡侧壁消失**（用户说的「顶部边缘」），只剩色带与明暗；
+- 界面：地图栏 `#map-lift` 下拉（立体 / 顶视），星球形态下隐藏（星球是 CPU 画的平面图）；落盘走 `save()`（一步撤销），换地形时由 `src/ui/map-gen.ts` 沿用旧 `lift`；
+- 缓存：`lift` 进 `syncTerrain()` 的 `key`（换档重挂画布，引擎缓存仍命中）。
+
+### 六、验证
+
+- `npx tsc --noEmit` 0、`npx vite build` 0；
+- `tools/e2e/mapgen-engine.mjs` **22/22 PASS**（★0 改成「上游骨架 + 灵框刻意偏离的三处」；★15~★17 海岸平滑、★19 峰值/均值 6.2 ≥ 5.9 全过）；
+- `tools/e2e/map-style.cjs` **13/13**、`map-planet.cjs` **13/13**、`map-studio.cjs` **16/16**（各自在**干净临时目录**起一个实例跑）；
+- 截图：`.review/shots-map-noise2/`（八档局部 + 八档星球）、`.review/shots-lift/`（立体 vs 顶视同图对比）。

@@ -66,6 +66,10 @@ export interface TerrainStyleDef {
   vignette: number;
   /** 湿度偏色权重（湿偏绿 / 干偏暖；0 = 不看湿度） */
   moist: number;
+  /** 气候色权重（0 = 只看高度；越大低地越按「干湿 × 冷暖」上色 —— 生物群系） */
+  biome: number;
+  /** 气候表的染色方式（八档各自的调子；见 `applyClimate()`） */
+  treat: ClimateTreat;
   /** 山脊描边强度 */
   outline: number;
   /** 河两侧压边（上游的 outline_water：越大河床越"凹"） */
@@ -88,7 +92,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
     river: '#5b9fc4',
     grade: 1, shade: 1, bands: 0, contour: 0, contourScale: 10,
     detail: 0.65, coast: 0.5, waterNoise: 0.2, hatch: 0, paper: 0, grain: 0.05, vignette: 0,
-    moist: 0.8, outline: 15, outlineWater: 13, outlineCoast: 1.2, light: 80,
+    moist: 0.8, biome: 0.85, treat: 'natural', outline: 15, outlineWater: 13, outlineCoast: 1.2, light: 80,
   },
   {
     id: 'topo',
@@ -100,7 +104,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
     river: '#4b8cb0',
     grade: 1, shade: 0.32, bands: 14, contour: 1, contourScale: 20,
     detail: 0.18, coast: 0.3, waterNoise: 0.04, hatch: 0, paper: 0.12, grain: 0.02, vignette: 0,
-    moist: 0.25, outline: 8, outlineWater: 13, outlineCoast: 0.8, light: 80,
+    moist: 0.25, biome: 0.4, treat: 'pale', outline: 8, outlineWater: 13, outlineCoast: 0.8, light: 80,
   },
   {
     id: 'paper',
@@ -112,7 +116,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
     river: '#8a6636',
     grade: 1, shade: 0.5, bands: 0, contour: 0.55, contourScale: 9,
     detail: 0.35, coast: 0.3, waterNoise: 0.1, hatch: 0.45, paper: 0.9, grain: 0.5, vignette: 0.45,
-    moist: 0.2, outline: 10, outlineWater: 13, outlineCoast: 1.5, light: 65,
+    moist: 0.2, biome: 0.55, treat: 'sepia', outline: 10, outlineWater: 13, outlineCoast: 1.5, light: 65,
   },
   {
     id: 'ink',
@@ -124,7 +128,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
     river: '#3d3b36',
     grade: 1, shade: 0.95, bands: 0, contour: 0.25, contourScale: 8,
     detail: 0.85, coast: 0.15, waterNoise: 0.2, hatch: 0.35, paper: 0.3, grain: 0.12, vignette: 0.3,
-    moist: 0.1, outline: 14, outlineWater: 13, outlineCoast: 0.6, light: 75,
+    moist: 0.1, biome: 0.45, treat: 'ink', outline: 14, outlineWater: 13, outlineCoast: 0.6, light: 75,
   },
   {
     id: 'blueprint',
@@ -136,7 +140,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
     river: '#7cc4e4',
     grade: 1, shade: 0.5, bands: 0, contour: 1, contourScale: 16,
     detail: 0.15, coast: 0.6, waterNoise: 0.2, hatch: 0.3, paper: 0, grain: 0.12, vignette: 0.35,
-    moist: 0, outline: 6, outlineWater: 13, outlineCoast: 1.8, light: 60,
+    moist: 0, biome: 0.5, treat: 'blue', outline: 6, outlineWater: 13, outlineCoast: 1.8, light: 60,
   },
   {
     id: 'dreamcore',
@@ -148,7 +152,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
     river: '#9ec262',
     grade: 1, shade: 0.75, bands: 0, contour: 0.2, contourScale: 9,
     detail: 0.5, coast: 0.4, waterNoise: 0.25, hatch: 0, paper: 0.35, grain: 0.3, vignette: 0.5,
-    moist: 0.5, outline: 12, outlineWater: 13, outlineCoast: 1.4, light: 75,
+    moist: 0.5, biome: 0.75, treat: 'dream', outline: 12, outlineWater: 13, outlineCoast: 1.4, light: 75,
   },
   {
     id: 'satellite',
@@ -160,7 +164,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
     river: '#5793b4',
     grade: 1, shade: 1, bands: 0, contour: 0, contourScale: 10,
     detail: 1, coast: 0.45, waterNoise: 0.3, hatch: 0, paper: 0, grain: 0.1, vignette: 0.25,
-    moist: 1, outline: 15, outlineWater: 13, outlineCoast: 1, light: 80,
+    moist: 1, biome: 0.8, treat: 'vivid', outline: 15, outlineWater: 13, outlineCoast: 1, light: 80,
   },
   {
     id: 'minimal',
@@ -172,7 +176,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
     river: '#a7bcbb',
     grade: 1, shade: 0, bands: 0, contour: 0, contourScale: 10,
     detail: 0, coast: 0.25, waterNoise: 0, hatch: 0, paper: 0, grain: 0, vignette: 0,
-    moist: 0.3, outline: 0, outlineWater: 13, outlineCoast: 0.4, light: 80,
+    moist: 0.3, biome: 0.3, treat: 'muted', outline: 0, outlineWater: 13, outlineCoast: 0.4, light: 80,
   },
 ];
 
@@ -238,6 +242,94 @@ export function sampleRampHex(hexes: string[], t: number): string {
   }).join('');
 }
 
+/* ── 气候色（生物群系）────────────────────────────────────────────────────────
+   用户 2026-10-21：「看不出不同地形之间有什么区别，只能看出山脉和平原两种地形」。
+   **高程色带只能表达"多高"，表达不了"多干 / 多冷"** ⇒ 再挂一张 **干湿 × 冷暖** 的气候表：
+   4 个湿度档（干 → 湿，纹理 x）× 3 个温度带（冷 / 温 / 暖，纹理 y）。
+   着色器按 `texture(u_biome, vec2(湿度, 温度))` 采样，线性过滤 ⇒ 群系之间是渐变不是色块。
+   八档风格各自把这张表染成自己的调子（`applyClimate`）—— 内容（哪里干哪里冷）来自地形，色调来自风格。 */
+
+/** 基准气候表：行 = 温度带（冷 / 温 / 暖），列 = 湿度（干 → 湿）。 */
+const CLIMATE_BASE: string[][] = [
+  /* 冷带：苔原（灰白）→ 荒原 → 针叶林（青灰绿）→ 深针叶林 —— 蓝绿调，与温带的黄绿拉开 */
+  ['#d5d7cc', '#b6bcae', '#6e8a7c', '#4f6f66'],
+  /* 温带：干草原（卡其）→ 草甸 → 温带阔叶林 → 深林 */
+  ['#b3a97f', '#98a46f', '#5f8355', '#4a6f4a'],
+  /* 暖带：荒漠（沙黄）→ 稀树草原（黄绿）→ 旱生林（橄榄）→ 雨林（深绿） */
+  ['#dfc48c', '#c3b26b', '#93a557', '#3f6f45'],
+];
+
+export type ClimateTreat = 'natural' | 'vivid' | 'dream' | 'sepia' | 'ink' | 'blue' | 'pale' | 'muted';
+
+function hexToRgb(hex: string): [number, number, number] {
+  return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+}
+function rgbToHex(r: number, g: number, b: number): string {
+  const c = (v: number) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return '#' + c(r) + c(g) + c(b);
+}
+/** 两色按 k 混合（0 = a，1 = b） */
+function mixHex(a: string, b: string, k: number): string {
+  const [r1, g1, b1] = hexToRgb(a), [r2, g2, b2] = hexToRgb(b);
+  return rgbToHex(r1 + (r2 - r1) * k, g1 + (g2 - g1) * k, b1 + (b2 - b1) * k);
+}
+/** 亮度（Rec.709） */
+function luma(hex: string): number {
+  const [r, g, b] = hexToRgb(hex);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+/** 去饱和：按 k 走向同亮度的灰 */
+function desat(hex: string, k: number): string {
+  const l = luma(hex);
+  return mixHex(hex, rgbToHex(l, l, l), k);
+}
+
+/** 把基准气候色染成某档风格的调子（只动色相/明度，不动"哪里是什么群系"的分布） */
+function applyClimate(hex: string, treat: ClimateTreat): string {
+  switch (treat) {
+    case 'vivid':   /* 卫星：略提亮、略加饱和（往纯色推一点） */
+      return desat(mixHex(hex, '#ffffff', 0.04), -0.12);
+    case 'dream':   /* 梦核：压向品牌橄榄绿，再混一层暖灰（旧录像感） */
+      return mixHex(mixHex(hex, '#87a95c', 0.32), '#c9c6bd', 0.14);
+    case 'sepia':   /* 羊皮纸：整体褐化 */
+      return mixHex(hex, '#c9b489', 0.55);
+    case 'ink':     /* 水墨：只剩明暗（留一点冷灰蓝，别变纯中性） */
+      return mixHex(rgbToHex(luma(hex), luma(hex), luma(hex)), '#5b6470', 0.16);
+    case 'blue':    /* 蓝图：压进深蓝，靠明度区分群系 */
+      return mixHex(mixHex(hex, '#1b4a72', 0.62), '#8fd3ee', 0.05);
+    case 'pale':    /* 地形图：往纸白提，保持读图时的低刺激 */
+      return mixHex(mixHex(hex, '#f2eddd', 0.45), '#8a5a2e', 0.03);
+    case 'muted':   /* 极简：灰化 + 压平 */
+      return mixHex(desat(hex, 0.5), '#cfcbbf', 0.35);
+    case 'natural':
+    default:
+      return hex;
+  }
+}
+
+/** 气候表 → 着色器纹理（4×3，行主序：温度带 0..2 × 湿度档 0..3），12×3 个 0..1 分量 */
+export function climateFloats(treat: ClimateTreat): Float32Array {
+  const out = new Float32Array(12 * 3);
+  let i = 0;
+  for (const row of CLIMATE_BASE) {
+    for (const hex of row) {
+      const [r, g, b] = colorFloats(applyClimate(hex, treat));
+      out[i++] = r; out[i++] = g; out[i++] = b;
+    }
+  }
+  return out;
+}
+
+/** 某个群系的颜色（星球逐像素上色用：按温度 / 湿度双线性插值） */
+export function climateHex(treat: ClimateTreat, temp01: number, moist01: number): string {
+  const t = Math.max(0, Math.min(1, temp01)) * (CLIMATE_BASE.length - 1);
+  const m = Math.max(0, Math.min(1, moist01)) * (CLIMATE_BASE[0].length - 1);
+  const t0 = Math.floor(t), t1 = Math.min(CLIMATE_BASE.length - 1, t0 + 1), tk = t - t0;
+  const m0 = Math.floor(m), m1 = Math.min(CLIMATE_BASE[0].length - 1, m0 + 1), mk = m - m0;
+  const row = (ri: number) => mixHex(CLIMATE_BASE[ri][m0], CLIMATE_BASE[ri][m1], mk);
+  return applyClimate(mixHex(row(t0), row(t1), tk), treat);
+}
+
 /** 风格 → 渲染参数（叠在 `params.render` 之上）。缺省档缺省值 = 上游原样。 */
 export function styleRenderParams(v: unknown): Partial<MapgenRenderParams> {
   const d = terrainStyleDef(v);
@@ -255,6 +347,8 @@ export function styleRenderParams(v: unknown): Partial<MapgenRenderParams> {
     grain: d.grain,
     vignette: d.vignette,
     moist: d.moist,
+    biome_amt: d.biome,
+    biome_ramp: Array.from(climateFloats(d.treat)),
     outline_strength: d.outline,
     outline_water: d.outlineWater,
     outline_coast: d.outlineCoast,

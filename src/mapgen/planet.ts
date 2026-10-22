@@ -29,7 +29,7 @@ import { createNoise3D } from 'simplex-noise';
  *  `require`），而 `./index.ts` 那条链拉进 vendored mapgen4，里面有 DOM 假设（`document` /
  *  `HTMLCanvasElement`）⇒ 值导入会在 node 里直接炸。`seedInt` 因此本地抄一份。 */
 import type { MapgenSpecInput, TerrainStats } from './index';
-import { sampleRampHex, terrainStyleDef } from './styles';
+import { climateHex, sampleRampHex, terrainStyleDef } from './styles';
 
 /* ── 小工具 ─────────────────────────────────────────────────────────────────── */
 
@@ -838,10 +838,21 @@ export function renderPlanet(f: PlanetField, view: unknown): Uint8ClampedArray {
           tt = (Math.floor(lv) + 0.35 * (lv - Math.floor(lv))) / bandN;
         }
         col = rampAt(landLut, tt);
-        /* 干湿偏色：湿的地方偏绿、干的地方偏暖 —— 沙漠/雨林在同高度也能分开 */
-        if (def.moist > 0) {
-          const dry = clamp((0.45 - moist[k]) * 1.6, 0, 1) * def.moist;
-          col = mix(col, mix(col, [201, 177, 132], 0.55), dry * 0.35);
+        /* ⭐ 第一百零四轮：生物群系 —— 用户「只能看出山脉和平原两种地形」。
+           星球这边**有真实纬度温度**（`temp[]`，年均℃）和湿度（`moist[]`），所以直接查气候表：
+           低地按气候上色（荒漠 / 草原 / 温带林 / 雨林 / 苔原 / 针叶林），
+           t > 0.42 起逐渐交回高程色带（岩 / 雪）—— 山脊不会被"气候绿"糊成草坪。 */
+        if (def.biome > 0) {
+          /* 星球有真实年均温（℃）：−5℃ 及以下算寒带、30℃ 及以上算热带 —— 按实测分位
+             （本机种子 5%..95% = 1.7..28℃）正好铺满三条温度带，不会整颗星球都落进"暖带=荒漠"。 */
+          const temp01 = clamp((temp[k] + 5) / 35, 0, 1);
+          /* 湿度：星球的 `moist` 中位数约 0.46（不是"必然偏湿"的量），先除以 0.75 再向两端拉 1.2 倍，
+             让 0.46 落在"旱生林"那一列、0.8 以上才进雨林 —— 不然整颗星球都读成荒漠/稀树草原。 */
+          const moist01 = clamp(0.5 + ((moist[k] - 0.05) / 0.75 - 0.5) * 1.2, 0, 1);
+          const climateC = hex(climateHex(def.treat, temp01, moist01));
+          const s0 = clamp((t - 0.42) / 0.36, 0, 1);
+          const rockMix = s0 * s0 * (3 - 2 * s0);
+          col = mix(mix(col, climateC, def.biome), col, rockMix);
         }
         /* 细节斑驳 */
         if (def.detail > 0) {

@@ -64,13 +64,19 @@ function run(seed, style, spec, opts) {
 /* 比"同种子一致"时把耗时剔掉（那是机器状态，不是确定性） */
 const core = (r) => JSON.stringify(r.stats);
 
-/* ★0 参数表：默认值必须是上游那套（抄错了下面全会歪） */
+/* ★0 参数表：**上游的骨架值不能动**（抄错了下面全会歪）；灵框刻意改过的三项单独钉住。
+   第一百零四轮（用户：「山很少」「只能看出山脉和平原两种地形」）改了三处：
+     · `elevation.hill_height` 0.02 → 0.07（上游一半陆地是平地）
+     · `elevation.mountain_folds` 0.05 → 0.18（只改渲染的脊谷对比）
+     · `biomes.raininess` 0.9 → 0.55 / `rain_shadow` 0.5 → 0.7（降雨挤在湿区 ⇒ 气候表只能上一色绿） */
 {
   const d = E.DEFAULT_PARAMS;
-  check('★0 默认参数与上游一致', d.spacing === 5.5 && d.mountainSpacing === 35 && d.mesh.seed === 12345
+  check('★0 参数表：上游骨架 + 灵框刻意的三处偏离', d.spacing === 5.5 && d.mountainSpacing === 35 && d.mesh.seed === 12345
     && d.elevation.seed === 187 && d.elevation.island === 0.5 && d.elevation.mountain_sharpness === 9.8
-    && d.biomes.rain_shadow === 0.5 && d.rivers.lg_min_flow === 2.7 && d.render.tilt_deg === 0,
-    { spacing: d.spacing, meshSeed: d.mesh.seed, elevSeed: d.elevation.seed });
+    && d.elevation.hill_height === 0.07 && d.elevation.mountain_folds === 0.18
+    && d.biomes.raininess === 0.55 && d.biomes.rain_shadow === 0.7
+    && d.rivers.lg_min_flow === 2.7 && d.render.tilt_deg === 0,
+    { spacing: d.spacing, meshSeed: d.mesh.seed, elevSeed: d.elevation.seed, hill: d.elevation.hill_height, folds: d.elevation.mountain_folds, rain: d.biomes.raininess });
 }
 
 /* ★1 网格建得出来（规模对得上上游：spacing 5.5 ⇒ 约 2.5 万区域 / 5 万三角形） */

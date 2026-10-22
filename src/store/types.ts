@@ -199,6 +199,10 @@ export interface MapTerrainSpec {
      （`src/mapgen/planet.ts` 的球面生成，等距圆柱 2:1 ⇒ 能贴到球上）。
      可选 ⇒ 旧数据照旧能读（缺省当局部）。两个形态**共用**种子 / 档位 / 数量 / 看的方式。 */
   form?: string;
+  /* ⭐ 立体度（第一百零四轮）：`solid` 立体（默认，山有厚度、能看到山坡侧面）/ `flat` 顶视
+     （从正上方看 ⇒ 没有侧壁，只剩色带与明暗）。用户 2026-10-21：「山好像有顶部边缘，
+     能不能做成开关」—— 只改渲染的垂直夸张（`mountain_height`），**不重算地形**。 */
+  lift?: string;
 }
 export interface MapData {
   id: string;
