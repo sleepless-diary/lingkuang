@@ -1,4 +1,4 @@
-/* 地形「风格」开关（第九十七轮）：立体 / 等高线 / 平面。
+/* 地形「风格」开关（第九十七轮三档 → 第一百零三轮八档）：自然 / 地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简。
  *
  *  用户 2026-10-14：「这个山怎么是立体的，不应该是等高线那一种的吗」→ 选了「做成开关，三档都留着」。
  *  这套件钉三件事：
@@ -10,6 +10,7 @@
  *     「平面」档 sd 必须明显小于「立体」档（阴影真关掉了），而不是只看按钮文字变了没有。
  *
  *  用法：LINGKUANG_TEST_* 指到临时目录起一个隔离实例（先跑 reset-entity-vault.cjs + seed-node.cjs），
+ *        第一百零三轮还多查一条：**旧 id 别名**（relief/contour/flat）仍能读写（老数据不炸）。
  *        LK_CDP_PORT=9500 node tools/e2e/map-style.cjs */
 const fs = require('fs');
 const DATA = process.env.LINGKUANG_TEST_DATA;
@@ -101,7 +102,7 @@ async function main() {
   })()`);
   const shotSum = async (sel) => {
     const rect = await box(sel);
-    if (!rect || rect.width < 20) return 0;
+    if (!rect || rect.width < 40) return 0;   /* 视口外/没渲染时 rect 是 0 ⇒ 直接判 0，别拿空图哈希 */
     const r = await send('Page.captureScreenshot', { format: 'png', clip: { ...rect, scale: 1 } });
     const data = r.result?.data || '';
     let x = 0;
@@ -127,9 +128,9 @@ async function main() {
     && !(diskMap()?.terrain),
     { views: v0 && v0.ids, disabled: v0disabled, terrain: diskMap()?.terrain ?? null });
   /* ★1 三档齐全（两个入口同一套 id / 文案）*/
-  check('★1 风格三档 = 立体 / 等高线 / 平面（地图栏）',
-    !!v0 && v0.n === 3 && v0.ids.join(',') === 'relief,contour,flat'
-    && v0.labels.join(',') === '立体,等高线,平面',
+  check('★1 风格八档 = 自然 / 地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简（地图栏）',
+    !!v0 && v0.n === 8 && v0.ids.join(',') === 'natural,topo,paper,ink,blueprint,dreamcore,satellite,minimal'
+    && v0.labels.join(',') === '自然,地形图,羊皮纸,水墨,蓝图,梦核,卫星,极简',
     { ids: v0 && v0.ids, labels: v0 && v0.labels });
 
   /* ★2 工作室「自己调」页也有这个控件 + 悬停说明跟着换 */
@@ -137,12 +138,12 @@ async function main() {
   await sleep(3000);
   const v1 = await views('#ms-view');
   const hint0 = await ev(`(document.getElementById('ms-view-hint') || {}).textContent || ''`);
-  await setSel('#ms-view', 'contour');
+  await setSel('#ms-view', 'topo');
   await sleep(600);
   const hint1 = await ev(`(document.getElementById('ms-view-hint') || {}).textContent || ''`);
   check('★2 工作室也有风格控件，且说明文字随档位换',
-    !!v1 && v1.n === 3 && v1.ids.join(',') === 'relief,contour,flat' && v1.value === 'relief'
-    && /山体阴影/.test(hint0) && /等高线/.test(hint1) && hint0 !== hint1,
+    !!v1 && v1.n === 8 && v1.ids.join(',') === 'natural,topo,paper,ink,blueprint,dreamcore,satellite,minimal' && v1.value === 'natural'
+    && /真实地形配色/.test(hint0) && /等高线/.test(hint1) && hint0 !== hint1,
     { ids: v1 && v1.ids, value0: v1 && v1.value, hint0: hint0.slice(0, 24), hint1: hint1.slice(0, 24) });
 
   /* ★3 开局有一张预览 + 统计行 */
@@ -153,33 +154,33 @@ async function main() {
 
   /* ★4 ⭐同一片地，三档出三张**不同**的图（像素哈希两两不等）*/
   const sig = {};
-  for (const v of ['relief', 'contour', 'flat']) {
+  for (const v of ['natural', 'topo', 'minimal']) {
     await setSel('#ms-view', v);
     await sleep(2600);                        /* 一张一张出图：换档要重新渲染一次 */
     sig[v] = await preview();
   }
-  const uniq = new Set([sig.relief.sum, sig.contour.sum, sig.flat.sum]);
+  const uniq = new Set([sig.natural.sum, sig.topo.sum, sig.minimal.sum]);
   check('★4 三档 = 三张不同的图（同一片地，只换画法）',
-    sig.relief.ok && sig.contour.ok && sig.flat.ok && uniq.size === 3,
-    { relief: sig.relief.sum, contour: sig.contour.sum, flat: sig.flat.sum });
+    sig.natural.ok && sig.topo.ok && sig.minimal.ok && uniq.size === 3,
+    { natural: sig.natural.sum, topo: sig.topo.sum, minimal: sig.minimal.sum });
 
   /* ★5 ⭐量化证据：平面档「局部对比 sd」明显小于立体档（阴影真被关掉了，不是只换了个按钮文字）*/
-  const drop = sig.relief.sd > 0 ? 1 - sig.flat.sd / sig.relief.sd : 0;
+  const drop = sig.natural.sd > 0 ? 1 - sig.minimal.sd / sig.natural.sd : 0;
   check('★5 平面档的阴影真关掉了（局部对比 sd 明显下降）',
-    drop > 0.05 && sig.contour.sd > 0 && sig.contour.sd !== sig.relief.sd,
-    { reliefSd: sig.relief.sd, flatSd: sig.flat.sd, contourSd: sig.contour.sd, drop: +drop.toFixed(3) });
+    drop > 0.05 && sig.topo.sd > 0 && sig.topo.sd !== sig.natural.sd,
+    { naturalSd: sig.natural.sd, minimalSd: sig.minimal.sd, topoSd: sig.topo.sd, drop: +drop.toFixed(3) });
 
   /* ★6 ⭐换风格**不重算地形**：统计行逐字不变（三档之间），且此刻磁盘一个字节没动 */
-  const note = sig.relief.note;
+  const note = sig.natural.note;
   const stat = (s) => s.replace(/ · 种子.*$/, '');   /* 去掉可能带风格字样的尾巴，只比地形数字 */
   const sigBefore = JSON.stringify(diskMap()?.terrain ?? null);
   check('★6 换风格不重算地形：三档的统计数字逐字相同、且预览阶段不落盘',
-    stat(sig.contour.note) === stat(note) && stat(sig.flat.note) === stat(note)
+    stat(sig.topo.note) === stat(note) && stat(sig.minimal.note) === stat(note)
     && JSON.stringify(diskMap()?.terrain ?? null) === sigBefore,
-    { note: note.slice(0, 60), same: stat(sig.contour.note) === stat(note) });
+    { note: note.slice(0, 60), same: stat(sig.topo.note) === stat(note) });
 
   /* ★7 「采用到地图」把这一档写进数据（顺便：地图栏控件跟着走）*/
-  await setSel('#ms-view', 'contour');
+  await setSel('#ms-view', 'topo');
   await sleep(1200);
   await click('#ms-apply');
   await sleep(2600);
@@ -190,21 +191,26 @@ async function main() {
              canvas: !!document.querySelector('#map-terrain-canvas'),
              note: (document.getElementById('map-gen-note') || {}).textContent || '' };
   })()`);
-  check('★7 采用后落盘 terrain.view=contour、地图栏控件同步、画布真建起来了',
-    diskMap()?.terrain?.view === 'contour' && pane.view === 'contour' && pane.disabled === false && pane.canvas,
+  check('★7 采用后落盘 terrain.view=topo、地图栏控件同步、画布真建起来了',
+    diskMap()?.terrain?.view === 'topo' && pane.view === 'topo' && pane.disabled === false && pane.canvas,
     { disk: diskMap()?.terrain?.view, pane });
 
   /* ★8 ⭐地图栏那条路也是三档三张图（截屏哈希；面板先关掉，别挡住地图）*/
   await click('#ms-close');
   await sleep(1200);
+  /* ⭐ 先把沙盘工具打开、把地图格滚进视口：元素在视口外/没渲染时，clip 截图是空的（★8 假红过） */
+  await ev("document.querySelector('#lk-toolbar [data-tool=\\'sandbox\\']').click(); true");
+  await sleep(1500);
+  await ev("(function () { const p = document.querySelector('#lk-pane-map'); if (p) p.scrollIntoView({ block: 'center' }); return true; })()");
+  await sleep(600);
   const paneShots = {};
-  for (const v of ['relief', 'contour', 'flat']) {
+  for (const v of ['natural', 'topo', 'minimal']) {
     await setSel('#map-view', v);
     await sleep(2600);
     paneShots[v] = await shotSum('#map-terrain');
   }
   check('★8 地图栏里三档也各是一张不同的图（换档立刻重画）',
-    new Set([paneShots.relief, paneShots.contour, paneShots.flat]).size === 3 && paneShots.relief !== 0,
+    new Set([paneShots.natural, paneShots.topo, paneShots.minimal]).size === 3 && paneShots.natural !== 0,
     paneShots);
 
   /* ★9 这条偏好随地图持久化：只调这一档 ⇒ 地形参数一个都没变
@@ -219,7 +225,7 @@ async function main() {
   await sleep(2500);
   await evSoft(`!!document.getElementById('map-view')`);
   const after = await evSoft(`(function () { const s = document.getElementById('map-view'); return s ? s.value : 'none'; })()`);
-  check('★10 刷新后仍是「平面」那一档', after === 'flat' && diskMap()?.terrain?.view === 'flat',
+  check('★10 刷新后仍在最后点的那一档（极简）', after === 'minimal' && diskMap()?.terrain?.view === 'minimal',
     { sel: after, disk: diskMap()?.terrain?.view });
 
   /* ★11 ⭐助手换地形时**不重置**创作者选的这一档（generate_map 不带 view ⇒ 沿用）*/
@@ -243,8 +249,8 @@ async function main() {
   await ev(`(function () { const b = document.querySelector('#lk-agent-msgs [data-prop-ok]'); if (b) b.click(); return true; })()`);
   await sleep(2200);
   const afterAgent = diskMap()?.terrain ?? {};
-  check('★11 助手换地形后，看的方式仍是「平面」（不带 view ⇒ 沿用创作者的选择）',
-    afterAgent.seed !== seedBefore && afterAgent.view === 'flat',
+  check('★11 助手换地形后，看的方式仍是「极简」（不带 view ⇒ 沿用创作者的选择）',
+    afterAgent.seed !== seedBefore && afterAgent.view === 'minimal',
     { seedBefore, seedAfter: afterAgent.seed, view: afterAgent.view });
 
   /* ★12 无未捕获异常 */

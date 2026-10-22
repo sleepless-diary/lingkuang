@@ -29,6 +29,7 @@ import { createNoise3D } from 'simplex-noise';
  *  `require`），而 `./index.ts` 那条链拉进 vendored mapgen4，里面有 DOM 假设（`document` /
  *  `HTMLCanvasElement`）⇒ 值导入会在 node 里直接炸。`seedInt` 因此本地抄一份。 */
 import type { MapgenSpecInput, TerrainStats } from './index';
+import { sampleRampHex, terrainStyleDef } from './styles';
 
 /* ── 小工具 ─────────────────────────────────────────────────────────────────── */
 
@@ -708,37 +709,47 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
   return { w, h, elev, e01, land, river, lake, moist, temp, flow, style, spec: sp, stats };
 }
 
-/* ── 上色（「看的方式」三档）────────────────────────────────────────────────────
-   ⚠️ 只换颜色：**不重算地形**（换档是瞬时的，与局部形态的 `setStyle` 同一条规矩）。
-   · `relief`  立体：9 档高程带（湿地绿 → 干地黄褐 → 岩灰 → 雪白）+ 山体阴影 + 海岸线 + 河；
-   · `contour` 等高线：10 档分层设色 + **250 m 等高线**（每 1 km 计曲线加深加粗）+ 4 档海深 + 淡阴影；
-   · `flat`    平面：**小森邻 OCity 那套平面色块**（`F:\knowledge-base\worldbuilding.md:116` 的颜色逐条照抄：
-     海单一浅蓝、陆浅绿/黄绿/米白、细深色海岸线、**无阴影无等高线**）。 */
+/* ── 上色（八档「看的方式」）──────────────────────────────────────────────────────
+   ⚠️ 只换颜色：**不重算地形**（换档是瞬时的，与局部形态的 setStyle() 同一条规矩）。
+   色带与旋钮的唯一来源是 ./styles.ts（与 WebGL 那条路共用同一张表）⇒ 以后加档只改那边。
+   局部形态的 frag_drape 干的事（山体细节 / 海岸湿沙与浪花 / 水纹 / 排线 / 纸纹 / 颗粒 / 暗角），
+   这里用同样的思路再做一遍：星球图约 1.18M 像素，逐像素三次取噪仍在百毫秒量级。
+   ⚠️ **极地夹边不能动**：at() 的行下标必须夹在 0..h-1（守卫 tools/e2e/map-planet.cjs ★6 靠它）。 */
 
 type RGB = [number, number, number];
 const hex = (s: string): RGB => [parseInt(s.slice(1, 3), 16), parseInt(s.slice(3, 5), 16), parseInt(s.slice(5, 7), 16)];
 const mix = (a: RGB, b: RGB, t: number): RGB => [
   a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t,
 ];
-
-/** 立体档的高程带（低 → 高） */
-const RELIEF_LAND: RGB[] = ['#5f8a52', '#7ba05f', '#9cb380', '#c3b98a', '#d6c79a', '#c2a983', '#a9927a', '#9c9c9c', '#f2f2f0'].map(hex);
-const RELIEF_SEA: RGB[] = ['#2c5f7c', '#1f4a66', '#15364d'].map(hex);
-/** 等高线档（图集风：陆 10 档浅色、海 4 档浅蓝） */
-const ATLAS_LAND: RGB[] = ['#f7f8ec', '#eef0d9', '#e4e8c6', '#d9e0b4', '#cdd7a3', '#c0cb93', '#b3be86', '#a6b17c', '#9aa274', '#8e936c'].map(hex);
-const ATLAS_SEA: RGB[] = ['#eaf3f8', '#dceaf3', '#cde1ee', '#bed8e8'].map(hex);
-const CONTOUR_LINE = hex('#777a62');
-const CONTOUR_INDEX = hex('#4a4e3a');
-/** 平面档 = OCity 那套（海 / 陆 5 档 / 海岸线 / 河） */
-const OCITY_SEA = hex('#b0e0f0');
-const OCITY_LAND: RGB[] = ['#edf4da', '#dae8b6', '#c0d694', '#dad8c4', '#eae8de'].map(hex);
-const OCITY_COAST = hex('#444a4a');
-const OCITY_RIVER = hex('#7fa9c6');
+const sstep = (a: number, b: number, v: number): number => {
+  const t = clamp((v - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+};
 const SNOW = hex('#f2f4f2');
-const COAST_DARK: RGB = [58, 58, 52];
-/** 河的三档颜色（提出来：像素循环里每格都要用，别在循环里现 hex()）*/
-const RIVER_RELIEF = hex('#6f9fc4');
-const RIVER_CONTOUR = hex('#6f8fa8');
+
+/** 逐像素值噪声（与着色器同一套公式）。坐标用**格子数**而不是 uv：极地不会被拉伸成横条。 */
+function hash2(x: number, y: number): number {
+  let h = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+}
+function vnoise2(x: number, y: number): number {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = hash2(xi, yi), b = hash2(xi + 1, yi), c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  return (a + (b - a) * u) * (1 - v) + (c + (d - c) * u) * v;
+}
+const fbm2 = (x: number, y: number): number =>
+  0.5 * vnoise2(x, y) + 0.25 * vnoise2(x * 2.03, y * 2.03) + 0.125 * vnoise2(x * 4.01, y * 4.01);
+
+/** 色带 → 256 级查找表（逐像素调 sampleRampHex() 要解析十六进制串，1M 次会肉眼可见地慢）*/
+function rampLut(hexes: string[]): RGB[] {
+  const out: RGB[] = [];
+  for (let i = 0; i < 256; i++) out.push(hex(sampleRampHex(hexes, i / 255)));
+  return out;
+}
+const rampAt = (lut: RGB[], t: number): RGB => lut[Math.round(clamp(t, 0, 1) * 255)];
 
 /** 3×3 盒滤（x 环绕、y 夹边）—— 抽等高线前先过一遍。
  *  真实制图也是从**平滑过的 DEM** 抽等高线的：不平滑时，海拔恰好压在档位线附近的地方
@@ -759,18 +770,29 @@ function boxFilter(src: Float32Array, w: number, h: number): Float32Array {
   return out;
 }
 
-/** 把场画成 RGBA（`w*h*4`，可直接进 canvas / WebGL 贴图）。`view` 认不出就按立体档。 */
+/** 把场画成 RGBA（w*h*4，可直接进 canvas / WebGL 贴图）。认不出的 view 落回默认档。 */
 export function renderPlanet(f: PlanetField, view: unknown): Uint8ClampedArray {
-  const v = view === 'contour' || view === 'flat' ? view : 'relief';
+  const def = terrainStyleDef(view);
   const { w, h, elev, e01, land, river, lake, moist, temp } = f;
   const out = new Uint8ClampedArray(w * h * 4);
-  const sm = v === 'contour' ? boxFilter(e01, w, h) : null;   /* 等高线用平滑后的高度 */
+  const needSmooth = def.contour > 0 || def.bands > 1;
+  const sm = needSmooth ? boxFilter(e01, w, h) : null;   /* 等高线用平滑后的高度 */
+  /* 山体阴影也从**平滑高度**求：逐格差分会把网格噪声一起放大，看着像揉皱的锡纸 */
+  const hs = boxFilter(elev, w, h);
   const dyKm = Math.PI * R_KM / h;
+  const landLut = rampLut(def.land);
+  const seaLut = rampLut(def.sea);
+  const lineC = hex(def.line);
+  const lineDark = mix(lineC, [18, 18, 16], 0.45);
+  const riverC = hex(def.river);
+  const bandN = def.bands > 1 ? def.bands : 0;
+  let maxDepth = 0.5;
+  for (let k = 0; k < w * h; k++) { const d = -elev[k]; if (d > maxDepth) maxDepth = d; }
   /* ⚠️ 行索引必须**夹在 0..h-1**（极点外面没有行）。不夹的话 i=0 那一行的"上一行"是负下标：
-     · `land[负数]` 读到 `undefined` ⇒ 极地**每一格陆地都被当成海岸线**（整行压上深色边）；
-     · `elev[负数]` 读到 `undefined` ⇒ 光照算出 NaN ⇒ `col * NaN` 写进 Uint8ClampedArray 变 0
+     · land[负数] 读到 undefined ⇒ 极地**每一格陆地都被当成海岸线**（整行压上深色边）；
+     · elev[负数] 读到 undefined ⇒ 光照算出 NaN ⇒ col * NaN 写进 Uint8ClampedArray 变 0
        ⇒ 极地整行发黑。
-     守卫 `tools/e2e/map-planet.cjs` ★6（"极地行起伏应远小于赤道行"）就是被这两条逼红的。 */
+     守卫 tools/e2e/map-planet.cjs ★6（"极地行起伏应远小于赤道行"）就是被这两条逼红的。 */
   const at = (x: number, y: number) => {
     const yy = y < 0 ? 0 : (y >= h ? h - 1 : y);
     return yy * w + (((x % w) + w) % w);
@@ -782,60 +804,119 @@ export function renderPlanet(f: PlanetField, view: unknown): Uint8ClampedArray {
     for (let j = 0; j < w; j++) {
       const k = i * w + j;
       const isLand = land[k] === 1;
+      const t = clamp(e01[k], 0, 1);
+      /* 细节噪声（世界格坐标 ⇒ 接缝只差一格，看不出） */
+      const det = def.detail > 0 ? fbm2(j / w * 90, i / h * 45) - 0.5 : 0;
+      /* 坡度：陆地才用（山体阴影 / 排线都读它）。
+         ⚠️ 第一百零三轮：**按像素夸张**（原来除以 dxKm/dyKm ⇒ 陆坡只有 0.02 量级，
+         光照算出来几乎是常数 —— 星球图因此"一片平色、山看不出来"）。这里是制图学的
+         垂直夸张，不是物理坡度；`dxKm/dyKm` 仍留给需要真实单位的排线判断。 */
+      let gx = 0, gy = 0;
+      if (isLand) {
+        /* 垂直夸张 15 倍（制图学常用量级）：km/km 的真实坡度只有 0.02 上下，不夸张看不出山。 */
+        const ex = 15;
+        gx = (hs[at(j + 1, i)] - hs[at(j - 1, i)]) / (2 * Math.max(0.5, dxKm)) * ex;
+        gy = (hs[at(j, i + 1)] - hs[at(j, i - 1)]) / (2 * Math.max(0.5, dyKm)) * ex;
+      }
       let col: RGB;
       if (!isLand) {
-        const depth = clamp(-elev[k] / 8.5, 0, 1);
-        if (v === 'flat') col = OCITY_SEA;
-        else if (v === 'contour') col = ATLAS_SEA[clamp((depth * 4) | 0, 0, 3)];
-        else col = mix(RELIEF_SEA[2], RELIEF_SEA[0], clamp(1 - depth * 1.4, 0, 1));
-      } else {
-        const t = clamp(e01[k], 0, 1);
-        if (v === 'flat') {
-          /* OCity：陆按高度分 5 档浅色（不分阴影、不画等高线）*/
-          col = OCITY_LAND[clamp((t * 5) | 0, 0, 4)];
-        } else if (v === 'contour') {
-          /* 色带只 10 档（图上要"少而干净"），但**等高线按 24 档切**（≈ 峰值/24 ≈ 260 m），
-             而且用的是**平滑过的高度**（`sm`）。 */
-          const s = sm as Float32Array;
-          const cb = clamp((s[k] * 24) | 0, 0, 23);
-          col = ATLAS_LAND[clamp((t * 10) | 0, 0, 9)];
-          const bl = clamp((s[at(j - 1, i)] * 24) | 0, 0, 23);
-          const bu = clamp((s[at(j, i - 1)] * 24) | 0, 0, 23);
-          if (cb !== bl || cb !== bu) col = cb % 4 === 0 ? CONTOUR_INDEX : CONTOUR_LINE;
-        } else {
-          const band = clamp((t * 9) | 0, 0, 8);
-          col = RELIEF_LAND[band];
-          /* 干湿微调：湿的地方偏绿、干的地方偏黄 —— 让"沙漠/雨林"在同高度能分开 */
-          const dry = clamp((0.45 - moist[k]) * 1.6, 0, 1);
-          col = mix(col, mix(col, hex('#c9b184'), 0.55), dry);
+        /* 海：深浅色带 + 细纹（上游口径：8.5 km 折算 1.0 水深）*/
+        /* 海深按**这片海最深的那一格**归一化：固定除以 8.5 时大多数地图只吃到色带最浅的一小段，
+           看上去"海是一片平色"（第一百零三轮第一版截图）。 */
+        const depth = Math.pow(clamp(-elev[k] / maxDepth, 0, 1), 0.7);
+        col = rampAt(seaLut, depth);
+        if (def.waterNoise > 0) {
+          const wn = fbm2(j / w * 42, i / h * 21) - 0.5;
+          const kk = 1 + wn * def.waterNoise * 0.16;
+          col = [col[0] * kk, col[1] * kk, col[2] * kk];
         }
-        /* 雪线：年均温 < −3℃ 的陆地渐白（纬度 + 海拔都算进去了）*/
-        if (temp[k] < -3) col = mix(col, SNOW, clamp((-temp[k] - 3) / 12, 0.12, 1));
+      } else {
+        /* 高程分布偏低（多数陆地贴在海平面附近）⇒ 轻度 gamma 拉开低地层次 */
+        let tt = Math.pow(t, 0.72);
+        if (bandN > 0) {
+          const lv = tt * bandN;
+          tt = (Math.floor(lv) + 0.35 * (lv - Math.floor(lv))) / bandN;
+        }
+        col = rampAt(landLut, tt);
+        /* 干湿偏色：湿的地方偏绿、干的地方偏暖 —— 沙漠/雨林在同高度也能分开 */
+        if (def.moist > 0) {
+          const dry = clamp((0.45 - moist[k]) * 1.6, 0, 1) * def.moist;
+          col = mix(col, mix(col, [201, 177, 132], 0.55), dry * 0.35);
+        }
+        /* 细节斑驳 */
+        if (def.detail > 0) {
+          const kk = 1 + det * 0.12 * def.detail;
+          col = [col[0] * kk, col[1] * kk, col[2] * kk];
+        }
+        /* 雪线：年均温 < −3℃ 的陆地渐白（只给"写实"那几档：蓝图上压雪会毁掉整套配色）*/
+        if (def.detail >= 0.6 && t > 0.6 && temp[k] < -3) {
+          col = mix(col, SNOW, clamp((-temp[k] - 3) / 22, 0.08, 0.6));
+        }
+        /* 等高线：用**平滑过**的高度切 contourScale 档；每 4 条计曲线加深（线色也来自档位）*/
+        if (def.contour > 0 && sm) {
+          const cs = def.contourScale;
+          const cb = Math.floor(sm[k] * cs);
+          const bl = Math.floor(sm[at(j - 1, i)] * cs);
+          const bu = Math.floor(sm[at(j, i - 1)] * cs);
+          if (cb !== bl || cb !== bu) col = cb % 4 === 0 ? lineDark : lineC;
+        }
+        /* 坡面排线（水墨 / 羊皮纸 / 蓝图）：沿坡向排线，越陡越密 */
+        if (def.hatch > 0) {
+          const ang = Math.atan2(gy, gx);
+          const sv = (j * Math.cos(ang) + i * Math.sin(ang)) * 1.15;
+          const hl = sstep(0.62, 0.96, Math.abs(Math.sin(sv)));
+          const steep = sstep(0.05, 0.30, Math.hypot(gx, gy));
+          col = mix(col, lineC, hl * steep * def.hatch * 0.75);
+        }
       }
-      /* 山体阴影（立体档全量、等高线档 35%、平面档不做 —— 与局部形态三档同一口径）*/
-      if (v !== 'flat') {
-        const dzdx = (elev[at(j + 1, i)] - elev[at(j - 1, i)]) / (2 * dxKm);
-        const dzdy = (elev[at(j, i + 1)] - elev[at(j, i - 1)]) / (2 * dyKm);
-        const nx = -dzdx, ny = -dzdy, nzz = 1;
+      /* 山体阴影（强度 = 档位的 shade；极简档 0 ⇒ 完全不画）。噪声微扰法线 ⇒ 山不是光滑色团。 */
+      if (isLand && def.shade > 0) {
+        const px = gx + det * 0.05 * def.detail, py = gy + det * 0.05 * def.detail;
+        const nx = -px, ny = -py, nzz = 1;
         const nl = Math.sqrt(nx * nx + ny * ny + 1);
         const lx = -0.55, ly = -0.62, lz = 0.56;   /* 光从西北上方来（地图惯例）*/
         const lam = clamp((nx / nl) * lx + (ny / nl) * ly + (nzz / nl) * lz, 0, 1);
-        const shadeK = v === 'contour' ? 0.28 : 0.75;
-        const f2 = 1 + shadeK * (lam * 1.6 - 0.8);
+        const f2 = clamp(1 + 0.9 * def.shade * (lam * 1.9 - 0.95), 0.55, 1.35);
         col = [col[0] * f2, col[1] * f2, col[2] * f2];
       }
-      /* 海岸线：陆地格挨着水就压一条暗线（1 格宽）—— 三档都画（OCity 也画细深色海岸线）*/
+      /* 海岸：陆地一侧湿沙 + 浪花亮边；档位没开就只留上游那条 1 格暗线 */
       if (isLand) {
         const nb = !land[at(j - 1, i)] || !land[at(j + 1, i)] || !land[at(j, i - 1)] || !land[at(j, i + 1)];
-        if (nb) col = v === 'flat' ? OCITY_COAST : (v === 'contour' ? CONTOUR_INDEX : mix(col, COAST_DARK, 0.55));
+        if (nb) {
+          /* 海岸**永远是"一条线"**：先压湿沙，再压一道深描边 ——
+             1536px 的星球图上不画这条线，陆地边缘就糊成一片（第一版截图的毛病）。 */
+          if (def.coast > 0) col = mix(col, mix(col, [232, 222, 194], 0.55), def.coast);
+          col = mix(col, mix(col, [40, 42, 40], 0.55), 0.7);
+        }
+      } else if (def.coast > 0) {
+        /* 水侧浪花：紧挨陆地的水格提亮一点，读得出"岸" */
+        const wb = land[at(j - 1, i)] || land[at(j + 1, i)] || land[at(j, i - 1)] || land[at(j, i + 1)];
+        if (wb) col = mix(col, [226, 236, 232], def.coast * 0.4);
       }
-      if (lake[k]) col = v === 'flat' ? OCITY_SEA : (v === 'contour' ? ATLAS_SEA[2] : RELIEF_SEA[1]);
-      /* 河：本格画实色，**四邻淡淡晕一指宽** —— 1px 的线缩到面板尺寸就成了一串点
-         （用户「细节不够」的另一半）；只在陆地上晕，免得把海染脏。 */
-      const riverCol = v === 'flat' ? OCITY_RIVER : (v === 'contour' ? RIVER_CONTOUR : RIVER_RELIEF);
-      if (river[k]) col = riverCol;
-      else if (isLand && (river[at(j - 1, i)] || river[at(j + 1, i)] || river[at(j, i - 1)] || river[at(j, i + 1)])) {
-        col = mix(col, riverCol, 0.25);
+      if (lake[k]) col = rampAt(seaLut, 0.12);
+      /* 河：本格画实色，**四邻淡淡晕一指宽** —— 1px 的线缩到面板尺寸就成了一串点。 */
+      if (river[k]) col = riverC;
+      else if (isLand && (river[at(j - 1, i)] || river[at(j + 1, i)] || river[at(j, i - 1)] || river[at(j, i + 1)]
+        || river[at(j - 1, i - 1)] || river[at(j + 1, i - 1)] || river[at(j - 1, i + 1)] || river[at(j + 1, i + 1)])) {
+        /* 四邻 + 四对角：星球图缩放后 1px 的河只剩几个点，得让它有"一指宽" */
+        col = mix(col, riverC, 0.35);
+      }
+      /* 屏幕空间收尾三层：纸纹 / 颗粒 / 暗角（与着色器同一个顺序） */
+      const u = j / w, v = i / h;
+      if (def.paper > 0) {
+        const stain = fbm2(u * 7, v * 7);
+        const kk = 1 - def.paper * (0.10 - 0.18 * stain);
+        col = [col[0] * kk * 1.04, col[1] * kk * 0.99, col[2] * kk * 0.92];
+      }
+      if (def.grain > 0) {
+        const g = hash2(j, i) - 0.5;
+        const kk = 1 + g * def.grain * 0.35;
+        col = [col[0] * kk, col[1] * kk, col[2] * kk];
+      }
+      if (def.vignette > 0) {
+        const rr = Math.hypot(u - 0.5, v - 0.5);
+        const kk = 1 - def.vignette * sstep(0.40, 0.95, rr);
+        col = [col[0] * kk, col[1] * kk, col[2] * kk];
       }
       const o = k * 4;
       out[o] = col[0]; out[o + 1] = col[1]; out[o + 2] = col[2]; out[o + 3] = 255;

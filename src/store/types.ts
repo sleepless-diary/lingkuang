@@ -191,7 +191,7 @@ export interface MapTerrainSpec {
   style: string;
   spec?: { [k: string]: number | undefined };
   paint?: MapPaintStroke[]; // 手刷笔迹（笔划，不是场；可选 ⇒ 旧数据照旧能读）
-  /* ⭐ 「看的方式」（第九十七轮）：relief 立体 / contour 等高线 / flat 平面
+  /* ⭐ 「看的方式」（第九十七轮）：natural 自然 / topo 地形图 / paper 羊皮纸 / ink 水墨 / blueprint 蓝图 / dreamcore 梦核 / satellite 卫星 / minimal 极简（旧值 relief/contour/flat 自动归一化）
      （见 `src/mapgen/index.ts` 的 `TERRAIN_STYLES`）。可选 ⇒ 旧数据照旧能读；
      改它**不重算地形**，只重画（所以它不是生成参数，是显示参数）。 */
   view?: string;

@@ -359,7 +359,13 @@ const frag_drape = `
                   u_outline_depth, u_outline_threshold,
                   u_biome_colors,
                   /* ⭐ 灵框追加（第九十七轮）：渲染风格三件套 —— 见 NOTICE.md */
-                  u_shade, u_contour, u_contour_scale, u_bands;
+                  u_shade, u_contour, u_contour_scale, u_bands,
+                  /* ⭐ 灵框追加（第一百零三轮）：真实感旋钮 —— 见 NOTICE.md */
+                  u_grade, u_detail, u_coast, u_water_noise, u_hatch, u_paper, u_grain, u_vignette, u_moist;
+    /* ⭐ 灵框追加（第一百零三轮）：风格色带（陆地 8 个等距采样点、海 6 个；JS 侧 「styles.ts」 生成） */
+    uniform vec3 u_land_ramp[8];
+    uniform vec3 u_sea_ramp[6];
+    uniform vec3 u_line_color, u_river_color;
     in vec2 v_uv, v_xy, v_em;
     in float v_z;
     out vec4 out_fragcolor;
@@ -379,6 +385,26 @@ const frag_drape = `
             + texture(tex, pos - vec2(0.0, zs.y)).x);
     }
 
+    /* ⭐ 灵框追加（第一百零三轮）：程序化噪声（值噪声 + 3 octave fbm）。
+       上游在 frag_drape 里自己留了一句 「// TODO: add noise texture based on biome」 ——
+       这就是那一行：不给它贴图（省一张 2K 纹理与一次采样带宽），直接在片元里算。
+       坐标用**世界 uv**（v_uv，0..1000 归一）⇒ 纹理跟着地形走，缩放时不会"在屏幕上滑动"。 */
+    float hash21(vec2 p) {
+        p = fract(p * vec2(123.34, 456.21));
+        p += dot(p, p + 45.32);
+        return fract(p.x * p.y);
+    }
+    float vnoise(vec2 p) {
+        vec2 i = floor(p), f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        float a = hash21(i),               b = hash21(i + vec2(1.0, 0.0)),
+              c = hash21(i + vec2(0.0, 1.0)), d = hash21(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
+    float fbm3(vec2 p) {
+        return 0.5 * vnoise(p) + 0.25 * vnoise(p * 2.03) + 0.125 * vnoise(p * 4.01);
+    }
+
     void main() {
         vec2 sample_offset = 0.5 * u_inverse_texture_size;
         vec2 pos = v_uv + sample_offset;
@@ -396,6 +422,19 @@ const frag_drape = `
         bool styleLand = (u_bands > 1.0 || u_contour > 0.0) && z0 >= 0.5;
         float zLand = styleLand ? smoothLandHeight(u_elevation, pos, u_inverse_texture_size, z0) : z0;
         vec3 slope_vector = normalize(vec3(zS-zN, zE-zW, u_overhead * (u_inverse_texture_size.x + u_inverse_texture_size.y)));
+        /* ⭐ 灵框追加（第一百零三轮）：山体细节 —— 用噪声扰动法线，让山不是"光滑的灰团"。
+           只在陆地、且档位开启时算（fbm3 是三次取噪，海里不需要）。
+           权重随高度上升：山脚平缓（不该长毛刺），山脊/坡面才需要细碎起伏。 */
+        float detailN = 0.0;
+        if (u_detail > 0.0 && z0 >= 0.5) {
+            vec2 duv = v_uv * 300.0;
+            float d0 = fbm3(duv);
+            float ddx = fbm3(duv + vec2(1.8, 0.0)) - d0;
+            float ddy = fbm3(duv + vec2(0.0, 1.8)) - d0;
+            float amt = u_detail * smoothstep(0.5, 0.62, z0);
+            slope_vector = normalize(slope_vector + vec3(ddx, ddy, 0.0) * 3.5 * amt);
+            detailN = d0 - 0.5;
+        }
         vec3 light_vector = normalize(vec3(u_light_angle, mix(u_slope, u_flat, slope_vector.z)));
         float light = u_ambient + max(0.0, dot(light_vector, slope_vector));
         vec3 neutral_biome_color = neutral_land_biome;
@@ -428,6 +467,51 @@ const frag_drape = `
             biome_color = mix(underground_color, highlight_color, 0.5 * smoothstep(-0.025, 0.0, v_z));
             light = 1.0 - 0.3 * smoothstep(0.8, 1.0, fract((v_em.x - v_z) * 20.0)); // add horizontal lines
         }
+        /* ⭐ 灵框追加（第一百零三轮）：风格色带 —— 用两条等距色带取代上游"高程 × 湿度"的贴图取色。
+           · 陆地 t = 高度（0 = 海平面，1 = 最高峰；纹理值 0.5..0.925 对应高度 0..0.85）；
+           · 海里 t = 深浅（0 = 岸边 → 1 = 最深；纹理值 0.5..0.225）；
+           · 河单独一色（上游 river 的 rgb 也是拿色带算的，风格档里统一成河色）。
+           u_grade = 0 ⇒ 整段跳过：旧调用方（离线脚本 / 没设风格的测试）拿到的还是上游逐字结果。 */
+        if (u_grade > 0.0) {
+            float landT = clamp((zLand - 0.5) / 0.425, 0.0, 1.0);
+            float seaT  = clamp((0.5 - z0) / 0.275, 0.0, 1.0);
+            float f8 = landT * 7.0;
+            int i8 = int(floor(f8));
+            vec3 landC = mix(u_land_ramp[i8], u_land_ramp[min(i8 + 1, 7)], fract(f8));
+            float f6 = seaT * 5.0;
+            int i6 = int(floor(f6));
+            vec3 seaC = mix(u_sea_ramp[i6], u_sea_ramp[min(i6 + 1, 5)], fract(f6));
+            /* 湿度：湿的地方偏绿、干的地方偏暖（只有自然/卫星档给大权重） */
+            landC *= mix(vec3(1.03, 0.99, 0.94), vec3(0.96, 1.04, 0.97), clamp(v_em.y, 0.0, 1.0) * u_moist);
+            /* 细节噪声给陆地加一层斑驳（幅度小，不把色带打乱） */
+            landC *= 1.0 + detailN * 0.04 * u_detail;
+            biome_color = mix(biome_color, mix(seaC, landC, step(0.5, z0)), u_grade);
+            water_color.rgb = mix(water_color.rgb, u_river_color, u_grade);
+
+            /* 海岸带：陆地一侧压一层湿沙，水线上一道极细的亮边（浪花）。
+               上游只有一条 1px 的暗描边，放大像"贴纸边缘"；真实地图上陆海之间是渐变 + 浪花。 */
+            if (u_coast > 0.0) {
+                float wet = (1.0 - smoothstep(0.0, 0.028, z0 - 0.5)) * step(0.5, z0);
+                biome_color = mix(biome_color, mix(biome_color, vec3(0.90, 0.86, 0.74), 0.45), wet * u_coast);
+                float foam = 1.0 - smoothstep(0.0, 0.004, abs(z0 - 0.5));
+                biome_color = mix(biome_color, vec3(0.95, 0.96, 0.94), foam * u_coast * 0.22);
+            }
+            /* 水面细纹：只在海里（河有自己的一色），给深浅色带一点"水"的质感 */
+            if (u_water_noise > 0.0 && z0 < 0.5) {
+                float wn = fbm3(v_uv * 70.0) - 0.5;
+                biome_color *= 1.0 + u_water_noise * wn * 0.05;
+            }
+            /* 坡面排线（水墨 / 羊皮纸 / 蓝图）：按坡向排线、按坡度遮罩 —— 越陡越密 */
+            if (u_hatch > 0.0) {
+                float steep = clamp(1.0 - slope_vector.z, 0.0, 1.0);
+                float ang = atan(slope_vector.y, slope_vector.x);
+                float sv = dot(v_uv * 700.0, vec2(cos(ang), sin(ang)));
+                float hline = smoothstep(0.62, 0.96, abs(sin(sv * 1.2)));
+                float hmask = smoothstep(0.08, 0.40, steep) * step(0.5, z0);
+                biome_color = mix(biome_color, u_line_color, hline * hmask * u_hatch);
+            }
+        }
+
         /* ⭐ 灵框追加（第九十七轮）：等高线 —— 上游那句原注释就写着 contour lines，是注释掉的，
            这里放开并做成可调（u_contour 开关 / u_contour_scale 每格几条）：
              · 只画陆地（z0 ≥ 0.5）：这个尺度下海里的等深线只会糊成一片；
@@ -441,7 +525,9 @@ const frag_drape = `
         float cDist = min(cFrac, 1.0 - cFrac) * cInterval;   /* 到最近档线的"高度距离" */
         float cPx = max(fwidth(zLand), 1e-6);
         float cLine = (1.0 - smoothstep(1.0, 2.2, cDist / cPx)) * u_contour * step(0.5, z0);
-        biome_color = mix(biome_color, biome_color * 0.5, cLine);
+        /* 线色跟着风格走（地形图是褐色、蓝图是青色、极简档压根不画）：以前只会"把底色调暗一半"，
+           在深色色带（蓝图）上就完全看不见线。 */
+        biome_color = mix(biome_color, mix(biome_color * 0.5, u_line_color, 0.65), cLine);
 
         // TODO: add noise texture based on biome
 
@@ -469,7 +555,21 @@ const frag_drape = `
 
         /* ⭐ 灵框追加（第九十七轮）：u_shade = 0 ⇒ 完全平面（light 恒 1），1 ⇒ 上游原样的山体阴影 */
         float shade = mix(1.0, light, u_shade);
-        out_fragcolor = vec4(mix(biome_color, water_color.rgb, water_color.a) * shade / outline, 1);
+        vec3 col = mix(biome_color, water_color.rgb, water_color.a) * shade / outline;
+        /* ⭐ 灵框追加（第一百零三轮）：屏幕空间的收尾三层 —— 纸面做旧 / 颗粒 / 暗角。
+           用 v_xy（屏幕 0..1）而不是世界 uv：纸纹和颗粒是"盖在这张图上"的，不该随地形缩放而游动。 */
+        if (u_paper > 0.0) {
+            float stain = fbm3(v_xy * 7.0);
+            col *= mix(1.0, 0.90 + 0.20 * stain, u_paper);
+            col = mix(col, col * vec3(1.05, 0.98, 0.90), u_paper * 0.5);
+        }
+        if (u_grain > 0.0) {
+            col *= 1.0 + (hash21(floor(v_xy * 1600.0)) - 0.5) * u_grain * 0.35;
+        }
+        if (u_vignette > 0.0) {
+            col *= 1.0 - u_vignette * smoothstep(0.40, 0.92, length(v_xy - 0.5));
+        }
+        out_fragcolor = vec4(col, 1);
     }`;
 
 const vert_final = `
@@ -495,6 +595,12 @@ const frag_final = `
 // Mapgen4 renderer
 
 const fbo_texture_size: number = 2048;
+
+/* ⭐ 灵框追加（第一百零三轮）：风格色带的零值兜底（`grade = 0` 时着色器不读它们，
+   但 uniform 数组仍必须被赋一个合法长度，否则有些驱动会警告）。 */
+const ZERO_LAND_RAMP = new Float32Array(8 * 3);
+const ZERO_SEA_RAMP = new Float32Array(6 * 3);
+const ZERO_RGB = new Float32Array([0, 0, 0]);
 
 export default class Renderer {
     numRiverTriangles: number = 0;
@@ -716,6 +822,23 @@ export default class Renderer {
             gl.uniform1f(program.u_contour, renderParam.contour ?? 0);
             gl.uniform1f(program.u_contour_scale, renderParam.contour_scale ?? 10);
             gl.uniform1f(program.u_bands, renderParam.bands ?? 0);
+            /* ⭐ 灵框追加（第一百零三轮）：真实感旋钮 + 风格色带
+               ⚠️ 数组 uniform 的 location 名带 `[0]`（WebGL 的 getActiveUniform 就这么报），
+               `program.u_land_ramp` 是 undefined ⇒ 得走 `uniformLoc()` 兜一下。 */
+            gl.uniform1f(program.u_grade, renderParam.grade ?? 0);
+            gl.uniform1f(program.u_detail, renderParam.detail ?? 0);
+            gl.uniform1f(program.u_coast, renderParam.coast ?? 0);
+            gl.uniform1f(program.u_water_noise, renderParam.water_noise ?? 0);
+            gl.uniform1f(program.u_hatch, renderParam.hatch ?? 0);
+            gl.uniform1f(program.u_paper, renderParam.paper ?? 0);
+            gl.uniform1f(program.u_grain, renderParam.grain ?? 0);
+            gl.uniform1f(program.u_vignette, renderParam.vignette ?? 0);
+            gl.uniform1f(program.u_moist, renderParam.moist ?? 0);
+            const uniformLoc = (name: string) => program[name] ?? program[`${name}[0]`];
+            gl.uniform3fv(uniformLoc('u_land_ramp'), renderParam.land_ramp ?? ZERO_LAND_RAMP);
+            gl.uniform3fv(uniformLoc('u_sea_ramp'), renderParam.sea_ramp ?? ZERO_SEA_RAMP);
+            gl.uniform3fv(uniformLoc('u_line_color'), renderParam.line_color ?? ZERO_RGB);
+            gl.uniform3fv(uniformLoc('u_river_color'), renderParam.river_color ?? ZERO_RGB);
 
             this.texture_colormap.activate(gl.TEXTURE0, program.u_colormap);
             this.fbo_land.texture.activate(gl.TEXTURE1, program.u_elevation);

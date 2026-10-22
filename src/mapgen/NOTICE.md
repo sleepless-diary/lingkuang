@@ -64,6 +64,23 @@
    另加一行 `float z0 = z;`（在河流压低 `z` 之前留一份原始高度）：等高线用 `z0`，
    否则河的浅槽两边会长出一圈假等高线。**地形/降雨/河流的数学仍然一字未改。**
 
+9. **`render.ts`：八档风格 + 真实感着色（第一百零三轮灵框追加）**。
+   用户 2026-10-20：「我们的地图生成系统还是很假，而且不像真实地图，显示风格也很少而且不好看」
+   ⇒ 三档扩成八档（自然 / 地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简），
+   并把上游自己在 `frag_drape` 里留的那行 `// TODO: add noise texture based on biome` 补上。
+   新增 uniform（**缺省值全是"上游原样"**，`u_grade = 0` 时下面整段是死代码）：
+   · `u_grade` + `u_land_ramp[8]` + `u_sea_ramp[6]` + `u_line_color` + `u_river_color`
+     —— 用**等距色带**取代"高程 × 湿度"的 colormap 取色（色带的唯一来源是
+     `src/mapgen/styles.ts`；改色只改那边，别在这一层写第二份表）；
+   · `u_detail` —— 程序化值噪声（hash + 3 octave fbm）扰动法线：山不是"光滑的灰团"；
+   · `u_coast` —— 陆地一侧湿沙 + 水线一道极细亮边（浪花）；
+   · `u_water_noise` —— 海面细纹；`u_hatch` —— 按坡向排线（水墨/羊皮纸）；
+   · `u_paper` / `u_grain` / `u_vignette` —— 屏幕空间的纸纹 / 颗粒 / 暗角；
+   · `u_moist` —— 湿度偏色权重（湿偏绿、干偏暖）。
+   ⚠️ 数组 uniform 的 location 名带 `[0]`（`getActiveUniform` 就这么报）⇒
+   `drawDrape()` 里走 `uniformLoc()` 兜一层，直接写 `program.u_land_ramp` 会拿到 undefined。
+   **地形/降雨/河流的数学仍然一字未改**（只动"怎么看"）。
+
 ## 怎么用
 
 只看 `src/mapgen/index.ts`（`createEngine` / `runGeneration` / `statsOf` / `TerrainView`）。

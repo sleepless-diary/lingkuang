@@ -223,28 +223,41 @@ const areaWater = (eng, y0, y1) => {
     { dirty, after: E.paintedSoFar(), painted: +wDirty.toFixed(3), cleared: +wClean.toFixed(3) });
 }
 
-/* ★14 「看的方式」三档（第九十七轮）：它只是**一组渲染参数**（纯函数），与"生成什么地形"无关
-   ⇒ 缺省/认不出的值都必须落回「立体」（= 上游原样），这是"不传就什么都不变"的保证。 */
+/* ★14 「看的方式」八档（第九十七轮三档 → 第一百零三轮八档）：它只是**一组渲染参数**（纯函数），
+   与"生成什么地形"无关 ⇒ 缺省/认不出的值都必须落回默认档（自然），这是"不传就什么都不变"的保证。
+   另外两条第一百零三轮的新契约：
+     · 每档都带**色带**（陆地 8 个等距采样点 ×3、海 6×3）与线/河色 —— 缺一项那一档就只剩"调亮度"；
+     · 旧 id（relief/contour/flat）必须仍能归一化（老数据不炸）。 */
 {
-  const r = E.styleRenderParams('relief');
-  const c = E.styleRenderParams('contour');
-  const f = E.styleRenderParams('flat');
+  const r = E.styleRenderParams('natural');
+  const t = E.styleRenderParams('topo');
+  const m = E.styleRenderParams('minimal');
+  const legacy = E.styleRenderParams('relief');
   const unknown = E.styleRenderParams('不认识的东西');
   const none = E.styleRenderParams(undefined);
   const d = E.DEFAULT_PARAMS.render;
-  const ok = E.TERRAIN_STYLES.length === 3
-    && E.TERRAIN_STYLES.map((s) => s.id).join(',') === 'relief,contour,flat'
+  const ids = E.TERRAIN_STYLES.map((s) => s.id).join(',');
+  const rampOk = (p) => Array.isArray(p.land_ramp) && p.land_ramp.length === 24
+    && Array.isArray(p.sea_ramp) && p.sea_ramp.length === 18
+    && Array.isArray(p.line_color) && p.line_color.length === 3
+    && Array.isArray(p.river_color) && p.river_color.length === 3
+    && p.land_ramp.every((v) => v >= 0 && v <= 1);
+  const ok = E.TERRAIN_STYLES.length === 8
+    && ids === 'natural,topo,paper,ink,blueprint,dreamcore,satellite,minimal'
     && E.TERRAIN_STYLES.every((s) => s.label && s.hint)
     && d.shade === 1 && d.contour === 0 && d.contour_scale === 10 && d.bands === 0
-    && r.shade === 1 && r.contour === 0 && r.bands === 0
-    && c.shade > 0 && c.shade < 1 && c.contour === 1 && c.contour_scale > 1 && c.bands > 1
-    && f.shade === 0 && f.contour === 0 && f.bands === 0
+    && E.TERRAIN_STYLE_DEFS.every((def) => rampOk(E.styleRenderParams(def.id)))
+    && r.shade === 1 && r.contour === 0 && r.bands === 0 && r.grade === 1
+    && t.shade > 0 && t.shade < 1 && t.contour === 1 && t.contour_scale > 1 && t.bands > 1
+    && m.shade === 0 && m.detail === 0 && m.contour === 0 && m.bands === 0
     && JSON.stringify(unknown) === JSON.stringify(r) && JSON.stringify(none) === JSON.stringify(r)
-    && E.isTerrainStyle('contour') && !E.isTerrainStyle('x') && !E.isTerrainStyle(null)
-    && E.terrainStyleOf('flat') === 'flat' && E.terrainStyleOf('乱写') === 'relief'
-    && E.terrainStyleLabel('contour') === '等高线' && E.terrainStyleLabel(undefined) === '立体';
-  check('★14 风格三档是一组渲染参数（缺省/认不出都落回立体）', ok,
-    { relief: r, contour: c, flat: f, unknownFallsBack: JSON.stringify(unknown) === JSON.stringify(r) });
+    && JSON.stringify(legacy) === JSON.stringify(r)
+    && E.isTerrainStyle('topo') && !E.isTerrainStyle('contour') && !E.isTerrainStyle(null)
+    && E.terrainStyleOf('contour') === 'topo' && E.terrainStyleOf('flat') === 'minimal'
+    && E.terrainStyleOf('乱写') === 'natural'
+    && E.terrainStyleLabel('topo') === '地形图' && E.terrainStyleLabel(undefined) === '自然';
+  check('★14 风格八档是一组渲染参数（每档带色带；旧 id 走别名；缺省/认不出落回自然）', ok,
+    { ids, natural: r, topo: t, minimal: m, legacyFallsBack: JSON.stringify(legacy) === JSON.stringify(r) });
 }
 
 /* ── 星球形态：**大陆感**（第九十九轮）──────────────────────────────────────────

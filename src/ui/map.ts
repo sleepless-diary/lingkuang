@@ -74,7 +74,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
         <button id="map-gen" title="打开地图生成面板：自己一个个调参数 / AI 直出 / 抽卡" style="background:none;border:1px solid var(--accent);color:var(--accent-ink);border-radius:var(--radius-sm);font-size:11px;padding:3px 10px;cursor:pointer;">生成地形…</button>
         <select id="map-form" title="形态：局部 = 一片地区的地形（能手刷精修）；星球 = 整颗星球（经度无缝、有两极，能贴到球上看）" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${MAP_FORMS.map((f) => `<option value="${f.id}" title="${escapeHtml(f.hint)}">${escapeHtml(f.label)}</option>`).join('')}</select>
         <button id="map-globe" class="lk-btn lk-btn--ghost lk-btn--sm" title="球体看：把星球图贴到一颗真球上（拖动旋转、滚轮缩放）—— 只在星球形态下出现" style="display:none;background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">球体看</button>
-        <select id="map-view" title="看的方式：地形怎么画（立体 / 等高线 / 平面）—— 只换画法，不重算地形" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${TERRAIN_STYLES.map((s) => `<option value="${s.id}" title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}</option>`).join('')}</select>
+        <select id="map-view" title="看的方式：地形怎么画（八档：自然 / 地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简）—— 只换画法，不重算地形" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${TERRAIN_STYLES.map((s) => `<option value="${s.id}" title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}</option>`).join('')}</select>
         <span style="width:1px;height:16px;background:var(--border-soft);"></span>
         <button data-mode="region" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" >区域</button>
         <button data-mode="marker" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" >标记</button>
@@ -412,7 +412,9 @@ export function renderMap(store: Store, host: HTMLElement): void {
     if (!m || !box) return;
     const bw = box.clientWidth || m.width;
     const bh = box.clientHeight || m.height;
-    viewScale = Math.min(bw / m.width, bh / m.height, 1);
+    /* ⭐ 第一百零三轮：允许**放大**到 2×（原来钳在 1 ⇒ 地图永远只有 900×500，四周一圈空）。
+       地形位图本身是 2048²，放大到 2× 仍有余量，不会糊。 */
+    viewScale = Math.min(bw / m.width, bh / m.height, 2);
     stage.style.transformOrigin = '0 0';
     stage.style.transform = `scale(${viewScale})`;
     stage.style.left = Math.max(0, Math.round((bw - m.width * viewScale) / 2)) + 'px';

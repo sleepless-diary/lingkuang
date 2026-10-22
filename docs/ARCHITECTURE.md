@@ -899,3 +899,55 @@
 | `src/main.ts` | **修**：写 vault / `flushSync` 时把 `typeId` 当类型名用了（`vaultWriteEntity(wsName, e.typeId, e)`）。老数据 `typeId === 中文名` 所以一直没暴露；机器 id 一出现就会在 vault 里长出 `et_1/`。两处改成 `entityTypes[typeId].name ?? typeId` |
 | `src/ui/inspire.ts` / `assoc.ts` | 抽卡两个出口：「整组→暂存词」（`pushStaged`）与「整组存为设定」（`createEntityFromCard`）；`mountAssocCanvas(host, getWord, store?)` 多收一个 store 用来挂工作栏，并监听 `lingkuang-staged` 回读（两处写同一个 localStorage 键 `lingkuang-char-staged`） |
 | `src/style.css` | 新原语：`.lk-intake*`、`.lk-palette*`、`.lk-lib-*`、`.ed-ttag.is-draft`、`button.lk-chip`（含 `.is-on`）。颜色一律走 `design-system/tokens.css` |
+
+## 2026-10-20 · 地图八档「看的方式」+ 真实感着色
+
+> 起因（用户原话）：「我们的地图生成系统还是很假，而且不像真实地图，显示风格也很少而且不好看」。
+
+### 一句话机制
+**风格仍然只是渲染参数**（第九十七轮定的规矩没变）：换档 = 下一帧重画，**不重建网格、不重算地形**。
+八档的唯一注册表是 `src/mapgen/styles.ts`（`TERRAIN_STYLE_DEFS`），两条渲染路径都从它取色带与旋钮：
+局部形态走 WebGL（`src/mapgen/vendor/render.ts` 的 `frag_drape`），星球形态走逐像素 JS
+（`src/mapgen/planet.ts` 的 `renderPlanet()`）。
+
+### 八档（id → 文案）
+`natural` 自然 · `topo` 地形图 · `paper` 羊皮纸 · `ink` 水墨 · `blueprint` 蓝图 ·
+`dreamcore` 梦核 · `satellite` 卫星 · `minimal` 极简。
+**旧 id 走别名**：`relief → natural`、`contour → topo`、`flat → minimal`
+（`TERRAIN_STYLE_ALIASES`，`terrainStyleOf()` 归一化 ⇒ 老数据不会炸）。默认档 = `natural`。
+
+### 每档带什么
+1. **陆地色带 8 个等距采样点**（t=0 海平面 → t=1 最高峰）+ **海深色带 6 个**（t=0 岸边 → t=1 最深）
+   —— 着色器按等距插值取色（改数量要同时改 `u_land_ramp[8]` / `u_sea_ramp[6]`）；
+2. 线色（等高线 / 排线 / 描边）与河色；
+3. 旋钮：`shade`（晕渲强度）、`bands`（分层设色档数）、`contour` + `contourScale`（等高线）、
+   `detail`（山体细节噪声）、`coast`（湿沙 + 浪花）、`waterNoise`、`hatch`（坡面排线）、
+   `paper` / `grain` / `vignette`（屏幕空间收尾）、`moist`（湿度偏色）、
+   `outline` / `outlineWater` / `outlineCoast` / `light`（后端两项沿用上游参数）。
+
+### 真实感那几处（局部形态，都在 `frag_drape` 里）
+- **山体细节**：`hash21/vnoise/fbm3` 三个函数（不贴图、直接算），扰动 `slope_vector` 的 xy；
+  权重 `u_detail`、并按高度 `smoothstep(0.5, 0.62, z0)` 淡入（山脚不长毛刺）。
+- **海岸带**：`|z0-0.5|` 附近：陆地一侧混湿沙、水线上一道 `0.004` 宽的亮边（浪花）。
+- **等高线**：线色改成 `u_line_color`（以前只会"把底色调暗一半"，深色色带上根本看不见）。
+- **排线**：按坡向取线、按坡度遮罩；**纸纹 / 颗粒 / 暗角**用 `v_xy`（屏幕空间，不随地形游动）。
+- **海深**：两条色带 + 细纹（频率 70、幅度 0.05 —— 第一版 120/0.14 时像"大理石云"）。
+
+### 卫星形态（`planet.ts`）
+同一张表取色带（256 级 LUT），另加：
+- **垂直夸张 15×** 求坡度（原来除以 `dxKm`/结果只有 0.02 量级 ⇒ 山完全不出阴影）；
+- 阴影从**平滑高度**（`boxFilter(elev)`）求（逐格差分会把网格噪声一起放大 → "揉皱的锡纸"）；
+- 海深按**这片海最深那一格**归一化（固定除以 8.5 时只吃到色带最浅一段）；
+- 海岸永远画一条深描边 + 水侧浪花；河画四邻 + 四对角（星球图上 1px 只剩几个点）。
+- 雪线只给 `detail ≥ 0.6` 的档（蓝图上压雪会毁配色），且要求 `t > 0.6`。
+
+### 顺带修的两件"假"
+1. **地图铺不满**：`src/ui/map.ts` 的 `fitView()` 原来 `Math.min(..., 1)` 钳在 1 倍 ⇒
+   900×500 的地图永远居中留一圈空；改成允许放大到 2×（地形位图本身 2048²，放大不糊）。
+2. **河看不见**：`paramsFromSeed()` 把 `rivers.lg_river_width` 从上游 `-2.4` 抬到 `-2.0`（≈1.5 倍宽）。
+   河**数**不受影响（数的是流量连通块），统计与守卫口径不变。
+
+### 守卫
+- `tools/e2e/mapgen-engine.mjs` ★14 换成八档契约（每档都必须带色带；旧 id 走别名），★21 仍是"等高线真画出来了"（★21 的判据没改，靠把 `topo` 的 `contourScale` 定在 20 过）；
+- `tools/e2e/map-style.cjs` 从三档改八档（★8 先点开沙盘工具并 `scrollIntoView`：元素在视口外时 clip 截图是空的，曾假红）。
+- 实测：`mapgen-engine` 22/22、`map-style` 13/13、`map-planet` 13/13。

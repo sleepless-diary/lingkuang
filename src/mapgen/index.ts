@@ -82,6 +82,21 @@ export interface MapgenRenderParams {
   contour: number;        /* 0/1：等高线 */
   contour_scale: number;  /* 整个高度范围画几条等高线（10 ⇒ 每 0.1 高度一条） */
   bands: number;          /* >1 = 分层设色档数（0/1 = 关） */
+  /* ⭐ 灵框追加（第一百零三轮）：八档风格的真实感旋钮 + 色带。全是可选 ⇒ 不填即上游原样。
+     值的来源只有一处：`src/mapgen/styles.ts` 的 `styleRenderParams()`。 */
+  grade?: number;              /* 0 = 用上游色带；1 = 完全用下面两条色带 */
+  detail?: number;             /* 山体细节噪声强度 */
+  coast?: number;              /* 海岸湿沙 + 浪花亮边 */
+  water_noise?: number;        /* 水面细纹 */
+  hatch?: number;              /* 坡面排线 */
+  paper?: number;              /* 纸面做旧 */
+  grain?: number;              /* 颗粒 */
+  vignette?: number;           /* 四角压暗 */
+  moist?: number;              /* 湿度偏色权重 */
+  land_ramp?: number[];        /* 8×3：陆地高程色带（0..1 RGB） */
+  sea_ramp?: number[];         /* 6×3：海深色带 */
+  line_color?: number[];       /* 等高线 / 排线 / 描边色 */
+  river_color?: number[];      /* 河色 */
 }
 export interface MapgenParams {
   spacing: number;
@@ -130,49 +145,16 @@ export const APPLY_NOTES = [
   '湖泊不再"挖"出来：内陆低地被淹就是内陆海（所以湖数可能为 0）',
 ];
 
-/* ── ⭐ 灵框追加（第九十七轮）：渲染风格（「看的方式」）──────────────────────────
-   用户 2026-10-14：「这个山怎么是立体的，不应该是等高线那一种的吗」→ 选了"做成开关"。
-   关键事实：**风格只是渲染参数**（照度强度 / 等高线 / 分层设色），与"生成什么地形"无关
-   ⇒ 换风格 = `TerrainView.setStyle()` = 下一帧重画，**不重建网格、不重算地形**（瞬时）。
-   三档各自的一套参数在 `styleRenderParams()` 里，改档只改这一个函数。 */
-
-export type TerrainStyleId = 'relief' | 'contour' | 'flat';
-export const DEFAULT_TERRAIN_STYLE: TerrainStyleId = 'relief';
-
-/** 面板上的三档（`label` 进 UI，`hint` 作悬停说明 —— 全项目界面不用 emoji） */
-export const TERRAIN_STYLES: { id: TerrainStyleId; label: string; hint: string }[] = [
-  { id: 'relief', label: '立体', hint: '山体阴影（上游默认）：一眼看出山在哪、哪边是坡，偏插画' },
-  { id: 'contour', label: '等高线', hint: '分层设色 + 等高线，只留一点点阴影：像地形图，读高度读得准' },
-  { id: 'flat', label: '平面', hint: '纯色块：没有阴影也没有线，看植被与地形分区最清楚' },
-];
-
-export function isTerrainStyle(v: unknown): v is TerrainStyleId {
-  return v === 'relief' || v === 'contour' || v === 'flat';
-}
-
-/** 数据里那个宽 `string` → 认得出的档（认不出的按默认档，不报错） */
-export function terrainStyleOf(v: unknown): TerrainStyleId {
-  return isTerrainStyle(v) ? v : DEFAULT_TERRAIN_STYLE;
-}
-
-export function terrainStyleLabel(v: unknown): string {
-  const id = terrainStyleOf(v);
-  return (TERRAIN_STYLES.find((s) => s.id === id) ?? TERRAIN_STYLES[0]).label;
-}
-
-/** 风格 → 渲染参数（叠在 `params.render` 之上；缺省档 = 空对象也能跑，值就是上游原样）。
- *  `contour` 那一档的 0.35 晕渲是刻意的：纯平的分层设色在缩略图上"糊成一块"，
- *  留一点阴影既像地形图、又还能看出山脊走向；同时把山脊描边压到 8，
- *  让**等高线**当主角（15 的话满屏都是深色棱线，与线打架）。
- *  `flat` 把 `outline_strength` 归零：那是内核沿深度不连续性画的山脊描边，
- *  不关掉的话"平面"档看着还是立体的（第九十七轮真机截图逮到的）。 */
-export function styleRenderParams(v: unknown): Partial<MapgenRenderParams> {
-  switch (terrainStyleOf(v)) {
-    case 'contour': return { shade: 0.35, bands: 10, contour: 1, contour_scale: 10, outline_strength: 8 };
-    case 'flat': return { shade: 0, bands: 0, contour: 0, outline_strength: 0 };
-    default: return { shade: 1, bands: 0, contour: 0, outline_strength: 15 };
-  }
-}
+/* ── 渲染风格（「看的方式」）——注册表已搬到 `src/mapgen/styles.ts`（第一百零三轮）──
+   这里只做**转出口**：老代码 `import { TERRAIN_STYLES } from '../mapgen'` 一行都不用改。
+   八档 + 旧 id 别名（relief→natural / contour→topo / flat→minimal）都在 `styles.ts` 里定义，
+   值也只有那一个来源 —— 别再往这里加第二份表。 */
+export {
+  DEFAULT_TERRAIN_STYLE, TERRAIN_STYLES, TERRAIN_STYLE_ALIASES, TERRAIN_STYLE_DEFS,
+  colorFloats, isTerrainStyle, rampFloats, sampleRampHex, styleRenderParams,
+  terrainStyleDef, terrainStyleLabel, terrainStyleOf,
+  type TerrainStyleDef, type TerrainStyleId,
+} from './styles';
 
 /* ── 种子：一串文字 → 两个 32 位整数（网格种子与高度种子分开，照上游的规矩）──────── */
 
@@ -217,6 +199,11 @@ export function paramsFromSeed(seed: string, style: string = 'continent', spec?:
   p.mountainSpacing = Math.round(56 - ridges * 5.2); /* ridges 2 → 46，4 → 35（上游默认），6 → 25 */
   p.rivers.flow = 0.14 + rv * 0.06;
   p.rivers.lg_min_flow = 3.2 - rv * 0.35;
+  /* ⭐ 第一百零三轮：河宽从上游的 0.0907（exp(-2.4)）抬到 0.135（exp(-2.0)，约 1.5 倍）。
+     用户「很假」的一半是**河看不见**：地图栏那块画布把 2048² 位图缩到 ~900px 显示，
+     上游那种"刚好一格"的细线在缩略尺寸下直接消失（状态行写着 29 条河，画面一根都没有）。
+     河**数**不受影响（数的是流量连通块），所以统计/守卫口径不变。 */
+  p.rivers.lg_river_width = -2.0;
   return p;
 }
 

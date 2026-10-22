@@ -245,7 +245,7 @@ export function openMapStudio(store: Store): () => void {
   const gridEl = q<HTMLElement>('#ms-grid');
   const styleSel = q<HTMLSelectElement>('#ms-style');
   const hintEl = q<HTMLElement>('#ms-style-hint');
-  /* ⭐ 「风格」（第九十七轮）：**看的方式**（立体 / 等高线 / 平面）—— 与上面的「档位」不是一回事：
+  /* ⭐ 「风格」（第九十七轮）：**看的方式**（八档：自然 / 地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简）—— 与上面的「档位」不是一回事：
      档位决定"生成什么地形"，风格决定"怎么画出来"。它不进引擎缓存键 ⇒ 换风格不重算地形。 */
   const viewSel = q<HTMLSelectElement>('#ms-view');
   const viewHintEl = q<HTMLElement>('#ms-view-hint');
@@ -578,7 +578,7 @@ export function openMapStudio(store: Store): () => void {
     const t = { seed: m.terrain.seed, style: m.terrain.style as MapStyle, spec: m.terrain.spec ?? {} };
     fillForm(t.style, t.spec);
     seedEl.value = t.seed;
-    /* 接着上一轮"看的方式"（没有这个字段的旧数据 ⇒ 落回默认「立体」）*/
+    /* 接着上一轮"看的方式"（没有这个字段的旧数据 ⇒ 落回默认「自然」）*/
     viewSel.value = terrainStyleOf(m.terrain.view);
     syncViewHint();
     /* 接着上一轮的**形态**（没有这个字段的旧数据 ⇒ 落回「局部」）*/
