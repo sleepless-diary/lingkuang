@@ -78,6 +78,16 @@ export interface TerrainStyleDef {
   outlineCoast: number;
   /** 光角（度） */
   light: number;
+  /* ⭐ 第一百零六轮：地表材质分层 + 浅滩带（B3/B4）。
+     没写就按 `MATERIAL_DEFAULTS`（按 id 取）—— 八档的配色是逐条挑的，材质强度也逐档给，不用改一堆字面量。 */
+  /** 高处 / 陡坡露岩（0 = 不上岩色） */
+  rock?: number;
+  /** 岩层条带（0 = 无） */
+  strata?: number;
+  /** 雪线（0 = 不压雪） */
+  snow?: number;
+  /** 水侧浅滩带（0 = 与深海同色） */
+  shelf?: number;
 }
 
 /** 八档。色带是**逐条挑的**（不是算法生成）：挑的标准是"缩到 120px 的缩略图还认得出是什么风格" */
@@ -92,7 +102,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
     river: '#5b9fc4',
     grade: 1, shade: 1, bands: 0, contour: 0, contourScale: 10,
     detail: 0.65, coast: 0.5, waterNoise: 0.2, hatch: 0, paper: 0, grain: 0.05, vignette: 0,
-    moist: 0.8, biome: 0.85, treat: 'natural', outline: 15, outlineWater: 13, outlineCoast: 1.2, light: 80,
+    moist: 0.8, biome: 0.85, treat: 'natural', outline: 15, outlineWater: 13, outlineCoast: 0.75, light: 80,
   },
   {
     id: 'topo',
@@ -330,9 +340,33 @@ export function climateHex(treat: ClimateTreat, temp01: number, moist01: number)
   return applyClimate(mixHex(row(t0), row(t1), tk), treat);
 }
 
+/** 材质分层的逐档强度（第一百零六轮）：把"山"与"平原"分开的四把旋钮。
+ *  · rock   —— 高处 + 陡坡露岩（雪线也要靠它给掩码）；
+ *  · strata —— 岩层条带（地形图/卫星最重，极简档 0）；
+ *  · snow   —— 雪线（水墨/蓝图压雪会毁掉那套配色 ⇒ 低甚至 0）；
+ *  · shelf  —— 水侧浅滩带（岸线不再是"一刀切"的深蓝）。 */
+const MATERIAL_DEFAULTS: Record<TerrainStyleId, { rock: number; strata: number; snow: number; shelf: number }> = {
+  natural:   { rock: 0.62, strata: 0.35, snow: 0.85, shelf: 0.75 },
+  topo:      { rock: 0.50, strata: 0.65, snow: 0.55, shelf: 0.45 },
+  paper:     { rock: 0.42, strata: 0.22, snow: 0.30, shelf: 0.35 },
+  ink:       { rock: 0.55, strata: 0.30, snow: 0.25, shelf: 0.30 },
+  blueprint: { rock: 0.65, strata: 0.55, snow: 0.10, shelf: 0.50 },
+  dreamcore: { rock: 0.35, strata: 0.18, snow: 0.45, shelf: 0.55 },
+  satellite: { rock: 0.85, strata: 0.50, snow: 1.00, shelf: 0.80 },
+  minimal:   { rock: 0.00, strata: 0.00, snow: 0.00, shelf: 0.15 },
+};
+
+/** 某档解析后的材质强度 —— 星球那条 CPU 上色路径与 WebGL 共用同一份取值 */
+export function styleMaterial(v: unknown): { rock: number; strata: number; snow: number; shelf: number } {
+  const d = terrainStyleDef(v);
+  const m = MATERIAL_DEFAULTS[d.id];
+  return { rock: d.rock ?? m.rock, strata: d.strata ?? m.strata, snow: d.snow ?? m.snow, shelf: d.shelf ?? m.shelf };
+}
+
 /** 风格 → 渲染参数（叠在 `params.render` 之上）。缺省档缺省值 = 上游原样。 */
 export function styleRenderParams(v: unknown): Partial<MapgenRenderParams> {
   const d = terrainStyleDef(v);
+  const mat = MATERIAL_DEFAULTS[d.id];
   return {
     grade: d.grade,
     shade: d.shade,
@@ -347,6 +381,10 @@ export function styleRenderParams(v: unknown): Partial<MapgenRenderParams> {
     grain: d.grain,
     vignette: d.vignette,
     moist: d.moist,
+    rock: d.rock ?? mat.rock,
+    strata: d.strata ?? mat.strata,
+    snow: d.snow ?? mat.snow,
+    shelf: d.shelf ?? mat.shelf,
     biome_amt: d.biome,
     biome_ramp: Array.from(climateFloats(d.treat)),
     outline_strength: d.outline,

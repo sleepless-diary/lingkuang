@@ -29,7 +29,7 @@ import { createNoise3D } from 'simplex-noise';
  *  `require`），而 `./index.ts` 那条链拉进 vendored mapgen4，里面有 DOM 假设（`document` /
  *  `HTMLCanvasElement`）⇒ 值导入会在 node 里直接炸。`seedInt` 因此本地抄一份。 */
 import type { MapgenSpecInput, TerrainStats } from './index';
-import { climateHex, sampleRampHex, terrainStyleDef } from './styles';
+import { climateHex, sampleRampHex, styleMaterial, terrainStyleDef } from './styles';
 
 /* ── 小工具 ─────────────────────────────────────────────────────────────────── */
 
@@ -343,9 +343,22 @@ function placeMassifs(rnd: () => number, cores: Kernel[], ridges: number): Kerne
   return out;
 }
 
-/** **生成一颗星球**（纯函数：同参数逐字节同结果）。
- *  `h` 是网格高（宽 = 2h），默认 `PLANET_H`；预览可以给更小的值换速度。 */
-export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecInput, h: number = PLANET_H): PlanetField {
+/** 分帧进度的统一形状（`planetFieldGen` / `renderPlanetGen` 都吐这个）。
+ *  用户 2026-10-23：「给加载做一点提示，不然别人以为会卡了」——
+ *  这两种计算各要 1.4s / 0.5s，整段同步跑的话连"正在算"都画不出来。 */
+export interface PlanetProgress {
+  phase: string;
+  done: number;
+  total: number;
+}
+
+/** **生成一颗星球**（生成器版：同参数逐字节同结果，只是把工作切成一小片一小片）。
+ *
+ *  ⚠️ 这是**唯一实现**：`buildPlanetField()` 只是把它一口气跑完的同步外壳
+ *  （守卫 / 离线脚本 / 预览用）；界面走 `drivePlanetField()`（`src/ui/planet-view.ts`），
+ *  每片之间让出一帧，遮罩与进度条才画得出来。
+ *  切点只放在**阶段边界**与**行循环**上：所有跨阶段的中间量都是局部变量，天然连续。 */
+export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecInput, h: number = PLANET_H): Generator<PlanetProgress, PlanetField, void> {
   const sp = planetSpec(style, spec);
   const w = h * 2;
   const n = w * h;
@@ -359,6 +372,7 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
   /* 陆核 / 山体核（各自的随机流：与上面五个噪声域互不相关，同种子仍确定） */
   const cores = placeCores(mulberry32(seedInt(String(seed) + '|陆核')), style);
   const mounts = placeMassifs(mulberry32(seedInt(String(seed) + '|山体')), cores, sp.ridges);
+  yield { phase: '撒陆核与山体', done: 0, total: 1 };
 
   const mtnAmp = 0.5 + sp.ridges * 0.16;          /* ridges 1..8 → 0.66 .. 1.78 */
   const ridgeFreq = 2.0 + sp.ridges * 0.18;
@@ -444,6 +458,8 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
       if (c < lo) lo = c;
       if (c > hi) hi = c;
     }
+    /* 分帧：每 16 行让出一次（实测这一趟占首次生成的六成 ⇒ 单片约 8~10ms）*/
+    if ((i & 15) === 15 || i === h - 1) yield { phase: '地形起伏', done: i + 1, total: h };
   }
 
   /* 海平面 = **分位数**（要 34% 陆地就取 66% 分位那个高度）：占比是精确命中的，不是碰运气。
@@ -461,6 +477,7 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
     acc += hist[b];
     if (acc >= n - wantLand) { sea = lo + (b / (BUCKETS - 1)) * span; break; }
   }
+  yield { phase: '定海平面', done: 1, total: 1 };
 
   const elev = new Float32Array(n);
   const e01 = new Float32Array(n);
@@ -479,6 +496,7 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
   for (let k = 0; k < n; k++) if (!land[k]) { dist[k] = 0; queue[tail++] = k; }
   while (head < tail) {
     const i = queue[head++];
+    if ((head & 0x7fff) === 0) yield { phase: '算离海距离', done: head, total: n };
     const y = (i / w) | 0, x = i - y * w;
     for (let dy = -1; dy <= 1; dy++) {
       const yy = y + dy;
@@ -518,6 +536,7 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
       if (elev[k] < -maxDepthKm) elev[k] = -maxDepthKm;
     }
   }
+  yield { phase: '铺海底与陆地高度', done: 1, total: 1 };
 
   const moist = new Float32Array(n);
   const temp = new Float32Array(n);
@@ -534,13 +553,18 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
       const nnn = nW(dx * 1.7 + 5.5, dsy * 1.7 + 9.9, lat / 90 * 1.7);
       const far = clamp(1 - dist[k] / 42, 0, 1);
       const alt = clamp(1 - Math.max(0, elev[k]) / 5.2, 0.25, 1);
-      moist[k] = clamp(far * (0.45 + 0.55 * wind) * alt + nnn * 0.12, 0, 1);
+      /* ⭐ 湿度（第一百零六轮修正）：以前几乎只看"离海多远" ⇒ 大陆内部一律干成荒漠，
+         整颗星球是"黄心绿边"（真机截图一眼就假）。现在以**风带**为底（ITCZ 湿 / 副热带干 /
+         西风带湿 / 极地干），离海远近只做 0.62→1.0 的微调，内陆也会按纬度分出雨林 / 草原 / 荒漠。 */
+      const belt = 0.38 + 0.62 * wind;
+      moist[k] = clamp((belt * (0.62 + 0.38 * far) + nnn * 0.16) * alt, 0, 1);
       /* 温度：纬度 + 海拔两条都算。⚠️ 系数调过：照 vision 那条口径的形（30 − 0.55×|纬度|、
          海拔 −6.5℃/km）会把 45° 上 800 m 的高地就冻成雪原 —— 真机出图"内陆成片惨白"
          就是这个来的。改成 32 − 0.45×|纬度|、−6.0℃/km ⇒ 45° 雪线约 2.5 km、赤道约 5.8 km，
          与真实地球同量级。 */
       temp[k] = 32 - 0.45 * alat - 6.0 * Math.max(0, elev[k]);
     }
+    if ((i & 31) === 31 || i === h - 1) yield { phase: '算温度与湿度', done: i + 1, total: h };
   }
 
   /* ── 汇流 → 河 / 湖 ───────────────────────────────────────────────────────
@@ -569,6 +593,7 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
       order[cnt[b]++] = k;
     }
   }
+  yield { phase: '排高度序', done: 1, total: 1 };
   for (let k = 0; k < n; k++) if (land[k]) flow[k] = 0.35 + 0.65 * moist[k];
   /* `down[i]` = i 的下游格（−1 = 洼地，水出不去）；`basin[i]` = 有多少格的水汇进 i。
      两个都在这一趟里顺手攒出来 —— 湖的判定与"把河补成 4 连通"都要用（见下）。 */
@@ -576,6 +601,7 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
   const basin = new Int32Array(n);
   for (let q = 0; q < order.length; q++) {
     const i = order[q];
+    if ((q & 0x7fff) === 0) yield { phase: '算汇流', done: q, total: order.length || 1 };
     if (!land[i]) continue;
     const y = (i / w) | 0, x = i - y * w;
     let best = -1, bestH = elev[i];
@@ -623,6 +649,7 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
     if (land[j1]) river[j1] = 1;
     if (land[j2]) river[j2] = 1;
   }
+  yield { phase: '连通河道', done: 1, total: 1 };
   /* ⭐ 碎河清理（2026-10-13）：高度场里比格子还小的洼地会把汇流切成一堆**几格就断**的短沟，
      画出来不是河、是一片蓝色抓痕（用户「细节都不够」那一轮真机截图就是这样）。
      只留 ≥ `RIVER_MIN_CELLS` 格的河网；统计那边 `riverComps >= 12` 本来就是同一口径。 */
@@ -674,6 +701,8 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
     }
   }
 
+  yield { phase: '认湖', done: 1, total: 1 };
+
   /* ── 统计（字段名与局部形态一致，UI 因此不用改）────────────────────────────
      ⚠️ 面积闸门**随分辨率缩放**：8 格在 1024×512 上只有 4 个像素 —— 不缩放的话
      "岛"会数出上百个（真机首跑就是 99 个），面板上那一行就没意义了。 */
@@ -706,7 +735,18 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
     longestRiver: Math.round(maxFlow),
   };
 
+  yield { phase: '汇总统计', done: 1, total: 1 };
+
   return { w, h, elev, e01, land, river, lake, moist, temp, flow, style, spec: sp, stats };
+}
+
+/** 同步外壳：一口气跑到完（守卫 / 离线脚本 / 预览图用）。
+ *  界面**不要**用它 —— 1.4s 的同步调用会把"正在算"的遮罩一起冻住。 */
+export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecInput, h: number = PLANET_H): PlanetField {
+  const it = planetFieldGen(seed, style, spec, h);
+  let step = it.next();
+  while (!step.done) step = it.next();
+  return step.value;
 }
 
 /* ── 上色（八档「看的方式」）──────────────────────────────────────────────────────
@@ -782,8 +822,9 @@ function boxFilter(src: Float32Array, w: number, h: number): Float32Array {
   return out;
 }
 
-/** 把场画成 RGBA（w*h*4，可直接进 canvas / WebGL 贴图）。认不出的 view 落回默认档。 */
-export function renderPlanet(f: PlanetField, view: unknown): Uint8ClampedArray {
+/** 把场画成 RGBA（w*h*4，可直接进 canvas / WebGL 贴图）。认不出的 view 落回默认档。
+ *  生成器版：每 32 行让出一次 —— 768 高时整趟约 0.5s，切完单片约 20ms。 */
+export function* renderPlanetGen(f: PlanetField, view: unknown): Generator<PlanetProgress, Uint8ClampedArray, void> {
   const def = terrainStyleDef(view);
   const { w, h, elev, e01, land, river, lake, moist, temp } = f;
   const out = new Uint8ClampedArray(w * h * 4);
@@ -791,15 +832,19 @@ export function renderPlanet(f: PlanetField, view: unknown): Uint8ClampedArray {
   const sm = needSmooth ? boxFilter(e01, w, h) : null;   /* 等高线用平滑后的高度 */
   /* 山体阴影也从**平滑高度**求：逐格差分会把网格噪声一起放大，看着像揉皱的锡纸 */
   const hs = boxFilter(elev, w, h);
+  yield { phase: '上色', done: 0, total: h };
   const dyKm = Math.PI * R_KM / h;
   const landLut = rampLut(def.land);
   const seaLut = rampLut(def.sea);
   const lineC = hex(def.line);
   const lineDark = mix(lineC, [18, 18, 16], 0.45);
   const riverC = hex(def.river);
+  /* ⭐ 第一百零六轮：材质分层（岩 / 岩层条带 / 雪 / 浅滩）—— 与 `frag_drape` 同一套规矩 */
+  const mat = styleMaterial(view);
   const bandN = def.bands > 1 ? def.bands : 0;
   let maxDepth = 0.5;
   for (let k = 0; k < w * h; k++) { const d = -elev[k]; if (d > maxDepth) maxDepth = d; }
+  yield { phase: '量海深', done: 1, total: 1 };
   /* ⚠️ 行索引必须**夹在 0..h-1**（极点外面没有行）。不夹的话 i=0 那一行的"上一行"是负下标：
      · land[负数] 读到 undefined ⇒ 极地**每一格陆地都被当成海岸线**（整行压上深色边）；
      · elev[负数] 读到 undefined ⇒ 光照算出 NaN ⇒ col * NaN 写进 Uint8ClampedArray 变 0
@@ -837,6 +882,11 @@ export function renderPlanet(f: PlanetField, view: unknown): Uint8ClampedArray {
            看上去"海是一片平色"（第一百零三轮第一版截图）。 */
         const depth = Math.pow(clamp(-elev[k] / maxDepth, 0, 1), 0.7);
         col = rampAt(seaLut, depth);
+        /* ⭐ 浅滩带（B4）：岸线水侧渐浅，不再与深海一个色 */
+        if (mat.shelf > 0) {
+          const shallow = 1 - sstep(0, 0.10, depth);
+          col = mix(col, mix(col, [158, 199, 189], 0.55), shallow * mat.shelf);
+        }
         if (def.waterNoise > 0) {
           const wn = fbm2(j / w * 42, i / h * 21) - 0.5;
           const kk = 1 + wn * def.waterNoise * 0.16;
@@ -871,9 +921,25 @@ export function renderPlanet(f: PlanetField, view: unknown): Uint8ClampedArray {
           const kk = 1 + det * 0.12 * def.detail;
           col = [col[0] * kk, col[1] * kk, col[2] * kk];
         }
-        /* 雪线：年均温 < −3℃ 的陆地渐白（只给"写实"那几档：蓝图上压雪会毁掉整套配色）*/
-        if (def.detail >= 0.6 && t > 0.6 && temp[k] < -3) {
-          col = mix(col, SNOW, clamp((-temp[k] - 3) / 22, 0.08, 0.6));
+        /* ⭐ 第一百零六轮：地表材质分层（B3）—— 高处 + 陡坡露岩（带岩层条带），再压雪线。
+           以前高处只是"更浅的绿"，山脊与平原分不开（用户「看不出不同地形之间的区别」）。 */
+        const steep = clamp(Math.hypot(gx, gy) * 1.6, 0, 1);
+        const rockT = clamp(Math.max(sstep(0.58, 0.80, tt), sstep(0.34, 0.78, steep) * 0.78), 0, 1);
+        if (mat.rock > 0) {
+          const rockC = mix(rampAt(landLut, 0.52), rampAt(landLut, 0.74), clamp(0.30 + 0.34 * (det + 0.5), 0, 1));
+          col = mix(col, rockC, rockT * mat.rock);
+          if (mat.strata > 0) {
+            const strata = (tt * 34 + (det + 0.5) * 1.4) % 1;
+            const band = sstep(0.42, 0.52, strata) - sstep(0.52, 0.62, strata);
+            const bk = 1 + band * 0.11 * mat.strata * rockT;
+            col = [col[0] * bk, col[1] * bk, col[2] * bk];
+          }
+        }
+        if (mat.snow > 0) {
+          /* 雪线只压在**最高的那圈**（0.88..0.98）：第一版从 0.80 起，整块高原都被刷成白色
+             ⇒ 星球图上是几团"奶油"（第一百零六轮真机截图）。 */
+          const snowT = sstep(0.88, 0.98, t) * sstep(0.30, 0.60, rockT);
+          if (snowT > 0) col = mix(col, SNOW, clamp(snowT, 0, 0.85) * mat.snow);
         }
         /* 等高线：用**平滑过**的高度切 contourScale 档；每 4 条计曲线加深（线色也来自档位）*/
         if (def.contour > 0 && sm) {
@@ -944,8 +1010,17 @@ export function renderPlanet(f: PlanetField, view: unknown): Uint8ClampedArray {
       const o = k * 4;
       out[o] = col[0]; out[o + 1] = col[1]; out[o + 2] = col[2]; out[o + 3] = 255;
     }
+    if ((i & 31) === 31 || i === h - 1) yield { phase: '上色', done: i + 1, total: h };
   }
   return out;
+}
+
+/** 同步外壳（同 `buildPlanetField`：离线/守卫用；界面走分帧版）*/
+export function renderPlanet(f: PlanetField, view: unknown): Uint8ClampedArray {
+  const it = renderPlanetGen(f, view);
+  let step = it.next();
+  while (!step.done) step = it.next();
+  return step.value;
 }
 
 /** 便捷：场 + 上色一次拿全（离线脚本 / 守卫用；界面里两者分开缓存）*/

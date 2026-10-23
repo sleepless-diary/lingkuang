@@ -24,7 +24,7 @@ import {
   type MapgenSpecInput, type MapgenStyle, type TerrainStats,
 } from '../mapgen';
 import { DEFAULT_MAP_FORM, isMapForm, mapFormLabel, type MapForm } from '../mapgen/planet';
-import { PLANET_VIEW_H, planetField } from './planet-view';
+import { PLANET_PREVIEW_H, planetField } from './planet-view';
 
 export type MapStyle = MapgenStyle;
 
@@ -238,10 +238,13 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
       ?? (isMapForm(old?.form) ? (old!.form as MapForm) : DEFAULT_MAP_FORM));
   plan.form = form;
 
-  /* 统计：两种形态各问各的内核（星球那条不碰 mapgen4 的引擎，也就不会白建一次网格）*/
+  /* 统计：两种形态各问各的内核（星球那条不碰 mapgen4 的引擎，也就不会白建一次网格）。
+     ⚠️ 星球这条必须用**预览分辨率**（256）：这里同步要一份统计给"已采用"那行字，
+     用 PLANET_VIEW_H 就是一次 1.5s 的同步长任务（第一百零六轮实测：点「采用」卡 1.8s）。
+     预览那张场刚刚算过、已缓存 ⇒ 这行字是白拿的；地图栏那份 768 的统计会自己重算。 */
   let s: TerrainStats;
   if (form === 'planet') {
-    s = planetField({ seed: plan.seed, style: plan.style, spec: plan.spec }, PLANET_VIEW_H).stats;
+    s = planetField({ seed: plan.seed, style: plan.style, spec: plan.spec }, PLANET_PREVIEW_H).stats;
   } else {
     const engine = createEngineFor(plan.seed, plan.style, plan.spec);
     runGeneration(engine, { strokes: keepPaint });   /* 统计要跟画布看到的一致 ⇒ 笔迹一起算 */

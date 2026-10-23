@@ -1686,3 +1686,100 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
 .lk-empty > .lk-btn { margin-top: 4px; }
 /* 窄栏里的空态（助手记忆 / 文件夹清单）：同一套话术，留白收一半 */
 .lk-empty--sm { padding: 10px 6px; gap: 3px; }
+
+/* ── 加载提示（第一百零六轮）────────────────────────────────────────────────
+   用户：「给加载做一点提示，不然别人以为会卡了」。
+   星球第一次生成 ~2s、局部地形重算 ~130ms：这段时间主线程被占，界面画不出任何东西。
+   这一层在**重活开始前**先画出来（`src/ui/busy.ts` 的 nextFrame），有进度就显示进度条。
+   颜色只用 tokens：底色 chrome（深框），文字 fg-inverse，进度与转圈用 accent。 */
+.lk-busy {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(10, 10, 12, .42);
+  cursor: progress;
+  opacity: 1;
+  transition: opacity 180ms var(--ease-standard);
+}
+.lk-busy.is-out { opacity: 0; pointer-events: none; }
+.lk-busy__box {
+  display: flex; flex-direction: column; align-items: center; gap: 9px;
+  min-width: 190px; max-width: 320px; padding: 16px 22px;
+  background: var(--chrome); color: var(--fg-inverse);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .38);
+  text-align: center;
+}
+.lk-busy__spin {
+  width: 20px; height: 20px; border-radius: 50%;
+  border: 2px solid rgba(232, 231, 223, .18);
+  border-top-color: var(--accent);
+  animation: lk-spin .8s linear infinite;
+}
+@keyframes lk-spin { to { transform: rotate(360deg); } }
+.lk-busy__text { font-size: var(--text-xs); font-weight: 600; }
+.lk-busy__sub { font-size: var(--text-2xs); color: var(--fg-inverse); opacity: .72; }
+.lk-busy__bar {
+  width: 100%; height: 3px; border-radius: 9999px; overflow: hidden;
+  background: rgba(232, 231, 223, .16);
+}
+.lk-busy__bar > i {
+  display: block; height: 100%; width: 0; border-radius: inherit;
+  background: var(--accent);
+  transition: width 140ms linear;
+}
+/* 大面积重算时别让遮罩被"点了就关"——没有任何交互，只是看着 */
+
+/* ── 大图查看器（第一百零六轮）──────────────────────────────────────────────
+   用户：「点击大图时全窗口显示大图，再点一下返回（方便看细节），双击放大，
+   滚轮调整大小，拖动调整位置」。交互全在 `src/ui/lightbox.ts`。 */
+.lk-lb {
+  position: fixed; inset: 0; z-index: 9000;
+  background: rgba(10, 10, 12, .95);
+  overflow: hidden;
+  cursor: zoom-out;
+  touch-action: none;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 140ms var(--ease-standard);
+}
+.lk-lb.is-in { opacity: 1; }
+.lk-lb.is-grab { cursor: grabbing; }
+.lk-lb__img {
+  position: absolute; left: 0; top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+  max-width: none; max-height: none;
+  image-rendering: auto;
+  opacity: 0;
+  transition: opacity 120ms linear;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+}
+.lk-lb.is-ready .lk-lb__img { opacity: 1; }
+.lk-lb__bar {
+  position: absolute; left: 0; right: 0; top: 0; z-index: 2;
+  display: flex; align-items: center; gap: 12px;
+  height: 42px; padding: 0 12px;
+  background: linear-gradient(rgba(10, 10, 12, .82), rgba(10, 10, 12, 0));
+  color: var(--fg-inverse);
+  font-size: var(--text-2xs);
+  cursor: default;
+}
+.lk-lb__title { font-size: var(--text-xs); font-weight: 600; }
+.lk-lb__zoom {
+  font-family: var(--font-mono); font-size: var(--text-2xs);
+  padding: 1px 6px; border: 1px solid rgba(232, 231, 223, .22); border-radius: 9999px;
+  opacity: .85;
+}
+.lk-lb__hint { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .6; }
+.lk-lb__close {
+  flex-shrink: 0; width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: 1px solid rgba(232, 231, 223, .22); border-radius: var(--radius-sm);
+  color: var(--fg-inverse); font-size: 16px; line-height: 1; cursor: pointer;
+}
+.lk-lb__close:hover { background: rgba(232, 231, 223, .12); border-color: rgba(232, 231, 223, .38); }
+.lk-lb__tip {
+  position: absolute; left: 0; right: 0; bottom: 22px; z-index: 2;
+  text-align: center; color: var(--fg-inverse); opacity: .5;
+  font-size: var(--text-2xs); pointer-events: none;
+}

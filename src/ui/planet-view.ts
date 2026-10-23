@@ -9,7 +9,7 @@
  *  **上色**（八档「看的方式」，~45ms）按 场 + 风格 缓存 ⇒ 换风格不重算地形（与局部形态同一条规矩）。
  *  ⚠️ 图**不落盘**：`MapData.terrain` 里只有几百字节参数。 */
 
-import { PLANET_H, buildPlanetField, renderPlanet, type PlanetField } from '../mapgen/planet';
+import { PLANET_H, buildPlanetField, planetFieldGen, renderPlanet, renderPlanetGen, type PlanetField, type PlanetProgress } from '../mapgen/planet';
 import type { MapgenSpecInput, TerrainStats } from '../mapgen';
 import type { MapTerrainSpec } from '../store/types';
 import { mountGlobe, type GlobeHandle } from './globe';
@@ -67,6 +67,96 @@ export function planetStats(t: MapTerrainSpec | undefined, h: number = PLANET_VI
   return planetField(t, h).stats;
 }
 
+/* ── 分帧驱动（第一百零六轮）────────────────────────────────────────────────
+   用户：「给加载做一点提示，不然别人以为会卡了」。
+   星球首次生成是 1.4s（场）+ 0.5s（上色）的同步长任务，遮罩画不出来。
+   内核已经改成生成器（`planetFieldGen` / `renderPlanetGen`）⇒ 这里一帧跑一小片，
+   顺便把"到哪一步了"换成 0..1 的进度。 */
+
+/** 各阶段在整趟里的权重量程（[起, 止]）—— 实测耗时占比的粗略刻度，只用来画进度条 */
+const PHASE_PCT: Record<string, [number, number]> = {
+  '撒陆核与山体': [0.02, 0.04],
+  '地形起伏': [0.04, 0.55],
+  '定海平面': [0.55, 0.58],
+  '算离海距离': [0.58, 0.66],
+  '铺海底与陆地高度': [0.66, 0.70],
+  '算温度与湿度': [0.70, 0.74],
+  '排高度序': [0.74, 0.76],
+  '算汇流': [0.76, 0.84],
+  '连通河道': [0.84, 0.86],
+  '认湖': [0.86, 0.88],
+  '汇总统计': [0.88, 0.90],
+  '量海深': [0.90, 0.91],
+  '上色': [0.91, 1.0],
+  '缓存': [1, 1],
+};
+
+export interface PlanetProgressInfo extends PlanetProgress { pct: number }
+export type PlanetProgressCb = (p: PlanetProgressInfo) => void;
+
+const pctOf = (p: PlanetProgress): number => {
+  const band = PHASE_PCT[p.phase] ?? [0, 1];
+  const local = p.total > 0 ? Math.min(1, Math.max(0, p.done / p.total)) : 1;
+  return band[0] + (band[1] - band[0]) * local;
+};
+
+/** 跑一个生成器：每帧最多 12ms，然后让出；`from..to` 把这一段的进度映射进总进度 */
+function drive<T>(gen: Generator<PlanetProgress, T, void>, onProgress: PlanetProgressCb | undefined, from: number, to: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const tick = () => {
+      try {
+        const t0 = performance.now();
+        let step = gen.next();
+        while (!step.done && performance.now() - t0 < 12) step = gen.next();
+        if (step.done) { resolve(step.value); return; }
+        onProgress?.({ ...step.value, pct: from + (to - from) * pctOf(step.value) });
+        requestAnimationFrame(tick);
+      } catch (e) { reject(e); }
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
+/** 在飞的场/上色：同一份参数被两处同时要时只算一遍（地图栏 + 工作室预览） */
+const inflightFields = new Map<string, Promise<PlanetField>>();
+const inflightColors = new Map<string, Promise<Uint8ClampedArray>>();
+
+/** 分帧版 `planetField`：界面用这个（能画进度），算完仍回填同一份缓存 */
+export function planetFieldAsync(t: MapTerrainSpec, h: number = PLANET_VIEW_H, onProgress?: PlanetProgressCb): Promise<PlanetField> {
+  const key = fieldKeyOf(t, h);
+  const hit = fields.get(key);
+  if (hit) { onProgress?.({ phase: '缓存', done: 1, total: 1, pct: 1 }); return Promise.resolve(hit); }
+  const busy = inflightFields.get(key);
+  if (busy) return busy;
+  const job = drive(planetFieldGen(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput, h), onProgress, 0, 0.9)
+    .then((f) => {
+      fields.set(key, f);
+      trim(fields, MAX_FIELDS);
+      inflightFields.delete(key);
+      return f;
+    }, (e) => { inflightFields.delete(key); throw e; });
+  inflightFields.set(key, job);
+  return job;
+}
+
+/** 分帧版 `planetRgba`：换「看的方式」时约 0.5s ⇒ 也切成小片，进度接着场的 0.9 往上走 */
+export function planetRgbaAsync(t: MapTerrainSpec, h: number, view: string, onProgress?: PlanetProgressCb): Promise<Uint8ClampedArray> {
+  const key = colorKeyOf(t, h, view);
+  const hit = colors.get(key);
+  if (hit) return Promise.resolve(hit);
+  const busy = inflightColors.get(key);
+  if (busy) return busy;
+  const job = planetFieldAsync(t, h, onProgress).then((f) =>
+    drive(renderPlanetGen(f, view), onProgress, 0.9, 1).then((out) => {
+      colors.set(key, out);
+      trim(colors, MAX_COLORS);
+      inflightColors.delete(key);
+      return out;
+    }, (e) => { inflightColors.delete(key); throw e; }));
+  inflightColors.set(key, job);
+  return job;
+}
+
 export function clearPlanetCache(): void {
   fields.clear();
   colors.clear();
@@ -83,12 +173,20 @@ export interface PlanetHandle {
   liveStats: () => TerrainStats;
 }
 
-/** 把星球图铺进画布：画布本体 = 原图分辨率（1024×512），CSS 缩放铺到 `w × w/2`（**2:1 不拉伸**）。
+/** 把星球图铺进画布：画布本体 = 原图分辨率（1536×768），CSS 缩放铺到 `w × w/2`（**2:1 不拉伸**）。
  *  比格子矮就上下留边居中（`boxH` 是地图格子高，通常 500；图高 450 ⇒ 各留 25px）。 */
 export function mountPlanet(
   canvas: HTMLCanvasElement, t: MapTerrainSpec, w: number, boxH: number, view: string,
 ): PlanetHandle {
   const f = planetField(t, PLANET_VIEW_H);
+  return mountPlanetPrepared(canvas, t, w, boxH, view, f, planetRgba(t, PLANET_VIEW_H, view));
+}
+
+/** 已经算好场与 RGBA 的挂载版（界面的分帧路径用这个，避免二次计算） */
+export function mountPlanetPrepared(
+  canvas: HTMLCanvasElement, t: MapTerrainSpec, w: number, boxH: number, _view: string,
+  f: PlanetField, rgba: Uint8ClampedArray,
+): PlanetHandle {
   const drawH = Math.round(w / 2);
   canvas.width = f.w;
   canvas.height = f.h;
@@ -98,12 +196,13 @@ export function mountPlanet(
   canvas.style.width = w + 'px';
   canvas.style.height = drawH + 'px';
   canvas.style.pointerEvents = 'none';       /* 手绘层在上面：指针要能穿过去 */
+  canvas.style.cursor = 'zoom-in';
   const ctx = canvas.getContext('2d');
-  const put = (rgba: Uint8ClampedArray) => {
+  const put = (data: Uint8ClampedArray) => {
     if (!ctx) return;
-    ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), f.w, f.h), 0, 0);
+    ctx.putImageData(new ImageData(new Uint8ClampedArray(data), f.w, f.h), 0, 0);
   };
-  put(planetRgba(t, PLANET_VIEW_H, view));
+  put(rgba);
   return {
     dispose: () => { /* 2D 画布：没有 GL 资源要还 */ },
     setStyle: (v) => put(planetRgba(t, PLANET_VIEW_H, String(v ?? 'natural'))),
@@ -116,15 +215,25 @@ export function mountPlanet(
 export function mountGlobeView(
   canvas: HTMLCanvasElement, t: MapTerrainSpec, w: number, boxH: number, view: string,
 ): (PlanetHandle & { globe: GlobeHandle }) | null {
+  const f = planetField(t, PLANET_VIEW_H);
+  return mountGlobePrepared(canvas, t, w, boxH, view, f, planetRgba(t, PLANET_VIEW_H, view));
+}
+
+/** 与 `mountPlanetPrepared` 同理：球体那条也接已经算好的场 */
+export function mountGlobePrepared(
+  canvas: HTMLCanvasElement, _t: MapTerrainSpec, w: number, boxH: number, _view: string,
+  f: PlanetField, rgba: Uint8ClampedArray,
+): (PlanetHandle & { globe: GlobeHandle }) | null {
   const side = Math.min(w, boxH);
+  canvas.width = side;
+  canvas.height = side;
   canvas.style.position = 'absolute';
   canvas.style.left = Math.round((w - side) / 2) + 'px';
   canvas.style.top = Math.round((boxH - side) / 2) + 'px';
   canvas.style.width = side + 'px';
   canvas.style.height = side + 'px';
   canvas.style.cursor = 'grab';
-  const f = planetField(t, PLANET_VIEW_H);
-  const globe = mountGlobe(canvas, f, planetRgba(t, PLANET_VIEW_H, view));
+  const globe = mountGlobe(canvas, f, rgba);
   if (!globe) return null;
   return {
     globe,
@@ -172,4 +281,17 @@ export function planetThumbUrl(
 
 export function releasePlanetThumbs(): void {
   /* 2D 画布不占显存（位图随 GC 走）—— 留着这个函数是为了与 map-terrain 的调用点对称 */
+}
+
+/** 全尺寸图（大图查看器用）：整张 1536×768 等距圆柱图。缓存命中时是同步的（几百 KB dataURL）。 */
+export function planetImageUrl(t: MapTerrainSpec, view: string, h: number = PLANET_VIEW_H): string {
+  const f = planetField(t, h);
+  const rgba = planetRgba(t, h, view);
+  const c = document.createElement('canvas');
+  c.width = f.w;
+  c.height = f.h;
+  const ctx = c.getContext('2d');
+  if (!ctx) return '';
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), f.w, f.h), 0, 0);
+  return c.toDataURL('image/png');
 }

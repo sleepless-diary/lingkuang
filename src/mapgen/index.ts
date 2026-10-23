@@ -102,6 +102,11 @@ export interface MapgenRenderParams {
   sea_ramp?: number[];         /* 6×3：海深色带 */
   line_color?: number[];       /* 等高线 / 排线 / 描边色 */
   river_color?: number[];      /* 河色 */
+  /* ⭐ 灵框追加（第一百零六轮）：地表材质分层（B3）+ 浅滩带（B4） */
+  rock?: number;               /* 岩：高处 / 陡坡露岩（0 = 不上岩色） */
+  strata?: number;             /* 岩层条带 */
+  snow?: number;               /* 雪线 */
+  shelf?: number;              /* 水侧浅滩带 */
 }
 export interface MapgenParams {
   spacing: number;
@@ -372,6 +377,8 @@ export function runGeneration(engine: TerrainEngine, opts?: { shape?: boolean; s
   map.assignElevation(params.elevation, { size: Painting.size, constraints: Painting.constraints });
   /* ⭐ 第一百零四轮：多尺度细节噪声 —— 必须在重定海平面**之前**（陆地占比之后还会被精确钉住）。 */
   applyTerrainNoise(engine);
+  /* ⭐ 第一百零六轮：按汇流切谷（脊—谷相间）—— 同样在重定海平面之前。 */
+  erodeTerrain(engine);
   if (shape && engine.targetLandRatio !== undefined) reseatSeaLevel(engine, engine.targetLandRatio);
   map.assignRainfall(params.biomes);
   map.assignRivers(params.rivers);
@@ -434,11 +441,20 @@ function normalizeRainfall(engine: TerrainEngine): void {
  *  确定性由整数哈希保证（守卫 ★3「同种子一致 + 换种子不同」）。 */
 function applyTerrainNoise(engine: TerrainEngine): void {
   const { mesh, map } = engine;
+  /* ⭐ 第一百零六轮：山脊噪声从"配角"抬成"主角" —— 用户「山很少」。
+     ① `ridgeAmp` 0.10 → 0.26：脊的高度不再只是细节，而是能改变坡线的起伏；
+     ② 换成**山脊多重分形**（`ridgedMultifractal2D`，5 octave）：主脊上长出分叉支脉；
+     ③ 加**域扭曲**（warpAmp 0.5）：团块边界不再是圆斑。*/
   const p: TerrainNoiseParams = {
     frequency: 1 / 95,
-    detailAmp: 0.045,
-    ridgeAmp: 0.10,
+    detailAmp: 0.05,
+    ridgeAmp: 0.26,
     octaves: 4,
+    ridgeOctaves: 5,
+    warpAmp: 0.5,
+    chainAmp: 0.26,
+    chainFreq: 1 / 260,
+    chainWidth: 0.055,
     seed: (engine.params.elevation.seed | 0) ^ 0x2f1b3c5d,
   };
   const eT: Float32Array = map.elevation_t;
@@ -456,6 +472,80 @@ function applyTerrainNoise(engine: TerrainEngine): void {
       if (e <= 0) continue;
       eR[r] = e + terrainOffset(mesh.x_of_r(r), mesh.y_of_r(r), e, p);
     }
+  }
+}
+
+/** ⭐ 灵框加的一步（第一百零六轮）：**按汇流切谷**（B2「坡度侵蚀一次迭代成谷」）。
+ *
+ *  用户 2026-10-21：「山很少，而且看不出不同地形之间有什么区别」。
+ *  噪声能加"脊"，但加不出"谷"：真实山地的形态是**脊—谷相间**，谷是水沿最陡方向一路冲出来的。
+ *  这里做一趟确定性的水力侵蚀近似（和星球形态的汇流同一套思路，按三角网而不是栅格）：
+ *    ① 陆地三角按高度降序（4096 桶排序）；
+ *    ② 每个三角降"1 滴雨"，全部送给最陡的邻居（`t_outer_s` 跨边的邻接），于是流量沿谷底累加；
+ *    ③ 按 `K·flow^0.55` 下切，**下限 45% 原高**（防止把山顶削平，也保证不会跌破海平面）；
+ *    ④ 反写 `elevation_r`（区域高度 = 三个相邻三角的平均），降雨与河流那几步才看到同一片地。
+ *  ⚠️ 调用点在 `reseatSeaLevel()` **之前** ⇒ 陆地占比仍精确等于目标（守卫 ★2）；
+ *  纯算术、无随机 ⇒ 同种子逐位一致（守卫 ★3）。 */
+function erodeTerrain(engine: TerrainEngine): void {
+  const { mesh, map } = engine;
+  const e: Float32Array = map.elevation_t;
+  if (!e?.length) return;
+  const n = mesh.numSolidTriangles;
+  const flow = new Float32Array(n);
+  let hi = 0;
+  for (let t = 0; t < n; t++) if (e[t] > hi) hi = e[t];
+  if (!(hi > 0)) return;
+
+  const B = 4096;
+  const binOf = (v: number) => Math.min(B, Math.max(0, ((v / hi) * B) | 0));
+  const cnt = new Int32Array(B + 1);
+  let landN = 0;
+  for (let t = 0; t < n; t++) if (e[t] > 0) { cnt[binOf(e[t])]++; landN++; }
+  if (landN < 32) return;
+  let sum = 0;
+  for (let b = B; b >= 0; b--) { const c = cnt[b]; cnt[b] = sum; sum += c; }
+  const order = new Int32Array(landN);
+  for (let t = 0; t < n; t++) if (e[t] > 0) order[cnt[binOf(e[t])]++] = t;
+
+  for (let q = 0; q < order.length; q++) {
+    const t = order[q];
+    flow[t] += 1;
+    let best = -1, bestH = e[t];
+    for (let j = 0; j < 3; j++) {
+      const u = mesh.t_outer_s(3 * t + j);
+      if (u < 0 || u >= n) continue;
+      if (e[u] < bestH) { bestH = e[u]; best = u; }
+    }
+    if (best >= 0) { flow[best] += flow[t]; }
+  }
+
+  /* 下切：主河道（flow 上千）切几米，支沟（flow 十位）切薄薄一层。
+     系数 0.0016 → 0.0032（第一百零六轮第二版）：第一版只切掉 1~2%，山谷在 900px 的地图上
+     根本看不出来；加倍后才看得出"脊—谷相间"。 */
+  const K = 0.0032;
+  for (let t = 0; t < n; t++) {
+    if (e[t] <= 0) continue;
+    const f = flow[t];
+    if (f < 2) continue;
+    const cut = K * Math.pow(f, 0.55);
+    const floor = e[t] * 0.45;
+    const next = e[t] - cut;
+    e[t] = next < floor ? floor : next;
+  }
+
+  /* 反写区域高度：每个 region = 相邻三个三角的平均（与上游 assignElevation 的口径一致） */
+  const er: Float32Array = map.elevation_r;
+  if (!er?.length) return;
+  const acc = new Float32Array(er.length);
+  const num = new Uint8Array(er.length);
+  for (let t = 0; t < n; t++) {
+    if (e[t] <= 0) continue;
+    const rs: number[] = mesh.r_around_t(t);
+    for (const r of rs) { acc[r] += e[t]; if (num[r] < 250) num[r]++; }
+  }
+  for (let r = 0; r < er.length; r++) {
+    if (er[r] < 0) continue;          /* 海里不动：海深由海平面重定统一处理 */
+    if (num[r]) er[r] = acc[r] / num[r];
   }
 }
 
@@ -619,10 +709,12 @@ export class TerrainView {
   /** ⭐ 灵框追加（第九十七轮）：当前风格叠在 `params.render` 之上（`setStyle()` 写它） */
   private styleOverride: Partial<MapgenRenderParams> = {};
 
-  constructor(canvas: HTMLCanvasElement, engine: TerrainEngine) {
+  /** `textureSize` = 内部位图边长（第一百零六轮 C3）：地图栏 1536、缩略图/抽卡 768。
+   *  不传 = 内核缺省 1536（旧调用不变）。 */
+  constructor(canvas: HTMLCanvasElement, engine: TerrainEngine, textureSize?: number) {
     this.canvas = canvas;
     this.engine = engine;
-    this.renderer = new (Renderer as any)(engine.mesh, canvas);
+    this.renderer = new (Renderer as any)(engine.mesh, canvas, textureSize);
   }
 
   /** ⭐ 只换风格：**不重传几何、不重算地形**，只把新参数交给渲染循环 ⇒ 下一帧就变。

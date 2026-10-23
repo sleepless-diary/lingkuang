@@ -125,3 +125,17 @@
     ⚠️ 同步改的地方：`src/ui/map-terrain.ts` 的 `TERRAIN_BITMAP`（`bandLayout()` 是**按比例**
     算的，CSS 尺寸不变）、`tools/e2e/map-gen.cjs` ★3 的断言、`src/mapgen/index.ts` 与
     `src/ui/map.ts` 里描述位图尺寸的注释。**地形数学一字未改**。
+
+12. **`render.ts`：地表材质分层 + 浅滩带 + 位图边长参数化（第一百零六轮灵框追加）**。
+    - `frag_drape` 新增 4 个 uniform：`u_rock`（高处/陡坡露岩）、`u_strata`（岩层条带）、
+      `u_snow`（雪线）、`u_shelf`（水侧浅滩带）。缺省全是 0 ⇒ 不设风格的调用方（离线脚本、
+      没传 `grade` 的旧路径）拿到的仍是逐字旧结果。
+    - 陡度**必须用宽基线**（±6 纹素）求：1 纹素差分把细节噪声也当坡度，整块陆地会糊成岩色
+      （第一版真机就是这样）；`macro = length(vec2(mE-mW, mS-mN)) / 12.0`。
+    - 海岸带从"一条湿沙 + 一道浪花"扩成**四段**：干沙（0.020 宽）→ 湿沙（0.007）→ 浪线（0.0025）
+      → 水侧浅滩线；配合 `u_shelf` 的深浅色带，岸线不再是"贴纸边缘"。
+    - 位图边长：`const fbo_texture_size = 1536` 仍是**缺省值**，但 `Renderer(mesh, canvas, textureSize?)`
+      与 `TerrainView(canvas, engine, textureSize?)` 现在接第三参数（`texture_size` 字段），
+      4 张 FBO、截图画布、`drawFinal` 的纹素偏移全用它。灵框侧：地图栏 1536、
+      缩略图/抽卡 768（`src/ui/map-terrain.ts` 的 `THUMB_BITMAP`，`bandSource(size)` 跟着参数化）。
+    ⚠️ 光栅化尺寸一变，`bandSource()` 的源矩形必须同步（否则 `drawImage` 会从错的位置裁一条带）。

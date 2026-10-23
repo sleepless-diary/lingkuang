@@ -1068,3 +1068,106 @@
 - 像素证据：`.review/shots-native/`（改前，2048 / spacing 5.5 / coast 0.012）与
   `.review/shots-native-after/`（改后，1536 / 4.8 / 0.028）；同世界坐标裁同一块地对照
   （`.review/png-crop.cjs`）。屏幕观感：`.review/shots-native-after/30-window.png`。
+
+---
+
+## 2026-10-23 · 加载提示 + 大图查看器 + 结构化真实感 + 性能（第一百零六轮）
+
+> 用户原话：「**给加载做一点提示，不然别人以为会卡了，点击大图时全窗口显示大图，再点一下返回
+> （方便看细节），双击放大，滚轮调整大小，拖动调整位置，然后接下来的全做了吧**」。
+> "接下来的" = `docs/MAP-REALISM-NEXT.md` 的 B（结构级真实感）与 C（性能）。
+
+### 一、加载提示（`src/ui/busy.ts`）
+
+- `showBusy(host, text, {pct, sub}) → { set(text, pct?, sub?), done() }`：在 host 里盖一层
+  `.lk-busy`（深 chrome 卡片 + 转圈 + 一句在做什么 + 可选进度条）。同一 host 重复 show 会**复用**
+  （连点不会叠层）；`done()` 幂等，带 180ms 淡出。
+- `nextFrame()`：两次 rAF + 一次 `setTimeout(0)`。**任何重活前都必须先 `await nextFrame()`** ——
+  遮罩刚插进 DOM 就被同一个长任务挡住的话，等于没插（这是"点了没反应"的真正成因）。
+- `withBusy(host, text, work)`：包一段同步重活的方便写法。
+- 落点：`src/ui/map.ts` 的 `rebuildTerrain()`（地形 / 星球两条路都先铺遮罩）、
+  `src/ui/map-studio.ts` 的 `previewOf()`（预览出图 120~400ms，占位 + 图片半透明）。
+
+### 二、大图查看器（`src/ui/lightbox.ts` + `src/style.css` 的 `.lk-lb`）
+
+- `openLightbox({ src, title?, hint? })` / `closeLightbox()` / `isLightboxOpen()`。
+- 交互：**点一下返回**（延迟 240ms 才关：双击的第一下必须能被取消）、**双击**在指针处放大到 2.5×
+  或缩回适应窗口、**滚轮**以指针为锚缩放（0.4× 适应 … 12×）、**拖动**平移、Esc 关、+/- 缩放、0 回适应。
+  顶部一条 `.lk-lb__bar`（标题 + 缩放百分比 + 提示 + ×），底部一句"点击图片任意处返回"。
+- 入口：
+  · 地图栏 **移动档点一下地图**（`src/ui/map.ts` 的 `openBigView()`，靠 `panMoved` 区分"拖过"与"点一下"）：
+    局部形态给**整张 1536² 位图**（`terrainFullUrl()`，临时开一个 1536 视图截图后立刻 dispose；
+    地图格子里看到的只是中间那条横带，整张图上下还有地形）；星球形态给整张 1536×768 等距圆柱图
+    （`planetImageUrl()`，缓存命中时是同步的）。
+  · 生成工作室 **点预览大图**（`#ms-img` 所在的 `.lk-ms__stage`）；抽卡小卡仍是"点一下换预览"。
+
+### 三、结构化真实感（B1~B4）
+
+- **B1 山脊 + 山系带 + 域扭曲**（`src/mapgen/noise.ts`、`src/mapgen/index.ts` 的 `applyTerrainNoise()`）：
+  · `ridgedMultifractal2D()`：**有符号**噪声的零交叉线当脊（`s = 2v-1`，`n = (1-|s|)²`），
+    5 octave、每层用上一层强度加权。⚠️ 别写回 `1-|2v-1|` —— 峰值落在 `v=0.5` 的等值线上，
+    值噪声的 0.5 等值线是**闭合环** ⇒ 整张图长满同心年轮（第一版 topo 档一眼可见）。
+  · `rangeMask()`：低频噪声的过零**带**（`1 - |n|/width`）⇒ 细长山系（全图三五条主脉），
+    在带上叠脊线细节。参数：`chainAmp 0.26 / chainFreq 1/260 / chainWidth 0.055`。
+  · `warpPoint()` 域扭曲（`warpAmp 0.5`，频率空间）⇒ 团块边界不成"圆斑"。
+  · `ridgeAmp 0.26 / detailAmp 0.05 / ridgeOctaves 5`（原 0.10 / 0.045 / 3）。
+- **B2 切谷侵蚀**（`src/mapgen/index.ts` 的 `erodeTerrain()`，排在 `applyTerrainNoise()` 之后、
+  `reseatSeaLevel()` 之前）：陆地三角按高度降序（4096 桶），每格降 1 滴雨送给最陡邻居
+  （`t_outer_s` 跨边邻接）累出流量，按 `K·flow^0.55`（`K = 0.0032`）下切、**下限 45% 原高**；
+  再按"三个相邻三角平均"反写 `elevation_r`。纯算术、确定性 ⇒ 陆地占比与同种子一致性两个守卫都不受影响。
+- **B3 地表材质分层**（`frag_drape` 的 `u_rock/u_strata/u_snow` + `renderPlanet` 同一套）：
+  高处（`landT > 0.58`）与**宽基线陡坡**（±6 纹素差分的 `macro`）露岩；岩层条带沿 `landT` 16 条
+  （噪声推一下，不整齐）；雪线只在最高一圈（`landT 0.80~0.93`，星球 0.88~0.98）。
+  强度逐档给在 `src/mapgen/styles.ts` 的 `MATERIAL_DEFAULTS`（`styleMaterial()` 解析；
+  极简档全是 0）。
+- **B4 海岸分带**：陆侧**干沙 → 湿沙 → 浪线**三段 + 水侧**浅滩线**；海深色带另叠一层
+  `u_shelf` 的浅水提亮（真实地图上陆架是"发白的一圈"）。自然档 `outlineCoast 1.2 → 0.75`：
+  原来那条 1px 深色描边在 1536 分辨率下像贴纸边缘。
+- **星球湿度修正**（`src/mapgen/planet.ts`）：以前 `moist` 几乎只看离海距离 ⇒ 大陆内部一律荒漠，
+  整颗星球"黄心绿边"。现在以风带为底（`belt = 0.38 + 0.62·wind`），离海只做 0.62→1.0 的微调。
+
+### 四、性能（C1~C4）
+
+- **C1/C2 星球分帧**：`planetFieldGen()` / `renderPlanetGen()` 是**唯一实现**（生成器，阶段边界与
+  16/32 行的行循环处留切点）；`buildPlanetField()` / `renderPlanet()` 是"一口气跑完"的同步外壳
+  （守卫、离线脚本、预览尺寸不变）。`src/ui/planet-view.ts` 的 `drive()` 每帧最多 12ms，
+  `PHASE_PCT` 把阶段映射成 0..1 画进度条；`planetFieldAsync()` / `planetRgbaAsync()` 共用
+  `fields/colors` 缓存，并有 `inflight*` 去重（地图栏与工作室同时要同一份时只算一遍）。
+- **C3 位图边长参数化**：`Renderer` / `TerrainView` 第三参数；缩略图/抽卡走 `THUMB_BITMAP = 768`
+  （显示只有 264~720px）；地图栏保持 1536。
+- **C4 视图池化**：本轮没再加池 —— 现状已经是"一个离屏缩略图视图 + 引擎缓存（`MAX_ENGINES = 8`）"，
+  工厂尺度的并行视图只出现在抽卡（串行出图）。缩小位图后单视图显存从 47MB（1536²）降到
+  **约 12MB（768²）**，串行 6 张也不再叠成 6 倍。
+- **两处"借预览分辨率拿统计"**（`src/ui/map-studio.ts`、`src/ui/map-gen.ts`）：都是 `PLANET_PREVIEW_H`
+  —— 那一份场缩略图刚算过、已缓存；用 `PLANET_VIEW_H` 就是为了**一行字**同步建 1.5s 的场。
+
+### 五、实测（真实数据副本、1440×900、dpr 1.2）
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 星球首次生成（墙钟） | 2054ms 单次长任务 | 744~1100ms，长任务最大 **136ms**（分 6~10 片） |
+| 工作室预览 | **2119ms** 单次长任务 | **354ms** |
+| 「采用到地图」 | **1824ms** 单次长任务 | ≤136ms |
+| 缩略图单视图显存（4 张 FBO） | 47MB（1536²） | **12MB（768²）** |
+| 局部地形重算 | 130ms（无提示） | 232ms 单任务，但**遮罩先画出来**（先 await 两帧） |
+| 换「看的方式」×3 | — | 无长任务（只重画，不重算） |
+
+- 截图：`.review/shots-final/`（`15-busy` 遮罩、`10-local-{natural,topo,satellite}`、
+  `20-planet-{natural,satellite}`、`30-lightbox`、`31-lightbox-zoomed`、`40-studio-lightbox`）。
+- 守卫（各在干净临时目录起独立实例）：`mapgen-engine.mjs` **22/22**、`map-style.cjs` **14/14**、
+  `map-gen.cjs` **20/20**、`map-planet.cjs` **13/13**、`map-studio.cjs` **16/16**。
+- 探针：`.review/probe-loading.cjs`（遮罩文案/进度/长任务 + 大图交互）、
+  `.review/probe-perf2.cjs`（局部大图 1536² + 星球首次生成）、`.review/probe-lt.cjs`
+  （把长任务定位到具体路径）、`.review/probe-b.cjs`（B 段八档截图）。
+
+### 六、教训
+
+- **"以为卡了"= 遮罩插进 DOM 但没画出来**：必须 `await nextFrame()`（两次 rAF + 一次 setTimeout），
+  只插 DOM 不给合成帧就等于没插。
+- **为一行字建一张图**是隐藏长任务的高发区：`planetStats(t, PLANET_VIEW_H)`、`planetField(...)` 这类
+  "只是拿个统计"的调用，要挑**已经缓存的那份分辨率**。
+- 改完 `src/` 一定要 `npx vite build` 再起实例 —— 有几轮守卫看着"通过了"其实是拿旧 `app-dist` 跑的
+  （本轮就因此误判过一次 2119ms 的长任务已修好）。
+- 生成器的切点只放在**阶段边界**与**行循环**上；不要往逐像素循环里插 `if` 判断时间（每像素一次
+  `performance.now()` 本身就贵），靠固定行数切。
+

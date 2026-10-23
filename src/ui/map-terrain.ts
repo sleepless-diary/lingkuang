@@ -35,6 +35,10 @@ export function terrainRenderParams(t: MapTerrainSpec): Partial<MapgenRenderPara
  *  ⭐ 第一百零五轮：2048 → 1536。屏幕宽约 1500px ⇒ 2048 只是被降采样（磨软边缘 + 多付显存），
  *  1536 与屏幕 1:1；`bandLayout()` 是**按比例**算的，所以地图格子的 CSS 尺寸一分不变。 */
 export const TERRAIN_BITMAP = 1536;
+/** 缩略图 / 抽卡 / 面板预览的位图边长（第一百零六轮 C3）。
+ *  这些图最终只显示 264~720px 宽，1536² 是纯浪费（4 张 FBO 的填充率 ×4）；
+ *  768² 对 720px 的预览仍是 1:1 以上，纹理比屏幕大一倍多。 */
+export const THUMB_BITMAP = 768;
 /** 默认渲染参数下画布能看到的世界范围（`zoom = 100/480`、`x = y = 500`）*/
 const WORLD_VIEW = 960;
 
@@ -97,13 +101,14 @@ export function bandLayout(w: number, h: number): { size: number; top: number; l
   return { size, top: -sy * scale, left: -(size - w) / 2 };
 }
 
-/** 位图上的源矩形（缩略图 `drawImage` 用） */
-export function bandSource(): { sx: number; sy: number; sw: number; sh: number } {
+/** 位图上的源矩形（缩略图 `drawImage` 用）。`size` 必须与出图那块视图的位图边长一致
+ *  （第一百零六轮：缩略图走 768²，地图栏走 1536²）。 */
+export function bandSource(size: number = TERRAIN_BITMAP): { sx: number; sy: number; sw: number; sh: number } {
   return {
     sx: 0,
-    sy: (BAND.y0 - BAND.x0) / WORLD_VIEW * TERRAIN_BITMAP,
-    sw: TERRAIN_BITMAP,
-    sh: (BAND.y1 - BAND.y0) / WORLD_VIEW * TERRAIN_BITMAP,
+    sy: (BAND.y0 - BAND.x0) / WORLD_VIEW * size,
+    sw: size,
+    sh: (BAND.y1 - BAND.y0) / WORLD_VIEW * size,
   };
 }
 
@@ -178,7 +183,7 @@ function thumbViewFor(t: MapTerrainSpec, w: number, h: number): TerrainView {
   thumb?.view.dispose();          /* 丢旧上下文（那块画布随之作废，不再复用） */
   const canvas = document.createElement('canvas');
   const { engine } = terrainEngine(t, w, h);
-  const view = new TerrainView(canvas, engine);
+  const view = new TerrainView(canvas, engine, THUMB_BITMAP);
   thumb = { canvas, view, key };
   return view;
 }
@@ -198,7 +203,7 @@ export async function terrainThumbUrl(
     out.height = Math.max(16, Math.round(outH));
     const ctx = out.getContext('2d');
     if (!ctx) return '';
-    const s = bandSource();
+    const s = bandSource(THUMB_BITMAP);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(shot, s.sx, s.sy, s.sw, s.sh, 0, 0, out.width, out.height);
@@ -213,4 +218,22 @@ export async function terrainThumbUrl(
 export function releaseThumbs(): void {
   thumb?.view.dispose();
   thumb = null;
+}
+
+/** 全尺寸位图（大图查看器用）：内核的整张 1536² 截图，不裁横带。
+ *  用户 2026-10-23：「点击大图时全窗口显示大图，方便看细节」——
+ *  地图格子里看到的只是中间那条横带，整张图里还有上下两片地形。
+ *  ⚠️ 这里**临时**开一个 1536² 视图（不走 `thumb` 那块 768² 的）：大图要看细节，
+ *  768² 放大到全屏会糊。用完立刻 dispose（一次性，不常驻显存）。 */
+export async function terrainFullUrl(t: MapTerrainSpec, w: number, h: number): Promise<string> {
+  const canvas = document.createElement('canvas');
+  const { engine } = terrainEngine(t, w, h);
+  const view = new TerrainView(canvas, engine, TERRAIN_BITMAP);
+  try {
+    view.setStyle(terrainRenderParams(t));
+    const shot = await view.snapshot();
+    return shot.toDataURL('image/png');
+  } finally {
+    view.dispose();
+  }
 }

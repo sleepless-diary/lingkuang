@@ -18,16 +18,21 @@ import type { MapData, MapPaintStroke } from '../store/types';
 import { escapeHtml } from './html';
 import { DEFAULT_MAP, polylinePath, smoothClosedPath } from './map-gen';
 import {
-  mountTerrain, mapPointToWorld, resetTerrainPaint, terrainStats, liftOf, type TerrainHandle, type TerrainStats,
+  mountTerrain, mapPointToWorld, resetTerrainPaint, terrainStats, liftOf, terrainFullUrl, type TerrainHandle, type TerrainStats,
 } from './map-terrain';
-import { PLANET_VIEW_H, mountGlobeView, mountPlanet, planetStats } from './planet-view';
+import {
+  PLANET_VIEW_H, mountGlobePrepared, mountPlanetPrepared, planetFieldAsync, planetImageUrl,
+  planetRgbaAsync,
+} from './planet-view';
+import { nextFrame, showBusy, type BusyHandle } from './busy';
+import { openLightbox } from './lightbox';
 import { DEFAULT_PAINT_SIZE, DEFAULT_PAINT_TOOL, TERRAIN_STYLES, beginPaintStroke, paintStep, terrainStyleLabel, terrainStyleOf } from '../mapgen';
 import { MAP_FORMS, mapFormLabel, mapFormOf } from '../mapgen/planet';
 import { openMapStudioFromToolbar } from './map-studio';
 
 type Mode = 'region' | 'marker' | 'move' | 'paint';
 /** 两套内核的句柄**同形**（dispose / setStyle / regenerate）—— 地图栏不关心底下是哪一个 */
-type TerrainLayer = TerrainHandle | ReturnType<typeof mountPlanet>;
+type TerrainLayer = TerrainHandle | ReturnType<typeof mountPlanetPrepared>;
 
 /* 同 detail.ts：host 是长生命周期容器，重新渲染必须摘掉上一次的订阅，
    否则切到别的工具后旧订阅仍会往别人的界面里画东西。 */
@@ -117,6 +122,9 @@ export function renderMap(store: Store, host: HTMLElement): void {
   let terrainKey = '';
   /* ⭐ 「看的方式」：上一次已经推给 GPU 的那一档（与 `terrainKey` 分开 —— 换风格不重建画布）*/
   let terrainStyleKey = '';
+  /* ⭐ 第一百零六轮：加载遮罩的句柄 + 重建序号（切得快时旧任务自己作废）*/
+  let busy: BusyHandle | null = null;
+  let rebuildSeq = 0;
   /* ⭐ 「球体看」（第九十八轮）：星球形态下的第二个视图（平面图 ⇄ 真球），只对星球有效 */
   let globeOn = false;
   const hint = host.querySelector('#map-hint') as HTMLElement;
@@ -162,7 +170,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
     const tips: Record<Mode, [string, string]> = {
       region: ['区域', '拖拽画区域（松开闭合）'],
       marker: ['标记', '点击放置标记'],
-      move: ['平移', '拖拽平移'],
+      move: ['平移', '拖拽平移；点一下看大图（双击放大 / 滚轮缩放）'],
       paint: ['地形', '按住拖动 = 刷地形（造山 / 压谷 / 浅海 / 深海）；每一笔单独一步撤销'],
     };
     hint.textContent = tips[m][0];
@@ -298,9 +306,6 @@ export function renderMap(store: Store, host: HTMLElement): void {
     terrainBox.style.width = m.width + 'px';
     terrainBox.style.height = m.height + 'px';
     const form = mapFormOf(m.terrain?.form);
-    const s = form === 'planet'
-      ? planetStats(m.terrain, PLANET_VIEW_H)
-      : terrainStats(m.terrain, m.width, m.height);
     /* ⭐ 「看的方式」（第九十七轮）：只决定**怎么画**。控件跟着数据走（在别处改了这里也同步），
        没有地形时置灰 —— 还没生成出来的地，谈不上用哪种画法。 */
     const style = terrainStyleOf(m.terrain?.view);
@@ -317,7 +322,23 @@ export function renderMap(store: Store, host: HTMLElement): void {
     globeBtn.style.display = m.terrain && form === 'planet' ? '' : 'none';
     globeBtn.style.background = globeOn ? 'rgba(158,194,98,.2)' : 'none';
     if (m.terrain && form === 'planet' && mode === 'paint') setMode('move');
-    setTerrainNote(m, s);
+    if (!m.terrain) {
+      setTerrainNote(m, null);
+      terrainKey = '';
+      terrainStyleKey = '';
+      rebuildSeq++;                 /* 作废在飞的生成 */
+      busy?.done();
+      busy = null;
+      terrainHandle?.dispose();
+      terrainHandle = null;
+      terrainCanvas?.remove();
+      terrainCanvas = null;
+      paintState();
+      return;
+    }
+    /* ⚠️ 状态行里那份统计**不能**在这里同步算：星球要 1.4s、局部要 130ms，
+       一算就把"遮罩都还没画出来"的那一帧一起冻住（用户原话：「别人以为会卡了」）。
+       先写一句"正在算"，数字等 rebuildTerrain 算完再补。 */
     const key = m.terrain
       ? `${form}|${m.terrain.seed}|${m.terrain.style}|${lift}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}|${JSON.stringify(m.terrain.paint ?? [])}`
         + (form === 'planet' ? `|${globeOn ? 'globe' : 'equirect'}|${style}` : '')
@@ -329,6 +350,21 @@ export function renderMap(store: Store, host: HTMLElement): void {
     }
     terrainKey = key;
     terrainStyleKey = style;
+    genNote.textContent = form === 'planet'
+      ? (globeOn ? '正在生成星球（球体）…' : '正在算星球…')
+      : '正在生成地形…';
+    void rebuildTerrain(m, key, style, form);
+  }
+
+  /* 真正的重建（第一百零六轮：改成**异步 + 遮罩 + 进度**）。
+     两条路都先铺遮罩、让出两帧，再动内核：
+       · 局部：建网格 + 生成约 130ms（走 `terrainStats`/`mountTerrain` 的引擎缓存）；
+       · 星球：场 1.4s + 上色 0.5s —— 生成器分帧（`planetFieldAsync` / `planetRgbaAsync`），
+         每片 12ms，进度条跟着走。
+     `key` / `seq` 一起用：切得快时后到的旧任务必须自己丢掉（否则会把新图盖成旧图）。 */
+  async function rebuildTerrain(m: MapData, key: string, style: string, form: string): Promise<void> {
+    const seq = ++rebuildSeq;
+    const stale = () => seq !== rebuildSeq || terrainKey !== key;
     terrainHandle?.dispose();
     terrainHandle = null;
     /* ⚠️ 重建前**换一块新画布**：`TerrainView.dispose()` 会 `loseContext()` 把那块画布永久作废，
@@ -337,28 +373,46 @@ export function renderMap(store: Store, host: HTMLElement): void {
     terrainCanvas?.remove();
     terrainCanvas = null;
     if (!m.terrain) { paintState(); return; }
-    terrainCanvas = document.createElement('canvas');
-    terrainCanvas.id = 'map-terrain-canvas';
-    terrainCanvas.setAttribute('data-terrain', '1');
-    if (form === 'planet') terrainCanvas.setAttribute('data-planet', globeOn ? 'globe' : 'equirect');
-    terrainBox.appendChild(terrainCanvas);
+    const canvas = document.createElement('canvas');
+    canvas.id = 'map-terrain-canvas';
+    canvas.setAttribute('data-terrain', '1');
+    if (form === 'planet') canvas.setAttribute('data-planet', globeOn ? 'globe' : 'equirect');
+    terrainBox.appendChild(canvas);
+    terrainCanvas = canvas;
+    const busyHost = (stage.parentElement ?? host) as HTMLElement;
+    const b = showBusy(busyHost, form === 'planet' ? (globeOn ? '正在生成星球（球体）…' : '正在算星球…') : '正在生成地形…', {
+      sub: form === 'planet' ? '第一次要几秒；之后换「看的方式」只重上色' : '建网格 · 算河流 · 定海岸',
+    });
+    busy = b;
+    await nextFrame();
     try {
       if (form === 'planet') {
-        const g = globeOn ? mountGlobeView(terrainCanvas, m.terrain, m.width, m.height, style) : null;
+        const f = await planetFieldAsync(m.terrain, PLANET_VIEW_H, (p) => b.set('正在算星球…', p.pct, p.phase));
+        if (stale()) return;
+        const rgba = await planetRgbaAsync(m.terrain, PLANET_VIEW_H, style, (p) => b.set('正在上色…', p.pct, p.phase));
+        if (stale()) return;
+        const g = globeOn ? mountGlobePrepared(canvas, m.terrain, m.width, m.height, style, f, rgba) : null;
         if (g) terrainHandle = g;
         else {
           if (globeOn) globeOn = false;   /* 没 WebGL ⇒ 退回平面图（按钮下次会跟着复位） */
-          terrainHandle = mountPlanet(terrainCanvas, m.terrain, m.width, m.height, style);
+          terrainHandle = mountPlanetPrepared(canvas, m.terrain, m.width, m.height, style, f, rgba);
         }
+        setTerrainNote(m, f.stats);
       } else {
-        terrainHandle = mountTerrain(terrainCanvas, m.terrain, m.width, m.height);
+        const s = terrainStats(m.terrain, m.width, m.height);
+        if (stale()) return;
+        terrainHandle = mountTerrain(canvas, m.terrain, m.width, m.height);
+        setTerrainNote(m, s);
       }
-    } catch {
-      /* 拿不到 WebGL（老机器/禁用显卡）⇒ 地图栏退化成"只有手绘层"，不炸整个沙盘 */
-      genNote.textContent = '这台机器开不了 WebGL2，地形画不出来（手绘区域照常能用）';
-      terrainCanvas.remove();
-      terrainCanvas = null;
+    } catch (e) {
+      console.warn('[map] 地形生成失败：', e);
+      genNote.textContent = form === 'planet' ? '星球生成失败（详见面板与控制台）' : '这台机器开不了 WebGL2，地形画不出来（手绘区域照常能用）';
+      canvas.remove();
+      if (terrainCanvas === canvas) terrainCanvas = null;
       terrainKey = '';
+    } finally {
+      b.done();
+      if (busy === b) busy = null;
     }
     paintState();
   }
@@ -448,6 +502,28 @@ export function renderMap(store: Store, host: HTMLElement): void {
   }
 
   let panning = false, panX = 0, panY = 0, panSX = 0, panSY = 0;
+  /* ⭐ 第一百零六轮：手动拖过就没有"点一下看大图"这回事（区别拖动与点击）*/
+  let panMoved = false;
+
+  /** 点一下地形 → 全窗口看大图（第一百零六轮）。局部形态给**整张** 1536² 位图
+   *  （地图格子里只是中间那条横带），星球给整张 1536×768 等距圆柱图。 */
+  async function openBigView(): Promise<void> {
+    const m = curMap();
+    if (!m?.terrain) return;
+    const form = mapFormOf(m.terrain.form);
+    const style = terrainStyleOf(m.terrain.view);
+    try {
+      if (form === 'planet') {
+        const src = planetImageUrl(m.terrain, style);
+        if (src) openLightbox({ src, title: `${m.name} · ${mapFormLabel(form)}` });
+      } else {
+        const src = await terrainFullUrl(m.terrain, m.width, m.height);
+        if (src) openLightbox({ src, title: `${m.name} · ${terrainStyleLabel(style)}` });
+      }
+    } catch (e) {
+      console.warn('[map] 出大图失败：', e);
+    }
+  }
 
   /* ⭐ 适应窗口：地图数据一直是 900×500，而沙盘右半边那格比它窄 —— 不缩的话生成完只能
      看到左上角一块（2026-10-13 真机截图发现的）。缩放只动 CSS transform，不动数据；
@@ -509,6 +585,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
       startPaint(e);
     } else {
       panning = true;
+      panMoved = false;
       panSX = e.clientX; panSY = e.clientY;
       /* 平移基准取当前 inline style 的 left/top——与下面赋值的 style.left/top 同一坐标系。
          旧代码用 getBoundingClientRect()（视口坐标）当基准，第一帧会把 SVG 平移一个
@@ -530,11 +607,17 @@ export function renderMap(store: Store, host: HTMLElement): void {
     } else if (mode === 'paint' && liveStroke) {
       paintFrom(e);
     } else if (panning) {
+      if (Math.abs(e.clientX - panSX) + Math.abs(e.clientY - panSY) > 4) panMoved = true;
       stage.style.left = panX + (e.clientX - panSX) + 'px';
       stage.style.top = panY + (e.clientY - panSY) + 'px';
     }
   };
-  const onUp = () => { endDrag(true); endPaint(true); };
+  const onUp = () => {
+    const openView = panning && !panMoved && mode === 'move';
+    endDrag(true);
+    endPaint(true);
+    if (openView) void openBigView();
+  };
   const onCancel = () => { endDrag(false); endPaint(false); };
   const onResize = () => fitView();
   /* ⭐ 生成工作室（`src/ui/map-studio.ts`）与助手都靠这两个事件把地图栏切到"地形"模式 ——
@@ -570,6 +653,9 @@ export function renderMap(store: Store, host: HTMLElement): void {
     ro?.disconnect();
     if (paintRebuildTimer !== null) { clearTimeout(paintRebuildTimer); paintRebuildTimer = null; }
     skipTerrainRebuild = false;
+    rebuildSeq++;
+    busy?.done();
+    busy = null;
     terrainHandle?.dispose();   /* ⭐ 地形画布后面挂着 WebGL 上下文（4 张 1536² FBO）—— 必须销毁 */
     terrainHandle = null;
     terrainKey = '';

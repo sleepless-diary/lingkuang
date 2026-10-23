@@ -361,7 +361,9 @@ const frag_drape = `
                   /* ⭐ 灵框追加（第九十七轮）：渲染风格三件套 —— 见 NOTICE.md */
                   u_shade, u_contour, u_contour_scale, u_bands,
                   /* ⭐ 灵框追加（第一百零三轮）：真实感旋钮 —— 见 NOTICE.md */
-                  u_grade, u_detail, u_coast, u_water_noise, u_hatch, u_paper, u_grain, u_vignette, u_moist;
+                  u_grade, u_detail, u_coast, u_water_noise, u_hatch, u_paper, u_grain, u_vignette, u_moist,
+                  /* ⭐ 灵框追加（第一百零六轮）：地表材质分层（岩 / 岩层条带 / 雪线）+ 浅滩带 */
+                  u_rock, u_strata, u_snow, u_shelf;
     /* ⭐ 灵框追加（第一百零三轮）：风格色带（陆地 8 个等距采样点、海 6 个；JS 侧 「styles.ts」 生成） */
     uniform vec3 u_land_ramp[8];
     uniform vec3 u_sea_ramp[6];
@@ -430,12 +432,14 @@ const frag_drape = `
            权重随高度上升：山脚平缓（不该长毛刺），山脊/坡面才需要细碎起伏。 */
         float detailN = 0.0;
         if (u_detail > 0.0 && z0 >= 0.5) {
-            vec2 duv = v_uv * 300.0;
+            /* 频率 300 → 110（第一百零六轮）：300 周期在 900px 的显示宽上只有 3px 一个周期，
+               画出来是"电视雪花"而不是山体起伏；110 周期 ≈ 8px，看得出是坡面纹理。 */
+            vec2 duv = v_uv * 110.0;
             float d0 = fbm3(duv);
             float ddx = fbm3(duv + vec2(1.8, 0.0)) - d0;
             float ddy = fbm3(duv + vec2(0.0, 1.8)) - d0;
             float amt = u_detail * smoothstep(0.5, 0.62, z0);
-            slope_vector = normalize(slope_vector + vec3(ddx, ddy, 0.0) * 3.5 * amt);
+            slope_vector = normalize(slope_vector + vec3(ddx, ddy, 0.0) * 1.7 * amt);
             detailN = d0 - 0.5;
         }
         vec3 light_vector = normalize(vec3(u_light_angle, mix(u_slope, u_flat, slope_vector.z)));
@@ -487,7 +491,7 @@ const frag_drape = `
             /* 湿度：湿的地方偏绿、干的地方偏暖（只有自然/卫星档给大权重） */
             landC *= mix(vec3(1.03, 0.99, 0.94), vec3(0.96, 1.04, 0.97), clamp(v_em.y, 0.0, 1.0) * u_moist);
             /* 细节噪声给陆地加一层斑驳（幅度小，不把色带打乱） */
-            landC *= 1.0 + detailN * 0.04 * u_detail;
+            landC *= 1.0 + detailN * 0.03 * u_detail;
             /* ⭐ 灵框追加（第一百零四轮）：生物群系 —— 用户「只能看出山脉和平原两种地形」。
                高程色带只管"多高"，管不了"多干 / 多冷"；这张 4×3 气候表（干湿 × 冷暖）补上后，
                低地会按气候分成荒漠 / 草原 / 温带林 / 雨林 / 苔原 / 针叶林，高处再交回高程色带（岩 / 雪）。
@@ -513,16 +517,57 @@ const frag_drape = `
                 vec3 rockC = mix(u_land_ramp[3], u_land_ramp[5], 0.35);
                 landC = mix(landC, rockC, smoothstep(0.30, 0.65, steep) * 0.5 * u_biome_amt);
             }
+            /* ⭐ 灵框追加（第一百零六轮）：地表材质分层（B3）。
+               用户 2026-10-21：「看不出不同地形之间有什么区别，只能看出山脉和平原两种」。
+               高程色带只回答"多高"，材质要回答"这地方是什么"：滩→植被→坡面露岩（带岩层）→雪。
+               坡度从 smoothLandHeight 求的 slope_vector.z 取（1 = 平，越小越陡）。 */
+            if (u_rock > 0.0) {
+                /* 陡度必须用**宽基线**（±6 纹素）求：1 纹素的差分会把细节噪声也当成坡度，
+                   于是"处处是陡坡"⇒ 整块陆地糊成岩色（第一百零六轮第一版真机就是这样）。 */
+                float mE = texture(u_elevation, pos + dx * 6.0).x;
+                float mW = texture(u_elevation, pos - dx * 6.0).x;
+                float mS = texture(u_elevation, pos + dy * 6.0).x;
+                float mN = texture(u_elevation, pos - dy * 6.0).x;
+                float macro = length(vec2(mE - mW, mS - mN)) / 12.0;
+                float steep = smoothstep(0.0015, 0.0075, macro);
+                /* 高处 + 陡坡都露岩：山脊线因此从"更浅的绿"变成岩石色，山与平原终于分得开 */
+                float rockT = clamp(max(smoothstep(0.58, 0.80, landT), steep * 0.80), 0.0, 1.0);
+                float rockVar = fbm3(v_uv * 140.0);
+                vec3 rockC = mix(u_land_ramp[4], u_land_ramp[6], 0.30 + 0.34 * rockVar);
+                landC = mix(landC, rockC, rockT * u_rock);
+                /* 岩层条带：沿高度做细密条纹（被噪声推一下 ⇒ 不会像等高线那样整齐）。
+                   条数从 34 降到 16：34 条在缩略图尺寸下是一条条"屏幕斜纹"，看着像电视雪花。 */
+                if (u_strata > 0.0) {
+                    float strata = fract(landT * 16.0 + rockVar * 1.4);
+                    float band = smoothstep(0.42, 0.52, strata) - smoothstep(0.52, 0.62, strata);
+                    landC *= 1.0 + band * 0.07 * u_strata * smoothstep(0.35, 0.75, rockT);
+                }
+                /* 雪线：只压在最高的那圈（用平滑高度 landT，边缘不锯齿）*/
+                if (u_snow > 0.0) {
+                    float snowT = smoothstep(0.80, 0.93, landT) * smoothstep(0.28, 0.58, rockT);
+                    landC = mix(landC, vec3(0.95, 0.96, 0.95), clamp(snowT, 0.0, 0.92) * u_snow);
+                }
+            }
+            /* 浅滩带（B4）：岸线水侧渐浅 —— 真地图上陆架是"发白的一圈"，不是与深海同色 */
+            if (u_shelf > 0.0) {
+                float shallow = 1.0 - smoothstep(0.0, 0.075, 0.5 - z0);
+                seaC = mix(seaC, mix(seaC, vec3(0.62, 0.78, 0.74), 0.55), shallow * u_shelf);
+            }
             biome_color = mix(biome_color, mix(seaC, landC, step(0.5, z0)), u_grade);
             water_color.rgb = mix(water_color.rgb, u_river_color, u_grade);
 
-            /* 海岸带：陆地一侧压一层湿沙，水线上一道极细的亮边（浪花）。
-               上游只有一条 1px 的暗描边，放大像"贴纸边缘"；真实地图上陆海之间是渐变 + 浪花。 */
+            /* 海岸带（B4，第一百零六轮重做）：干沙 → 湿沙 → 浪线 → 水侧浅滩，四段。
+               上游只有一条 1px 的暗描边，放大像"贴纸边缘"；真地图上陆海之间是有宽度的过渡。 */
             if (u_coast > 0.0) {
-                float wet = (1.0 - smoothstep(0.0, 0.028, z0 - 0.5)) * step(0.5, z0);
-                biome_color = mix(biome_color, mix(biome_color, vec3(0.90, 0.86, 0.74), 0.45), wet * u_coast);
-                float foam = 1.0 - smoothstep(0.0, 0.004, abs(z0 - 0.5));
-                biome_color = mix(biome_color, vec3(0.95, 0.96, 0.94), foam * u_coast * 0.22);
+                float dLand = z0 - 0.5;
+                float beach = (1.0 - smoothstep(0.006, 0.020, dLand)) * step(0.5, z0);
+                biome_color = mix(biome_color, mix(biome_color, vec3(0.88, 0.83, 0.68), 0.58), beach * u_coast);
+                float wet = (1.0 - smoothstep(0.0, 0.007, dLand)) * step(0.5, z0);
+                biome_color = mix(biome_color, mix(biome_color, vec3(0.80, 0.74, 0.60), 0.55), wet * u_coast);
+                float foam = 1.0 - smoothstep(0.0, 0.0025, abs(dLand));
+                biome_color = mix(biome_color, vec3(0.96, 0.97, 0.95), foam * u_coast * 0.32);
+                float shelfLine = (1.0 - smoothstep(0.004, 0.014, -dLand)) * step(z0, 0.5);
+                biome_color = mix(biome_color, vec3(0.90, 0.95, 0.92), shelfLine * u_coast * 0.12);
             }
             /* 水面细纹：只在海里（河有自己的一色），给深浅色带一点"水"的质感 */
             if (u_water_noise > 0.0 && z0 < 0.5) {
@@ -648,6 +693,11 @@ export default class Renderer {
     quad_elements: Int32Array;
     a_river_xyww: Float32Array;
 
+    /* ⭐ 灵框追加（第一百零六轮）：**位图边长由调用方定**（T3「FBO 按显示尺寸动态」）。
+       上游写死一张 2048² 的 FBO 给"整窗地图"用；灵框同一套内核还要出 264px 的抽卡小图，
+       那种尺寸跑 1536² 是纯浪费（填充率 4 张 FBO × 236 万像素）。缺省值仍是 1536。 */
+    texture_size: number;
+
     screenshotCanvas: HTMLCanvasElement;
     screenshotCallback: () => void;
     renderParam: any;
@@ -685,11 +735,13 @@ export default class Renderer {
     buffer_quad_elements: Buffer;
     buffer_river_xyww: Buffer;
 
-    constructor (mesh: Mesh, canvas?: HTMLCanvasElement) {
+    constructor (mesh: Mesh, canvas?: HTMLCanvasElement, textureSize?: number) {
         /* ⭐ 灵框追加：允许外部传画布（不传才退回上游那个 `#mapgen4`）。 */
         canvas = canvas ?? document.getElementById('mapgen4') as HTMLCanvasElement;
         if (!canvas) throw new Error('mapgen4: 需要一个 canvas（没传，页面里也没有 #mapgen4）');
         this.canvas = canvas;
+        /* ⭐ 灵框追加：位图边长按调用方的显示尺寸定（见 texture_size 字段的注释）*/
+        this.texture_size = Math.max(256, Math.min(2048, Math.round(textureSize ?? fbo_texture_size)));
         this.webgl = new WebGLWrapper(canvas);
 
         this.resizeCanvas();
@@ -725,10 +777,10 @@ export default class Renderer {
         this.texture_colormap = this.webgl.createTexture({data: colormap.data, width: colormap.width, height: colormap.height, filter: 'nearest'});
         this.texture_biome = this.webgl.createTexture({width: 4, height: 3, data: new Uint8Array(4 * 3 * 4), filter: 'linear'});
 
-        this.fbo_land  = this.webgl.createFramebuffer(fbo_texture_size, fbo_texture_size, {depth: false, internalFormat: this.webgl.gl.R16F, filter: 'linear'});
-        this.fbo_depth = this.webgl.createFramebuffer(fbo_texture_size, fbo_texture_size, {depth: true, internalFormat: this.webgl.gl.R16F, filter: 'nearest'}); // NOTE: linear requires adjusting parameters
-        this.fbo_river = this.webgl.createFramebuffer(fbo_texture_size, fbo_texture_size, {depth: false, filter: 'linear'}); // linear makes rivers look better
-        this.fbo_drape = this.webgl.createFramebuffer(fbo_texture_size, fbo_texture_size, {depth: true, filter: 'linear'}); // linear to smooth out edges
+        this.fbo_land  = this.webgl.createFramebuffer(this.texture_size, this.texture_size, {depth: false, internalFormat: this.webgl.gl.R16F, filter: 'linear'});
+        this.fbo_depth = this.webgl.createFramebuffer(this.texture_size, this.texture_size, {depth: true, internalFormat: this.webgl.gl.R16F, filter: 'nearest'}); // NOTE: linear requires adjusting parameters
+        this.fbo_river = this.webgl.createFramebuffer(this.texture_size, this.texture_size, {depth: false, filter: 'linear'}); // linear makes rivers look better
+        this.fbo_drape = this.webgl.createFramebuffer(this.texture_size, this.texture_size, {depth: true, filter: 'linear'}); // linear to smooth out edges
 
         this.program_river = this.webgl.createProgram('river', vert_river, frag_river, (gl, program) => {
             this.buffer_river_xyww.vertexAttribPointer(program.a_xyww, 4, gl.FLOAT, false, 0, 0);
@@ -753,8 +805,8 @@ export default class Renderer {
         });
 
         this.screenshotCanvas = document.createElement('canvas');
-        this.screenshotCanvas.width = fbo_texture_size;
-        this.screenshotCanvas.height = fbo_texture_size;
+        this.screenshotCanvas.width = this.texture_size;
+        this.screenshotCanvas.height = this.texture_size;
         this.screenshotCallback = null;
 
         this.renderParam = undefined;
@@ -789,7 +841,7 @@ export default class Renderer {
            （尺寸取 `fbo_texture_size`，画布与 4 张 FBO 同大最省一次重采样）。 */
         let canvas = this.canvas;
         if (!canvas) return;
-        let size = fbo_texture_size; /* could be smaller to increase performance */
+        let size = this.texture_size; /* could be smaller to increase performance */
         if (canvas.width !== size || canvas.height !== size) {
             console.log(`Resizing canvas from ${canvas.width}x${canvas.height} to ${size}x${size}`);
             canvas.width = canvas.height = size;
@@ -872,6 +924,11 @@ export default class Renderer {
             gl.uniform1f(program.u_grain, renderParam.grain ?? 0);
             gl.uniform1f(program.u_vignette, renderParam.vignette ?? 0);
             gl.uniform1f(program.u_moist, renderParam.moist ?? 0);
+            /* ⭐ 灵框追加（第一百零六轮）：地表材质分层 + 浅滩带（缺省 0 ⇒ 不改变旧调用方结果）*/
+            gl.uniform1f(program.u_rock, renderParam.rock ?? 0);
+            gl.uniform1f(program.u_strata, renderParam.strata ?? 0);
+            gl.uniform1f(program.u_snow, renderParam.snow ?? 0);
+            gl.uniform1f(program.u_shelf, renderParam.shelf ?? 0);
             /* ⭐ 灵框追加（第一百零四轮）：气候表 —— 48 字节，内容变了才重传 */
             gl.uniform1f(program.u_biome_amt, renderParam.biome_amt ?? 0);
             const biome = renderParam.biome_ramp;
@@ -969,7 +1026,7 @@ export default class Renderer {
             this.drawDrape(renderParam);
 
             /* Draw the final texture to the canvas; this slightly blurs the outlines */
-            this.drawFinal([0.5 / fbo_texture_size, 0.5 / fbo_texture_size]);
+            this.drawFinal([0.5 / this.texture_size, 0.5 / this.texture_size]);
 
             if (this.screenshotCallback) {
                 const ctx = this.screenshotCanvas.getContext('2d');

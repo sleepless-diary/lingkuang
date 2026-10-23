@@ -21,13 +21,15 @@ import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import type { MapTerrainSpec } from '../store/types';
 import { aiChat, splitReply } from './ai';
+import { nextFrame, showBusy } from './busy';
+import { openLightbox } from './lightbox';
 import { escapeHtml } from './html';
 import {
   MAP_LIMITS, MAP_STYLES, generateIntoMap, parseMapPrompt, planGeneration, styleHint,
   type MapGenSummary, type MapPlan, type MapSpec, type MapStyle,
 } from './map-gen';
 import { releaseThumbs, terrainStats, terrainThumbUrl } from './map-terrain';
-import { PLANET_VIEW_H, planetStats, planetThumbUrl } from './planet-view';
+import { PLANET_PREVIEW_H, planetStats, planetThumbUrl } from './planet-view';
 import { TERRAIN_STYLES, terrainStyleLabel, terrainStyleOf } from '../mapgen';
 import { MAP_FORMS, mapFormOf } from '../mapgen/planet';
 import { openTool } from '../tools/registry';
@@ -237,6 +239,15 @@ export function openMapStudio(store: Store): () => void {
 
   const q = <T extends HTMLElement>(sel: string) => card.querySelector(sel) as T;
   const img = q<HTMLImageElement>('#ms-img');
+  const stageEl = q<HTMLElement>('.lk-ms__stage');
+  stageEl.style.position = 'relative';
+  /* ⭐ 第一百零六轮：「点大图 → 全窗口看」（用户原话：点击大图时全窗口显示大图，再点一下返回）。
+     舞台里那张就是"大图"，点它进查看器；抽卡的小卡仍是"点一下看大图"（换预览）。 */
+  stageEl.addEventListener('click', () => {
+    if (img.style.display === 'none' || !img.src) return;
+    openLightbox({ src: img.src, title: '地图预览' });
+  });
+  stageEl.title = '点一下全窗口看大图（双击放大 · 滚轮缩放 · 拖动平移）';
   const emptyEl = q<HTMLElement>('#ms-empty');
   const limitsEl = q<HTMLElement>('#ms-limits');
   limitsEl.innerHTML = MAP_LIMITS.map((t) => `· ${escapeHtml(t)}`).join('<br>');
@@ -324,12 +335,25 @@ export function openMapStudio(store: Store): () => void {
     const keepPaint = old && old.seed === p.seed && old.style === p.style ? old.paint : undefined;
     const t: MapTerrainSpec = { seed: p.seed, style: p.style, spec: p.spec, view: viewNow(), form, ...(keepPaint?.length ? { paint: keepPaint } : {}) };
     const seq = ++previewSeq;
-    const url = await thumbOf(t, w, h, PREVIEW_W, PREVIEW_H);
+    /* ⭐ 第一百零六轮：出图有耗时（星球预览 ~250ms、局部 ~120ms），先把「正在算」摆上，
+       并且**让出一帧**让遮罩真的画出来，否则同一个长任务会把它一起挡住。 */
+    const b = showBusy(stageEl, form === 'planet' ? '正在算星球预览…' : '正在出图…');
+    img.style.opacity = '.45';
+    await nextFrame();
+    let url = '';
+    try {
+      url = await thumbOf(t, w, h, PREVIEW_W, PREVIEW_H);
+    } finally {
+      b.done();
+      img.style.opacity = '';
+    }
     if (seq !== previewSeq || !openEl) return;
     img.src = url;
     img.style.display = url ? '' : 'none';
     emptyEl.style.display = url ? 'none' : '';
-    const s = form === 'planet' ? planetStats(t, PLANET_VIEW_H) : terrainStats(t, w, h);
+    /* ⚠️ 统计用**预览分辨率**那份场（缩略图刚算过、已缓存）：用 PLANET_VIEW_H 会为了一行字
+       再同步建一张 768 的场（~1s 冻结，正好是用户抱怨的"以为卡了"）。 */
+    const s = form === 'planet' ? planetStats(t, PLANET_PREVIEW_H) : terrainStats(t, w, h);
     noteEl.textContent = s ? `${sumLine(s)} · 种子「${p.seed}」` : `种子「${p.seed}」`;
   };
   const fromForm = () => {

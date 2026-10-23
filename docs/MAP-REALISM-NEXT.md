@@ -68,3 +68,28 @@
 - `png-crop.cjs`：原生像素裁剪（对照世界坐标同一块地）；
 - `perf-planet.cjs`：切形态 / 换档的长任务；
 - `window-shot.cjs`：不经任何 DOM 改动截一张地图栏。
+
+---
+
+## 五、✅ 2026-10-23（第一百零六轮）：B + C 全部落地
+
+用户当时那句「**然后接下来的全做了吧**」就是这一节。机制细节与实测数字见
+`docs/ARCHITECTURE.md` 的「2026-10-23 · 加载提示 + 大图 + 结构化真实感 + 性能」。
+
+| 待办 | 状态 | 落点 |
+|---|---|---|
+| B1 ridged 主导 + 域扭曲 | ✅ | `noise.ts` 的 `ridgedMultifractal2D()`（零交叉线）+ `rangeMask()`（线状山系）+ `warpPoint()`；参数在 `applyTerrainNoise()` |
+| B2 坡度侵蚀成谷 | ✅ | `index.ts` 的 `erodeTerrain()`：降序汇流 + `K·flow^0.55` 下切（下限 45%），排在重定海平面之前 |
+| B3 地表材质分层 | ✅ | `frag_drape` 的 `u_rock/u_strata/u_snow`（宽基线陡坡 + 16 条岩层 + 雪线）；`renderPlanet` 同一套；逐档强度在 `styles.ts` 的 `MATERIAL_DEFAULTS` |
+| B4 海岸分带 | ✅ | `u_coast` 重做：干沙 → 湿沙 → 浪线 → 水侧浅滩线；另加 `u_shelf` 浅水色带 |
+| C1 星球场分帧 | ✅（选了方案 A，不是 Worker） | `planetFieldGen()` + `planet-view.ts` 的 `drive()`（12ms/帧 + `PHASE_PCT` 进度） |
+| C2 上色分帧 | ✅ | `renderPlanetGen()`，接在 0.9 → 1.0 的进度段 |
+| C3 FBO 按显示尺寸 | ✅（按用途定档，不是逐屏动态） | `Renderer(mesh, canvas, textureSize?)`；缩略图 768、地图栏 1536 |
+| C4 视图池化 | ➖ 未改（现状够用） | 抽卡是串行出图 + 单 thumb 视图；位图降到 768 后单视图约 12MB，串行 6 张不再叠成 6 倍 |
+
+顺带修掉的两个"隐藏长任务"（都是**为一行统计字同步建场**）：
+`map-studio.ts` 的 `previewOf()`（2119ms → 354ms）、`map-gen.ts` 的 `generateIntoMap()`（1824ms → ≤136ms）。
+
+结论：星球首次生成从 **2054ms 单次长任务** 变成 **744~1100ms 墙钟、最长单片 136ms**，
+并且全程有提示与进度条。下一步若要继续提"真实感"，方向不再是"更多噪声"，
+而是**河流宽度随流量变化**与**岸线/湖岸的矢量级平滑**（见 `docs/ROADMAP.md`）。
