@@ -18,19 +18,24 @@ import type { MapData, MapPaintStroke } from '../store/types';
 import { escapeHtml } from './html';
 import { DEFAULT_MAP, polylinePath, smoothClosedPath } from './map-gen';
 import {
-  mountTerrain, mapPointToWorld, resetTerrainPaint, terrainStats, liftOf, terrainFullUrl, type TerrainHandle, type TerrainStats,
+  mountTerrain, mapPointToWorld, resetTerrainPaint, terrainStats, liftOf, type TerrainHandle, type TerrainStats,
 } from './map-terrain';
 import {
-  PLANET_VIEW_H, mountGlobePrepared, mountPlanetPrepared, planetFieldAsync, planetImageUrl,
-  planetRgbaAsync,
+  PLANET_VIEW_H, mountGlobePrepared, mountPlanetPrepared, planetFieldAsync, planetRgbaAsync,
 } from './planet-view';
 import { nextFrame, showBusy, type BusyHandle } from './busy';
 import { openLightbox } from './lightbox';
-import { DEFAULT_PAINT_SIZE, DEFAULT_PAINT_TOOL, TERRAIN_STYLES, beginPaintStroke, paintStep, terrainStyleLabel, terrainStyleOf } from '../mapgen';
-import { MAP_FORMS, mapFormLabel, mapFormOf } from '../mapgen/planet';
+import {
+  CONTOUR_MODES, DEFAULT_PAINT_SIZE, DEFAULT_PAINT_TOOL, TERRAIN_STYLES, beginPaintStroke, contourModeLabel,
+  contourModeOf, paintStep, terrainStyleLabel, terrainStyleOf,
+} from '../mapgen';
+import { mapFormLabel, mapFormOf } from '../mapgen/planet';
 import { openMapStudioFromToolbar } from './map-studio';
+import { openMapRefine, closeMapRefine } from './map-refine';
+import { openMapEditor } from './map-editor';
+import { hdImageFor } from './map-hd';
 
-type Mode = 'region' | 'marker' | 'move' | 'paint';
+type Mode = 'region' | 'refine' | 'marker' | 'move' | 'paint';
 /** 两套内核的句柄**同形**（dispose / setStyle / regenerate）—— 地图栏不关心底下是哪一个 */
 type TerrainLayer = TerrainHandle | ReturnType<typeof mountPlanetPrepared>;
 
@@ -77,11 +82,13 @@ export function renderMap(store: Store, host: HTMLElement): void {
         <span id="map-gen-note" style="font-size:var(--text-xs);color:var(--fg-2);"></span>
         <span style="flex:1;"></span>
         <button id="map-gen" title="打开地图生成面板：自己一个个调参数 / AI 直出 / 抽卡" style="background:none;border:1px solid var(--accent);color:var(--accent-ink);border-radius:var(--radius-sm);font-size:11px;padding:3px 10px;cursor:pointer;">生成地形…</button>
-        <select id="map-form" title="形态：局部 = 一片地区的地形（能手刷精修）；星球 = 整颗星球（经度无缝、有两极，能贴到球上看）" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${MAP_FORMS.map((f) => `<option value="${f.id}" title="${escapeHtml(f.hint)}">${escapeHtml(f.label)}</option>`).join('')}</select>
+        <button id="map-editor" class="lk-btn lk-btn--ghost lk-btn--sm" title="手绘海陆：先刷大陆与海洋的剪影，再按这幅剪影生成星球">手绘海陆…</button>
+        <select id="map-contour" title="等高线画法：自动 = 按屏幕线距自动跳线（陡坡变稀 / 平地全显示）；也可以强制「全部 / 减半 / 每五条」" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${CONTOUR_MODES.map((c) => `<option value="${c.id}" title="${escapeHtml(c.hint)}">${escapeHtml(c.label)}</option>`).join('')}</select>
         <button id="map-globe" class="lk-btn lk-btn--ghost lk-btn--sm" title="球体看：把星球图贴到一颗真球上（拖动旋转、滚轮缩放）—— 只在星球形态下出现" style="display:none;background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">球体看</button>
         <select id="map-view" title="看的方式：地形怎么画（八档：自然 / 地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简）—— 只换画法，不重算地形" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${TERRAIN_STYLES.map((s) => `<option value="${s.id}" title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}</option>`).join('')}</select>
         <select id="map-lift" title="立体度：立体 = 山有厚度（能看到山坡侧面）；顶视 = 从正上方看（没有侧壁，只有色带与明暗）—— 只换看法，不重算地形" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;"><option value="solid" title="山有厚度：能看见山坡侧面与投影（默认）">立体</option><option value="flat" title="正上方俯视：山只靠色带与明暗表达高度，没有侧壁">顶视</option></select>
         <button data-mode="region" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" >区域</button>
+        <button data-mode="refine" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" title="拖一块矩形区域：生成这一带的精细化样本（可抽卡 / 留多版）">细化区域</button>
         <span style="width:1px;height:16px;background:var(--border-soft);"></span>
         <button data-mode="marker" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" >标记</button>
         <button data-mode="paint" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" title="手刷地形：造山 / 压谷 / 浅海 / 深海（在地形上直接刷）" >地形</button>
@@ -108,6 +115,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
       <div style="flex:1;position:relative;overflow:hidden;">
         <div id="map-stage" style="position:absolute;left:0;top:0;transform-origin:0 0;">
           <div id="map-terrain" style="position:absolute;left:0;top:0;background:var(--surface-2);overflow:hidden;"></div>
+          <div id="map-refined" style="position:absolute;left:0;top:0;pointer-events:none;"></div>
           <svg id="map-svg" width="${curMap()?.width ?? 900}" height="${curMap()?.height ?? 500}" style="position:absolute;left:0;top:0;background:transparent;touch-action:none;"></svg>
         </div>
       </div>
@@ -169,9 +177,10 @@ export function renderMap(store: Store, host: HTMLElement): void {
     /* 提示行两段：短名 + 悬停说明（照旧是中栏那行的写法，不加图标） */
     const tips: Record<Mode, [string, string]> = {
       region: ['区域', '拖拽画区域（松开闭合）'],
+      refine: ['细化区域', '拖一块矩形：生成这一带的细节样本（可抽卡 / 留多版）'],
       marker: ['标记', '点击放置标记'],
       move: ['平移', '拖拽平移；点一下看大图（双击放大 / 滚轮缩放）'],
-      paint: ['地形', '按住拖动 = 刷地形（造山 / 压谷 / 浅海 / 深海）；每一笔单独一步撤销'],
+      paint: ['手刷地形', '按住拖动 = 刷地形（造山 / 压谷 / 浅海 / 深海）；每一笔单独一步撤销（底图切到星球后不可用，改走「手绘海陆…」）'],
     };
     hint.textContent = tips[m][0];
     hint.title = tips[m][1];
@@ -215,10 +224,13 @@ export function renderMap(store: Store, host: HTMLElement): void {
      与助手的 `generate_map` 动作共用它，一次 store.update ⇒ 一步 Ctrl+Z 就能撤销回去。 */
   const genNote = host.querySelector('#map-gen-note') as HTMLElement;
   const viewSel = host.querySelector('#map-view') as HTMLSelectElement;
-  const formSel = host.querySelector('#map-form') as HTMLSelectElement;
+  const contourSel = host.querySelector('#map-contour') as HTMLSelectElement;
   const liftSel = host.querySelector('#map-lift') as HTMLSelectElement;
+  const refinedBox = host.querySelector('#map-refined') as HTMLElement;
   const globeBtn = host.querySelector('#map-globe') as HTMLButtonElement;
   host.querySelector('#map-gen')?.addEventListener('click', () => { openMapStudioFromToolbar(store); });
+  /* ⭐ 手绘海陆（第一百零八轮）：全屏画板，画完按剪影生成星球（落盘仍走 generateIntoMap）*/
+  host.querySelector('#map-editor')?.addEventListener('click', () => { openMapEditor(store); });
   /* ⭐ 「看的方式」（第九十七轮）：改了**只重画**（`syncTerrain` 里换渲染参数），不重算地形。
      落盘照走 `save()`（一步撤销）—— 与面板「采用到地图」同一条路，不留第二份状态。 */
   viewSel.addEventListener('change', () => {
@@ -226,12 +238,12 @@ export function renderMap(store: Store, host: HTMLElement): void {
     if (!curMap()?.terrain) return;
     save((mm) => { if (mm.terrain) mm.terrain.view = v; });
   });
-  /* ⭐ 「形态」（第九十八轮）：局部 ⇄ 星球。两套内核**共用**同一份种子/档位/数量/看的方式
-     ⇒ 切过去只是换了一套渲染，参数还在；落盘照走 `save()`（一步撤销）。 */
-  formSel.addEventListener('change', () => {
-    const v = formSel.value;
+  /* ⭐ 等高线方式（第一百零八轮）：用户「有些地方因为地形陡峭导致等高线有点密集」。
+     只是**显示参数** ⇒ 落盘照走 `save()`（一步撤销），换它不重算地形。 */
+  contourSel.addEventListener('change', () => {
+    const v = contourSel.value;
     if (!curMap()?.terrain) return;
-    save((mm) => { if (mm.terrain) mm.terrain.form = v; });
+    save((mm) => { if (mm.terrain) mm.terrain.contour = v; });
   });
   /* ⭐ 「立体度」（第一百零四轮）：立体（山有厚度、能看到山坡侧面）⇄ 顶视（正上方看，没有侧壁）。
      只改渲染的垂直夸张（`mountain_height`），**不重算地形**；落盘照走 `save()`（一步撤销）。 */
@@ -281,9 +293,32 @@ export function renderMap(store: Store, host: HTMLElement): void {
       )
       .join('');
     const drawingPath = drawing.length > 1 ? `<path d="${smoothClosedPath(drawing)}" fill="rgba(158,194,98,.15)" stroke="var(--accent)" stroke-width="1" stroke-dasharray="4 2"/>` : '';
+    /* 正在拖的细化框 */
+    const refinePath = refineFrom && refineTo
+      ? `<rect x="${Math.min(refineFrom[0], refineTo[0])}" y="${Math.min(refineFrom[1], refineTo[1])}"
+          width="${Math.abs(refineTo[0] - refineFrom[0])}" height="${Math.abs(refineTo[1] - refineFrom[1])}"
+          fill="rgba(158,194,98,.12)" stroke="var(--accent)" stroke-width="1" stroke-dasharray="4 2"/>`
+      : '';
     /* 层序：地形画布（`#map-terrain`，**在 SVG 底下**，内核渲染的）+ 手绘开放线 → 标记
        → 正在画的那一笔。（原来的矢量岸线/湖岸/河已删：内核的 shader 自己会画。）*/
-    svg.innerHTML = regions + lines + markers + drawingPath;
+    /* ⭐ 区域精细化（第一百零八轮）：虚线框 + 「当前采用」那张样本图叠在框里。
+       框画在 SVG（与手绘同层），样本图画在 #map-refined（地形层之上、SVG 之下）。 */
+    const refined = m.refined ?? [];
+    const rects = refined.map((r) => {
+      const on = r.active && r.samples.some((s) => s.id === r.active);
+      return `<rect x="${r.rect.x}" y="${r.rect.y}" width="${r.rect.w}" height="${r.rect.h}" fill="none"
+        stroke="${on ? 'var(--accent)' : 'var(--fg-2)'}" stroke-width="1.2" stroke-dasharray="5 3"
+        data-refined="${escapeHtml(r.id)}" style="cursor:pointer;pointer-events:all;"
+        title="${escapeHtml(r.name)} · ${r.samples.length} 个样本（点开精细化）"/>`
+        + `<text x="${r.rect.x + 3}" y="${r.rect.y + 12}" style="font-size:11px;fill:var(--fg-2);pointer-events:none;">${escapeHtml(r.name)}</text>`;
+    }).join('');
+    refinedBox.innerHTML = refined.map((r) => {
+      const a = r.samples.find((s) => s.id === r.active);
+      if (!a?.thumb) return '';
+      return `<img src="${a.thumb}" alt="" data-refined-img="${escapeHtml(r.id)}"
+        style="position:absolute;left:${r.rect.x}px;top:${r.rect.y}px;width:${r.rect.w}px;height:${r.rect.h}px;object-fit:cover;image-rendering:auto;">`;
+    }).join('');
+    svg.innerHTML = regions + lines + markers + rects + drawingPath + refinePath;
   }
 
   /* ── 地形画布：只在**参数真的变了**的时候重建。
@@ -298,7 +333,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
     const form = mapFormOf(m.terrain?.form);
     const style = terrainStyleOf(m.terrain?.view);
     genNote.textContent = s && m.terrain
-      ? `${mapFormLabel(form)} · ${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}% · 种子「${m.terrain.seed}」 · ${terrainStyleLabel(style)}${form === 'planet' && globeOn ? ' · 球体' : ''}`
+      ? `${mapFormLabel(form)} · ${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}% · 种子「${m.terrain.seed}」 · ${terrainStyleLabel(style)} · 等高线${contourModeLabel(m.terrain.contour)}${form === 'planet' && globeOn ? ' · 球体' : ''}`
       : '还没有地形';
   }
 
@@ -311,9 +346,13 @@ export function renderMap(store: Store, host: HTMLElement): void {
     const style = terrainStyleOf(m.terrain?.view);
     if (viewSel.value !== style) viewSel.value = style;
     viewSel.disabled = !m.terrain;
-    /* ⭐ 「形态」（第九十八轮）：控件跟着数据走；星球形态才显示「球体看」，画笔在星球下不适用 */
-    if (formSel.value !== form) formSel.value = form;
-    formSel.disabled = !m.terrain;
+    /* ⭐ 等高线方式（第一百零八轮）：控件跟着数据走；没有地形时置灰 */
+    const contour = contourModeOf(m.terrain?.contour);
+    if (contourSel.value !== contour) contourSel.value = contour;
+    contourSel.disabled = !m.terrain;
+    /* ⭐ 区域样本的覆盖层（第一百零八轮）：跟着地图尺寸走（与 #map-terrain 同一个坐标系）*/
+    refinedBox.style.width = m.width + 'px';
+    refinedBox.style.height = m.height + 'px';
     /* ⭐ 「立体度」（第一百零四轮）：控件跟着数据走；星球形态是 CPU 画的平面图，没有立体度这回事 ⇒ 藏起来 */
     const lift = liftOf(m.terrain);
     if (liftSel.value !== lift) liftSel.value = lift;
@@ -327,6 +366,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
       terrainKey = '';
       terrainStyleKey = '';
       rebuildSeq++;                 /* 作废在飞的生成 */
+      closeMapRefine();
       busy?.done();
       busy = null;
       terrainHandle?.dispose();
@@ -342,6 +382,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
     const key = m.terrain
       ? `${form}|${m.terrain.seed}|${m.terrain.style}|${lift}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}|${JSON.stringify(m.terrain.paint ?? [])}`
         + (form === 'planet' ? `|${globeOn ? 'globe' : 'equirect'}|${style}` : '')
+        + `|${contour}|${JSON.stringify(m.terrain.mask ?? null)}`
       : '';
     if (key === terrainKey) {
       /* 地形没变，但「看的方式」可能变了（面板采用 / 助手改了数据）⇒ **只换渲染参数、不重建画布** */
@@ -439,7 +480,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
   function startPaint(e: PointerEvent): void {
     const m = curMap();
     if (!m?.terrain || !terrainHandle) { paintState('这片地还没有地形：先点「生成地形…」'); return; }
-    if (mapFormOf(m.terrain.form) === 'planet') { paintState('星球形态暂不支持手刷 —— 想刷局部地形就切回「局部」'); return; }
+    if (mapFormOf(m.terrain.form) === 'planet') { paintState('星球底图不支持手刷 —— 想自己画大陆就点「手绘海陆…」（全屏画板，按剪影生成）'); return; }
     beginPaintStroke();
     liveStroke = { tool: brushTool, size: brushSize, points: [] };
     lastPaint = null;
@@ -501,6 +542,9 @@ export function renderMap(store: Store, host: HTMLElement): void {
     paintState('笔迹已清空');
   }
 
+  /* ⭐ 细化区域（第一百零八轮）：在地图上拖一个矩形 ⇒ 打开精细化面板 */
+  let refineFrom: [number, number] | null = null;
+  let refineTo: [number, number] | null = null;
   let panning = false, panX = 0, panY = 0, panSX = 0, panSY = 0;
   /* ⭐ 第一百零六轮：手动拖过就没有"点一下看大图"这回事（区别拖动与点击）*/
   let panMoved = false;
@@ -511,17 +555,20 @@ export function renderMap(store: Store, host: HTMLElement): void {
     const m = curMap();
     if (!m?.terrain) return;
     const form = mapFormOf(m.terrain.form);
-    const style = terrainStyleOf(m.terrain.view);
+    /* ⭐ 第一百零八轮：大图统一走**高清**（局部 3072² / 星球 2304×1152）——
+       用户原话「进入全窗口预览时能不能渲染一下更高的分辨率」。算的时候挂遮罩 + 进度。 */
+    const b = showBusy((stage.parentElement ?? host) as HTMLElement, '正在出高清大图…', {
+      sub: form === 'planet' ? '星球 2304×1152 · 第一次几秒' : `地形 3072² · 一次性视图`,
+    });
+    await nextFrame();
     try {
-      if (form === 'planet') {
-        const src = planetImageUrl(m.terrain, style);
-        if (src) openLightbox({ src, title: `${m.name} · ${mapFormLabel(form)}` });
-      } else {
-        const src = await terrainFullUrl(m.terrain, m.width, m.height);
-        if (src) openLightbox({ src, title: `${m.name} · ${terrainStyleLabel(style)}` });
-      }
+      const shot = await hdImageFor(m.terrain, m.width, m.height, (p) => b.set('正在出高清大图…', p.pct, p.phase));
+      b.done();
+      if (shot.src) openLightbox({ src: shot.src, title: `${m.name} · ${shot.title}` });
     } catch (e) {
+      b.done();
       console.warn('[map] 出大图失败：', e);
+      genNote.textContent = '高清图出不来（详见面板与控制台）';
     }
   }
 
@@ -576,8 +623,18 @@ export function renderMap(store: Store, host: HTMLElement): void {
   svg.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return; // 右键/中键不画区域、不拖画布
     const [x, y] = local(e);
+    /* ⭐ 点已有的细化框 = 打开它的面板（不进入平移）*/
+    const hitRect = (e.target as Element | null)?.closest?.('[data-refined]') as HTMLElement | null;
+    if (hitRect && mode === 'move') {
+      const id = hitRect.dataset.refined;
+      if (id) { openMapRefine(store, { regionId: id }); return; }
+    }
     if (mode === 'region') {
       drawing = [[x, y]];
+      renderSvg();
+    } else if (mode === 'refine') {
+      refineFrom = [x, y];
+      refineTo = [x, y];
       renderSvg();
     } else if (mode === 'marker') {
       save((m) => { m.markers.push({ id: uid('mk'), x, y, label: `M${labelSeq++}` }); });
@@ -604,6 +661,9 @@ export function renderMap(store: Store, host: HTMLElement): void {
     if (mode === 'region' && drawing.length) {
       drawing.push(local(e));
       renderSvg();
+    } else if (mode === 'refine' && refineFrom) {
+      refineTo = local(e);
+      renderSvg();
     } else if (mode === 'paint' && liveStroke) {
       paintFrom(e);
     } else if (panning) {
@@ -616,6 +676,22 @@ export function renderMap(store: Store, host: HTMLElement): void {
     const openView = panning && !panMoved && mode === 'move';
     endDrag(true);
     endPaint(true);
+    /* ⭐ 细化区域：拖出足够大的框才建区域（误点一下别建出一个 1px 的框）*/
+    if (refineFrom && refineTo) {
+      const x = Math.min(refineFrom[0], refineTo[0]);
+      const y = Math.min(refineFrom[1], refineTo[1]);
+      const w = Math.abs(refineTo[0] - refineFrom[0]);
+      const h = Math.abs(refineTo[1] - refineFrom[1]);
+      refineFrom = null;
+      refineTo = null;
+      if (w >= 24 && h >= 16) {
+        /* ⚠️ 底图是老的「局部」地形也能框：区域样本本来就是 mapgen4 那条内核出的，
+           框只记"这块地在哪"，与底图是星球还是老局部地形无关。 */
+        openMapRefine(store, { rect: { x, y, w, h } });
+        setMode('move');
+      }
+      renderSvg();
+    }
     if (openView) void openBigView();
   };
   const onCancel = () => { endDrag(false); endPaint(false); };

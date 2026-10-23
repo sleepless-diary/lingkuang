@@ -1251,3 +1251,105 @@
 - 星球侧的标定顺序：先量 `landDiff`（形状真的变了没有），再看 `coast`（碎度），最后才看图 —— 
   本轮第一次"改了没变化"就是只看图、没量指标。
 
+
+## 2026-10-24 · 等高线方式 + 区域精细化 + 手绘海陆 + 高清大图（第一百零八轮）
+
+用户原话：「有些地方因为地形陡峭导致等高线有点密集，能不能加一个等高线绘制方式，是全部显示
+还是省略部分，你再做一个简易的编辑器，能让用户自行绘制大陆和地形，并在此之上生成对应地形，
+以及能不能加一个精细化生成的功能，把局部类型删了，改成能在地图上选一个区域进行精细化生成
+（也能重复生成和抽卡），生成结果留档，作为该地区的样本，以及进入全窗口预览时能不能渲染一下
+更高的分辨率」。
+
+已确认的产品口径（问过两轮）：等高线 = **自动抽稀 + 手动三档**；样本落盘 = **参数 + 一张小缩略图**；
+一个区域**可留多版 + 标「当前采用」**；编辑器 = **独立全屏海陆画板**；高清 = **局部 3072² / 星球 2304×1152**；
+**底图 = 星球总图**（「局部」形态退场，原来那套 WebGL 细节渲染降级为「区域样本」的渲染器）。
+
+### 一、等高线绘制方式（陡坡不糊）
+
+- 数据：`MapTerrainSpec.contour?: string`（`auto | all | half | fifth`，显示参数 ⇒ 换它不重算地形）。
+- 注册表：`src/mapgen/styles.ts` 的 `CONTOUR_MODES` / `contourModeOf()` / `contourEveryOf()`
+  （auto=0、all=1、half=2、fifth=5；脏值落回 auto）。`styleRenderParams()` 不含它 ——
+  抽稀是**用户偏好**，由 `src/ui/map-terrain.ts` 的 `terrainRenderParams()` 叠进 `contour_every`。
+- WebGL（`src/mapgen/vendor/render.ts` 的 `frag_drape`）：新增 `uniform float u_contour_every`。
+  `spacingPx = cInterval / fwidth(zLand)`（一格几条线）；自动档 `autoEvery = floor(10 / spacingPx + 0.999)`
+  ⇒ 陡坡（线距 < 10px）按整数倍跳线，平地全显示；手选档直接用 n。跳线按**档号取模**
+  （`mod(floor(zLand/cInterval + 0.5), every)`），所以不会出现"半条线"；每 5 条一条主等高线仍加深
+  （`cMajor`）。
+- 星球（`src/mapgen/planet.ts` 的 `renderPlanetGen(f, view, contourEvery)`）：自动档看**邻格跨了几档**
+  （`grad >= 2` ⇒ 按 `min(grad, 6)` 跳线），手选档同理取模；计曲线改成每 5 条。
+- UI：地图栏 `#map-contour`、工作室 `#ms-contour`（都读 `CONTOUR_MODES`），落盘照走 `save()`。
+- 实测（局部 WebGL + topo，684×380 截图裁片数"棕色线"像素）：全部 13524 / 自动 8297（61%，陡坡更稀）/
+  减半 5864 / 每五条 3287。星球栅格上自动≈全部（分辨率固定、线本来不挤），四档照样各是一张不同的图。
+
+### 二、区域精细化（原「局部」形态的替代）
+
+- 数据（`src/store/types.ts`）：`MapData.refined?: MapRegionDetail[]`，
+  `MapRegionDetail = { id, name, rect:{x,y,w,h}, samples: MapRegionSample[], active?, createdAt }`；
+  `MapRegionSample = { id, seed, style, spec, view, lift, contour, thumb, createdAt }`。
+  `rect` 用**地图坐标**（0..MapData.width，与 SVG/沙盘同一套），窗口缩放不会漂。
+- 交互：地图栏模式「细化区域」→ 拖一个矩形 ⇒ 建区域并开面板（`src/ui/map-refine.ts`，悬浮，与生成工作室同骨架）。
+  点地图上已存的虚线框也能重开面板。
+- 生成：走 mapgen4 那条内核（`terrainEngine()`），`spec.spacing = 3.4`（主图 4.8）⇒ 三角 ×2.1，
+  "精细化"是**网格真的更密**，不是放大。一次抽 6 张（`SAMPLE_BATCH`），每张「换一颗」重抽；
+  「采用」把 `active` 指向那一版 ⇒ 地图上 `#map-refined` 里叠它那张图（虚线框是 SVG 的 `[data-refined]`）。
+- 落盘：`thumb` 是 **JPEG dataURL（264×147，q=0.82，实测 16~18KB）** —— 第一版用 PNG 因为地形噪声
+  每张 100KB+，六个样本就 600KB。参数（种子/档位/数量/看的方式/立体度/等高线）都在样本里，
+  大图重新渲染一次即可（高清 3072²）。
+- ⚠️ 样本**不是**从星球图上裁的：星球是球面等距圆柱、区域细节是 mapgen4 方形网格，两套内核不通用。
+  样本的定位是"这一带长什么样的细化研究图"，`rect` 只记"属于哪一块地"。
+
+### 三、手绘海陆（独立全屏画板）
+
+- `src/ui/map-editor.ts`（新）：全屏 `.lk-ed` 画板，掩膜 **160×80、2 bit/格**，画布放大 6 倍显示
+  （`image-rendering: pixelated`）。工具：陆地 / 海洋 / 橡皮；四档笔宽；撤销（30 步）/ 清空 /
+  导入 PNG（按颜色分类：绿=陆地、蓝=海洋、其它=留白）/ 导出 PNG。
+  「留白 = 海洋」勾选默认开 ⇒ 画板就是整个世界；取消勾选则只在画过的地方钉死海陆。
+- 数据：`MapTerrainSpec.mask?: { w, h, bits }`，`bits` = 每格 2 bit（低位在前）的 base64，
+  160×80 实测 **4268 字符（约 4.2KB）**。
+- 生成（`src/mapgen/planet.ts` 的 `planetFieldGen(..., mask)`）：
+  · 掩膜 → 两张 0/1 场（陆地 / 海洋），**双线性**采样（最近邻会把海岸弄成一格一格楼梯）；
+  · 叠已有的 `shore` 多尺度噪声抖动边界（`wig = shore * 0.6`）⇒ 边缘像自然海岸；
+  · 阈值 0.5 定海陆，**在 `pruneSmall()` 之后**再盖一遍（否则手画的小岛被当噪声清掉）；
+  · 代价：陆地占比不再精确等于 `landRatio`（剪影说了算，这是用户意图）。
+- 生成走同一条落盘路：`generateIntoMap()`（`form: 'planet'`）⇒ 一步 Ctrl+Z 能撤。
+
+### 四、全窗口高清图
+
+- `src/ui/map-hd.ts`（新）：`hdImageFor(t, w, h, onProgress)` 按形态挑路径 ——
+  局部 `terrainFullUrl(t, w, h, TERRAIN_HD_BITMAP=3072)`；星球 `planetImageUrlHD(t, style, PLANET_HD_H=1152)`
+  （生成器分帧 + 进度，**不写缓存**：1152 高的场约 60MB、3072² 的 4 张 FBO 峰值约 190MB）。
+- `vendor/render.ts` 的 `texture_size` 上限 2048 → **4096**（否则 3072 会被夹回 2048，第一版就是这么假红的）。
+- 入口：地图栏点一下地形（移动档）/ 工作室点预览大图 / 区域面板「全窗口看高清」。
+  都先 `showBusy` + `await nextFrame()`（重活前让出一帧，遮罩才画得出来），出图后立刻释放视图。
+
+### 五、形态退场的连带改动
+
+- `src/ui/map.ts` 去掉 `#map-form`；工作室去掉 `#ms-form`；`MapGenInput.form` 缺省 = `planet`，
+  `parseMapPrompt()` 不再认「局部」（老数据 `form:'local'` 仍能渲染，只是不再被生成出来）。
+- 手刷（造山/压谷/浅海/深海）只对老局部地形有效：星球底图上画笔档会**明确拒绝**并指向「手绘海陆」。
+- `map-gen.ts` 的 `generateIntoMap()`：`mask`（同种子/档位才沿用）、`contour`（显示参数，沿用/显式给）。
+
+### 六、守卫与本轮实测
+
+- 新增 `tools/e2e/map-refine.cjs`（11 项）：三个入口 / 采用星球底图 / 等高线落盘 / 拖框建区域 /
+  抽 6 张（JPEG 小图 < 60KB）/ 采用叠图 / 3072 高清 / 刷新后仍在 / 画板按剪影生成（陆地占比 0.332→0.022）/
+  mask 只是 base64 文本、文件 112KB / 无异常。
+- `mapgen-engine.mjs` 新增 ★22（四档 + 脏值落回自动）、★23（剪影优先：全陆地 1.0、全海洋 0.0、
+  画一块 0.219 vs 期望 0.219）⇒ **25/25**。
+- 旧套件随新契约改口径：`map-planet.cjs`（形态控件退场 + 高清 2304×1152）**12/12**、
+  `map-style.cjs`（★5 改量地图栏星球栅格的亮度 sd：自然 19.8 / 极简 13.5 / 地形图 24.0；★9 terrain 键
+  允许 contour/lift/mask 但仍禁 `data:`）**14/14**、`map-gen.cjs`（★3/★4 改 1536×768、★12/★13
+  星球底图拒绝手刷）**15/15**、`map-studio.cjs` **16/16**。
+- `npx tsc --noEmit` 0、`npx vite build` 0。
+- 证据：`.review/shots-c108/`（等高线三档 / 区域面板 / 抽卡 / 高清）、`.review/shots-contour3/` 与
+  `shots-contour4/`（抽稀像素统计的裁片）、`.review/shots-editor2/`（画板 + 按剪影生成的星球）。
+
+### 七、教训
+
+- **PowerShell 里内联 node 多行含引号/反引号会被吃掉** ⇒ 一律写 `.review/_*.cjs` 再跑；
+  patch 脚本自己的模板字符串里也**别写反引号**（本轮在 `_patch-c108s/p.cjs` 上各栽了一次）。
+- **CRLF 文件**用 `edit` 多行匹配会 MIS（单行才稳）⇒ 走 patch 脚本：读入统一 `\n`、写回还原 `\r\n`。
+- 守卫**不能在同一个实例上连跑两次**：★0 这类前置假定的是"干净开局"，第二次跑会带着上一轮的地形/球体状态假红
+  （★0 因此改成"球体按钮显隐与数据一致"，而不是"必须隐藏"）。
+- 星球是**异步挂载**：量画布前要等它真的 resize 过（第一版 ★3 量到 300×150 假红）。
+- 等高线抽稀在**没有等高线的档位**（自然/极简/卫星）上看不出差别 ⇒ 守卫要先切到「地形图」再比截图哈希。

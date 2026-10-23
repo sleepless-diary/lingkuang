@@ -211,6 +211,48 @@ export function terrainStyleLabel(v: unknown): string {
   return terrainStyleDef(v).label;
 }
 
+/* ── 等高线绘制方式（第一百零八轮）─────────────────────────────────────────────
+   用户原话：「有些地方因为地形陡峭导致等高线有点密集，能不能加一个等高线绘制方式，
+   是全部显示还是省略部分」。拍板口径：**自动抽稀 + 手动档位** —— 默认「自动」按屏幕上的
+   线间距自动跳线（陡坡自然变稀、平地全显示），另给「全部 / 减半 / 每五条」三档手选。
+
+   ⚠️ 这是**显示参数**（和 `view` / `lift` 同一类）：换它不重算地形，只是重画。
+   着色器里 0 = 自动（按 `fwidth(zLand)` 现算每格多少条），n>1 = 每 n 条画一挑一：
+   见 `vendor/render.ts` 的 `u_contour_every`。星球那条 CPU 上色读同一个数字。 */
+export type ContourMode = 'auto' | 'all' | 'half' | 'fifth';
+
+export const CONTOUR_MODES: { id: ContourMode; label: string; hint: string }[] = [
+  { id: 'auto', label: '自动', hint: '按屏幕上线间距自动跳线：陡坡变稀、平地照旧全显示' },
+  { id: 'all', label: '全部', hint: '每条等高线都画（陡坡上会挤成一片）' },
+  { id: 'half', label: '减半', hint: '每 2 条画 1 条' },
+  { id: 'fifth', label: '每五条', hint: '每 5 条画 1 条 —— 只留主等高线，读起来最清爽' },
+];
+
+export function isContourMode(v: unknown): v is ContourMode {
+  return v === 'auto' || v === 'all' || v === 'half' || v === 'fifth';
+}
+
+/** 数据里的宽 `string` → 认得的方式（缺省/认不出 = 自动）*/
+export function contourModeOf(v: unknown): ContourMode {
+  return isContourMode(v) ? v : 'auto';
+}
+
+export function contourModeLabel(v: unknown): string {
+  const m = contourModeOf(v);
+  return CONTOUR_MODES.find((c) => c.id === m)?.label ?? '自动';
+}
+
+/** 渲染参数里的「每几条画一条」：0 = 自动（着色器按屏幕导数现算），其余是手选倍率 */
+export function contourEveryOf(v: unknown): number {
+  switch (contourModeOf(v)) {
+    case 'all': return 1;
+    case 'half': return 2;
+    case 'fifth': return 5;
+    case 'auto':
+    default: return 0;
+  }
+}
+
 /** 面板上的八档（`label` 进 UI，`hint` 作悬停说明 —— 界面不用 emoji） */
 export const TERRAIN_STYLES: { id: TerrainStyleId; label: string; hint: string }[] =
   TERRAIN_STYLE_DEFS.map((d) => ({ id: d.id, label: d.label, hint: d.hint }));

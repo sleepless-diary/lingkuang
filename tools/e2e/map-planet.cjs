@@ -164,53 +164,88 @@ async function main() {
   await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); true`);
   await send('Page.enable');
 
-  /* ★0 前置：地图栏在、形态控件在（没地形时置灰）、球体按钮藏着、工作室没开、磁盘没地形 */
-  const o0 = await opts('#map-form');
+  /* ★0 前置（第一百零八轮改口径）：地图栏在、**形态控件已退场**（底图 = 星球总图）、
+     等高线方式四档 / 手绘海陆 / 细化区域 三个入口都在、球体按钮藏着、工作室没开、磁盘没地形。 */
+  const contour0 = await opts('#map-contour');
   const p0 = await pane();
-  check('★0 前置：地图栏形态控件在、没地形时置灰、球体按钮不显示、面板没开',
-    (await ready()) === true && !!o0 && o0.n === 2 && p0.formDisabled === true && p0.globeShown === false
-    && (await ev(`!!document.getElementById('lk-map-studio')`)) === false && !(diskMap()?.terrain),
-    { opts: o0 && o0.ids, disabled: p0.formDisabled, globe: p0.globeShown });
+  const hasTerrain0 = !!diskMap()?.terrain;
+  const pre0 = {
+    genBtn: (await ev(`!!document.getElementById('map-gen')`)) === true,
+    globeBtn: (await ev(`!!document.getElementById('map-globe')`)) === true,
+    noFormSel: (await ev(`!document.getElementById('map-form')`)) === true,
+    noStudioFormSel: (await ev(`!document.getElementById('ms-form')`)) === true,
+    contour4: !!contour0 && contour0.ids.join(',') === 'auto,all,half,fifth',
+    editorBtn: (await ev(`!!document.getElementById('map-editor')`)) === true,
+    refineMode: (await ev(`!!document.querySelector('[data-mode="refine"]')`)) === true,
+    /* 球体按钮的显隐跟着「有没有星球地形」走（守卫可能跑在已有地图的世界里） */
+    globeFollowsData: p0.globeShown === hasTerrain0,
+    studioClosed: (await ev(`!!document.getElementById('lk-map-studio')`)) === false,
+  };
+  check('★0 前置：形态控件已退场、等高线四档、三个新入口齐、球体按钮不显示、面板没开',
+    Object.values(pre0).every(Boolean),
+    { ...pre0, contour: contour0 && contour0.ids });
 
-  /* ★1 形态两档 = 局部 / 星球 */
-  check('★1 形态两档 = 局部 / 星球',
-    !!o0 && o0.ids.join(',') === 'local,planet' && o0.labels.join(',') === '局部,星球',
-    { ids: o0 && o0.ids, labels: o0 && o0.labels });
-
-  /* ★2 工作室「自己调」页也有形态控件，说明随档位换 */
+  /* ★1 工作室：等高线四档 + 说明在；形态控件已退场 */
   await click('#map-gen');
   await sleep(2500);
-  const o1 = await opts('#ms-form');
-  const h0 = await ev(`(document.getElementById('ms-form-hint') || {}).textContent || ''`);
-  await setSel('#ms-form', 'planet');
-  await sleep(600);
-  const h1 = await ev(`(document.getElementById('ms-form-hint') || {}).textContent || ''`);
-  check('★2 工作室也有形态控件、说明随档换',
-    !!o1 && o1.n === 2 && o1.ids.join(',') === 'local,planet' && o1.value === 'local'
-    && /高一点|一片地区|方图/.test(h0) && /星球|经度/.test(h1) && h0 !== h1,
-    { ids: o1 && o1.ids, h0: h0.slice(0, 20), h1: h1.slice(0, 20) });
+  const c1 = await opts('#ms-contour');
+  const hint1 = await ev(`(document.getElementById('ms-contour-hint') || {}).textContent || ''`);
+  check('★1 工作室也有「等高线」四档、说明在、形态控件已退场',
+    !!c1 && c1.n === 4 && c1.ids.join(',') === 'auto,all,half,fifth' && /跳线|只换画法/.test(hint1)
+    && (await ev(`!document.getElementById('ms-form')`)) === true,
+    { ids: c1 && c1.ids, hint: hint1.slice(0, 24) });
 
-  /* ★3 切到星球 ⇒ 预览真的换了一张（与局部那张不同），统计行仍有数字 */
-  await sleep(2600);
-  const prevPlanet = await previewSum();
-  const notePlanet = await ev(`(document.getElementById('ms-note') || {}).textContent || ''`);
-  await setSel('#ms-form', 'local');
-  await sleep(2600);
-  const prevLocal = await previewSum();
-  check('★3 换形态 = 换一张预览（局部 ⇄ 星球两张不同）',
-    prevPlanet !== 0 && prevLocal !== 0 && prevPlanet !== prevLocal && /块陆地/.test(notePlanet),
-    { planet: prevPlanet, local: prevLocal, note: notePlanet.slice(0, 40) });
-
-  /* ★4 星球形态「采用到地图」⇒ 落盘 form=planet、画布是 2:1、状态行写「星球」 */
-  await setSel('#ms-form', 'planet');
-  await sleep(1400);
+  /* ★2 工作室「采用到地图」⇒ 落盘 form=planet、画布 2:1、状态行写「星球」、球体按钮出现 */
+  const prev2 = await previewSum();
   await click('#ms-apply');
-  await sleep(3200);
-  const p4 = await pane();
-  const t4 = diskMap()?.terrain ?? {};
-  check('★4 采用后落盘 form=planet、画布 2:1、状态行写「星球」',
-    t4.form === 'planet' && p4.planetKind === 'equirect' && p4.w === 2 * p4.h && p4.w > 0 && /星球/.test(p4.note) && p4.globeShown === true,
-    { form: t4.form, w: p4.w, h: p4.h, kind: p4.planetKind, note: p4.note.slice(0, 40) });
+  await sleep(3400);
+  const p2 = await pane();
+  const t2 = diskMap()?.terrain ?? {};
+  check('★2 采用到地图 ⇒ 落盘 form=planet、画布 2:1、状态行写「星球」、球体按钮出现',
+    prev2 !== 0 && t2.form === 'planet' && p2.planetKind === 'equirect'
+    && p2.w === 2 * p2.h && p2.w > 0 && /星球/.test(p2.note) && p2.globeShown === true,
+    { form: t2.form, w: p2.w, h: p2.h, kind: p2.planetKind, note: p2.note.slice(0, 40) });
+
+  /* ★3 等高线方式：切到「每五条」⇒ 落盘 contour='fifth'、画布真的重画了一张 */
+  await click('#ms-close');
+  await sleep(800);
+  /* 先把「看的方式」切到地形图（只有带等高线的档位才看得出抽稀的效果），
+     再切「全部」→「每五条」：守卫可能跑在已经设过第五档的数据上，
+     同值 change 不会触发重画（否则 ★3 假红）。 */
+  await setSel('#map-view', 'topo');
+  await sleep(3000);
+  await setSel('#map-contour', 'all');
+  await sleep(2400);
+  const shot3a = await shotSum('#map-terrain');
+  await setSel('#map-contour', 'fifth');
+  await sleep(2800);
+  const t3 = diskMap()?.terrain ?? {};
+  const shot3b = await shotSum('#map-terrain');
+  check('★3 等高线方式切换 ⇒ 落盘 contour=fifth、画布重画（截图哈希变了）',
+    t3.contour === 'fifth' && shot3a !== 0 && shot3b !== 0 && shot3a !== shot3b,
+    { contour: t3.contour, before: shot3a, after: shot3b });
+
+  /* ★4 大图走高清（第一百零八轮）：点地图空白处 ⇒ 全窗口查看器，星球图 2304×1152 */
+  await click('[data-mode="move"]');
+  await sleep(500);
+  const svg4 = await box('#map-svg');
+  if (svg4) {
+    const cx = svg4.x + Math.round(svg4.width * 0.5);
+    const cy = svg4.y + Math.round(svg4.height * 0.5);
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', buttons: 1, clickCount: 1 });
+    await sleep(80);
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', buttons: 0, clickCount: 1 });
+  }
+  let hd = null;
+  for (let i = 0; i < 60; i++) {
+    await sleep(500);
+    hd = await ev(`(function () { const i = document.querySelector('.lk-lb__img'); return i ? { w: i.naturalWidth, h: i.naturalHeight } : null; })()`);
+    if (hd) break;
+  }
+  check('★4 点地图 ⇒ 全窗口高清图（星球 2304×1152）',
+    !!hd && hd.w === 2304 && hd.h === 1152, hd);
+  await ev(`document.querySelector('.lk-lb') && document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), true`);
+  await sleep(600);
 
   /* ★5 ⭐经度无缝：首尾列差 ≪ 隔半个地球的两列差 */
   const px5 = await ev(PIX);
@@ -218,10 +253,7 @@ async function main() {
     px5?.ok === true && px5.seam < px5.far * 0.5,
     px5);
 
-  /* ★6 ⭐极点收敛：极地整行几乎是同一个颜色，中纬度那一行则五颜六色。
-     实测（5 个种子，h=256）：极地行 1~22 种色、45° 行 26~64 种色；地形数据上极地整行的
-     海拔只差 0.07 km（中纬度 2.9 km）⇒ 球面采样在极点天然"塌成一点"。
-     平面采样的实现过不了这一条（每一行的花色都差不多）。 */
+  /* ★6 ⭐极点收敛：极地整行几乎是同一个颜色，中纬度那一行则五颜六色。 */
   check('★6 ⭐极点收敛：极地行几乎同色、中纬度行五颜六色',
     px5?.ok === true && px5.midColors >= px5.poleColors * 2 + 8 && px5.midColors >= px5.poleSColors * 2 + 8,
     { poleColors: px5?.poleColors, poleSColors: px5?.poleSColors, midColors: px5?.midColors, poleVar: px5?.pole, equatorVar: px5?.equator });
@@ -238,29 +270,21 @@ async function main() {
   check('★7 ⭐球体看：贴到真球上出画面、拖动后画面变了',
     gKind === 'globe' && shotGlobe !== 0 && shotGlobe !== shotFlat && shotDragged !== 0 && shotDragged !== shotGlobe,
     { kind: gKind, flat: shotFlat, globe: shotGlobe, dragged: shotDragged });
+  await click('#map-globe');
+  await sleep(1200);
 
-  /* ★8 形态并存：切回「局部」⇒ 画布回到局部那套、地形参数一个字没变 */
-  const before8 = JSON.stringify({ seed: t4.seed, style: t4.style, spec: t4.spec ?? {} });
-  await setSel('#map-form', 'local');
-  await sleep(2600);
-  const p8 = await pane();
+  /* ★8 只存参数：terrain 里没有任何 data:（图不落盘），且等高线/形态都在 */
   const t8 = diskMap()?.terrain ?? {};
-  check('★8 切回「局部」：画布回到局部那套、种子/档位/数量一个字没变',
-    p8.form === 'local' && p8.planetKind === null && p8.w !== 2 * p8.h && p8.globeShown === false
-    && JSON.stringify({ seed: t8.seed, style: t8.style, spec: t8.spec ?? {} }) === before8 && t8.form === 'local',
-    { form: t8.form, w: p8.w, h: p8.h, kind: p8.planetKind, globe: p8.globeShown });
+  const blob = JSON.stringify(t8);
+  check('★8 只存参数（terrain 里没有 base64 图）、形态与等高线都在',
+    !blob.includes('data:') && t8.form === 'planet' && t8.contour === 'fifth' && diskSize() < 400000,
+    { keys: Object.keys(t8).sort(), size: diskSize() });
 
-  /* ★9 只存参数：terrain 的键就是那五个，数据文件没被图撑大 */
-  const keys = Object.keys(t8).sort();
-  check('★9 只存参数（terrain 里没有像素/base64）',
-    JSON.stringify(keys) === JSON.stringify(['form', 'seed', 'spec', 'style', 'view']) && diskSize() < 400000,
-    { keys, size: diskSize() });
-
-  /* ★10 ⭐助手不写 form，只在描述里说「一整颗星球」⇒ 也切到星球形态 */
+  /* ★9 ⭐助手不写 form，只在描述里说「一整颗星球」⇒ 也切到星球形态 */
   await ev(`window.__lkSeen = []; window.__lkAgentMock = (m) => { window.__lkSeen.push(m); return '{"tool":"generate_map","args":{"description":"一整颗星球，一片群岛"}}'; }; true`);
   await ev(`document.querySelector('#lk-toolbar [data-tool="codex"]').click(); true`);
   await sleep(500);
-  await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })); true`);
+  await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', ctrlKey: true, bubbles: true })); true`);
   await sleep(900);
   await ev(`(function () {
     const s = document.getElementById('lk-agent-scope');
@@ -274,19 +298,20 @@ async function main() {
   await sleep(3000);
   await ev(`(function () { const b = document.querySelector('#lk-agent-msgs [data-prop-ok]'); if (b) b.click(); return true; })()`);
   await sleep(3200);
-  const t10 = diskMap()?.terrain ?? {};
-  check('★10 助手只说「一整颗星球」（不带 form 参数）也能切到星球形态',
-    t10.form === 'planet',
-    { form: t10.form, seed: t10.seed });
+  const t9 = diskMap()?.terrain ?? {};
+  check('★9 助手只说「一整颗星球」（不带 form 参数）也能切到星球形态',
+    t9.form === 'planet',
+    { form: t9.form, seed: t9.seed });
 
-  /* ★11 刷新后形态还在（存的是数据，不是内存里的临时状态）+ 球体按钮还在 */
+  /* ★10 刷新后形态 / 等高线方式都还在（存的是数据，不是内存里的临时状态） */
   await ev(`window.location.reload(); true`);
-  await sleep(2600);
-  await evSoft(`!!document.getElementById('map-form')`);
-  const p11 = await pane();
-  check('★11 刷新后仍是「星球」形态、球体按钮还在',
-    p11.form === 'planet' && p11.globeShown === true && diskMap()?.terrain?.form === 'planet',
-    { form: p11.form, globe: p11.globeShown });
+  await sleep(2800);
+  await evSoft(`!!document.getElementById('map-contour')`);
+  const t10 = diskMap()?.terrain ?? {};
+  const p10 = await pane();
+  check('★10 刷新后仍是「星球」形态 + 等高线「每五条」、球体按钮还在',
+    t10.form === 'planet' && t10.contour === 'fifth' && p10.globeShown === true,
+    { form: t10.form, contour: t10.contour, globe: p10.globeShown });
 
   /* ★12 无未捕获异常 */
   const errs = await ev(`(window.__errs || []).slice(0, 8)`);

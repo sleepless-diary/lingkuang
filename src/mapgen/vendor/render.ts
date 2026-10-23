@@ -363,7 +363,9 @@ const frag_drape = `
                   /* ⭐ 灵框追加（第一百零三轮）：真实感旋钮 —— 见 NOTICE.md */
                   u_grade, u_detail, u_coast, u_water_noise, u_hatch, u_paper, u_grain, u_vignette, u_moist,
                   /* ⭐ 灵框追加（第一百零六轮）：地表材质分层（岩 / 岩层条带 / 雪线）+ 浅滩带 */
-                  u_rock, u_strata, u_snow, u_shelf;
+                  u_rock, u_strata, u_snow, u_shelf,
+                  /* ⭐ 灵框追加（第一百零八轮）：等高线抽稀 —— 0 = 自动，n>1 = 每 n 条画一条 */
+                  u_contour_every;
     /* ⭐ 灵框追加（第一百零三轮）：风格色带（陆地 8 个等距采样点、海 6 个；JS 侧 「styles.ts」 生成） */
     uniform vec3 u_land_ramp[8];
     uniform vec3 u_sea_ramp[6];
@@ -597,7 +599,20 @@ const frag_drape = `
         float cFrac = fract(zLand / cInterval);
         float cDist = min(cFrac, 1.0 - cFrac) * cInterval;   /* 到最近档线的"高度距离" */
         float cPx = max(fwidth(zLand), 1e-6);
-        float cLine = (1.0 - smoothstep(1.0, 2.2, cDist / cPx)) * u_contour * step(0.5, z0);
+        /* ⭐ 灵框追加（第一百零八轮）：等高线抽稀 —— 用户「有些地方因为地形陡峭导致等高线有点密集」。
+           自动档：一格里挤多少条线由 fwidth 现算 —— 线间距 < 7px 就按整数倍跳线
+           （陡坡自然变稀，平地 sp 仍是 1 ⇒ 全显示）；手选档：直接每 n 条留一条。
+           ⚠️ 跳线按**档号**取模（不是按屏幕像素）⇒ 相邻两格跨过同一个档号时仍然只画一次，
+           线与线之间不会出现"半条"。
+           ⚠️ 主等高线（每 5 条一条）不打折：抽稀后仍把它压深一点，读图时才有"计曲线"。 */
+        float spacingPx = cInterval / cPx;
+        float autoEvery = max(1.0, floor(10.0 / max(spacingPx, 0.001) + 0.999));
+        float every = u_contour_every > 0.5 ? u_contour_every : autoEvery;
+        float cIdx = floor(zLand / cInterval + 0.5);
+        float cKeep = every <= 1.0 ? 1.0 : (1.0 - step(0.5, mod(cIdx, every)));
+        float cMajor = 1.0 - step(0.5, mod(cIdx, 5.0));
+        float cLine = (1.0 - smoothstep(1.0, 2.2, cDist / cPx)) * u_contour * step(0.5, z0)
+                    * cKeep * (0.55 + 0.45 * cMajor);
         /* 线色跟着风格走（地形图是褐色、蓝图是青色、极简档压根不画）：以前只会"把底色调暗一半"，
            在深色色带（蓝图）上就完全看不见线。 */
         biome_color = mix(biome_color, mix(biome_color * 0.5, u_line_color, 0.65), cLine);
@@ -759,7 +774,8 @@ export default class Renderer {
         if (!canvas) throw new Error('mapgen4: 需要一个 canvas（没传，页面里也没有 #mapgen4）');
         this.canvas = canvas;
         /* ⭐ 灵框追加：位图边长按调用方的显示尺寸定（见 texture_size 字段的注释）*/
-        this.texture_size = Math.max(256, Math.min(2048, Math.round(textureSize ?? fbo_texture_size)));
+        /* ⭐ 灵框（第一百零八轮）：上限 2048 → 4096 —— 全窗口大图要 3072² 那张（2048 会被夹回 2048）。 */
+        this.texture_size = Math.max(256, Math.min(4096, Math.round(textureSize ?? fbo_texture_size)));
         this.webgl = new WebGLWrapper(canvas);
 
         this.resizeCanvas();
@@ -929,6 +945,8 @@ export default class Renderer {
             gl.uniform1f(program.u_shade, renderParam.shade ?? 1);
             gl.uniform1f(program.u_contour, renderParam.contour ?? 0);
             gl.uniform1f(program.u_contour_scale, renderParam.contour_scale ?? 10);
+            /* ⭐ 灵框追加（第一百零八轮）：等高线抽稀（0 = 自动 / n = 每 n 条画一条）*/
+            gl.uniform1f(program.u_contour_every, renderParam.contour_every ?? 0);
             gl.uniform1f(program.u_bands, renderParam.bands ?? 0);
             /* ⭐ 灵框追加（第一百零三轮）：真实感旋钮 + 风格色带
                ⚠️ 数组 uniform 的 location 名带 `[0]`（WebGL 的 getActiveUniform 就这么报），

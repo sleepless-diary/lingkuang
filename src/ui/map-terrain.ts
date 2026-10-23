@@ -12,7 +12,7 @@
  *  渲染时现算（确定性：同一份参数永远同一片地）。 */
 
 import {
-  BAND, TerrainView, createEngineFor, resetPaint, runGeneration, statsOf, styleRenderParams,
+  BAND, TerrainView, contourModeOf, contourEveryOf, createEngineFor, resetPaint, runGeneration, statsOf, styleRenderParams,
   type MapgenRenderParams, type MapgenSpecInput, type TerrainEngine, type TerrainStats,
 } from '../mapgen';
 import type { MapTerrainSpec } from '../store/types';
@@ -28,13 +28,23 @@ export function liftOf(t: MapTerrainSpec | undefined): 'solid' | 'flat' {
 /** 「看的方式」+ 立体度 → 渲染参数（缺省 = 立体：不动 `mountain_height`，沿用内核默认的垂直夸张） */
 export function terrainRenderParams(t: MapTerrainSpec): Partial<MapgenRenderParams> {
   const p = styleRenderParams(t.view);
-  return liftOf(t) === 'flat' ? { ...p, mountain_height: 0 } : p;
+  /* ⭐ 第一百零八轮：等高线抽稀（用户「陡峭的地方等高线有点密」）—— 0 = 自动、
+     n = 每 n 条画一条。只是显示参数，与地形生成无关。 */
+  const q: Partial<MapgenRenderParams> = { ...p, contour_every: contourEveryOf(t.contour) };
+  return liftOf(t) === 'flat' ? { ...q, mountain_height: 0 } : q;
 }
+
+/** 等高线方式的中文名（状态行 / 面板提示用） */
+export { contourModeOf };
 
 /** 内核位图边长（`render.ts` 的 `fbo_texture_size`；改那里就得改这里）
  *  ⭐ 第一百零五轮：2048 → 1536。屏幕宽约 1500px ⇒ 2048 只是被降采样（磨软边缘 + 多付显存），
  *  1536 与屏幕 1:1；`bandLayout()` 是**按比例**算的，所以地图格子的 CSS 尺寸一分不变。 */
 export const TERRAIN_BITMAP = 1536;
+/** ⭐ 第一百零八轮：**全窗口大图**的位图边长（3072²）。
+ *  用户原话：「进入全窗口预览时能不能渲染一下更高的分辨率」。点开大图才现挂一个
+ *  3072 的视图（4 张 FBO 峰值约 190MB），截完立刻 dispose —— 常驻的还是 1536。 */
+export const TERRAIN_HD_BITMAP = 3072;
 /** 缩略图 / 抽卡 / 面板预览的位图边长（第一百零六轮 C3）。
  *  这些图最终只显示 264~720px 宽，1536² 是纯浪费（4 张 FBO 的填充率 ×4）；
  *  768² 对 720px 的预览仍是 1:1 以上，纹理比屏幕大一倍多。 */
@@ -190,7 +200,7 @@ function thumbViewFor(t: MapTerrainSpec, w: number, h: number): TerrainView {
 
 /** 出一张缩略图（异步：要等渲染循环那一帧）。失败返回空串（调用方跳过这张）。 */
 export async function terrainThumbUrl(
-  t: MapTerrainSpec, w: number, h: number, outW: number, outH: number,
+  t: MapTerrainSpec, w: number, h: number, outW: number, outH: number, format: 'png' | 'jpeg' = 'png',
 ): Promise<string> {
   try {
     const view = thumbViewFor(t, w, h);
@@ -207,7 +217,9 @@ export async function terrainThumbUrl(
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(shot, s.sx, s.sy, s.sw, s.sh, 0, 0, out.width, out.height);
-    return out.toDataURL('image/png');
+    /* ⭐ 区域样本落盘用 JPEG（第一百零八轮实测：264×147 的 PNG 因为地形噪声有 100KB+，
+       JPEG 只要 10~20KB）—— 缩略图是"记住这一版长什么样"，不是像素级档案。 */
+    return out.toDataURL(format === 'jpeg' ? 'image/jpeg' : 'image/png', format === 'jpeg' ? 0.82 : undefined);
   } catch (e) {
     console.warn('[map-terrain] 缩略图失败：', e);
     return '';
@@ -223,12 +235,15 @@ export function releaseThumbs(): void {
 /** 全尺寸位图（大图查看器用）：内核的整张 1536² 截图，不裁横带。
  *  用户 2026-10-23：「点击大图时全窗口显示大图，方便看细节」——
  *  地图格子里看到的只是中间那条横带，整张图里还有上下两片地形。
- *  ⚠️ 这里**临时**开一个 1536² 视图（不走 `thumb` 那块 768² 的）：大图要看细节，
- *  768² 放大到全屏会糊。用完立刻 dispose（一次性，不常驻显存）。 */
-export async function terrainFullUrl(t: MapTerrainSpec, w: number, h: number): Promise<string> {
+ *  ⚠️ 这里**临时**开一个视图（不走 thumb 那块 768² 的）：大图要看细节，768² 放大到全屏会糊。
+ *  `size` 缺省 1536（"点开就有"的即时图），传 `TERRAIN_HD_BITMAP`（3072）就是高清版。
+ *  用完立刻 dispose（一次性，不常驻显存）。 */
+export async function terrainFullUrl(
+  t: MapTerrainSpec, w: number, h: number, size: number = TERRAIN_BITMAP,
+): Promise<string> {
   const canvas = document.createElement('canvas');
   const { engine } = terrainEngine(t, w, h);
-  const view = new TerrainView(canvas, engine, TERRAIN_BITMAP);
+  const view = new TerrainView(canvas, engine, size);
   try {
     view.setStyle(terrainRenderParams(t));
     const shot = await view.snapshot();

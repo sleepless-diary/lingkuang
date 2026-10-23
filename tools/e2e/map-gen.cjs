@@ -92,7 +92,7 @@ async function main() {
     const r = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { w: Math.round(b.width), h: Math.round(b.height) }; };
     return {
       hasCanvas: !!c, cw: c ? c.width : 0, ch: c ? c.height : 0,
-      css: c ? { w: Math.round(parseFloat(c.style.width)), top: Math.round(parseFloat(c.style.top)) } : null,
+      css: c ? { w: Math.round(parseFloat(c.style.width)), h: Math.round(parseFloat(c.style.height)), top: Math.round(parseFloat(c.style.top)) } : null,
       box: box ? { w: box.style.width, h: box.style.height } : null,
       stage: stage ? stage.style.transform : '', svg: r(svg), canvas: r(c),
       note: (document.getElementById('map-gen-note') || {}).textContent || '',
@@ -117,13 +117,17 @@ async function main() {
     && JSON.stringify(disk1).length < 4000,
     { terrain: disk1?.terrain, mapJsonLen: JSON.stringify(disk1).length });
 
-  /* ★3 地图栏出画布：1536²，且铺满地图格子（裁带 ⇒ 画布比格子高，四周不拉伸） */
-  const p1 = await pane();
-  check('★3 地图栏出 1536² 画布 + 格子尺寸 = 地图尺寸',
-    p1.hasCanvas && p1.cw === 1536 && p1.ch === 1536 && p1.box.w === '900px' && p1.box.h === '500px',
-    { cw: p1.cw, box: p1.box, css: p1.css });
-  check('★4 裁带映射：画布 CSS 是正方形（不拉扁）、宽度略大于地图宽、上移为负',
-    p1.css && Math.abs(p1.css.w - p1.css.w) === 0 && p1.css.w > 880 && p1.css.w < 940 && p1.css.top < -180 && p1.css.top > -220,
+  /* ★3（第一百零八轮改口径）地图栏出画布：星球 1536×768（2:1），格子尺寸 = 地图尺寸。
+     ⚠️ 星球是**异步挂载**（遮罩 + 分帧生成）⇒ 要等画布真的被 resize 过再量，
+        刚采用完那一下还是 300×150 的默认画布（第一版就是这么假红的）。 */
+  let p1 = await pane();
+  for (let i = 0; i < 40 && p1.cw < 1000; i++) { await sleep(400); p1 = await pane(); }
+  check('★3 地图栏出 1536×768 画布（星球 2:1）+ 格子尺寸 = 地图尺寸',
+    p1.hasCanvas && p1.cw === 1536 && p1.ch === 768 && p1.box.w === '900px' && p1.box.h === '500px',
+    { cw: p1.cw, ch: p1.ch, box: p1.box, css: p1.css });
+  /* ★4 不拉伸：画布 CSS 宽 = 地图宽、高 = 宽/2，且在格子里居中（原来查的是"局部裁带"，那套随形态一起退场了）*/
+  check('★4 星球图按 2:1 铺进格子（不拉伸）、居中留边',
+    p1.css && Math.abs(p1.css.w - 900) < 2 && Math.abs(p1.css.h - 450) < 2,
     p1.css);
   check('★5 画布与 SVG 一起被缩放（同一层 ⇒ 手绘落点不偏）',
     p1.svg && p1.canvas && Math.abs(p1.svg.w / p1.svg.h - 1.8) < 0.05 && /scale\(/.test(p1.stage),
@@ -203,74 +207,31 @@ async function main() {
     await sleep(900);   /* 一笔一次 store.update + 落盘防抖 */
   };
 
-  /* ★12 「地形」模式：画笔条出现（刷子 + 尺寸 + 撤销/清空） */
+  /* ★12（第一百零八轮改口径）：「局部」形态退场之后，**手刷笔迹只对老数据里的局部地形有效**。
+     底图是星球时，画笔档必须**明确拒绝**（而不是悄悄不生效），并把用户指向「手绘海陆」。
+     新的手绘路径（全屏画板 → 剪影 → 生成）由 map-refine.cjs ★8 覆盖。 */
   await ev(`(function () { const b = document.querySelector('.map-mode[data-mode="paint"]'); if (b) b.click(); return true; })()`);
   await sleep(200);
   const pm = await paneMode();
   const brushBtns = await ev(`document.querySelectorAll('.map-brush').length + '/' + document.querySelectorAll('.map-brush-size').length`);
-  check('★12 进「地形」模式 ⇒ 画笔条出现（4 支刷子 + 4 档尺寸）',
-    pm.bar !== 'none' && pm.hint === '地形' && brushBtns === '4/4', { bar: pm.bar, hint: pm.hint, btns: brushBtns });
+  await stroke('mountain', [[0.3, 0.4], [0.4, 0.45], [0.5, 0.5]], 'large');
+  await sleep(900);
+  const paintOnPlanet = (diskMap()?.terrain?.paint ?? []).length;
+  const paintNote = await ev(`(document.getElementById('map-paint-note') || {}).textContent || ''`);
+  check('★12 星球底图上手刷被明确拒绝：画笔条在、刷完盘上没有笔迹、提示指向「手绘海陆」',
+    pm.bar !== 'none' && brushBtns === '4/4' && paintOnPlanet === 0 && /星球|手绘海陆/.test(paintNote),
+    { bar: pm.bar, btns: brushBtns, strokes: paintOnPlanet, note: paintNote.slice(0, 60) });
 
-  /* ★13 刷一笔 ⇒ 磁盘上多一笔（工具 + 尺寸 + 轨迹点，坐标都在世界里 0..1） */
-  const noteBefore = (await pane()).note;
-  const path = [[0.24, 0.36], [0.3, 0.42], [0.36, 0.46], [0.42, 0.5], [0.48, 0.52], [0.54, 0.56], [0.6, 0.6], [0.68, 0.64]];
-  await stroke('mountain', path, 'large');
-  const paint1 = diskMap()?.terrain?.paint ?? [];
-  const inRange = paint1.length === 1 && paint1[0].points.every((p) => p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1);
-  check('★13 刷一笔落盘：工具 + 尺寸 + 轨迹点（0..1 世界坐标）',
-    paint1.length === 1 && paint1[0].tool === 'mountain' && paint1[0].size === 'large' && paint1[0].points.length >= 5 && inRange,
-    { strokes: paint1.length, tool: paint1[0]?.tool, size: paint1[0]?.size, points: paint1[0]?.points?.length });
-
-  /* ★14 画布跟着重算：状态行（统计）变了 —— 证明笔迹真喂进了内核，不只是存了数据 */
-  const notePainted = (await pane()).note;
-  check('★14 刷完地形真的重算了（状态行变了）', notePainted !== noteBefore && !!notePainted,
-    { before: noteBefore.slice(0, 48), after: notePainted.slice(0, 48) });
-
-  /* ★15 ⭐ 重开页面（reload）之后笔迹还在、而且**重放出来的是同一片地**（这是"只存笔划"的根据） */
-  await send('Page.reload', {});
-  await sleep(5000);
-  await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); window.addEventListener('unhandledrejection', (e) => window.__errs.push('rej: ' + String(e.reason))); true`);
-  await sleep(800);
-  const pReload = await pane();
-  const paintReload = (diskMap()?.terrain?.paint ?? []).length;
-  check('★15 reload 后笔迹仍在且重放成同一片地（统计逐字一致）',
-    paintReload === 1 && pReload.hasCanvas && pReload.note === notePainted,
-    { strokes: paintReload, canvas: pReload.hasCanvas, same: pReload.note === notePainted, note: pReload.note.slice(0, 48) });
-
-  /* ★16 撤销最后一笔 ⇒ 盘上笔迹清空、状态行回到刷之前 */
-  await ev(`(function () { const b = document.querySelector('.map-mode[data-mode="paint"]'); if (b) b.click(); return true; })()`);
-  await sleep(200);
+  /* ★13 撤销 / 清空按钮仍在，且点了不炸、不污染数据 */
   await ev(`(function () { const b = document.getElementById('map-paint-undo'); if (b) b.click(); return true; })()`);
-  await sleep(1000);
-  const afterUndo = (diskMap()?.terrain?.paint ?? []).length;
-  const noteUndo = (await pane()).note;
-  check('★16 撤销最后一笔 ⇒ 盘上 0 笔、状态行回到刷之前',
-    afterUndo === 0 && noteUndo === noteBefore, { strokes: afterUndo, same: noteUndo === noteBefore });
-
-  /* ★17 清空笔迹：刷两笔再一次清掉（顺带覆盖"多笔"） */
-  await stroke('ocean', [[0.2, 0.7], [0.3, 0.7], [0.4, 0.72]]);
-  await stroke('mountain', [[0.6, 0.3], [0.7, 0.28]]);
-  const twoStrokes = (diskMap()?.terrain?.paint ?? []).length;
+  await sleep(500);
   await ev(`(function () { const b = document.getElementById('map-paint-clear'); if (b) b.click(); return true; })()`);
-  await sleep(1000);
+  await sleep(700);
   const cleared = (diskMap()?.terrain?.paint ?? []).length;
-  const noteClear = (await pane()).note;
-  check('★17 清空笔迹 ⇒ 盘上 0 笔、状态行回到干净地形',
-    twoStrokes === 2 && cleared === 0 && noteClear === noteBefore,
-    { two: twoStrokes, cleared, same: noteClear === noteBefore });
+  const pane13 = await pane();
+  check('★13 撤销 / 清空笔迹按钮仍安全（盘上 0 笔、画布还在）',
+    cleared === 0 && pane13.hasCanvas === true, { strokes: cleared, canvas: pane13.hasCanvas });
 
-  /* ★18 ⭐ 再生成时的笔迹：**种子与档位没变 ⇒ 保住**（只调一个旋钮不该把刷过的清掉）；
-     换种子 ⇒ 就是另一片地了，笔迹作废 */
-  await stroke('mountain', [[0.35, 0.34], [0.42, 0.38], [0.5, 0.42]]);
-  const n18 = (diskMap()?.terrain?.paint ?? []).length;
-  const seedNow = diskMap()?.terrain?.seed;
-  const styleNow = diskMap()?.terrain?.style;
-  await gen(styleNow, seedNow, { ridges: 6, rivers: 2, ratio: 40 });          /* 同种子、只改旋钮 */
-  const kept18 = (diskMap()?.terrain?.paint ?? []).length;
-  await gen(styleNow, 'e2e换了一颗种子', { ridges: 6, rivers: 2, ratio: 40 }); /* 换种子 */
-  const gone18 = (diskMap()?.terrain?.paint ?? []).length;
-  check('★18 同一片地再生成 ⇒ 笔迹保住；换种子 ⇒ 作废',
-    n18 === 1 && kept18 === 1 && gone18 === 0, { painted: n18, kept: kept18, afterNewSeed: gone18 });
 
   /* ★19 助手的 generate_map：图上已有地形 ⇒ 必须出卡片（不许悄悄换掉） */
   await ev(`document.querySelector('#lk-toolbar [data-tool="codex"]').click(); true`);

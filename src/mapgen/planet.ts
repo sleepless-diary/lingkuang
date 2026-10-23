@@ -124,7 +124,7 @@ export function isPlanetStyle(v: unknown): v is PlanetStyle {
 }
 
 /** 档位 + 创作者旋钮 → 本形态真正用到的三件套（陆地占比 / 山脊密度 / 河密度） */
-export function planetSpec(style: string, spec?: MapgenSpecInput): Required<MapgenSpecInput> {
+export function planetSpec(style: string, spec?: MapgenSpecInput): { landRatio: number; ridges: number; rivers: number } {
   const p = PRESETS[(isPlanetStyle(style) ? style : 'continent') as PlanetStyle];
   return {
     landRatio: clamp(Number(spec?.landRatio ?? p.landRatio), 0.05, 0.8),
@@ -134,6 +134,31 @@ export function planetSpec(style: string, spec?: MapgenSpecInput): Required<Mapg
 }
 
 /* ── 场 ─────────────────────────────────────────────────────────────────────── */
+
+/** ⭐ 手绘海陆剪影（第一百零八轮）：2 bit/格的掩膜，`bits` = base64。
+ *  0 = 没画（交给生成器）、1 = 陆地、2 = 海洋。
+ *  ⚠️ 与 `src/store/types.ts` 的 `MapMask` **结构相同**（那边不反向 import 这里，
+ *  这里也不 import 数据层）⇒ 两边靠结构类型兼容。 */
+export interface SilhouetteMask {
+  w: number;
+  h: number;
+  bits: string;
+}
+
+/** base64 → 每格 2 bit（低位在前）。坏数据返回 null（⇒ 当作没画，照常生成）。 */
+function decodeMask(m: SilhouetteMask): Uint8Array | null {
+  const n = Math.max(0, (m.w | 0) * (m.h | 0));
+  if (!n) return null;
+  let bin = '';
+  try { bin = atob(String(m.bits ?? '')); } catch { return null; }
+  if (bin.length < Math.ceil(n * 2 / 8)) return null;
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const bit = i * 2;
+    out[i] = (bin.charCodeAt(bit >> 3) & 0xff) >> (bit & 7) & 3;
+  }
+  return out;
+}
 
 export interface PlanetField {
   w: number; h: number;
@@ -151,7 +176,7 @@ export interface PlanetField {
   /** 汇流量（格数，画河与"最长河"用） */
   flow: Float32Array;
   style: string;
-  spec: Required<MapgenSpecInput>;
+  spec: { landRatio: number; ridges: number; rivers: number };
   stats: TerrainStats;
 }
 
@@ -383,7 +408,7 @@ export interface PlanetProgress {
  *  （守卫 / 离线脚本 / 预览用）；界面走 `drivePlanetField()`（`src/ui/planet-view.ts`），
  *  每片之间让出一帧，遮罩与进度条才画得出来。
  *  切点只放在**阶段边界**与**行循环**上：所有跨阶段的中间量都是局部变量，天然连续。 */
-export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecInput, h: number = PLANET_H): Generator<PlanetProgress, PlanetField, void> {
+export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecInput, h: number = PLANET_H, mask?: SilhouetteMask | null): Generator<PlanetProgress, PlanetField, void> {
   const sp = planetSpec(style, spec);
   const w = h * 2;
   const n = w * h;
@@ -398,6 +423,46 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
   const cores = placeCores(mulberry32(seedInt(String(seed) + '|陆核')), style);
   const mounts = placeMassifs(mulberry32(seedInt(String(seed) + '|山体')), cores, sp.ridges);
   yield { phase: '撒陆核与山体', done: 0, total: 1 };
+
+  /* ⭐ 第一百零八轮（手绘海陆剪影）：解成每格 2 bit + 预先把"画幅 → 网格"的下标表算好。
+     剪影**优先于**噪声：画过的地方直接钉死海陆（见下面 `forced[]` 的用法），
+     没画的地方照旧由大陆场决定 —— 所以"只在东半球画一块大陆"这种用法也成立。 */
+  const maskVals = mask && mask.w > 0 && mask.h > 0 ? decodeMask(mask) : null;
+  /* 剪影边缘要自然，不能一格一格地楼梯（第一版最近邻就是这样，和海岸细节的成果打架）：
+     · 掩膜 → 两张 0/1 场（陆地 / 海洋），双线性采样 ⇒ 边界是斜的、不平；
+     · 再叠一层已有的 shore 多尺度噪声做抖动 ⇒ 边缘像自然海岸而不是手绘色块；
+     · 阈值 0.5 定海陆：一边过半就是它，两边都不过半 = 没画（交给生成器）。
+     预先把列/行 → 掩膜格 + 权重算好（两万多次除法不该放在逐像素路径上）。 */
+  const mw0 = mask ? (mask.w | 0) : 0, mh0 = mask ? (mask.h | 0) : 0;
+  const maskLand = maskVals ? new Float32Array(mw0 * mh0) : null;
+  const maskSea = maskVals ? new Float32Array(mw0 * mh0) : null;
+  if (maskVals && maskLand && maskSea) {
+    for (let i = 0; i < maskVals.length; i++) {
+      if (maskVals[i] === 1) maskLand[i] = 1;
+      else if (maskVals[i] === 2) maskSea[i] = 1;
+    }
+  }
+  const maskX0 = maskVals ? new Int32Array(w) : null;
+  const maskX1 = maskVals ? new Int32Array(w) : null;
+  const maskXF = maskVals ? new Float32Array(w) : null;
+  const maskY0 = maskVals ? new Int32Array(h) : null;
+  const maskY1 = maskVals ? new Int32Array(h) : null;
+  const maskYF = maskVals ? new Float32Array(h) : null;
+  if (maskVals && maskX0 && maskX1 && maskXF && maskY0 && maskY1 && maskYF) {
+    const axis = (count: number, cells: number, i0: Int32Array, i1: Int32Array, fr: Float32Array) => {
+      for (let k = 0; k < count; k++) {
+        const f = (k + 0.5) * cells / count - 0.5;
+        const base = Math.floor(f);
+        fr[k] = f - base;
+        i0[k] = Math.min(cells - 1, Math.max(0, base));
+        i1[k] = Math.min(cells - 1, Math.max(0, base + 1));
+      }
+    };
+    axis(w, mw0, maskX0, maskX1, maskXF);
+    axis(h, mh0, maskY0, maskY1, maskYF);
+  }
+  /** 0 = 没画（自由）、1 = 钉成陆地、2 = 钉成海洋 */
+  const forced = maskVals ? new Uint8Array(n) : null;
 
   const mtnAmp = 0.5 + sp.ridges * 0.16;          /* ridges 1..8 → 0.66 .. 1.78 */
   const ridgeFreq = 2.0 + sp.ridges * 0.18;
@@ -471,6 +536,17 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
 
       const kk = i * w + j;
       raw[kk] = c;
+      if (forced && maskLand && maskSea && maskX0 && maskX1 && maskXF && maskY0 && maskY1 && maskYF) {
+        const x0 = maskX0[j], x1 = maskX1[j], y0 = maskY0[i], y1 = maskY1[i];
+        const fx = maskXF[j], fy = maskYF[i];
+        const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
+        const a0 = y0 * mw0, a1 = y1 * mw0;
+        const lf = maskLand[a0 + x0] * w00 + maskLand[a0 + x1] * w10 + maskLand[a1 + x0] * w01 + maskLand[a1 + x1] * w11;
+        const sf = maskSea[a0 + x0] * w00 + maskSea[a0 + x1] * w10 + maskSea[a1 + x0] * w01 + maskSea[a1 + x1] * w11;
+        /* 抖动：直接用这一格的 shore 噪声（±0.2 量级），乘 0.6 就够把画出来的直边打毛 */
+        const wig = shore * 0.6;
+        forced[kk] = (lf + wig > 0.5) ? 1 : ((sf - wig > 0.5) ? 2 : 0);
+      }
       /* ⭐ 高度**另起一套场**：陆块场只决定海陆（它的等值线就是海岸线），高度是
          "底 + 分区基准 + **主山体** + 山脊 + 板缘山带 + 细节"。主山体 `mf` 是绝对主角，
          板缘带 `band` 降到配角 —— 旧版只有板缘带，山是撒满全图的疙瘩、没有主峰。
@@ -512,6 +588,17 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
   /* 碎块清理：小于约 10 格的陆块还给海（噪声斑点，不是岛）。**必须在下游各 pass 之前做**
      —— 距离海 / 高度 / 汇流 / 温度 / 统计就都跑在同一张干净的陆地掩膜上。 */
   pruneSmall(w, h, land, Math.max(4, Math.round(n * 0.00002)));
+  /* ⭐ 第一百零八轮：剪影优先 —— 在 `pruneSmall` **之后**再盖一遍，否则手画的小岛会被当噪声清掉。
+     代价：陆地占比不再精确等于 `landRatio`（剪影说了算），这是用户画的意图，不是 bug。 */
+  if (forced) {
+    let changed = 0;
+    for (let k = 0; k < n; k++) {
+      const fv = forced[k];
+      if (fv === 1) { if (!land[k]) { land[k] = 1; changed++; } }
+      else if (fv === 2) { if (land[k]) { land[k] = 0; changed++; } }
+    }
+    if (changed) yield { phase: '按剪影定海陆', done: 1, total: 1 };
+  }
 
   /* ── 距海（多源 BFS；经度环绕）——**必须在高度之前算**：
      ① 陆地高度乘它做"沿海压低"（海岸是低地、越高越往里）；
@@ -768,8 +855,8 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
 
 /** 同步外壳：一口气跑到完（守卫 / 离线脚本 / 预览图用）。
  *  界面**不要**用它 —— 1.4s 的同步调用会把"正在算"的遮罩一起冻住。 */
-export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecInput, h: number = PLANET_H): PlanetField {
-  const it = planetFieldGen(seed, style, spec, h);
+export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecInput, h: number = PLANET_H, mask?: SilhouetteMask | null): PlanetField {
+  const it = planetFieldGen(seed, style, spec, h, mask);
   let step = it.next();
   while (!step.done) step = it.next();
   return step.value;
@@ -850,7 +937,7 @@ function boxFilter(src: Float32Array, w: number, h: number): Float32Array {
 
 /** 把场画成 RGBA（w*h*4，可直接进 canvas / WebGL 贴图）。认不出的 view 落回默认档。
  *  生成器版：每 32 行让出一次 —— 768 高时整趟约 0.5s，切完单片约 20ms。 */
-export function* renderPlanetGen(f: PlanetField, view: unknown): Generator<PlanetProgress, Uint8ClampedArray, void> {
+export function* renderPlanetGen(f: PlanetField, view: unknown, contourEvery = 0): Generator<PlanetProgress, Uint8ClampedArray, void> {
   const def = terrainStyleDef(view);
   const { w, h, elev, e01, land, river, lake, moist, temp } = f;
   const out = new Uint8ClampedArray(w * h * 4);
@@ -973,7 +1060,13 @@ export function* renderPlanetGen(f: PlanetField, view: unknown): Generator<Plane
           const cb = Math.floor(sm[k] * cs);
           const bl = Math.floor(sm[at(j - 1, i)] * cs);
           const bu = Math.floor(sm[at(j, i - 1)] * cs);
-          if (cb !== bl || cb !== bu) col = cb % 4 === 0 ? lineDark : lineC;
+          /* ⭐ 第一百零八轮：等高线抽稀（与 WebGL 那条 u_contour_every 同一套口径）：
+             手选 n ⇒ 只画档号能被 n 整除的线；自动 ⇒ 看**邻格跨了几档**（跨得多说明坡陡、
+             线本来就会挤成一片）⇒ 按 2..6 倍跳线。每 5 条一条主等高线仍加深。 */
+          const grad = Math.max(Math.abs(cb - bl), Math.abs(cb - bu));
+          const every = contourEvery > 0 ? contourEvery : (grad >= 2 ? Math.min(grad, 6) : 1);
+          const keep = every <= 1 || cb % every === 0;
+          if (keep && (cb !== bl || cb !== bu)) col = cb % 5 === 0 ? lineDark : lineC;
         }
         /* 坡面排线（水墨 / 羊皮纸 / 蓝图）：沿坡向排线，越陡越密 */
         if (def.hatch > 0) {
@@ -1042,15 +1135,15 @@ export function* renderPlanetGen(f: PlanetField, view: unknown): Generator<Plane
 }
 
 /** 同步外壳（同 `buildPlanetField`：离线/守卫用；界面走分帧版）*/
-export function renderPlanet(f: PlanetField, view: unknown): Uint8ClampedArray {
-  const it = renderPlanetGen(f, view);
+export function renderPlanet(f: PlanetField, view: unknown, contourEvery = 0): Uint8ClampedArray {
+  const it = renderPlanetGen(f, view, contourEvery);
   let step = it.next();
   while (!step.done) step = it.next();
   return step.value;
 }
 
 /** 便捷：场 + 上色一次拿全（离线脚本 / 守卫用；界面里两者分开缓存）*/
-export function buildPlanet(seed: string, style: string, spec?: MapgenSpecInput, view?: unknown, h: number = PLANET_H) {
-  const field = buildPlanetField(seed, style, spec, h);
-  return { field, rgba: renderPlanet(field, view) };
+export function buildPlanet(seed: string, style: string, spec?: MapgenSpecInput, view?: unknown, h: number = PLANET_H, mask?: SilhouetteMask | null, contourEvery = 0) {
+  const field = buildPlanetField(seed, style, spec, h, mask);
+  return { field, rgba: renderPlanet(field, view, contourEvery) };
 }

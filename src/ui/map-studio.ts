@@ -30,8 +30,8 @@ import {
 } from './map-gen';
 import { releaseThumbs, terrainStats, terrainThumbUrl } from './map-terrain';
 import { PLANET_PREVIEW_H, planetStats, planetThumbUrl } from './planet-view';
-import { TERRAIN_STYLES, terrainStyleLabel, terrainStyleOf } from '../mapgen';
-import { MAP_FORMS, mapFormOf } from '../mapgen/planet';
+import { CONTOUR_MODES, TERRAIN_STYLES, contourModeOf, terrainStyleLabel, terrainStyleOf } from '../mapgen';
+import { openMapEditor } from './map-editor';
 import { openTool } from '../tools/registry';
 
 const BATCH = 6;      /* 一次抽几张（用户选的 6） */
@@ -176,9 +176,9 @@ export function openMapStudio(store: Store): () => void {
 
       <div class="lk-ms__sec" data-sec="tune">
         <div class="lk-ms__row">
-          <label>形态</label>
-          <select id="ms-form">${MAP_FORMS.map((f) => `<option value="${f.id}" title="${escapeHtml(f.hint)}">${escapeHtml(f.label)}</option>`).join('')}</select>
-          <span id="ms-form-hint" class="lk-ms__dim"></span>
+          <label>等高线</label>
+          <select id="ms-contour" title="陡峭的地方等高线会挤在一起：自动档按屏幕线距跳线，也能强制全部 / 减半 / 每五条">${CONTOUR_MODES.map((c) => `<option value="${c.id}" title="${escapeHtml(c.hint)}">${escapeHtml(c.label)}</option>`).join('')}</select>
+          <span id="ms-contour-hint" class="lk-ms__dim">只换画法，地形不重算</span>
         </div>
         <div class="lk-ms__row">
           <label>风格</label>
@@ -201,12 +201,13 @@ export function openMapStudio(store: Store): () => void {
           <input id="ms-seed" placeholder="留空 = 用「灵框」，同一颗种子永远同一片地">
           <button id="ms-reseed" class="lk-ms__btn" title="随机换一颗种子再预览">换一颗</button>
         </div>
-        <div class="lk-ms__sub">手绘地形（刷子）</div>
-        <div class="lk-ms__hint">生成出来的只是「底稿」—— 不满意的地方不用重新抽，去地图栏直接用刷子改：造山 / 压谷 / 浅海 / 深海。
-          每一笔都能单独撤销，笔迹存在地图数据里（关掉重开还在，同一颗种子算出来还是这张图）。</div>
+        <div class="lk-ms__sub">手绘海陆</div>
+        <div class="lk-ms__hint">想自己决定大陆长在哪：开全屏画板刷海陆剪影（涂绿 = 陆地、涂蓝 = 海洋），
+          再「按这幅生成」—— 生成器会按你画的钉死海陆，细节照旧由它补。
+          画板可导入 / 导出 PNG（绿蓝两色就能来回搬）。</div>
         <div class="lk-ms__row">
-          <button id="ms-brush" class="lk-ms__btn">在地图上刷</button>
-          <button id="ms-brush-clear" class="lk-ms__btn">清空笔迹</button>
+          <button id="ms-brush" class="lk-ms__btn">打开手绘海陆…</button>
+          <button id="ms-brush-clear" class="lk-ms__btn" title="清掉老「局部」地形留下的手刷笔迹">清空旧笔迹</button>
           <span id="ms-brush-n" class="lk-ms__dim"></span>
         </div>
       </div>
@@ -265,14 +266,14 @@ export function openMapStudio(store: Store): () => void {
     const hit = TERRAIN_STYLES.find((s) => s.id === viewNow());
     viewHintEl.textContent = hit ? `${hit.hint}（只换画法，地形不重算）` : '';
   };
-  /* ⭐ 「形态」（第九十八轮）：局部（mapgen4，能手刷）/ 星球（球面等距圆柱，能贴到球上）。
-     两个形态共用同一份种子 / 档位 / 数量 / 看的方式 ⇒ 换形态只是换一套内核。 */
-  const formSel = q<HTMLSelectElement>('#ms-form');
-  const formHintEl = q<HTMLElement>('#ms-form-hint');
-  const formNow = () => mapFormOf(formSel.value);
-  const syncFormHint = () => {
-    const hit = MAP_FORMS.find((f) => f.id === formNow());
-    formHintEl.textContent = hit ? hit.hint : '';
+  /* ⭐ 等高线方式（第一百零八轮）：用户「有些地方因为地形陡峭导致等高线有点密集」。
+     显示参数 ⇒ 换它只重画预览（不重算地形）。 */
+  const contourSel = q<HTMLSelectElement>('#ms-contour');
+  const contourHintEl = q<HTMLElement>('#ms-contour-hint');
+  const contourNow = () => contourModeOf(contourSel.value);
+  const syncContourHint = () => {
+    const hit = CONTOUR_MODES.find((c) => c.id === contourNow());
+    contourHintEl.textContent = hit ? hit.hint : '';
   };
   const seedEl = q<HTMLInputElement>('#ms-seed');
   const descEl = q<HTMLTextAreaElement>('#ms-desc');
@@ -319,21 +320,24 @@ export function openMapStudio(store: Store): () => void {
   let previewSeq = 0;
   /** 出一张缩略图：**两种形态各走各的内核** —— 局部 = 内核 WebGL 渲染后截横带；
    *  星球 = 低分辨率（384×192）场直接上色，约 65ms。 */
+  /* ⭐ 第一百零八轮：底图只剩星球 ⇒ 预览一律走星球内核（老数据的「局部」形态不在这里出现）。 */
   const thumbOf = (t: MapTerrainSpec, w: number, h: number, ow: number, oh: number) =>
-    mapFormOf(t.form) === 'planet'
-      ? planetThumbUrl(t, w, ow, oh, String(t.view ?? ''))
-      : terrainThumbUrl(t, w, h, ow, oh);
+    String(t.form ?? 'planet') === 'local'
+      ? terrainThumbUrl(t, w, h, ow, oh)
+      : planetThumbUrl(t, w, ow, oh, String(t.view ?? ''));
 
   const previewOf = async (p: MapPlan) => {
     cur = p;
     const { w, h } = dims();
     /* ⭐ 形态：描述里点了「星球 / 一整颗」就跟着切（AI 直出与关键词那条路都吃这个）*/
-    const form = mapFormOf(p.form ?? formSel.value);
-    if (formSel.value !== form) { formSel.value = form; syncFormHint(); }
+    const form = 'planet';   /* ⭐ 第一百零八轮：局部形态退场，预览一律出星球 */
     /* 预览要跟"采用之后的样子"一致 ⇒ 种子与档位没变时把手刷笔迹也带上（同 `generateIntoMap`） */
     const old = hostStore ? currentWorld(hostStore).maps?.[0]?.terrain : undefined;
     const keepPaint = old && old.seed === p.seed && old.style === p.style ? old.paint : undefined;
-    const t: MapTerrainSpec = { seed: p.seed, style: p.style, spec: p.spec, view: viewNow(), form, ...(keepPaint?.length ? { paint: keepPaint } : {}) };
+    const t: MapTerrainSpec = {
+      seed: p.seed, style: p.style, spec: p.spec, view: viewNow(), form, contour: contourNow(),
+      ...(keepPaint?.length ? { paint: keepPaint } : {}),
+    };
     const seq = ++previewSeq;
     /* ⭐ 第一百零六轮：出图有耗时（星球预览 ~250ms、局部 ~120ms），先把「正在算」摆上，
        并且**让出一帧**让遮罩真的画出来，否则同一个长任务会把它一起挡住。 */
@@ -362,7 +366,7 @@ export function openMapStudio(store: Store): () => void {
     /* ⚠️ **形态必须一起带上**：不带的话 `planGeneration()` 会落到默认「局部」，
        而 `previewOf()` 又把计划里的形态写回下拉框 ⇒ 创作者刚切到「星球」立刻被拽回「局部」
        （本套件 ★2/★4 首跑就是这么红的）。 */
-    void previewOf(planGeneration({ seed: f.seed, style: f.style, spec: f.spec, form: formNow() }));
+    void previewOf(planGeneration({ seed: f.seed, style: f.style, spec: f.spec, form: 'planet' }));
   };
   const debounced = () => {
     if (dbTimer !== null) window.clearTimeout(dbTimer);
@@ -371,7 +375,9 @@ export function openMapStudio(store: Store): () => void {
 
   const apply = () => {
     if (!cur || !hostStore) { setState('先出一张预览，再采用。'); return; }
-    const r = generateIntoMap(hostStore, { seed: cur.seed, style: cur.style, spec: cur.spec, view: viewNow(), form: formNow() });
+    const r = generateIntoMap(hostStore, {
+      seed: cur.seed, style: cur.style, spec: cur.spec, view: viewNow(), form: 'planet', contour: contourNow(),
+    });
     setState(r.note);
     syncBrush();
   };
@@ -383,15 +389,15 @@ export function openMapStudio(store: Store): () => void {
   function syncBrush(): void {
     const m = hostStore ? currentWorld(hostStore).maps?.[0] : undefined;
     const n = m?.terrain?.paint?.length ?? 0;
-    brushN.textContent = m?.terrain ? (n ? `${n} 笔笔迹` : '还没有笔迹') : '这片地还没有地形';
+    brushN.textContent = n ? `（老局部地形还留着 ${n} 笔手刷笔迹）` : '';
   }
   q<HTMLButtonElement>('#ms-brush').addEventListener('click', () => {
-    const m = hostStore ? currentWorld(hostStore).maps?.[0] : undefined;
-    if (!m?.terrain) { setState('先在这边抽一张、点「采用到地图」，才有地可刷。'); return; }
-    if (formNow() === 'planet') { setState('星球形态不支持手刷 —— 想刷局部地形，先把「形态」切成「局部」。'); return; }
-    /* 面板 560px 宽，摆在地图栏上面 ⇒ 先把面板收掉再切刷子，否则看不到自己刷了什么 */
-    window.dispatchEvent(new CustomEvent('lingkuang-map-brush', { detail: { on: true } }));
+    /* ⭐ 第一百零八轮：手刷（原来的四支刷子）随「局部」形态退场；这里改成开**手绘海陆画板**，
+       画完直接按剪影生成星球 —— 一条更干净的"自己决定大陆长在哪"的路。 */
+    if (!hostStore) return;
+    const st = hostStore;
     closeMapStudio();
+    openMapEditor(st);
   });
   q<HTMLButtonElement>('#ms-brush-clear').addEventListener('click', () => {
     window.dispatchEvent(new CustomEvent('lingkuang-map-clear-paint'));
@@ -429,7 +435,7 @@ export function openMapStudio(store: Store): () => void {
     const c = cands[i];
     if (!c) return;
     picked = i;
-    void previewOf({ seed: c.seed, style: c.style, spec: c.spec, form: formNow(), matched: [] });
+    void previewOf({ seed: c.seed, style: c.style, spec: c.spec, form: 'planet', matched: [] });
     renderGrid();
   };
   /** 抽一批：**一张一张地翻**（生成一张约 60~150ms，串行出图才不会整片白等） */
@@ -450,7 +456,7 @@ export function openMapStudio(store: Store): () => void {
     const step = async () => {
       if (!openEl) { rolling = false; return; }
       const c = fresh[i];
-      c.url = await thumbOf({ seed: c.seed, style: c.style, spec: c.spec, view: viewNow(), form: formNow() }, w, h, CARD_W, CARD_H);
+      c.url = await thumbOf({ seed: c.seed, style: c.style, spec: c.spec, view: viewNow(), form: 'planet', contour: contourNow() }, w, h, CARD_W, CARD_H);
       if (!openEl) { rolling = false; return; }
       renderGrid();
       setState(`抽到第 ${i + 1}/${BATCH} 张…`);
@@ -472,7 +478,7 @@ export function openMapStudio(store: Store): () => void {
     const { w, h } = dims();
     window.setTimeout(async () => {
       if (!openEl) return;
-      c.url = await thumbOf({ seed: c.seed, style: c.style, spec: c.spec, view: viewNow(), form: formNow() }, w, h, CARD_W, CARD_H);
+      c.url = await thumbOf({ seed: c.seed, style: c.style, spec: c.spec, view: viewNow(), form: 'planet', contour: contourNow() }, w, h, CARD_W, CARD_H);
       if (!openEl) return;
       renderGrid();
       if (picked === i) selectCard(i);
@@ -490,7 +496,7 @@ export function openMapStudio(store: Store): () => void {
       if (!openEl) return;
       const c = cands[i];
       if (c) {
-        c.url = await thumbOf({ seed: c.seed, style: c.style, spec: c.spec, view: v, form: formNow() }, w, h, CARD_W, CARD_H);
+        c.url = await thumbOf({ seed: c.seed, style: c.style, spec: c.spec, view: v, form: 'planet', contour: contourNow() }, w, h, CARD_W, CARD_H);
         if (openEl) renderGrid();
       }
       i++;
@@ -527,8 +533,8 @@ export function openMapStudio(store: Store): () => void {
     syncHint();
     /* ⭐ 形态：描述里点了「星球 / 一整颗」就跟着切；**没说形态就别动**创作者当前的选择
        （`planGeneration` 认不出时会落到默认「局部」，直接用它会把星球悄悄改回局部）。 */
-    const p = planGeneration({ description: desc, seed: desc, style, spec });
-    if (!parseMapPrompt(desc).form) p.form = formNow();
+    const p = planGeneration({ description: desc, seed: desc, style, spec, form: 'planet' });
+    p.form = 'planet';
     void previewOf(p);
     if (got) setState(`AI 给的参数：${describeParams(style, spec)}。种子 = 你这句话；不抽一张？`);
     else if (err) setState(`没连上 AI（${err}）—— 这次按关键词解析：${describeParams(style, spec)}`);
@@ -566,17 +572,12 @@ export function openMapStudio(store: Store): () => void {
     if (cd) { selectCard(Number(cd.dataset.cand)); return; }
   });
   styleSel.addEventListener('change', () => { syncHint(); fromForm(); });
-  /* ⭐ 形态（第九十八轮）：局部 ⇄ 星球 —— 换的是**内核**，所以预览与卡片都得重出；
-     参数（种子/档位/数量/看的方式）一个字不动。 */
-  formSel.addEventListener('change', () => {
-    syncFormHint();
-    /* ⚠️ 这里**不能**用 `previewOf(cur)`：`cur` 是上一次的计划，它带着**旧形态**
-       ⇒ 会把刚切过去的下拉框又写回来。要走 `fromForm()`（从表单现拼一份计划）。 */
-    fromForm();
+  /* ⭐ 等高线方式（第一百零八轮）：只换画法 —— 大图与卡片重出图，**不重算地形** */
+  contourSel.addEventListener('change', () => {
+    syncContourHint();
+    if (cur) void previewOf(cur);
     repaintCards();
-    setState(formNow() === 'planet'
-      ? '换成「星球」：整颗星球（等距圆柱 2:1，经度无缝、有两极）—— 采用后在地图栏点「球体看」能贴到球上转着看。'
-      : '换成「局部」：一片地区的地形，能在地图栏用刷子精修（手绘笔迹只对局部有效）。');
+    setState(`等高线方式换成「${CONTOUR_MODES.find((c) => c.id === contourNow())?.label ?? '自动'}」—— 地形没重算。`);
   });
   /* ⭐ 风格（第九十七轮）：只换画法 —— 大图立刻重画、卡片重出缩略图，**都不重算地形** */
   viewSel.addEventListener('change', () => {
@@ -605,15 +606,15 @@ export function openMapStudio(store: Store): () => void {
     /* 接着上一轮"看的方式"（没有这个字段的旧数据 ⇒ 落回默认「自然」）*/
     viewSel.value = terrainStyleOf(m.terrain.view);
     syncViewHint();
-    /* 接着上一轮的**形态**（没有这个字段的旧数据 ⇒ 落回「局部」）*/
-    formSel.value = mapFormOf(m.terrain.form);
-    syncFormHint();
-    void previewOf({ ...t, form: mapFormOf(m.terrain.form), matched: [] });
+    /* 等高线方式接着上一轮（没有这个字段的旧数据 ⇒ 落回「自动」）*/
+    contourSel.value = contourNow();
+    syncContourHint();
+    void previewOf({ ...t, form: 'planet', matched: [] });
     setState(`这是「${m.name}」现在的地形 —— 改参数或抽一张，满意了再采用。`);
   } else {
     fillForm('continent', {});
     syncViewHint();
-    syncFormHint();
+    syncContourHint();
     fromForm();
     setState('挑一套参数或抽几张 —— 预览满意了按「采用到地图」。');
   }

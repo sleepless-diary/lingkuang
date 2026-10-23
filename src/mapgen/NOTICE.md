@@ -157,3 +157,15 @@
       海岸线交给上面那条距离带，陡崖不再"一整片死黑"。
     ⚠️ **这个文件的着色器是 TS 模板字符串：注释里绝对不能出现反引号**（本轮在注释里写了
     `` `u_depth` ``，`tsc` 一片 TS1005、`vite build` 失败但旧 `app-dist` 照跑 ⇒ 看起来"改了没用"）。
+
+14. **`render.ts`：等高线抽稀 `u_contour_every` + 位图上限 4096（第一百零八轮灵框追加）**。
+    用户 2026-10-24：「有些地方因为地形陡峭导致等高线有点密集，能不能加一个等高线绘制方式，
+    是全部显示还是省略部分」。
+    - `frag_drape` 新增 `uniform float u_contour_every`：0 = 自动、n>1 = 每 n 条画一条。
+      自动档用 `spacingPx = cInterval / fwidth(zLand)` 现算（线距 < 10px 就按整数倍跳线），
+      跳线按**档号取模**（`mod(floor(zLand / cInterval + 0.5), every)`），不会出现半条线；
+      每 5 条一条主等高线（`cMajor`）仍加深。缺省 0（= 老调用方的行为仍由 `u_contour` 决定）。
+    - `drawDrape()` 里 `gl.uniform1f(program.u_contour_every, renderParam.contour_every ?? 0)`。
+    - `Renderer` 的 `texture_size` 上限 2048 → **4096**（全窗口高清图要 3072²；
+      否则被静默夹回 2048，看起来"高清没生效"）。
+    ⚠️ 这个文件的着色器是 TS 模板字符串：注释里不能出现反引号（`tsc` 会一片 TS1005）。

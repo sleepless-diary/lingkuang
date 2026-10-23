@@ -164,12 +164,6 @@ async function main() {
     sig.natural.ok && sig.topo.ok && sig.minimal.ok && uniq.size === 3,
     { natural: sig.natural.sum, topo: sig.topo.sum, minimal: sig.minimal.sum });
 
-  /* ★5 ⭐量化证据：平面档「局部对比 sd」明显小于立体档（阴影真被关掉了，不是只换了个按钮文字）*/
-  const drop = sig.natural.sd > 0 ? 1 - sig.minimal.sd / sig.natural.sd : 0;
-  check('★5 平面档的阴影真关掉了（局部对比 sd 明显下降）',
-    drop > 0.05 && sig.topo.sd > 0 && sig.topo.sd !== sig.natural.sd,
-    { naturalSd: sig.natural.sd, minimalSd: sig.minimal.sd, topoSd: sig.topo.sd, drop: +drop.toFixed(3) });
-
   /* ★6 ⭐换风格**不重算地形**：统计行逐字不变（三档之间），且此刻磁盘一个字节没动 */
   const note = sig.natural.note;
   const stat = (s) => s.replace(/ · 种子.*$/, '');   /* 去掉可能带风格字样的尾巴，只比地形数字 */
@@ -195,6 +189,42 @@ async function main() {
     diskMap()?.terrain?.view === 'topo' && pane.view === 'topo' && pane.disabled === false && pane.canvas,
     { disk: diskMap()?.terrain?.view, pane });
 
+  /* ★5（第一百零八轮改口径）：「极简」真的更平 —— 量的是**地图栏那张星球栅格**
+     （以前量工作室预览：预览图有 letterbox 黑边，亮度 sd 被边框主导，判据已经不成立）。
+     判据：极简的亮度标准差比自然低 5% 以上，且地形图与自然是两张不同的图。 */
+  const paneSd = async (v) => {
+    await setSel('#map-view', v);
+    await sleep(2600);
+    return ev(`(function () {
+      const c = document.querySelector('#map-terrain-canvas');
+      if (!c || !c.getContext) return { ok: false };
+      const g = c.getContext('2d');
+      if (!g || !c.width || !c.height) return { ok: false };
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      let sum = 0, n = 0;
+      const lum = new Float32Array(c.width * c.height);
+      for (let i = 0; i < lum.length; i++) {
+        const o = i * 4;
+        const l = d[o] * .299 + d[o + 1] * .587 + d[o + 2] * .114;
+        lum[i] = l; sum += l; n++;
+      }
+      const mean = sum / n;
+      let sq = 0, k = 0;
+      for (let i = 0; i < lum.length; i += 7) { sq += (lum[i] - mean) * (lum[i] - mean); k++; }
+      return { ok: true, sd: +Math.sqrt(sq / k).toFixed(2), mean: +mean.toFixed(1) };
+    })()`);
+  };
+  const sdNatural = await paneSd('natural');
+  const sdMinimal = await paneSd('minimal');
+  const sdTopo = await paneSd('topo');
+  check('★5 极简档真的更平（地图栏星球栅格的亮度 sd 明显更低）',
+    sdNatural.ok && sdMinimal.ok && sdTopo.ok
+    && sdMinimal.sd < sdNatural.sd * 0.95 && sdTopo.sd !== sdNatural.sd,
+    { natural: sdNatural.sd, minimal: sdMinimal.sd, topo: sdTopo.sd });
+  /* 回到地形图档（后面的 ★7/★8 都按 topo 走）*/
+  await setSel('#map-view', 'topo');
+  await sleep(2200);
+
   /* ★8 ⭐地图栏那条路也是三档三张图（截屏哈希；面板先关掉，别挡住地图）*/
   await click('#ms-close');
   await sleep(1200);
@@ -214,10 +244,14 @@ async function main() {
     paneShots);
 
   /* ★9 这条偏好随地图持久化：只调这一档 ⇒ 地形参数一个都没变
-     （`form` 是第九十八轮加的「形态」字段 —— 同样是"只存参数"的显示/生成开关，一起列进来）*/
+     （terrain 里除了生成参数还有**显示参数**：form 形态 / lift 立体度 / contour 等高线方式
+      / mask 手绘海陆剪影 —— 都是"只存参数不存图"，所以只允许这几个键，且不许出现 data:）*/
   const t9 = diskMap()?.terrain ?? {};
+  const allowed9 = ['contour', 'form', 'lift', 'mask', 'seed', 'spec', 'style', 'view'];
   check('★9 只改了「看的方式」：种子/档位/数量一个都没动',
-    !!t9.seed && !!t9.style && JSON.stringify(Object.keys(t9).sort()) === JSON.stringify(['form', 'seed', 'spec', 'style', 'view']),
+    !!t9.seed && !!t9.style
+    && Object.keys(t9).every((k) => allowed9.includes(k))
+    && !JSON.stringify(t9).includes('data:'),
     { keys: Object.keys(t9).sort(), view: t9.view, seed: t9.seed });
 
   /* ★10 刷新后还是那一档（存的是数据，不是内存里的临时状态）*/

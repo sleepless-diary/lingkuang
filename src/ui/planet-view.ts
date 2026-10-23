@@ -10,6 +10,7 @@
  *  ⚠️ 图**不落盘**：`MapData.terrain` 里只有几百字节参数。 */
 
 import { PLANET_H, buildPlanetField, planetFieldGen, renderPlanet, renderPlanetGen, type PlanetField, type PlanetProgress } from '../mapgen/planet';
+import { contourEveryOf } from '../mapgen/styles';
 import type { MapgenSpecInput, TerrainStats } from '../mapgen';
 import type { MapTerrainSpec } from '../store/types';
 import { mountGlobe, type GlobeHandle } from './globe';
@@ -20,6 +21,10 @@ import { mountGlobe, type GlobeHandle } from './globe';
 export const PLANET_VIEW_H = PLANET_H;
 /** 预览与抽卡用的分辨率（512×256，约 150ms —— 一次抽 6 张也跟得上）*/
 export const PLANET_PREVIEW_H = 256;
+/** ⭐ 第一百零八轮：**全窗口大图**的分辨率（2304×1152，约 2.25 倍像素）。
+ *  用户原话：「进入全窗口预览时能不能渲染一下更高的分辨率」—— 点开大图才现算，
+ *  算完马上释放（不进食谱缓存：一张 1152 高的场约 60MB）。 */
+export const PLANET_HD_H = 1152;
 
 const fields = new Map<string, PlanetField>();
 const colors = new Map<string, Uint8ClampedArray>();
@@ -27,9 +32,10 @@ const colors = new Map<string, Uint8ClampedArray>();
 const MAX_FIELDS = 3;
 const MAX_COLORS = 6;
 
+/* ⚠️ 键里**必须含剪影**（第一百零八轮）：同一颗种子画了剪影就是另一片地。 */
 const fieldKeyOf = (t: MapTerrainSpec, h: number) =>
-  `${t.seed}|${t.style}|${JSON.stringify(t.spec ?? {})}|${h}`;
-const colorKeyOf = (t: MapTerrainSpec, h: number, view: string) => `${fieldKeyOf(t, h)}|${view}`;
+  `${t.seed}|${t.style}|${JSON.stringify(t.spec ?? {})}|${h}|${t.mask ? JSON.stringify(t.mask) : ''}`;
+const colorKeyOf = (t: MapTerrainSpec, h: number, view: string) => `${fieldKeyOf(t, h)}|${view}|${contourEveryOf(t.contour)}`;
 
 function trim<K, V>(m: Map<K, V>, max: number) {
   while (m.size > max) {
@@ -44,7 +50,7 @@ export function planetField(t: MapTerrainSpec, h: number = PLANET_VIEW_H): Plane
   const key = fieldKeyOf(t, h);
   const hit = fields.get(key);
   if (hit) return hit;
-  const f = buildPlanetField(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput, h);
+  const f = buildPlanetField(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput, h, t.mask ?? null);
   fields.set(key, f);
   trim(fields, MAX_FIELDS);
   return f;
@@ -55,7 +61,7 @@ export function planetRgba(t: MapTerrainSpec, h: number, view: string): Uint8Cla
   const key = colorKeyOf(t, h, view);
   const hit = colors.get(key);
   if (hit) return hit;
-  const out = renderPlanet(planetField(t, h), view);
+  const out = renderPlanet(planetField(t, h), view, contourEveryOf(t.contour));
   colors.set(key, out);
   trim(colors, MAX_COLORS);
   return out;
@@ -128,7 +134,7 @@ export function planetFieldAsync(t: MapTerrainSpec, h: number = PLANET_VIEW_H, o
   if (hit) { onProgress?.({ phase: '缓存', done: 1, total: 1, pct: 1 }); return Promise.resolve(hit); }
   const busy = inflightFields.get(key);
   if (busy) return busy;
-  const job = drive(planetFieldGen(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput, h), onProgress, 0, 0.9)
+  const job = drive(planetFieldGen(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput, h, t.mask ?? null), onProgress, 0, 0.9)
     .then((f) => {
       fields.set(key, f);
       trim(fields, MAX_FIELDS);
@@ -147,7 +153,7 @@ export function planetRgbaAsync(t: MapTerrainSpec, h: number, view: string, onPr
   const busy = inflightColors.get(key);
   if (busy) return busy;
   const job = planetFieldAsync(t, h, onProgress).then((f) =>
-    drive(renderPlanetGen(f, view), onProgress, 0.9, 1).then((out) => {
+    drive(renderPlanetGen(f, view, contourEveryOf(t.contour)), onProgress, 0.9, 1).then((out) => {
       colors.set(key, out);
       trim(colors, MAX_COLORS);
       inflightColors.delete(key);
@@ -287,6 +293,28 @@ export function releasePlanetThumbs(): void {
 export function planetImageUrl(t: MapTerrainSpec, view: string, h: number = PLANET_VIEW_H): string {
   const f = planetField(t, h);
   const rgba = planetRgba(t, h, view);
+  const c = document.createElement('canvas');
+  c.width = f.w;
+  c.height = f.h;
+  const ctx = c.getContext('2d');
+  if (!ctx) return '';
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), f.w, f.h), 0, 0);
+  return c.toDataURL('image/png');
+}
+
+/** ⭐ 第一百零八轮：**全窗口大图**（2304×1152）—— 现算、不缓存、算完即弃。
+ *  用户原话：「进入全窗口预览时能不能渲染一下更高的分辨率」。
+ *  与 planetImageUrl()（1536×768，走缓存）分工：那个给"点开就有"的即时图，
+ *  这个给"点开大图"的一次性高清图（约 3~4s，调用方负责挂遮罩与进度）。
+ *  ⚠️ 不写进 fields / colors（缓存表）：1152 高的场约 60MB，留着会把缓存挤掉还白占内存。 */
+export async function planetImageUrlHD(
+  t: MapTerrainSpec, view: string, h: number = PLANET_HD_H, onProgress?: PlanetProgressCb,
+): Promise<string> {
+  const f = await drive(
+    planetFieldGen(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput, h, t.mask ?? null),
+    onProgress, 0, 0.85,
+  );
+  const rgba = await drive(renderPlanetGen(f, view, contourEveryOf(t.contour)), onProgress, 0.85, 1);
   const c = document.createElement('canvas');
   c.width = f.w;
   c.height = f.h;

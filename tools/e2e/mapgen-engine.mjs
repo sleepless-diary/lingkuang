@@ -414,6 +414,64 @@ function planetMetrics(f) {
     { darkPct: +(dark / landPx * 100).toFixed(1), cross10, vs10: +(dark / Math.max(1, cross10)).toFixed(2) });
 }
 
+/* ── 等高线抽稀档位（第一百零八轮）──────────────────────────────────────────
+   用户原话：「有些地方因为地形陡峭导致等高线有点密集，能不能加一个等高线绘制方式，
+   是全部显示还是省略部分」。口径 = 自动 + 手选三档：
+   · auto = 0（着色器按屏幕线距现算）、all = 1、half = 2、fifth = 5；
+   · 认不出的值一律落回自动（老数据/脏数据不炸）。 */
+{
+  const map = { auto: 0, all: 1, half: 2, fifth: 5 };
+  const ok = Object.entries(map).every(([k, v]) => E.contourEveryOf(k) === v)
+    && E.contourEveryOf(undefined) === 0
+    && E.contourEveryOf('乱写') === 0
+    && E.contourModeOf('fifth') === 'fifth'
+    && E.contourModeOf(null) === 'auto'
+    && E.CONTOUR_MODES.length === 4
+    && E.CONTOUR_MODES.map((m) => m.id).join(',') === 'auto,all,half,fifth'
+    && E.contourModeLabel('half') === '减半';
+  check('★22 等高线方式四档（auto=0 / all=1 / half=2 / fifth=5）且脏值落回自动', ok,
+    { modes: E.CONTOUR_MODES.map((m) => m.id) });
+}
+
+/* ── 手绘海陆掩膜（第一百零八轮）──────────────────────────────────────────────
+   用户原话：「做一个简易的编辑器，能让用户自行绘制大陆和地形，并在此之上生成对应地形」。
+   判据（不看图）：同样种子/档位，只换掩膜 ⇒
+     · 全陆地掩膜 → 陆地占比趋近 1，全海洋掩膜 → 趋近 0（剪影优先于噪声）；
+     · 掩膜只画东半球一块 → 陆地占比落在剪影那一块附近、且与"不画掩膜"那张明显不同。
+   掩膜格式 = 每格 2bit、低位在前的 base64（与画板 encodeMask 同一口径）。 */
+{
+  const pack = (cells) => {
+    const bytes = new Uint8Array(Math.ceil(cells.length * 2 / 8));
+    for (let i = 0; i < cells.length; i++) {
+      const bit = i * 2;
+      bytes[bit >> 3] |= (cells[i] & 3) << (bit & 7);
+    }
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  };
+  const W = 160, H = 80, N = W * H;
+  const all = (v) => new Uint8Array(N).fill(v);
+  const landRatioOf = (f) => {
+    let n = 0;
+    for (let k = 0; k < f.land.length; k++) n += f.land[k];
+    return n / f.land.length;
+  };
+  const spec = { landRatio: 0.34, ridges: 4, rivers: 2 };
+  const base = landRatioOf(P.buildPlanetField('lk-mask', 'continent', spec, 256, null));
+  const allLand = landRatioOf(P.buildPlanetField('lk-mask', 'continent', spec, 256, { w: W, h: H, bits: pack(all(1)) }));
+  const allSea = landRatioOf(P.buildPlanetField('lk-mask', 'continent', spec, 256, { w: W, h: H, bits: pack(all(2)) }));
+  /* 只画东半球（列 80..159）一块陆地，其余留白 = 海洋 */
+  const east = new Uint8Array(N).fill(2);
+  for (let y = 20; y < 60; y++) for (let x = 80; x < 150; x++) east[y * W + x] = 1;
+  const eastRatio = landRatioOf(P.buildPlanetField('lk-mask', 'continent', spec, 256, { w: W, h: H, bits: pack(east) }));
+  const eastWant = (40 * 70) / N;
+  check('★23 剪影优先：全陆地掩膜 ⇒ 陆地≈1、全海洋 ⇒ ≈0、画一块 ⇒ 只争那块',
+    base > 0.2 && base < 0.6 && allLand > 0.97 && allSea < 0.03
+    && eastRatio > eastWant * 0.6 && eastRatio < eastWant * 2.2,
+    { noMask: +base.toFixed(3), allLand: +allLand.toFixed(3), allSea: +allSea.toFixed(3), east: +eastRatio.toFixed(3), eastWant: +eastWant.toFixed(3) });
+}
+
 const pass = results.filter(Boolean).length;
 console.log(`\n${pass}/${results.length} PASS`);
 process.exit(pass === results.length ? 0 : 1);

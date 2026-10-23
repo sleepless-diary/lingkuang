@@ -107,6 +107,9 @@ export interface MapgenRenderParams {
   strata?: number;             /* 岩层条带 */
   snow?: number;               /* 雪线 */
   shelf?: number;              /* 水侧浅滩带 */
+  /* ⭐ 灵框追加（第一百零八轮）：等高线抽稀 —— 0 = 自动（按屏幕导数现算每格几条），
+     n>1 = 每 n 条画一挑一。只影响 `u_contour` 开着的那几档（地形图 / 蓝图 / 羊皮纸 / 水墨）。 */
+  contour_every?: number;
 }
 export interface MapgenParams {
   spacing: number;
@@ -183,10 +186,10 @@ export const APPLY_NOTES = [
    八档 + 旧 id 别名（relief→natural / contour→topo / flat→minimal）都在 `styles.ts` 里定义，
    值也只有那一个来源 —— 别再往这里加第二份表。 */
 export {
-  DEFAULT_TERRAIN_STYLE, TERRAIN_STYLES, TERRAIN_STYLE_ALIASES, TERRAIN_STYLE_DEFS,
-  colorFloats, isTerrainStyle, rampFloats, sampleRampHex, styleRenderParams,
-  terrainStyleDef, terrainStyleLabel, terrainStyleOf,
-  type TerrainStyleDef, type TerrainStyleId,
+  CONTOUR_MODES, DEFAULT_TERRAIN_STYLE, TERRAIN_STYLES, TERRAIN_STYLE_ALIASES, TERRAIN_STYLE_DEFS,
+  colorFloats, contourEveryOf, contourModeLabel, contourModeOf, isContourMode, isTerrainStyle, rampFloats,
+  sampleRampHex, styleRenderParams, terrainStyleDef, terrainStyleLabel, terrainStyleOf,
+  type ContourMode, type TerrainStyleDef, type TerrainStyleId,
 } from './styles';
 
 /* ── 种子：一串文字 → 两个 32 位整数（网格种子与高度种子分开，照上游的规矩）──────── */
@@ -206,12 +209,15 @@ export interface MapgenSpecInput {
   landRatio?: number;
   ridges?: number;
   rivers?: number;
+  /* ⭐ 第一百零八轮：网格密度（只给「区域精细化样本」用 —— 那一块地要更细的三角）。
+     主地图不写它（缺省 4.8，见 `DEFAULT_PARAMS.spacing`）。范围 3.2..8。 */
+  spacing?: number;
   /* 索引签名：这份 spec 要存进 `MapData.terrain.spec`（数据层用的是宽索引签名），
      少这一行 TS 会拦「没有索引签名」（第九十三轮踩过）。 */
   [k: string]: number | undefined;
 }
 
-export const DEFAULT_SPEC: Required<MapgenSpecInput> = { landRatio: 0.34, ridges: 4, rivers: 1 };
+export const DEFAULT_SPEC: Required<MapgenSpecInput> = { landRatio: 0.34, ridges: 4, rivers: 1, spacing: 4.8 };
 
 /** 灵框的（种子 + 档位 + 数量）→ 上游完整参数。
  *  · `landRatio` 只作为**目标**记下来，真正的收敛在 `runGeneration()` 里做（改 `island`）；
@@ -225,6 +231,11 @@ export function paramsFromSeed(seed: string, style: string = 'continent', spec?:
   const rv = Math.min(4, Math.max(0, sp.rivers));
   const p: MapgenParams = JSON.parse(JSON.stringify(DEFAULT_PARAMS));
   p.mesh.seed = keys;
+  /* ⭐ 第一百零八轮：`spec.spacing` 覆盖网格密度（区域精细化样本要更细的三角）。
+     只在显式给了的时候才动 —— 主地图照旧 4.8（守卫 ★1 的三角数门槛按它写的）。 */
+  if (sp.spacing !== undefined && Number.isFinite(sp.spacing)) {
+    p.spacing = Math.min(8, Math.max(3.2, Number(sp.spacing)));
+  }
   p.elevation.seed = seedInt(String(seed || '灵框') + '|高度');
   p.elevation.island = st.island;
   p.elevation.noisy_coastlines = st.noisy_coastlines;
