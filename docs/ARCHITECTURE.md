@@ -1353,3 +1353,105 @@
   （★0 因此改成"球体按钮显隐与数据一致"，而不是"必须隐藏"）。
 - 星球是**异步挂载**：量画布前要等它真的 resize 过（第一版 ★3 量到 300×150 假红）。
 - 等高线抽稀在**没有等高线的档位**（自然/极简/卫星）上看不出差别 ⇒ 守卫要先切到「地形图」再比截图哈希。
+
+## 2026-10-24 · 关闭按钮 + 删区域精细化 + 手绘面板大改 + 高清缓存（第一百零九轮）
+
+用户原话（末尾被截断）：「高清大图下右上角的关闭按钮没有用，区域精细化的功能删了吧，地形工具加入
+手绘面板吧，这个手绘面板精细度不够，而且不能放大或者拖动，笔刷大小用滑块调整吧，还有高清大图怎么
+每次都要重新算，不能保存吗，手绘地形里面的橡皮定位不清晰，海洋不就是橡皮的功能吗，还有我们的」。
+
+### 一、高清大图的 × 为什么点不动（真因）
+
+`src/ui/lightbox.ts` 的 pointer 手势里，`pointerdown` 在**工具栏上**按下时提前 `return`（本意：
+点标题/按钮不该变成拖图），但**没有清 `moved`**。于是只要之前拖动过一次，`moved` 会一直是 true，
+`pointerup` 里 `wasDrag` 恒真 ⇒ 「点一下返回」「点 × 关闭」全部被当成拖动吞掉。
+
+修法（三条一起，防御性）：
+1. 每次 `pointerdown` **先** `moved = false`，再判断是不是点在工具栏上；
+2. 关闭按钮**直接绑 `click`**（不依赖 pointerup 的坐标判断）；
+3. `pointerup` 里遇到 `closest('.lk-lb__bar')` 直接 return（工具栏上的点击不算"点图返回"）。
+
+另外 `el.setPointerCapture(...)` 包了 try/catch —— e2e 合成事件里 pointerId 不在活动指针表，
+会抛 `NotFoundError: Failed to execute 'setPointerCapture' on 'Element': No active pointer with the given id is found.`
+（真实鼠标不会，但守卫会红）。`src/ui/map-editor.ts` 的同类调用也照此处理。
+
+### 二、区域精细化：已删除（第一百零八轮的反向决定）
+
+用户原话「区域精细化的功能删了吧」。删掉的东西（一处不留）：
+
+| 位置 | 删掉的内容 |
+| --- | --- |
+| `src/ui/map-refine.ts` | 整个文件（面板 `#lk-map-refine`、抽卡 6 张、采用/重抽/删样本、高清入口） |
+| `src/store/types.ts` | `MapRegionSample` / `MapRegionDetail` / `MapData.refined` |
+| `src/ui/map.ts` | `Mode 'refine'`、`细化区域` 按钮、`#map-refined` 叠图层、`refineFrom/refineTo` 拖框、`[data-refined]` 渲染与点击、`syncTerrain` 里的叠图尺寸、`key` 里的 `mask` |
+| `src/style.css` | `.lk-rf` 两条 |
+| `tools/e2e/` | `map-refine.cjs`（11 项）整支删除；`map-planet.cjs` ★0 的 `refineMode` 断言改成 `noRefineMode` |
+
+**为什么不留"只删 UI"的中间态**：区域样本那一整套（`refined` 数据 + 叠图 + 面板）只有它自己在用，
+留着就是死代码 + 数据膨胀；而"看局部"这个目的已经由**手绘海陆 → 按剪影生成整颗星球** + 大图查看器
+（滚轮/拖动/双击放大）覆盖。旧数据里若还带 `refined` 字段，读进来会被忽略（TS 类型里没有它），不影响渲染。
+
+### 三、「地形」= 手绘面板（旧画笔条退场）
+
+- 地图栏那个 `data-mode="paint"` 的「地形」档，现在是**动作按钮** `#map-editor`「地形 · 手绘…」——
+  点它打开全屏手绘海陆画板，不再是"在地形上刷四支刷子"。
+- 删掉：`#map-paint-bar` 整条（造山/压谷/浅海/深海 + 四档尺寸 + 撤销最后一笔/清空笔迹）、
+  `paintState()`/`brushUi()`/`startPaint()`/`paintFrom()`/`endPaint()`/`clearPaint()`、`liveStroke`/`lastPaint`、
+  `lingkuang-map-brush` 事件监听、`skipTerrainRebuild`/`schedulePaintRebuild`。
+- **保留**：`resetTerrainPaint()` + 一个 `clearLegacyPaint()`（工作室「清空旧笔迹」仍走
+  `lingkuang-map-clear-paint`）—— 老「局部」地形数据里的 `terrain.paint` 笔划还要能被清掉；
+  渲染侧 `replayPaint` 照旧（旧地图打开还是那张带笔迹的图）。
+
+### 四、手绘画板重做（`src/ui/map-editor.ts`）
+
+| 项 | 第一百零八轮 | 现在 |
+| --- | --- | --- |
+| 掩膜分辨率 | 160×80（base64 约 4.3KB） | **320×160**（base64 17,068 字符） |
+| 工具 | 陆地 / 海洋 / 橡皮 | **陆地 / 海洋**（橡皮删除 —— 用户：「海洋不就是橡皮的功能吗」） |
+| 笔刷大小 | 四颗按钮（2/4/8/14 格） | **滑块 1~20 格**（`input[type=range]`，旁边显示数值；`[` / `]` 也能调） |
+| 缩放 | 无 | **滚轮 1×~8×**，以指针为锚；`−` / `适应` / `＋`，显示百分比 |
+| 平移 | 无 | **中键拖动** 或 **空格 + 左键拖动**；缩小到整幅时自动居中，放大后夹在边界内 |
+| 笔刷定位 | 无（凭手感） | **光标圆环**（`#ed-cursor` 叠加画布，半径 = 笔刷格数 × 当前格宽，`pointer-events:none`） |
+| 细节辅助 | 无 | 一格 ≥ 7 屏幕像素时画**淡网格**（一格一格补细节） |
+| 导出 | 160×80 | **4× 放大 1280×640**（拿出去在别的软件里看得清；导回来按颜色还原） |
+| 旧数据 | — | 读剪影时按 `src.w/src.h` 采样，**160×80 的老剪影自动最近邻放大**到 320×160 |
+
+坐标换算的稳健性（这次踩过）：画布 backing store 与 CSS 尺寸可能短暂不一致（刚打开、resize 还没跑完），
+`cellAt()` 里先用 `k = vw / rect.width` 把指针换到画布坐标，再除 `contentW() / MASK_W`；光标环同理。
+打开后连做两次 `resize()`（`requestAnimationFrame` + 120ms）让布局落定。
+
+### 五、高清大图：内存 LRU + 「保存」
+
+`src/ui/map-hd.ts`：
+- 键 = `[形态, 种子, 档位, 看的方式, 立体度, 等高线, spec, 剪影, 宽, 高]`；**容量 3 张**（FIFO 淘汰 = LRU
+  触达时挪到队尾）。命中 ⇒ `hdCached()` 返回，`src/ui/map.ts` 的 `openBigView()` **直接开查看器**，
+  不挂遮罩、不重算。
+- 查看器工具栏多一颗「保存」：`LightboxItem.download` 给了就显示，点了用 `<a download>` 存 PNG
+  （文件名 `世界名-高清.png`）。
+- 实测：第一张星球高清 2304×1152 首次 **4.3s**（含遮罩 + 进度），同一张再开 **1ms**、`busy === false`。
+- 为什么不落盘：高清图是**派生数据**，写进数据文件会让 `worldbuilding.json` 涨几 MB；要长期留档就点「保存」。
+  换世界/换地图不用清缓存 —— 键里已经含着决定画面的全部参数。
+
+### 六、守卫
+
+新 `tools/e2e/map-draw.cjs`（11 项，干净临时目录 + 独立实例）：★0 前置（地形=手绘入口、无细化区域、
+等高线四档、无旧画笔条）★1 面板骨架（两档工具、滑块 1~20、缩放三键、双画布铺满、光标层
+`pointer-events:none`）★2 画一笔陆地% 上升 ★3 滚轮缩放（261%）★4 中键平移（画面签名变）
+★5 滑块改笔刷 + 光标环半径 37→405px ★6 按剪影生成（mask 320×160、`form=planet`、画布挂上）
+★7 大图 2304×1152 + 保存按钮 ★8 **拖过之后点 × 仍能关**（第一百零九轮回归）★9 再开命中缓存
+（<1s、无遮罩）★10 无未捕获异常。
+
+其余四套跟着改口径后全绿：`map-gen.cjs` 15/15（★12「地形」打开面板 + 旧画笔条不存在；
+★13 关掉面板后地图栏照旧）、`map-planet.cjs` 12/12（★0 改成 `noRefineMode`）、
+`map-style.cjs` 14/14、`map-studio.cjs` 16/16。`npx tsc --noEmit` 0、`npx vite build` 0。
+
+### 七、教训（都是这次真栽的）
+
+1. **补丁脚本里 `process.exit(1)` 早退前一定要先写盘**：CSS 整块替换那支脚本在最后一个 `sub` MISS 时
+   退出了，文件没写 ⇒ 面板还是旧样式（canvas 在文档流里、`#ed-cursor` 盖在上面、`vw/vh` 量到 981），
+   表现为"点下去画不上"（指针落点被算到画布外）—— 白查一轮。
+2. **不要用 PowerShell 的 `Get-Content -Raw` + `Set-Content -Encoding UTF8` 改 UTF-8 源码**：
+   5.1 会按 ANSI 读，中文全成乱码（守卫文件直接 SyntaxError）。改文件只用 `node` / `edit` / `write`。
+3. **合成 PointerEvent 的 `setPointerCapture` 会抛 `NotFoundError`** ⇒ 所有 `setPointerCapture` 都要
+   try/catch（`src/ui/lightbox.ts`、`src/ui/map-editor.ts`），否则守卫的"无异常"一项永远红。
+4. 画布类组件要**同时**量 backing store 与 CSS 尺寸：两者不一致时手写坐标换算必错。

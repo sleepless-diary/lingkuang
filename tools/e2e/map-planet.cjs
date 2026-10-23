@@ -164,8 +164,8 @@ async function main() {
   await ev(`window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(String(e.message))); true`);
   await send('Page.enable');
 
-  /* ★0 前置（第一百零八轮改口径）：地图栏在、**形态控件已退场**（底图 = 星球总图）、
-     等高线方式四档 / 手绘海陆 / 细化区域 三个入口都在、球体按钮藏着、工作室没开、磁盘没地形。 */
+  /* ★0 前置（第一百零九轮改口径）：地图栏在、**形态控件已退场**（底图 = 星球总图）、
+     等高线方式四档 / 手绘海陆入口在、区域精细化**已删除**、球体按钮藏着、工作室没开、磁盘没地形。 */
   const contour0 = await opts('#map-contour');
   const p0 = await pane();
   const hasTerrain0 = !!diskMap()?.terrain;
@@ -176,12 +176,12 @@ async function main() {
     noStudioFormSel: (await ev(`!document.getElementById('ms-form')`)) === true,
     contour4: !!contour0 && contour0.ids.join(',') === 'auto,all,half,fifth',
     editorBtn: (await ev(`!!document.getElementById('map-editor')`)) === true,
-    refineMode: (await ev(`!!document.querySelector('[data-mode="refine"]')`)) === true,
+    noRefineMode: (await ev(`!document.querySelector('[data-mode="refine"]')`)) === true,
     /* 球体按钮的显隐跟着「有没有星球地形」走（守卫可能跑在已有地图的世界里） */
     globeFollowsData: p0.globeShown === hasTerrain0,
     studioClosed: (await ev(`!!document.getElementById('lk-map-studio')`)) === false,
   };
-  check('★0 前置：形态控件已退场、等高线四档、三个新入口齐、球体按钮不显示、面板没开',
+  check('★0 前置：形态控件已退场、等高线四档、手绘入口在、区域精细化已删、球体按钮不显示、面板没开',
     Object.values(pre0).every(Boolean),
     { ...pre0, contour: contour0 && contour0.ids });
 
@@ -247,7 +247,12 @@ async function main() {
   await ev(`document.querySelector('.lk-lb') && document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), true`);
   await sleep(600);
 
-  /* ★5 ⭐经度无缝：首尾列差 ≪ 隔半个地球的两列差 */
+  /* ★5 ⭐经度无缝：首尾列差 ≪ 隔半个地球的两列差。
+     ⚠️ 先切回「自然」再量：★3 已经切到「地形图 + 每五条」，那画法上有 1px 宽的等高线，
+     相邻两列的均值差本来就有 ~10（一个像素的横向错位就够）⇒ 会误判成"没有接缝"。
+     接缝是数据属性，与画法无关。 */
+  await setSel('#map-view', 'natural');
+  await sleep(2200);
   const px5 = await ev(PIX);
   check('★5 ⭐经度无缝：首尾列（球上相邻）的像素差远小于对面列',
     px5?.ok === true && px5.seam < px5.far * 0.5,

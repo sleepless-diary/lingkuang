@@ -178,62 +178,40 @@ async function main() {
   })()`);
   check('★10 层序：地形层在 SVG 之前（画在底下）', Array.isArray(order) && order.indexOf('map-terrain') < order.indexOf('map-svg'), order);
 
-  /* ── 手刷地形（画笔）：走地图栏那条真路。真相同样是磁盘上的 `terrain.paint`（一串笔划）。
-     ⚠️ 这一段必须排在助手那段（★19）之前：★19 会切到设定库工具，地图栏就不见了。 */
-  const paneMode = () => ev(`(function () {
-    const bar = document.getElementById('map-paint-bar');
-    const hint = document.getElementById('map-hint');
-    const note = document.getElementById('map-paint-note');
-    return { bar: bar ? getComputedStyle(bar).display : 'none', hint: hint ? hint.textContent : '', note: note ? note.textContent : '' };
-  })()`);
-  /** 在图上按一串相对坐标刷一笔（工具/尺寸按钮先点一下 —— 顺便覆盖那两个按钮的接线） */
-  const stroke = async (tool, pts, size = 'large') => {
-    await ev(`(function () { const b = document.querySelector('.map-mode[data-mode="paint"]'); if (b) b.click(); return true; })()`);
-    await sleep(150);
-    await ev(`(function () { const b = document.querySelector('.map-brush[data-tool="${tool}"]'); if (b) b.click(); return true; })()`);
-    await ev(`(function () { const b = document.querySelector('.map-brush-size[data-size="${size}"]'); if (b) b.click(); return true; })()`);
-    await ev(`(function () {
-      const svg = document.getElementById('map-svg');
-      const r = svg.getBoundingClientRect();
-      const at = (fx, fy) => ({ clientX: r.left + r.width * fx, clientY: r.top + r.height * fy });
-      const mk = (t, p) => new PointerEvent(t, { clientX: p.clientX, clientY: p.clientY, bubbles: true, button: 0, buttons: 1, pointerId: 2 });
-      const pts = ${JSON.stringify(pts)};
-      svg.dispatchEvent(mk('pointerdown', at(pts[0][0], pts[0][1])));
-      for (let i = 1; i < pts.length; i++) svg.dispatchEvent(mk('pointermove', at(pts[i][0], pts[i][1])));
-      const last = pts[pts.length - 1];
-      window.dispatchEvent(mk('pointerup', at(last[0], last[1])));
-      return true;
-    })()`);
-    await sleep(900);   /* 一笔一次 store.update + 落盘防抖 */
-  };
-
-  /* ★12（第一百零八轮改口径）：「局部」形态退场之后，**手刷笔迹只对老数据里的局部地形有效**。
-     底图是星球时，画笔档必须**明确拒绝**（而不是悄悄不生效），并把用户指向「手绘海陆」。
-     新的手绘路径（全屏画板 → 剪影 → 生成）由 map-refine.cjs ★8 覆盖。 */
-  await ev(`(function () { const b = document.querySelector('.map-mode[data-mode="paint"]'); if (b) b.click(); return true; })()`);
-  await sleep(200);
-  const pm = await paneMode();
-  const brushBtns = await ev(`document.querySelectorAll('.map-brush').length + '/' + document.querySelectorAll('.map-brush-size').length`);
-  await stroke('mountain', [[0.3, 0.4], [0.4, 0.45], [0.5, 0.5]], 'large');
-  await sleep(900);
-  const paintOnPlanet = (diskMap()?.terrain?.paint ?? []).length;
-  const paintNote = await ev(`(document.getElementById('map-paint-note') || {}).textContent || ''`);
-  check('★12 星球底图上手刷被明确拒绝：画笔条在、刷完盘上没有笔迹、提示指向「手绘海陆」',
-    pm.bar !== 'none' && brushBtns === '4/4' && paintOnPlanet === 0 && /星球|手绘海陆/.test(paintNote),
-    { bar: pm.bar, btns: brushBtns, strokes: paintOnPlanet, note: paintNote.slice(0, 60) });
-
-  /* ★13 撤销 / 清空按钮仍在，且点了不炸、不污染数据 */
-  await ev(`(function () { const b = document.getElementById('map-paint-undo'); if (b) b.click(); return true; })()`);
+  /* ── 第一百零九轮（用户：「地形工具加入手绘面板吧」）：旧画笔条整条退场，
+     「地形」按钮改成打开**全屏手绘面板**（笔刷滑块 / 缩放 / 双画布）。
+     这里只验入口与骨架；真画+生成+缩放由 map-draw.cjs 覆盖。 */
+  await ev(`(function () { const b = document.getElementById('map-editor'); if (b) b.click(); return true; })()`);
   await sleep(500);
-  await ev(`(function () { const b = document.getElementById('map-paint-clear'); if (b) b.click(); return true; })()`);
-  await sleep(700);
-  const cleared = (diskMap()?.terrain?.paint ?? []).length;
+  const ed = await ev(`(function () {
+    const el = document.querySelector('.lk-ed');
+    if (!el) return { open: false, bar: !!document.getElementById('map-paint-bar'), brushes: document.querySelectorAll('.map-brush').length };
+    const slider = document.getElementById('ed-brush');
+    return {
+      open: true,
+      tools: [...el.querySelectorAll('[data-tool]')].map((b) => b.dataset.tool),
+      slider: !!slider && slider.type === 'range' && slider.min === '1' && slider.max === '20',
+      canvases: !!document.getElementById('ed-canvas') && !!document.getElementById('ed-cursor'),
+      hasErase: !!el.querySelector('[data-tool="erase"]'),
+      zoomBtns: !!document.getElementById('ed-zoom-in') && !!document.getElementById('ed-zoom-out') && !!document.getElementById('ed-zoom-fit'),
+      bar: !!document.getElementById('map-paint-bar'),
+      brushes: document.querySelectorAll('.map-brush').length,
+    };
+  })()`);
+  await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
+  await sleep(300);
+  const edClosed = (await ev(`!document.querySelector('.lk-ed')`)) === true;
+  check('★12 「地形」打开手绘面板：陆地/海洋两档、笔刷滑块 1~20、缩放三键、双画布、无橡皮；旧画笔条已删',
+    ed.open === true && ed.tools.join(',') === 'land,sea' && ed.slider === true && ed.zoomBtns === true
+    && ed.canvases === true && ed.hasErase === false && ed.bar === false && ed.brushes === 0,
+    ed);
+
+  /* ★13 面板关掉之后地图栏照旧（画布还在、Esc 不炸）*/
   const pane13 = await pane();
-  check('★13 撤销 / 清空笔迹按钮仍安全（盘上 0 笔、画布还在）',
-    cleared === 0 && pane13.hasCanvas === true, { strokes: cleared, canvas: pane13.hasCanvas });
+  check('★13 关掉手绘面板后地图栏照旧（画布在、Esc 不炸）',
+    pane13.hasCanvas === true && edClosed, { canvas: pane13.hasCanvas, closed: edClosed });
 
-
-  /* ★19 助手的 generate_map：图上已有地形 ⇒ 必须出卡片（不许悄悄换掉） */
+  /* ★19 助手的 generate_map：图上已有地形 ⇒ 必须出卡片（不许悄悄换掉） */  /* ★19 助手的 generate_map：图上已有地形 ⇒ 必须出卡片（不许悄悄换掉） */
   await ev(`document.querySelector('#lk-toolbar [data-tool="codex"]').click(); true`);
   await sleep(500);
   await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })); true`);

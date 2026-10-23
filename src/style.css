@@ -1790,12 +1790,11 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
    顶栏工具 / 中间 2:1 画布 / 底栏状态。颜色只用 tokens.css 的变量。 */
 .lk-ed {
   position: fixed; inset: 0; z-index: 1500;
-  background: rgba(15, 15, 17, .66);
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 10px; padding: 18px;
+  background: rgba(15, 15, 17, .9);
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 16px;
 }
 .lk-ed__bar, .lk-ed__foot {
-  width: 100%; max-width: 1040px;
+  width: 100%;
   background: var(--chrome-2); color: var(--fg-inverse);
   border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
 }
@@ -1804,35 +1803,34 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
 .lk-ed__hint { font-size: var(--text-2xs); color: rgba(232, 231, 223, .62); }
 .lk-ed__spacer { flex: 1; }
 .lk-ed__group { display: flex; align-items: center; gap: 4px; }
-.lk-ed__tool, .lk-ed__size, .lk-ed__btn {
+.lk-ed__tool, .lk-ed__btn {
   background: none; border: 1px solid rgba(232, 231, 223, .22); color: var(--fg-inverse);
   border-radius: var(--radius-sm); padding: 4px 10px; font-size: var(--text-2xs);
   cursor: pointer; font-family: inherit; line-height: 1.4;
 }
-.lk-ed__tool:hover, .lk-ed__size:hover, .lk-ed__btn:hover { border-color: rgba(232, 231, 223, .45); }
-.lk-ed__tool.is-on, .lk-ed__size.is-on { border-color: var(--accent); color: var(--accent); }
+.lk-ed__tool:hover, .lk-ed__btn:hover { border-color: rgba(232, 231, 223, .45); }
+.lk-ed__tool.is-on { border-color: var(--accent); color: var(--accent); }
 .lk-ed__btn.is-primary { border-color: var(--accent); background: var(--accent); color: var(--accent-on); font-weight: 600; }
 .lk-ed__close {
   width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
   background: none; border: 1px solid rgba(232, 231, 223, .22); border-radius: var(--radius-sm);
   color: var(--fg-inverse); font-size: 16px; line-height: 1; cursor: pointer;
 }
+.lk-ed__slider { display: flex; align-items: center; gap: 6px; font-size: var(--text-2xs); color: rgba(232, 231, 223, .78); }
+.lk-ed__slider input[type="range"] { width: 110px; accent-color: var(--accent); cursor: pointer; }
+.lk-ed__val { font-family: var(--font-mono); font-size: var(--text-2xs); opacity: .82; min-width: 38px; text-align: right; }
 .lk-ed__stage {
+  position: relative; flex: 1; min-height: 0;
   background: var(--chrome-2); border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg); padding: 10px; line-height: 0;
+  border-radius: var(--radius-lg); overflow: hidden;
 }
-.lk-ed__stage canvas {
-  display: block; width: 960px; height: 480px;
-  max-width: calc(100vw - 60px); max-height: calc(100vh - 210px);
-  aspect-ratio: 2 / 1; cursor: crosshair; image-rendering: pixelated;
-  border-radius: 2px; touch-action: none;
-}
+.lk-ed__stage canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; touch-action: none; }
+#ed-canvas { image-rendering: pixelated; cursor: crosshair; }
+#ed-cursor { pointer-events: none; }
 .lk-ed__foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 12px; font-size: var(--text-2xs); color: rgba(232, 231, 223, .62); }
 .lk-ed__foot #ed-note { text-align: right; }
 
 /* ── 区域精细化面板（第一百零八轮）：与生成工作室同一套 lk-ms 骨架，只补几处 ── */
-.lk-rf .lk-ms__sel { max-width: 190px; }
-.lk-rf .lk-ms__stage { aspect-ratio: 9 / 5; }
 
 /* 画板的「留白 = 海洋」勾选（第一百零八轮）*/
 .lk-ed__check { display: flex; align-items: center; gap: 5px; font-size: var(--text-2xs); color: rgba(232, 231, 223, .78); cursor: pointer; }

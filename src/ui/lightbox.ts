@@ -18,6 +18,8 @@ export interface LightboxItem {
   src: string;
   title?: string;
   hint?: string;
+  /** 给了就在工具栏里多一颗「保存」：文件按这个名字落地（PNG）*/
+  download?: string;
 }
 
 interface View {
@@ -61,6 +63,7 @@ export function openLightbox(item: LightboxItem): void {
       <span class="lk-lb__title"></span>
       <span class="lk-lb__zoom">100%</span>
       <span class="lk-lb__hint">点一下返回 · 双击放大 · 滚轮缩放 · 拖动平移</span>
+      <button class="lk-lb__save" type="button" title="把这幅高清图存成 PNG" hidden>保存</button>
       <button class="lk-lb__close" type="button" title="返回（Esc）">×</button>
     </div>
     <img class="lk-lb__img" alt="" draggable="false">
@@ -73,6 +76,20 @@ export function openLightbox(item: LightboxItem): void {
   titleEl.textContent = item.title ?? '';
   titleEl.hidden = !item.title;
   if (item.hint) hintEl.textContent = item.hint;
+
+  /* ⭐ 保存：直接给一个 <a download> —— Electron 里会走系统"另存为"。 */
+  const saveBtn = el.querySelector('.lk-lb__save') as HTMLButtonElement | null;
+  if (item.download && saveBtn) {
+    saveBtn.hidden = false;
+    saveBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (closeTimer !== null) { window.clearTimeout(closeTimer); closeTimer = null; }
+      const a = document.createElement('a');
+      a.href = item.src;
+      a.download = item.download || '地图.png';
+      a.click();
+    });
+  }
 
   const state: View = { scale: 1, tx: 0, ty: 0 };
   let fit = 1;
@@ -110,13 +127,16 @@ export function openLightbox(item: LightboxItem): void {
 
   el.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
+    /* ⚠️ 每次按下都清一次：旧写法在"工具栏上按下"时提前 return、
+       没清 moved ⇒ 只要之前拖过一次，后面的点击都会被当成拖动（关闭按钮因此失灵）。 */
+    moved = false;
     /* 工具栏上的按钮不启动拖动（否则点关闭会变成拖图） */
     if ((e.target as HTMLElement)?.closest('.lk-lb__bar')) return;
     dragging = true;
-    moved = false;
     px = e.clientX; py = e.clientY;
     ptx = state.tx; pty = state.ty;
-    el.setPointerCapture?.(e.pointerId);
+    /* 合成事件（e2e）的 pointerId 不在活动指针表里 ⇒ setPointerCapture 会抛 NotFoundError，吞掉 */
+    try { el.setPointerCapture?.(e.pointerId); } catch { /* 没有活动指针 */ }
     el.classList.add('is-grab');
     e.preventDefault();
   });
@@ -138,12 +158,20 @@ export function openLightbox(item: LightboxItem): void {
     const wasDrag = moved;
     endDrag(e);
     if (wasDrag) return;
-    /* 点一下（或点按钮）→ 延迟关：窗口期内来了双击就取消这次关闭 */
-    if ((e.target as HTMLElement)?.closest('.lk-lb__close')) { closeLightbox(); return; }
+    /* 工具栏（标题/保存/关闭）上的点击不当作"点图返回"*/
+    if ((e.target as HTMLElement)?.closest('.lk-lb__bar')) return;
+    /* 点一下 → 延迟关：窗口期内来了双击就取消这次关闭 */
     if (closeTimer !== null) window.clearTimeout(closeTimer);
     closeTimer = window.setTimeout(() => { closeTimer = null; closeLightbox(); }, 240);
   });
   el.addEventListener('pointercancel', endDrag);
+
+  /* ⭐ 关闭按钮：直接绑 click —— 不依赖 pointer 手势那套坐标判断（用户报"× 点了没反应"）。*/
+  el.querySelector('.lk-lb__close')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (closeTimer !== null) { window.clearTimeout(closeTimer); closeTimer = null; }
+    closeLightbox();
+  });
 
   el.addEventListener('dblclick', (e) => {
     e.preventDefault();

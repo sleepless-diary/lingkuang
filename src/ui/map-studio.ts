@@ -382,9 +382,8 @@ export function openMapStudio(store: Store): () => void {
     syncBrush();
   };
 
-  /* ── 手绘地形（刷子）：面板只负责"把地图栏切到地形模式" —— 画布与指针都在地图栏
-     （`src/ui/map.ts` 监听 `lingkuang-map-brush` / `lingkuang-map-clear-paint`）。
-     用户定下的分工：**地形拿来看，文化分区拿来动手**；刷子就是"在看得见的底稿上动手"的另一半。 */
+  /* ── 手绘地形：面板只开**全屏手绘海陆画板**（第一百零九轮：地图栏的画笔条已退场）。
+     「清空旧笔迹」仍走 `lingkuang-map-clear-paint`，清的是老「局部」地形留下的手刷笔迹。 */
   const brushN = q<HTMLElement>('#ms-brush-n');
   function syncBrush(): void {
     const m = hostStore ? currentWorld(hostStore).maps?.[0] : undefined;

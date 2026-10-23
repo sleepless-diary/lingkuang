@@ -215,43 +215,13 @@ export interface MapTerrainSpec {
 }
 
 /** 手绘海陆剪影（见 `MapTerrainSpec.mask`）。
- *  `bits` = 每格 2 bit 的 base64（顺序按行主序，低位在前）⇒ 160×80 的剪影约 4.3KB 文本。 */
+ *  `bits` = 每格 2 bit 的 base64（顺序按行主序，低位在前）⇒ 320×160 的剪影约 17KB 文本。 */
 export interface MapMask {
   w: number;
   h: number;
   bits: string;
 }
 
-/** ⭐ 区域精细化样本（第一百零八轮）：一个样本 = 一组生成参数 + 一张小缩略图。
- *  用户拍板：「参数 + 一张小缩略图（dataURL）」（每样本多 20~60KB）、「一个区域可留多版 +
- *  标一个『当前采用』」。缩略图是**卡片尺寸**（264×147），大图打开时现渲染高清。 */
-export interface MapRegionSample {
-  id: string;
-  seed: string;
-  style: string;
-  spec?: { [k: string]: number | undefined };
-  /** 生成时用的「看的方式」（样本自己记住，切看的方式不会把已存的样本染色搞混） */
-  view?: string;
-  /** 生成时的等高线方式（同 view，是显示参数） */
-  contour?: string;
-  lift?: string;
-  /** 卡片缩略图（PNG dataURL，264×147）*/
-  thumb?: string;
-  createdAt: number;
-}
-
-/** ⭐ 一块「精细化区域」：在地图上框出来的矩形 + 它名下的样本库（第一百零八轮）。
- *  `rect` 用**地图坐标**（0..MapData.width / 0..height）—— 与世界沙盘、SVG 同一套坐标，
- *  拖动窗口大小不会跟着漂。 */
-export interface MapRegionDetail {
-  id: string;
-  name: string;
-  rect: { x: number; y: number; w: number; h: number };
-  samples: MapRegionSample[];
-  /** 当前采用的样本 id（地图上高亮它；没有就是没选） */
-  active?: string;
-  createdAt: number;
-}
 export interface MapData {
   id: string;
   name: string;
@@ -264,9 +234,6 @@ export interface MapData {
      是因为地图住在 worldbuilding.json 里，用户手里那份数据不能因升级读不出来。 */
   lines?: MapLine[];        // 开放线（手绘轨迹之外，给将来的矢量水系留位）
   terrain?: MapTerrainSpec; // 程序化生成的地形（见 `src/ui/map-gen.ts`；图现算）
-  /* ⭐ 区域精细化（第一百零八轮）：地图上框出来的矩形 + 每个矩形名下的样本库。
-     底图 = 星球总图，细节交给这些区域样本（原来那个「局部形态」整个撤了）。 */
-  refined?: MapRegionDetail[];
 }
 
 /** 世界观（= 顶部世界栏的一个 tab） */
