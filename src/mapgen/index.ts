@@ -11,7 +11,7 @@
  *  全在 `vendor/map.ts` 里。
  *
  *  ── 灵框的取舍（都写在这里，方便以后改）
- *  1. **世界仍是上游那个 1000×1000 方形网格**（`choosePoints` 的 bounds 写死），内部 FBO 固定 2048²。
+ *  1. **世界仍是上游那个 1000×1000 方形网格**（`choosePoints` 的 bounds 写死），内部 FBO 固定 1536²。
  *     灵框的地图是 900×500（1.8:1）⇒ 我们不碰任何几何/光照数学，而是**取中间那条横带**显示
  *     （`BAND` 常量 + `screenToWorld` 一致的裁剪）。这样上游的着色各向同性、不会拉扁。
  *  2. **一个世界一张图**：`MapData.terrain` 只存参数（种子/档位/数量），图在渲染时现算（同种子同一片地）。
@@ -115,7 +115,11 @@ export interface MapgenParams {
 
 /** 上游默认值（逐字抄自 `mapgen4.ts:25-66` 的 `initialParams` + `config.js`） */
 export const DEFAULT_PARAMS: MapgenParams = {
-  spacing: 5.5,
+  /* ⭐ 灵框改动（第一百零五轮）：`spacing` 5.5 → 4.8。
+     5.5 时一个三角边在屏幕上约 8.6px，海岸/山脊的**波长下限**就被这个宽度钉住（用户
+     「边缘还是很平滑」）；4.8 ⇒ 三角 +31%（5.0 万 → 6.6 万）、建网格只 +6ms、生成耗时不变。
+     再往上（4.2 / 3.6）实测三角 +72% / +134%，收益递减，留给以后的档位化。 */
+  spacing: 4.8,
   mountainSpacing: 35,
   mesh: { seed: 12345 },
   elevation: {
@@ -152,9 +156,13 @@ export const DEFAULT_PARAMS: MapgenParams = {
 /** 灵框的档位（用户能选的三种世界形态）→ 上游参数。理由：上游没有「档位」这个概念，
  *  它只有一堆滑杆；我们把"大陆/群岛/盘古"翻译成参数组合。 */
 export const STYLE_PRESETS = {
-  continent: { island: 0.5, noisy_coastlines: 0.012, ocean_depth: 1.4, mountainSpacing: 35 },
-  archipelago: { island: 0.3, noisy_coastlines: 0.05, ocean_depth: 1.15, mountainSpacing: 26 },
-  pangaea: { island: 0.72, noisy_coastlines: 0.02, ocean_depth: 1.55, mountainSpacing: 40 },
+  /* ⭐ 灵框改动（第一百零五轮）：`noisy_coastlines` 全线抬档 —— 这是"海岸线有多碎"的唯一开关
+     （上游拿它在海平面附近叠一层高频噪声，只改海岸、不改大陆形状）。
+     实测（同种子）：0.012 → 0.028 时陆/水交界边对数 1684 → 约 2100（+25%），生成耗时一分不变。
+     代价是河数会跟着涨（河口变多）—— `paramsFromSeed()` 里把 `lg_min_flow` 一并抬一点压回去。 */
+  continent: { island: 0.5, noisy_coastlines: 0.028, ocean_depth: 1.4, mountainSpacing: 35 },
+  archipelago: { island: 0.3, noisy_coastlines: 0.055, ocean_depth: 1.15, mountainSpacing: 26 },
+  pangaea: { island: 0.72, noisy_coastlines: 0.032, ocean_depth: 1.55, mountainSpacing: 40 },
 } as const;
 export type MapgenStyle = keyof typeof STYLE_PRESETS;
 export const MAPGEN_STYLES: MapgenStyle[] = ['continent', 'archipelago', 'pangaea'];
@@ -224,7 +232,7 @@ export function paramsFromSeed(seed: string, style: string = 'continent', spec?:
   p.rivers.flow = 0.14 + rv * 0.06;
   p.rivers.lg_min_flow = 3.2 - rv * 0.35;
   /* ⭐ 第一百零三轮：河宽从上游的 0.0907（exp(-2.4)）抬到 0.135（exp(-2.0)，约 1.5 倍）。
-     用户「很假」的一半是**河看不见**：地图栏那块画布把 2048² 位图缩到 ~900px 显示，
+     用户「很假」的一半是**河看不见**：地图栏那块画布把位图缩到 ~900px 显示，
      上游那种"刚好一格"的细线在缩略尺寸下直接消失（状态行写着 29 条河，画面一根都没有）。
      河**数**不受影响（数的是流量连通块），所以统计/守卫口径不变。 */
   p.rivers.lg_river_width = -2.0;
@@ -599,8 +607,8 @@ export function statsOf(engine: TerrainEngine): TerrainStats {
 
 /* ── 视图：一块画布上的地形（沙盘地图栏 / 生成面板预览 / 抽卡缩略图都走它）──────── */
 
-/** 灵框地图是 1.8:1，而内核世界是方的（1000×1000，画布 2048²）⇒ **取中间那条横带**。
- *  `BAND` = 横带在世界坐标里的上下界（y 从 234 到 766 ⇒ 532/1000 ≈ 0.532，2048×0.532 ≈ 1090 像素高）。 */
+/** 灵框地图是 1.8:1，而内核世界是方的（1000×1000，画布 1536²）⇒ **取中间那条横带**。
+ *  `BAND` = 横带在世界坐标里的上下界（y 从 234 到 766 ⇒ 532/1000 ≈ 0.532，1536×0.532 ≈ 817 像素高）。 */
 export const BAND = { y0: 234, y1: 766, x0: 20, x1: 980 };
 
 export class TerrainView {
@@ -637,7 +645,7 @@ export class TerrainView {
     this.renderer.updateView(p);
   }
 
-  /** 抓一张 2048² 的像素图（上游自带的 screenshotCanvas；WebGL 缓冲区不保留，只能这样读）。 */
+  /** 抓一张 `TERRAIN_BITMAP²` 的像素图（上游自带的 screenshotCanvas；WebGL 缓冲区不保留，只能这样读）。 */
   snapshot(timeoutMs = 3000): Promise<HTMLCanvasElement> {
     return new Promise((resolve, reject) => {
       if (this.disposed) { reject(new Error('地形视图已经销毁')); return; }

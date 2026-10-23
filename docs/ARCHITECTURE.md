@@ -1005,3 +1005,66 @@
 - `tools/e2e/mapgen-engine.mjs` **22/22 PASS**（★0 改成「上游骨架 + 灵框刻意偏离的三处」；★15~★17 海岸平滑、★19 峰值/均值 6.2 ≥ 5.9 全过）；
 - `tools/e2e/map-style.cjs` **13/13**、`map-planet.cjs` **13/13**、`map-studio.cjs` **16/16**（各自在**干净临时目录**起一个实例跑）；
 - 截图：`.review/shots-map-noise2/`（八档局部 + 八档星球）、`.review/shots-lift/`（立体 vs 顶视同图对比）。
+
+## 2026-10-23 · 地图细节与开销（第一百零五轮）
+
+用户 2026-10-23：「**感觉边缘还是很平滑，是不是细节度不够的问题，而且性能开销好像有点大，
+要不要讨论一下方案**」。先量了三件事（真实数据副本、真入口触发、钩 GL 取原生像素），
+再按「快修」落地了下面四条；结构级/性能彻底的部分写进 `docs/MAP-REALISM-NEXT.md`。
+
+### 一、位图 2048 → 1536（渲染层，用户看不到"分辨率"这个数，但它是"糊"的一部分）
+
+- `src/mapgen/vendor/render.ts`：`const fbo_texture_size = 1536`（原 2048），
+  `resizeCanvas()` 改用这个常量（上游这里还写死着 2048）。
+- `src/ui/map-terrain.ts`：`TERRAIN_BITMAP = 1536`。`bandLayout()` / `bandSource()` 全是**按比例**算的
+  ⇒ 地图格子的 CSS 尺寸一分没变（仍是 902×902 的正方形裁带、top −201）。
+- 为什么：地图栏把位图缩到地图格子再按 `viewScale`（≤2）放大到屏幕。实测屏幕宽
+  **606px（时间线+地图双窗格）/ 1502px（地图占满）** —— 2048 在常用放大档是 1.36× 降采样
+  （锐边先被磨一遍，还多付 44% 显存）；1536 在 1.66× 那档约 1:1。
+- 显存：4 张 FBO 的像素格式合计约 20 B/px ⇒ 2048² ≈ 84MB → 1536² ≈ 47MB；每趟填充率 −44%。
+  `tools/e2e/map-gen.cjs` ★3 同步改成断言 1536²。
+
+### 二、地形细节：网格加密 + 海岸噪声抬档（生成层）
+
+- `src/mapgen/index.ts`：`DEFAULT_PARAMS.spacing` **5.5 → 4.8**（三角 50,258 → **66,092**、
+  区域 25,390 → **33,345**；建网格 65 → 71~75ms、生成 59 → 66ms）。代价是**手刷每步
+  15.3 → 20.9ms**（仍约 48fps，用户没抱怨过这个方向，先这么定）。
+- `STYLE_PRESETS` 的 `noisy_coastlines` 全线抬档（这是"海岸线有多碎"的唯一开关）：
+  大陆 0.012 → **0.028**、盘古 0.02 → **0.032**、群岛 0.05 → **0.055**。
+  实测陆/水交界边对数 1684 → 约 2100（+25%），**生成耗时不变**。
+- 守卫同步：`tools/e2e/mapgen-engine.mjs` ★0 断言 `spacing === 4.8` 并把这轮偏离登记进注释，
+  ★1 的门槛提到 regions > 28000 / tris > 55000。实测三档海岸指标：大陆 0.061（≤0.09）、
+  盘古 0.03（≤0.09）、群岛 0.117（≤0.155），河数 49、河密度 0.0023（★20 仍过）。
+
+### 三、手刷松手那 154ms 不再卡在手指上
+
+- 旧路径：`endPaint(true)` → `save()` → store 通知 → `renderSvg()` → `syncTerrain()` 走**新键重建**
+  （全量生成 + 重定海平面）⇒ 实测**一次 154ms 长任务**，正好落在抬手那一刻。
+- 现在（`src/ui/map.ts`）：
+  - `skipTerrainRebuild` 标志：松手那一帧的 `renderSvg()` **跳过** `syncTerrain`（画布保持 shape:false 的场）；
+  - `schedulePaintRebuild()`：用 `requestIdleCallback(…, { timeout: 900 })`（无此 API 时 `setTimeout 260ms`）
+    再做那趟全量重算 —— 撤销/重做、数据、盘上内容都是**立刻**正确的。
+  - 状态行**当场**报新数字：`TerrainHandle` / `PlanetHandle` 新增 `liveStats()`（局部 = `statsOf(engine)`，
+    星球 = 场缓存里的 stats），`map.ts` 抽出 `setTerrainNote()` 供 `syncTerrain()` 与 `endPaint()` 共用。
+- 实测：松手从 **154ms 单个长任务** → **64ms + 97ms**（后一段在空闲时段）；
+  `map-gen.cjs` ★14（"刷完状态行变了"）、★15（reload 后逐字一致）都仍然过。
+
+### 四、星球（**分辨率没降**，只做了两件小事）
+
+- ⚠️ 不要降 `PLANET_VIEW_H`：2026-10-13 用户明确说过「分辨率和细节都不够」，从 512 抬到 768 的。
+  现在 1536×768 对 1502px 的屏幕刚好，降到 640 会重新变糊。
+- `src/mapgen/planet.ts`：`hex()` 加 `Map` 缓存 —— `renderPlanet()` 逐像素走
+  `hex(climateHex(...))`，1.18M 次 rgbToHex + 反解 ≈ 100ms；climateHex 只落在 3 温带 × 4 湿度格点上，
+  缓存后基本全命中。⚠️ 返回值是**共享数组**，调用方只读（`mix()` 会新建）。
+- 实测仍存在（列入 `docs/MAP-REALISM-NEXT.md` 的 C 档）：切形态首次 **2054ms** 长任务、
+  换一档未缓存的上色约 **700ms**。分帧/Worker 是下一步，不是本轮。
+
+### 五、验证
+
+- `npx tsc --noEmit` 0、`npx vite build` 0。
+- 守卫（各在**干净临时目录**起一个实例跑）：
+  `mapgen-engine.mjs` **22/22**、`map-style.cjs` **14/14**、`map-gen.cjs` **20/20**、
+  `map-planet.cjs` **13/13**、`map-studio.cjs` **16/16**。
+- 像素证据：`.review/shots-native/`（改前，2048 / spacing 5.5 / coast 0.012）与
+  `.review/shots-native-after/`（改后，1536 / 4.8 / 0.028）；同世界坐标裁同一块地对照
+  （`.review/png-crop.cjs`）。屏幕观感：`.review/shots-native-after/30-window.png`。

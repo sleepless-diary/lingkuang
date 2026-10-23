@@ -31,8 +31,10 @@ export function terrainRenderParams(t: MapTerrainSpec): Partial<MapgenRenderPara
   return liftOf(t) === 'flat' ? { ...p, mountain_height: 0 } : p;
 }
 
-/** 内核位图边长（`render.ts` 的 `fbo_texture_size`；改那里就得改这里） */
-export const TERRAIN_BITMAP = 2048;
+/** 内核位图边长（`render.ts` 的 `fbo_texture_size`；改那里就得改这里）
+ *  ⭐ 第一百零五轮：2048 → 1536。屏幕宽约 1500px ⇒ 2048 只是被降采样（磨软边缘 + 多付显存），
+ *  1536 与屏幕 1:1；`bandLayout()` 是**按比例**算的，所以地图格子的 CSS 尺寸一分不变。 */
+export const TERRAIN_BITMAP = 1536;
 /** 默认渲染参数下画布能看到的世界范围（`zoom = 100/480`、`x = y = 500`）*/
 const WORLD_VIEW = 960;
 
@@ -81,9 +83,9 @@ export function resetTerrainPaint(): void {
 
 /* ── 位图 ↔ 地图的映射：取中间横带 ────────────────────────────────────────── */
 
-/** 把 2048² 位图里「横带」那一块搬到界面上：给的是画布 CSS 尺寸与负的 top 偏移。
- *  推导：画布能看到世界 960 单位（→ 2048 像素）⇒ 横带 y∈[BAND.y0, BAND.y1] 对应
- *  位图 y ∈ [(y0-20)/960×2048, (y1-20)/960×2048]（本机实测 y0=234 ⇒ 456.5px，带高 1135px）。
+/** 把 `TERRAIN_BITMAP²` 位图里「横带」那一块搬到界面上：给的是画布 CSS 尺寸与负的 top 偏移。
+ *  推导：画布能看到世界 960 单位（→ 位图边长像素）⇒ 横带 y∈[BAND.y0, BAND.y1] 对应
+ *  位图 y ∈ [(y0-20)/960×边长, (y1-20)/960×边长]（1536 时 y0=234 ⇒ 342px，带高 851px）。
  *  要让它正好铺满 w×h 的格子 ⇒ 缩放 h/带高，画布整体按这个比例（**正方形、不拉伸**）。 */
 export function bandLayout(w: number, h: number): { size: number; top: number; left: number } {
   const sy = (BAND.y0 - BAND.x0) / WORLD_VIEW * TERRAIN_BITMAP;
@@ -115,6 +117,9 @@ export interface TerrainHandle {
   regenerate: (opts?: { shape?: boolean }) => void;
   /** ⭐ 「看的方式」（第九十七轮）：只换渲染风格 —— 不重建网格、不重算地形，下一帧就变。 */
   setStyle: (v: string | undefined) => void;
+  /** ⭐ 第一百零五轮：**实时的**统计（手刷直接改内核的场，缓存里那份 stats 会旧）。
+   *  手刷落盘后状态行要立刻报新数字，不能等空闲那趟全量重建。 */
+  liveStats: () => TerrainStats;
 }
 
 /** 把一块画布变成"这个世界的地形"。 */
@@ -131,6 +136,7 @@ export function mountTerrain(canvas: HTMLCanvasElement, t: MapTerrainSpec, w: nu
   view.setStyle(terrainRenderParams(t));   /* 风格 + 立体度在构造后立刻定下来（缺省 = 立体）*/
   view.update();
   return {
+    liveStats: () => statsOf(engine),
     dispose: () => view.dispose(),
     setStyle: (v) => view.setStyle(terrainRenderParams({ ...t, view: v })),
     regenerate: (opts) => {

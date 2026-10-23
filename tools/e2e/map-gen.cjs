@@ -5,7 +5,7 @@
  *  地形从"我们自己画的栅格图 + 矢量岸线"换成**内核渲染的 WebGL 画布**（`src/mapgen/`）。
  *  本套件跟着重写，钉住的是**接进界面之后的契约**（内核那层的数字由
  *  `tools/e2e/mapgen-engine.mjs` 无头钉，不用开实例）：
- *    · 生成真画出来（`#map-terrain-canvas` 2048²），且**不落盘**（数据里只有参数，几百字节）；
+ *    · 生成真画出来（`#map-terrain-canvas` 1536²），且**不落盘**（数据里只有参数，几百字节）；
  *    · 画布与 SVG 一起被 `#map-stage` 缩放 ⇒ 两者尺寸一致（手绘落点才不会偏）；
  *    · 状态行的数字与内核报的一致；
  *    · 同种子同参数 ⇒ 同一份统计；换种子 ⇒ 不一样；
@@ -117,10 +117,10 @@ async function main() {
     && JSON.stringify(disk1).length < 4000,
     { terrain: disk1?.terrain, mapJsonLen: JSON.stringify(disk1).length });
 
-  /* ★3 地图栏出画布：2048²，且铺满地图格子（裁带 ⇒ 画布比格子高，四周不拉伸） */
+  /* ★3 地图栏出画布：1536²，且铺满地图格子（裁带 ⇒ 画布比格子高，四周不拉伸） */
   const p1 = await pane();
-  check('★3 地图栏出 2048² 画布 + 格子尺寸 = 地图尺寸',
-    p1.hasCanvas && p1.cw === 2048 && p1.ch === 2048 && p1.box.w === '900px' && p1.box.h === '500px',
+  check('★3 地图栏出 1536² 画布 + 格子尺寸 = 地图尺寸',
+    p1.hasCanvas && p1.cw === 1536 && p1.ch === 1536 && p1.box.w === '900px' && p1.box.h === '500px',
     { cw: p1.cw, box: p1.box, css: p1.css });
   check('★4 裁带映射：画布 CSS 是正方形（不拉扁）、宽度略大于地图宽、上移为负',
     p1.css && Math.abs(p1.css.w - p1.css.w) === 0 && p1.css.w > 880 && p1.css.w < 940 && p1.css.top < -180 && p1.css.top > -220,

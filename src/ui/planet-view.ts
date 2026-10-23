@@ -79,6 +79,8 @@ export interface PlanetHandle {
   dispose: () => void;
   setStyle: (v?: string) => void;
   regenerate: (opts?: { shape?: boolean }) => void;
+  /** 与 `TerrainHandle.liveStats` 同义（星球没有手刷，场缓存里的 stats 就是最新） */
+  liveStats: () => TerrainStats;
 }
 
 /** 把星球图铺进画布：画布本体 = 原图分辨率（1024×512），CSS 缩放铺到 `w × w/2`（**2:1 不拉伸**）。
@@ -106,6 +108,7 @@ export function mountPlanet(
     dispose: () => { /* 2D 画布：没有 GL 资源要还 */ },
     setStyle: (v) => put(planetRgba(t, PLANET_VIEW_H, String(v ?? 'natural'))),
     regenerate: () => { /* 星球形态 v1 不支持手刷：画笔留给局部形态 */ },
+    liveStats: () => f.stats,
   };
 }
 
@@ -128,6 +131,7 @@ export function mountGlobeView(
     dispose: () => globe.dispose(),
     setStyle: () => { /* 球体上换「看的方式」要重挂（贴图变了）—— 调用方按 key 重建 */ },
     regenerate: () => { /* 不支持手刷 */ },
+    liveStats: () => f.stats,
   };
 }
 

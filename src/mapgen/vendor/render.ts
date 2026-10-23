@@ -622,7 +622,12 @@ const frag_final = `
 //////////////////////////////////////////////////////////////////////
 // Mapgen4 renderer
 
-const fbo_texture_size: number = 2048;
+/* ⭐ 灵框刻意偏离上游（第一百零五轮）：`2048` → `1536`。
+   上游按"内部位图比显示大"设计（超采样）；灵框地图栏把这张位图 CSS 缩到地图格子再放大到
+   屏幕，实测屏幕宽约 1500px（1440 窗口、900 宽地图、`viewScale` 1.66）—— 2048 位图在屏幕上
+   被 **1.36× 双线性降采样**：既不增加可见细节，又把海岸/山脊的锐边磨软，还多付 44% 的显存
+   与填充率（4 张 FBO）。降到 1536 后屏幕 ≈ 1:1（更锐），单视图显存 67MB → 37MB。 */
+const fbo_texture_size: number = 1536;
 
 /* ⭐ 灵框追加（第一百零三轮）：风格色带的零值兜底（`grade = 0` 时着色器不读它们，
    但 uniform 数组仍必须被赋一个合法长度，否则有些驱动会警告）。 */
@@ -780,11 +785,11 @@ export default class Renderer {
 
     /* Allow drawing at a different resolution than the internal texture size */
     resizeCanvas() {
-        /* ⭐ 灵框追加：上游这里写死 `#mapgen4` + 写死 2048；改成用手里那块画布。
-           （尺寸仍是 2048 —— 内部 4 张 FBO 就是 2048²，画布与之同大最省一次重采样。） */
+        /* ⭐ 灵框追加：上游这里写死 `#mapgen4` + 写死 2048；改成用手里那块画布 + 与 FBO 同大
+           （尺寸取 `fbo_texture_size`，画布与 4 张 FBO 同大最省一次重采样）。 */
         let canvas = this.canvas;
         if (!canvas) return;
-        let size = 2048; /* could be smaller to increase performance */
+        let size = fbo_texture_size; /* could be smaller to increase performance */
         if (canvas.width !== size || canvas.height !== size) {
             console.log(`Resizing canvas from ${canvas.width}x${canvas.height} to ${size}x${size}`);
             canvas.width = canvas.height = size;

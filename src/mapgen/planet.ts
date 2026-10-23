@@ -717,7 +717,19 @@ export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecI
    ⚠️ **极地夹边不能动**：at() 的行下标必须夹在 0..h-1（守卫 tools/e2e/map-planet.cjs ★6 靠它）。 */
 
 type RGB = [number, number, number];
-const hex = (s: string): RGB => [parseInt(s.slice(1, 3), 16), parseInt(s.slice(3, 5), 16), parseInt(s.slice(5, 7), 16)];
+/* ⭐ 第一百零五轮：`hex()` 原来在**逐像素**路径上被调（`renderPlanet` 里
+   `hex(climateHex(...))` ⇒ 每个像素一次 rgbToHex + 一次反解，1.18M 次 ≈ 100ms）。
+   climateHex 的取值只落在 3 温带 × 4 湿度的格点上 ⇒ 缓存后基本全命中。
+   ⚠️ 返回值是**共享数组**：调用方只读（`mix()` 会新建），千万别就地改。 */
+const hexCache = new Map<string, RGB>();
+const hex = (s: string): RGB => {
+  let v = hexCache.get(s);
+  if (!v) {
+    v = [parseInt(s.slice(1, 3), 16), parseInt(s.slice(3, 5), 16), parseInt(s.slice(5, 7), 16)];
+    if (hexCache.size < 4096) hexCache.set(s, v);
+  }
+  return v;
+};
 const mix = (a: RGB, b: RGB, t: number): RGB => [
   a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t,
 ];

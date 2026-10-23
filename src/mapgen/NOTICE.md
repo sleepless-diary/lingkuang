@@ -114,3 +114,14 @@
 
 只看 `src/mapgen/index.ts`（`createEngine` / `runGeneration` / `statsOf` / `TerrainView`）。
 不要在业务代码里直接 import `vendor/` 里的东西。
+
+11. **`render.ts` 的位图尺寸 2048 → 1536（第一百零五轮灵框追加）**。
+    用户 2026-10-23：「感觉边缘还是很平滑……性能开销好像有点大」。量下来地图栏把这张位图
+    缩到地图格子再按 `viewScale`（≤2）铺到屏幕，实测屏幕宽 **606px（双窗格）/ 1502px（占满）**
+    ⇒ 2048 在常用放大档是 **1.36× 双线性降采样**：既不加可见细节、又把海岸/山脊的锐边磨软，
+    还多付 44% 显存与填充率（4 张 FBO，约 20 B/px ⇒ 84MB → 47MB）。
+    改：`const fbo_texture_size = 1536`；`resizeCanvas()` 里写死的 2048 改用这个常量
+    （上游注释本来就是 "could be smaller to increase performance"）。
+    ⚠️ 同步改的地方：`src/ui/map-terrain.ts` 的 `TERRAIN_BITMAP`（`bandLayout()` 是**按比例**
+    算的，CSS 尺寸不变）、`tools/e2e/map-gen.cjs` ★3 的断言、`src/mapgen/index.ts` 与
+    `src/ui/map.ts` 里描述位图尺寸的注释。**地形数学一字未改**。

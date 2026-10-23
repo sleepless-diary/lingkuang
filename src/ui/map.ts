@@ -7,7 +7,7 @@
  *  层序变成：**地形画布（最底）→ 手绘 `regions` 文化分区（动手层）→ 手绘开放线 → 标记**。
  *  ⚠️ 画布与 SVG 一起放在 `#map-stage` 里：`fitView()` / 平移只动这**一个**元素，
  *  两者永远对齐（坐标都是地图自己的 900×500 空间，手绘落点不用换算）。
- *  内核世界是方的、内部位图 2048² ⇒ 取**中间横带**铺满地图格子（`bandLayout()`），不拉伸。
+ *  内核世界是方的、内部位图 1536² ⇒ 取**中间横带**铺满地图格子（`bandLayout()`），不拉伸。
  *  ⭐ 2026-10-14（用户：「生成做成一个独立的面板吧，两种，创作者自己一个个调参数或者 AI 直出，
  *  可以抽卡」）：生成控件**从这里搬走**，进了 `src/ui/map-studio.ts` 那层悬浮面板；
  *  地图栏只留「生成地形…」一个入口 + 一行现状（`#map-gen-note`）。 */
@@ -18,7 +18,7 @@ import type { MapData, MapPaintStroke } from '../store/types';
 import { escapeHtml } from './html';
 import { DEFAULT_MAP, polylinePath, smoothClosedPath } from './map-gen';
 import {
-  mountTerrain, mapPointToWorld, resetTerrainPaint, terrainStats, liftOf, type TerrainHandle,
+  mountTerrain, mapPointToWorld, resetTerrainPaint, terrainStats, liftOf, type TerrainHandle, type TerrainStats,
 } from './map-terrain';
 import { PLANET_VIEW_H, mountGlobeView, mountPlanet, planetStats } from './planet-view';
 import { DEFAULT_PAINT_SIZE, DEFAULT_PAINT_TOOL, TERRAIN_STYLES, beginPaintStroke, paintStep, terrainStyleLabel, terrainStyleOf } from '../mapgen';
@@ -243,7 +243,8 @@ export function renderMap(store: Store, host: HTMLElement): void {
   function renderSvg() {
     const m = curMap();
     if (!m) { svg.innerHTML = ''; return; }   /* maps 瞬时缺失（worldsets 被整体替换中）→ 这一帧不画 */
-    syncTerrain(m);
+    /* 刚松手的那一帧**不重建地形**（见 endPaint 的注释）：等空闲那一趟再来 */
+    if (!skipTerrainRebuild) syncTerrain(m);
     /* 球体上看不了手绘：区域/标记是**地图平面坐标**，要投到球面上得另做一遍投影（本轮不做）
        ⇒ 藏起来 + 关掉指针，免得笔画在旋转的球上对不上位置。切回平面就恢复。 */
     const onGlobe = mapFormOf(m.terrain?.form) === 'planet' && globeOn;
@@ -284,6 +285,15 @@ export function renderMap(store: Store, host: HTMLElement): void {
        · **星球**（`planet`）：等距圆柱图直接铺进 2D 画布（`mountPlanet`），或者贴到一颗真球上
          （`mountGlobeView`）—— 场算一次约 450ms，之后换「看的方式」只是重新上色（约 45ms）。
      ⚠️ 局部那条键里**含手刷笔迹**：刷完一笔就是另一片地（内核的约束场是模块级单例）。 */
+  /** 状态行（统计 + 种子 + 看的方式）。手刷落盘后也要立刻调一次（用 liveStats） */
+  function setTerrainNote(m: MapData, s: TerrainStats | null): void {
+    const form = mapFormOf(m.terrain?.form);
+    const style = terrainStyleOf(m.terrain?.view);
+    genNote.textContent = s && m.terrain
+      ? `${mapFormLabel(form)} · ${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}% · 种子「${m.terrain.seed}」 · ${terrainStyleLabel(style)}${form === 'planet' && globeOn ? ' · 球体' : ''}`
+      : '还没有地形';
+  }
+
   function syncTerrain(m: MapData) {
     terrainBox.style.width = m.width + 'px';
     terrainBox.style.height = m.height + 'px';
@@ -307,9 +317,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
     globeBtn.style.display = m.terrain && form === 'planet' ? '' : 'none';
     globeBtn.style.background = globeOn ? 'rgba(158,194,98,.2)' : 'none';
     if (m.terrain && form === 'planet' && mode === 'paint') setMode('move');
-    genNote.textContent = s && m.terrain
-      ? `${mapFormLabel(form)} · ${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}% · 种子「${m.terrain.seed}」 · ${terrainStyleLabel(style)}${form === 'planet' && globeOn ? ' · 球体' : ''}`
-      : '还没有地形';
+    setTerrainNote(m, s);
     const key = m.terrain
       ? `${form}|${m.terrain.seed}|${m.terrain.style}|${lift}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}|${JSON.stringify(m.terrain.paint ?? [])}`
         + (form === 'planet' ? `|${globeOn ? 'globe' : 'equirect'}|${style}` : '')
@@ -384,6 +392,27 @@ export function renderMap(store: Store, host: HTMLElement): void {
     paintFrom(e);
   }
 
+  /* ⭐ 第一百零五轮（实测）：松手原来一口气跑**全量生成**（「regenerate({shape:true})」走的是
+     `syncTerrain` 的新键重建），单次长约 **150ms** —— 手一抬就顿一下。现在拆成两步：
+     ① 立刻落盘（撤销栈 + 数据都对）；
+     ② 把"重算成与落盘数据逐位一致"这一步挪到**空闲**（`requestIdleCallback`，900ms 兜底）。
+     手上的这一帧仍显示 shape:false 的场（只在海平面重定上有极小差异），空闲时自动校正。 */
+  let paintRebuildTimer: number | null = null;
+  let skipTerrainRebuild = false;
+  function schedulePaintRebuild(): void {
+    if (paintRebuildTimer !== null) clearTimeout(paintRebuildTimer);
+    const run = () => {
+      paintRebuildTimer = null;
+      skipTerrainRebuild = false;
+      const m = curMap();
+      if (m) syncTerrain(m);
+    };
+    const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
+    paintRebuildTimer = typeof ric === 'function'
+      ? (ric(run, { timeout: 900 }) as unknown as number)
+      : (window.setTimeout(run, 260) as unknown as number);
+  }
+
   function endPaint(commit: boolean): void {
     const s = liveStroke;
     liveStroke = null;
@@ -396,12 +425,17 @@ export function renderMap(store: Store, host: HTMLElement): void {
       renderSvg();
       return;
     }
-    save((m) => {
-      if (!m.terrain) return;
-      if (!m.terrain.paint) m.terrain.paint = [];
-      m.terrain.paint.push(s);
+    skipTerrainRebuild = true;
+    save((mm) => {
+      if (!mm.terrain) return;
+      if (!mm.terrain.paint) mm.terrain.paint = [];
+      mm.terrain.paint.push(s);
     });
-    paintState();
+    paintState('笔迹已保存');
+    /* 状态行立刻报新数字（内核的场已经刷过了，只是还没做那趟"重定海平面"的全量重算） */
+    const m = curMap();
+    if (m) setTerrainNote(m, terrainHandle?.liveStats() ?? null);
+    schedulePaintRebuild();
   }
 
   /** 清空笔迹：数据里删掉笔划 + **内核的约束场也回到干净状态**
@@ -427,7 +461,8 @@ export function renderMap(store: Store, host: HTMLElement): void {
     const bw = box.clientWidth || m.width;
     const bh = box.clientHeight || m.height;
     /* ⭐ 第一百零三轮：允许**放大**到 2×（原来钳在 1 ⇒ 地图永远只有 900×500，四周一圈空）。
-       地形位图本身是 2048²，放大到 2× 仍有余量，不会糊。 */
+       地形位图本身是 1536²（≈ 屏幕 1.66× 时 1:1），放大到 2× 会略微上采样 —— 但比 2048 位图
+        被降采样更锐（第一百零五轮）。 */
     viewScale = Math.min(bw / m.width, bh / m.height, 2);
     stage.style.transformOrigin = '0 0';
     stage.style.transform = `scale(${viewScale})`;
@@ -533,7 +568,9 @@ export function renderMap(store: Store, host: HTMLElement): void {
     window.removeEventListener('lingkuang-map-brush', onBrushEvt);
     window.removeEventListener('lingkuang-map-clear-paint', onClearEvt);
     ro?.disconnect();
-    terrainHandle?.dispose();   /* ⭐ 地形画布后面挂着 WebGL 上下文（4 张 2048² FBO）—— 必须销毁 */
+    if (paintRebuildTimer !== null) { clearTimeout(paintRebuildTimer); paintRebuildTimer = null; }
+    skipTerrainRebuild = false;
+    terrainHandle?.dispose();   /* ⭐ 地形画布后面挂着 WebGL 上下文（4 张 1536² FBO）—— 必须销毁 */
     terrainHandle = null;
     terrainKey = '';
     terrainStyleKey = '';
