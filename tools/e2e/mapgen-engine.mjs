@@ -112,6 +112,31 @@ const base = run('灵框测试', 'continent', { landRatio: 0.34, ridges: 4, rive
     { same: core(a) === core(b), diff: core(a) !== core(c) });
 }
 
+/* ★22 局部（三角网）海岸够碎 —— 第一百零七轮加的 `addCoastDetail()`。
+   用户 2026-10-23：「陆地边缘还是看起来太顺滑了」。星球栅格那条线由 ★15~17 守，
+   局部那条（WebGL 网格 + `frag_drape`）只能在这里量几何：
+   `岸线三角 ÷ 陆地三角`（一个陆地三角只要有水邻边就算岸线）。
+   旧版（没有 addCoastDetail）实测 0.164~0.242，加完之后 0.219~0.287 ⇒ 门槛取 0.19。
+   ⚠️ 这个数**跨种子漂**，别贴着实测值往紧里调。 */
+{
+  const eng = base.eng;
+  const mesh = eng.mesh;
+  const n = mesh.numSolidTriangles;
+  const e = eng.map.elevation_t;
+  const land = new Uint8Array(n);
+  let landN = 0, edge = 0;
+  for (let t = 0; t < n; t++) if (e[t] >= 0) { land[t] = 1; landN++; }
+  for (let t = 0; t < n; t++) {
+    for (let j = 0; j < 3; j++) {
+      const u = mesh.t_outer_s(3 * t + j);
+      if (u >= 0 && u < n && u !== t && land[u] !== land[t]) { edge++; break; }
+    }
+  }
+  const ratio = edge / Math.max(1, landN);
+  check('★22 局部网格海岸够碎（岸线三角 ÷ 陆地三角 ≥ 0.19）', ratio >= 0.19,
+    { ratio: +ratio.toFixed(3), landN, edge });
+}
+
 /* ★4 三档位形态分化：群岛的岛必须比盘古多（同一颗种子、同一目标占比） */
 {
   const spec = { landRatio: 0.34, ridges: 4, rivers: 1 };
@@ -271,7 +296,10 @@ const areaWater = (eng, y0, y1) => {
 /* ── 星球形态：**大陆感**（第九十九轮）──────────────────────────────────────────
    用户原话「**大陆没有大陆的感觉**」。判据全是"像不像大陆"里可量化那部分：
    · 陆块数 + 最大陆块占比 ⇒ 少数大而连续的陆块 vs 一堆大小相近的碎块（旧版 = 后者）；
-   · 海岸碎度（与海相邻的格 ÷ 陆地格）⇒ 海岸平滑 vs 满边毛刺；
+   · 海岸碎度（与海相邻的格 ÷ 陆地格）⇒ **下限**守"海岸够碎"、**上限**守"不碎成满边毛刺"；
+     ⚠️ 第一百零七轮换了口径：用户 2026-10-23 说「陆地边缘还是看起来太顺滑了」⇒ 以前只守上限
+     （海岸不许比基准更碎），现在同时守下限（海岸必须碎到看得见）。实测（3 种子 × 3 档，@256）：
+     大陆 0.144~0.159、盘古 0.096~0.128、群岛 0.166~0.192（旧版分别是 0.051~0.064 / 0.035~0.039 / 0.11~0.127）。
    · 极区陆地占比 ⇒ 开放极海（有极地陆地时，等距圆柱投影会把它拉成**横贯全图的条带**）；
    · 主峰集中度（峰值 ÷ 陆地平均海拔）⇒ 有主山体 vs 满地山包。
    ⚠️ 这些数字**跨种子漂**（5 种子实测大陆档：lands 1~3、largest 0.41~0.94、coast 0.05~0.07），
@@ -334,12 +362,13 @@ function planetMetrics(f) {
     lands: m[s].lands, largest: +m[s].largest.toFixed(3),
     coast: +m[s].coast.toFixed(3), peakRatio: +m[s].peakRatio.toFixed(2), polar: +m[s].polar.toFixed(3),
   });
-  check('★15 大陆档：少数大而连续的陆块（碎块 / 毛刺都挂）',
-    m.continent.lands <= 4 && m.continent.largest >= 0.36 && m.continent.coast <= 0.09, brief('continent'));
-  check('★16 盘古档：连成一整块',
-    m.pangaea.lands <= 2 && m.pangaea.coast <= 0.09, brief('pangaea'));
-  check('★17 群岛档：多而小，海岸一样平滑',
-    m.archipelago.lands >= 4 && m.archipelago.coast <= 0.155, brief('archipelago'));
+  check('★15 大陆档：少数大而连续的陆块（碎块守 lands/largest，海岸必须够碎）',
+    m.continent.lands <= 4 && m.continent.largest >= 0.36
+      && m.continent.coast >= 0.10 && m.continent.coast <= 0.30, brief('continent'));
+  check('★16 盘古档：连成一整块（碎块守 lands，海岸必须够碎）',
+    m.pangaea.lands <= 3 && m.pangaea.coast >= 0.06 && m.pangaea.coast <= 0.26, brief('pangaea'));
+  check('★17 群岛档：多而小，海岸最碎',
+    m.archipelago.lands >= 4 && m.archipelago.coast >= 0.13 && m.archipelago.coast <= 0.36, brief('archipelago'));
   check('★18 极区是海（三档都查：防极地陆地被投影拉成横贯全图的条带）',
     ['continent', 'archipelago', 'pangaea'].every((s) => m[s].polar <= 0.02),
     { continent: +m.continent.polar.toFixed(3), archipelago: +m.archipelago.polar.toFixed(3), pangaea: +m.pangaea.polar.toFixed(3) });

@@ -139,3 +139,21 @@
       4 张 FBO、截图画布、`drawFinal` 的纹素偏移全用它。灵框侧：地图栏 1536、
       缩略图/抽卡 768（`src/ui/map-terrain.ts` 的 `THUMB_BITMAP`，`bandSource(size)` 跟着参数化）。
     ⚠️ 光栅化尺寸一变，`bandSource()` 的源矩形必须同步（否则 `drawImage` 会从错的位置裁一条带）。
+
+13. **`render.ts`：海岸描边改成"到海岸线的距离带" + 山体描边只在陆地画（第一百零七轮灵框追加）**。
+    用户 2026-10-23：「陆地边缘还是看起来太顺滑了」。海岸在 `src/mapgen/index.ts` 的
+    `addCoastDetail()` 里被真正打碎之后，上游那条描边判据暴露了它的性质问题：
+    - 旧写法：`if (z <= 0.5 && max(depth1, depth2) > 1.0/256.0 && neighboring_river <= 0.2)
+      outline += u_outline_coast * 256.0 * (max(depth1, depth2) - 2.0*(z - 0.5));`
+      它量的是 **`u_depth` 的几何台阶**（相邻像素的深度差），与"离海岸线多远"无关 ⇒ 岸坡一陡
+      就整片变黑（海岸平滑时表现为"1px 贴纸边上的黑点"，碎开之后是一圈黑渣）。
+    - 新写法：`coastLine = 1.0 - smoothstep(0.55, 1.85, |z0 - 0.5| / fwidth(z0))`，
+      再乘 `1.0 - smoothstep(0.15, 0.45, neighboring_river)`（河口不留硬边），
+      `outline += u_outline_coast * 1.5 * coastLine`。**约 1.5 像素宽、缩放不变粗**，
+      与 `u_contour` 同一套 `fwidth` 归一写法。
+    - 同时把山体描边夹上限、只在陆地画：
+      `reliefAmt = min(max(u_outline_threshold, depth1 - depth0) - u_outline_threshold, 0.12)
+       * smoothstep(0.495, 0.545, z0)`，`outline = 1.0 + u_outline_strength * reliefAmt` ——
+      海岸线交给上面那条距离带，陡崖不再"一整片死黑"。
+    ⚠️ **这个文件的着色器是 TS 模板字符串：注释里绝对不能出现反引号**（本轮在注释里写了
+    `` `u_depth` ``，`tsc` 一片 TS1005、`vite build` 失败但旧 `app-dist` 照跑 ⇒ 看起来"改了没用"）。

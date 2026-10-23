@@ -611,7 +611,13 @@ const frag_drape = `
               depth2 = max(max(texture(u_depth, v_xy + u_outline_depth*(dy-dx)).x,
                                texture(u_depth, v_xy + u_outline_depth*(dy+dx)).x),
                            texture(u_depth, v_xy + u_outline_depth*(dy)).x);
-        float outline = 1.0 + u_outline_strength * (max(u_outline_threshold, depth1-depth0) - u_outline_threshold);
+        /* ⭐ 灵框改写（第一百零七轮）：山体描边**只画在陆地**、并夹住上限。
+           上游这一项量的是相邻像素的深度跳变，海岸那一圈等于"垂直悬崖" ⇒ u_outline_strength × 大数
+           直接把海边涂成黑块（第一百零七轮把海岸打碎后更明显）。海岸线由下面那条距离带负责画。
+           夹上限 0.12 也顺手压住了陡崖上"一整片死黑"的老问题（0.12 时 outline ≈ 2.8 就到顶）。 */
+        float reliefAmt = max(u_outline_threshold, depth1 - depth0) - u_outline_threshold;
+        reliefAmt = min(reliefAmt, 0.12) * smoothstep(0.495, 0.545, z0);
+        float outline = 1.0 + u_outline_strength * reliefAmt;
 
         // Add coast outline, but avoid it if there's a river nearby
         float neighboring_river = max(
@@ -624,7 +630,19 @@ const frag_drape = `
                 texture(u_water, pos - u_outline_depth * dy).a
             )
         );
-        if (z <= 0.5 && max(depth1, depth2) > 1.0/256.0 && neighboring_river <= 0.2) { outline += u_outline_coast * 256.0 * (max(depth1, depth2) - 2.0*(z - 0.5)); }
+        /* ⭐ 灵框改写（第一百零七轮）：海岸描边改成**到海岸线的距离带**，不再用 u_depth 的几何台阶判据。
+           旧判据 max(depth1,depth2) > 1/256 量的是相邻像素的**深度跳变**，与离岸线远近无关 ——
+           岸坡一陡就整片变黑（第一百零七轮把海岸打碎后，岸边直接糊出一圈黑块）。
+           新判据 = 到 z0 = 0.5 等值线的像素距离（fwidth 归一 ⇒ 约 1.5 像素宽、缩放不变粗），
+           顺带把上游那条"1px 贴纸边"变成了干净的等高线感描边。 */
+        {
+            float zc = z0 - 0.5;
+            float zcPx = max(fwidth(zc), 1e-6);
+            float dPx = abs(zc) / zcPx;
+            float coastLine = 1.0 - smoothstep(0.55, 1.85, dPx);
+            coastLine *= 1.0 - smoothstep(0.15, 0.45, neighboring_river);
+            outline += u_outline_coast * 1.5 * coastLine;
+        }
 
         /* ⭐ 灵框追加（第九十七轮）：u_shade = 0 ⇒ 完全平面（light 恒 1），1 ⇒ 上游原样的山体阴影 */
         float shade = mix(1.0, light, u_shade);

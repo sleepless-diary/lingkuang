@@ -34,7 +34,7 @@ import {
   resetPainting as vendorResetPainting, userHasPainted as vendorUserHasPainted,
 } from './vendor/painting';
 import Renderer from './vendor/render';
-import { terrainOffset, type TerrainNoiseParams } from './noise';
+import { terrainOffset, fbm2D, type TerrainNoiseParams } from './noise';
 
 /* ── 参数（字段名与上游 `mapgen4.ts` 的 initialParams 一致；默认值也照抄）────────── */
 
@@ -380,6 +380,12 @@ export function runGeneration(engine: TerrainEngine, opts?: { shape?: boolean; s
   /* ⭐ 第一百零六轮：按汇流切谷（脊—谷相间）—— 同样在重定海平面之前。 */
   erodeTerrain(engine);
   if (shape && engine.targetLandRatio !== undefined) reseatSeaLevel(engine, engine.targetLandRatio);
+  /* ⭐ 第一百零七轮：海岸细节必须排在 `reseatSeaLevel()` **之后**（那时海平面 = 0、陆高 [0, .85]，
+     位移量才有一致的物理含义），跑完再把陆地占比钉回目标 —— 见 `addCoastDetail()`。 */
+  if (shape) {
+    addCoastDetail(engine);
+    if (engine.targetLandRatio !== undefined) reseatLandRatio(engine, engine.targetLandRatio);
+  }
   map.assignRainfall(params.biomes);
   map.assignRivers(params.rivers);
   /* ⭐ 第一百零四轮：降雨归一化必须排在河流之后（河流用得上原始降雨/流量口径）。 */
@@ -547,6 +553,139 @@ function erodeTerrain(engine: TerrainEngine): void {
     if (er[r] < 0) continue;          /* 海里不动：海深由海平面重定统一处理 */
     if (num[r]) er[r] = acc[r] / num[r];
   }
+}
+
+/* ⭐ 海岸细节参数（第一百零七轮）：集中一处方便微调 / 扫参（`.review/coast-sweep.mjs` 直接改它）。 */
+export const COAST_DETAIL = {
+  /** 从海陆交界往外数几圈三角参与（一圈 ≈ spacing 4.8 世界单位） */
+  ring: 5,
+  /** 两档波长（世界单位）：大湾岬 + 小锯齿 */
+  wl: [44, 18],
+  /** 两档横向位移（世界单位）—— 按局部坡度换算成高度增量，横向宽度才与陡缓无关 */
+  amp: [4.2, 1.9],
+  seed: 0x5c0d7e11,
+};
+
+/** ⭐ 灵框加的一步（第一百零七轮）：**海岸细节** —— 把海岸线从"一条光滑等值线"打成多尺度碎边。
+ *
+ *  用户 2026-10-23：「陆地边缘还是看起来太顺滑了」。
+ *  上游 `noisy_coastlines` 只叠 3 档**长波长**噪声（世界 31 / 16 / 8）× `(1-e⁴)`、系数 0.028，
+ *  在 900px 的地图栏上就是"大波浪"，没有礁石 / 潟湖 / 岬角那种碎。
+ *  这里按**离岸的三角圈数**取带（0..ring），带内沿局部坡度把三角高度推 `amp` 个世界单位：
+ *    · 位移用"世界单位 × 局部坡度"换算 ⇒ 陡岸与缓滩的岬角**横向宽度一致**（不会在陡岸上被抹平）；
+ *    · 两档波长 44 / 18 ⇒ 大湾岬 + 小锯齿（1536² 位图上 1 世界单位 ≈ 1.6 像素）；
+ *    · 只改高度、不改拓扑 ⇒ 不用重算网格，`spacing` 一变碎边自动跟着变细。
+ *  ⚠️ 必须在 `reseatSeaLevel()` **之后**（那时海平面 = 0、陆高 [0, .85]，位移量才有意义），
+ *  并紧跟 `reseatLandRatio()` 把陆地占比钉回目标（守卫 ★2）。
+ *  只在 `shape === true` 时跑：`shape: false` 是"边刷边重算"那条路（不重定海平，海平面不是 0，
+ *  按高度取带无意义），松手之后那次完整生成会把它补上。
+ *  纯算术、无随机 ⇒ 同种子逐位一致（守卫 ★3「同种子一致 + 换种子不同」）。 */
+function addCoastDetail(engine: TerrainEngine): void {
+  const { mesh, map } = engine;
+  const e: Float32Array = map.elevation_t;
+  const n = mesh.numSolidTriangles;
+  if (!e?.length || n < 64) return;
+
+  /* ① 海陆（重定海平之后：海平面正好是 0） */
+  const land = new Uint8Array(n);
+  let landN = 0;
+  for (let t = 0; t < n; t++) if (e[t] >= 0) { land[t] = 1; landN++; }
+  if (landN < 8 || landN > n - 8) return;
+
+  const nb = (t: number, j: number): number => {
+    const u = mesh.t_outer_s(3 * t + j) as number;
+    return (u < 0 || u >= n || u === t) ? -1 : u;
+  };
+
+  /* ② 离岸圈数：海陆交界的三角是第 0 圈，向外 BFS 到 ring 圈 */
+  const R = Math.max(1, COAST_DETAIL.ring | 0);
+  const ring = new Int32Array(n).fill(-1);
+  const queue = new Int32Array(n);
+  let head = 0, tail = 0;
+  for (let t = 0; t < n; t++) {
+    for (let j = 0; j < 3; j++) {
+      const u = nb(t, j);
+      if (u >= 0 && land[u] !== land[t]) { ring[t] = 0; queue[tail++] = t; break; }
+    }
+  }
+  if (!tail) return;
+  while (head < tail) {
+    const t = queue[head++];
+    const r = ring[t];
+    if (r >= R) continue;
+    for (let j = 0; j < 3; j++) {
+      const u = nb(t, j);
+      if (u < 0 || ring[u] >= 0) continue;
+      ring[u] = r + 1;
+      queue[tail++] = u;
+    }
+  }
+
+  /* ③ 局部坡度（高度 / 世界单位）：取三条邻边的最大值（只用邻接，不再多算噪声） */
+  const xs = (t: number): number => mesh.x_of_t(t) as number;
+  const ys = (t: number): number => mesh.y_of_t(t) as number;
+  const gradOf = (t: number): number => {
+    let g = 0;
+    const xt = xs(t), yt = ys(t);
+    for (let j = 0; j < 3; j++) {
+      const u = nb(t, j);
+      if (u < 0) continue;
+      const d = Math.hypot(xs(u) - xt, ys(u) - yt);
+      if (d < 1e-6) continue;
+      const g1 = Math.abs(e[u] - e[t]) / d;
+      if (g1 > g) g = g1;
+    }
+    return g;
+  };
+
+  /* ④ 在带内按"世界单位 × 坡度"推高度：两档波长 + 圈数窗（交界圈满幅，外圈归零） */
+  const f1 = 1 / COAST_DETAIL.wl[0], f2 = 1 / COAST_DETAIL.wl[1];
+  const d1 = COAST_DETAIL.amp[0], d2 = COAST_DETAIL.amp[1];
+  const sd = COAST_DETAIL.seed | 0;
+  const sd2 = (sd ^ 0x9e3779b9) | 0;
+  const win = (r: number): number => 0.5 + 0.5 * Math.cos(Math.PI * Math.min(1, r / (R + 0.5)));
+  const mask = new Float32Array(R + 1);
+  for (let r = 0; r <= R; r++) mask[r] = win(r);
+
+  for (let t = 0; t < n; t++) {
+    const r = ring[t];
+    if (r < 0) continue;
+    const g = gradOf(t);
+    if (!(g > 0)) continue;
+    const x = xs(t), y = ys(t);
+    const n1 = fbm2D(x * f1, y * f1, 3, sd) - 0.5;
+    const n2 = fbm2D(x * f2, y * f2, 2, sd2) - 0.5;
+    e[t] += (n1 * 2 * d1 + n2 * 2 * d2) * g * mask[r];
+  }
+}
+
+/** 海岸细节之后**再钉一次陆地占比**：只整体平移、不改形状（误差 ±1 个三角）。
+ *  `addCoastDetail()` 的噪声零均值，正常只挪 1e-4 量级；直方图求分位，与 `reseatSeaLevel()` 同口径。 */
+function reseatLandRatio(engine: TerrainEngine, target: number): void {
+  const { mesh, map } = engine;
+  const n = mesh.numSolidTriangles;
+  const e: Float32Array = map.elevation_t;
+  if (!n || !e?.length) return;
+  const B = 2048;
+  let lo = Infinity, hi = -Infinity;
+  for (let t = 0; t < n; t++) { const v = e[t]; if (v < lo) lo = v; if (v > hi) hi = v; }
+  const span = (hi - lo) || 1;
+  const hist = new Int32Array(B);
+  for (let t = 0; t < n; t++) {
+    const b = Math.min(B - 1, Math.max(0, (((e[t] - lo) / span) * B) | 0));
+    hist[b]++;
+  }
+  const wantLand = Math.round(target * n);
+  let acc = 0, q = hi;
+  for (let b = B - 1; b >= 0; b--) {
+    acc += hist[b];
+    if (acc >= wantLand) { q = lo + ((b + 1) / B) * span; break; }
+  }
+  if (Math.abs(q) < 1e-7) return;
+  for (let t = 0; t < e.length; t++) e[t] -= q;
+  const er: Float32Array = map.elevation_r;
+  if (er) for (let r = 0; r < er.length; r++) er[r] -= q;
+  engine.seaLevel = 0;
 }
 
 /** ⭐ 灵框加的一步（上游没有）：**按目标陆地占比重定海平面**。

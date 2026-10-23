@@ -297,6 +297,31 @@ const CORE_PLAN: Record<PlanetStyle, {
   pangaea:     { n: 3,  ra: [0.78, 1.00], sep: 0.50, isl: 4,  islRa: [0.12, 0.20], islSep: 0.36 },
 };
 
+/** ⭐ 海岸细节（第一百零七轮）：`shore` 场额外叠的高频档（freq, amp, octave）。
+ *
+ *  用户 2026-10-23：「陆地边缘还是看起来太顺滑了」。
+ *  原来只有 2.15 / 6.5 两档（≈ 38px / 12px @512 宽）⇒ 海岸是"肥圆的波浪"，没有礁石与细碎岬角。
+ *  这里补 12 / 24 / 48 三档。**幅度是实测标定的，不是拍的**：`fbm3` 归一化后实际幅度只有
+ *  名义值的 ~1/4，而 `raw` 沿海的梯度很陡（约 4 / 单位球）⇒ 名义 0.03 只挪半像素。
+ *  `.review/planet-coast-png.mjs` 逐档离线出图 + 量 `landDiff`：0.30/0.14/0.06 ≈ 2% 陆地像素翻转（"有点碎"），
+ *  0.55/0.26/0.12 ≈ 4%（碎到出现成片小潟湖）。取中间那一档，海岸碎度（岸线格 ÷ 陆地格 @256）约翻 2.5 倍。
+ *  球面坐标采样 ⇒ 经度接缝天然连续；`pruneSmall` 会把碎成几格的小岛还给海。 */
+export const COAST_SHORE_TERMS: { freq: number; amp: number; oct: number }[] = [
+  { freq: 12, amp: 0.42, oct: 3 },
+  { freq: 24, amp: 0.20, oct: 3 },
+  { freq: 48, amp: 0.09, oct: 2 },
+];
+
+/** 把 `COAST_SHORE_TERMS` 叠成 shore 场的高频尾巴（缺省两档；扫参脚本会改它）。 */
+function coastShoreDetail(n: Noise3, x: number, y: number, z: number): number {
+  let s = 0;
+  for (let q = 0; q < COAST_SHORE_TERMS.length; q++) {
+    const tr = COAST_SHORE_TERMS[q];
+    s += fbm3(n, x, y, z, tr.freq, tr.oct) * tr.amp;
+  }
+  return s;
+}
+
 /** 撒核：大陆核（amp 1）+ 岛核（amp 乘 0.44 ⇒ 又矮又小）*/
 function placeCores(rnd: () => number, style: string): Kernel[] {
   const p = CORE_PLAN[(isPlanetStyle(style) ? style : 'continent') as PlanetStyle];
@@ -412,7 +437,8 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
       /* 海岸的"湾岬"：**两档**扰动加在陆块场上（低频 2.15 给大尺度湾岬，中频 6.5 给小半岛 /
          小海湾）。只有低频时海岸是"肥圆的波浪"，一眼就看得出底下是个椭圆核。
          末尾乘 `polarTaper`：极区收成海（否则极地陆地在等距圆柱下会拉成横贯全图的条带）。 */
-      const shore = fbm3(nC, x, y, z, 2.15, 2) * 0.13 + fbm3(nC, x, y, z, 6.5, 2) * 0.032;
+      const shore = fbm3(nC, x, y, z, 2.15, 2) * 0.13 + fbm3(nC, x, y, z, 6.5, 2) * 0.032
+        + coastShoreDetail(nC, x, y, z);
       /* 极区收口：`pt=1` 原样；`pt=0` 压到 −1.1 附近。⭐ ① 扰动 `shore` 放在**收口外面**
          —— 若写成乘进去，极区那 2% 的格子会取到同一个常数，直方图求分位就废了；
          ② 地板要**足够低**：盘古档海平面能低到 −0.68，地板只给 −0.75 的话
