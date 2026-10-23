@@ -55,29 +55,94 @@ export const MAP_LIMITS = APPLY_NOTES;
 /* ── 几何小工具（手绘区域与轨迹用；和内核无关，留着）──────────────────────── */
 const r1 = (n: number) => Math.round(n * 10) / 10;
 
-/** Catmull-Rom 平滑 → 闭合 SVG path（手绘区域用） */
+/** Catmull-Rom 平滑 → 闭合 SVG path（手绘区域用）
+ *  ⭐ 第一百一十轮：控制臂要**限长**（k ≤ 2·本段长 / 邻点跨度）。
+ *  否则首尾缺口一大（手绘松开闭合、两头离得远），相邻两点的控制臂会被拉到 20+ 单位外，
+ *  曲线在起笔/收笔处甩出一个钩状凸起 —— 小图上就是一条突兀的"尖角"。 */
 export function smoothClosedPath(pts: [number, number][]): string {
   if (pts.length < 3) return pts.map(([x, y]) => `M${r1(x)},${r1(y)}`).join(' ');
   const p = pts.map((pt) => ({ x: pt[0], y: pt[1] }));
   let d = `M${r1(p[0].x)},${r1(p[0].y)}`;
+  const dist = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(b.x - a.x, b.y - a.y) || 1e-6;
   for (let i = 0; i < p.length; i++) {
     const p0 = p[(i - 1 + p.length) % p.length];
     const p1 = p[i];
     const p2 = p[(i + 1) % p.length];
     const p3 = p[(i + 2) % p.length];
-    const c1x = p1.x + (p2.x - p0.x) / 6;
-    const c1y = p1.y + (p2.y - p0.y) / 6;
-    const c2x = p2.x - (p3.x - p1.x) / 6;
-    const c2y = p2.y - (p3.y - p1.y) / 6;
+    const seg = dist(p1, p2);
+    const k1 = Math.min(1, (2 * seg) / dist(p0, p2));
+    const k2 = Math.min(1, (2 * seg) / dist(p1, p3));
+    const c1x = p1.x + ((p2.x - p0.x) / 6) * k1;
+    const c1y = p1.y + ((p2.y - p0.y) / 6) * k1;
+    const c2x = p2.x - ((p3.x - p1.x) / 6) * k2;
+    const c2y = p2.y - ((p3.y - p1.y) / 6) * k2;
     d += ` C${r1(c1x)},${r1(c1y)} ${r1(c2x)},${r1(c2y)} ${r1(p2.x)},${r1(p2.y)}`;
   }
   return d + ' Z';
+}
+
+/** 从存盘的区域 path 里拆回端点序列（我们自己生成的格式：`M x,y C .. .. x,y ... Z`）。
+ *  末尾那个点等于起点（闭合段回到了起点）⇒ 丢掉，避免"补边"永远是长度 0 的假段。 */
+export function regionPoints(d: string): [number, number][] | null {
+  const g = d.match(/-?\d+(?:\.\d+)?/g);
+  if (!g || g.length < 8 || (g.length - 2) % 6 !== 0) return null;   /* 认不出格式就别动它 */
+  const n = g.map(Number);
+  const pts: [number, number][] = [[n[0], n[1]]];
+  for (let i = 2; i + 5 < n.length; i += 6) pts.push([n[i + 4], n[i + 5]]);
+  const lastP = pts[pts.length - 1];
+  if (pts.length > 2 && Math.hypot(lastP[0] - pts[0][0], lastP[1] - pts[0][1]) < 0.05) pts.pop();
+  return pts;
+}
+
+/** 区域 path → 该画的 `{ fill, stroke }`（第一百一十轮修"尖角"）。
+ *
+ *  两个毛病都出在**存盘的老 path**里（新画的已经被 `smoothClosedPath` 的限长规则修好了）：
+ *  ① 首尾缺口大时，起笔/收笔两处的控制臂被拉出 20+ 单位 ⇒ 轮廓甩出一个钩状凸起；
+ *  ② 拖拽画区域是"松开闭合"，手一松就补一条直边，缺得远时这条直边横穿地图。
+ *  ⇒ 这里把端点拆出来**重算一遍**（限长 Catmull-Rom，顺手去掉钩），
+ *     缺口比其它边中位数的 3 倍还长时，描边省掉那条补边（填色仍闭合，只是一层 0.25 的淡色）。
+ *  认不出的 path（外来数据）原样返回，不把图弄坏。 */
+export function regionPaths(d: string): { fill: string; stroke: string } {
+  const pts = regionPoints(d);
+  if (!pts || pts.length < 4) return { fill: d, stroke: d };
+  const closed = smoothClosedPath(pts);
+  const seg: number[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    seg.push(Math.hypot(b[0] - a[0], b[1] - a[1]));
+  }
+  const closing = seg[seg.length - 1];
+  const rest = seg.slice(0, -1).sort((x, y) => x - y);
+  const median = rest[rest.length >> 1] || 1;
+  if (closing < median * 3) return { fill: closed, stroke: closed };
+  return { fill: closed, stroke: closed.replace(/\s+C[^CZ]*Z$/, '') };
 }
 
 /** 开放折线 → SVG path（手绘轨迹 / 路线用） */
 export function polylinePath(pts: [number, number][]): string {
   if (!pts.length) return '';
   return pts.map(([x, y], i) => `${i ? 'L' : 'M'}${r1(x)},${r1(y)}`).join(' ');
+}
+
+/** 这块区域是不是「误拖出来的细长条」——用户在地图上拖一下（本意是想平移/随手点），
+ *  「拖拽画区域」就落下一个几乎没面积的多边形；它在地图上只剩一条斜线，
+ *  正是第一百一十轮报的"突兀的尖角"。
+ *  判据：多边形面积 / 外接矩形面积 < 0.07（正经区域一般 0.2 以上，细长条只有几个百分点）。 */
+export function regionIsSliver(pts: [number, number][]): boolean {
+  if (pts.length < 4) return true;                       /* 不到 4 个点围不出一块面 */
+  let area = 0;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    area += a[0] * b[1] - b[0] * a[1];
+    if (a[0] < minX) minX = a[0];
+    if (a[0] > maxX) maxX = a[0];
+    if (a[1] < minY) minY = a[1];
+    if (a[1] > maxY) maxY = a[1];
+  }
+  const a = Math.abs(area / 2);
+  const box = Math.max(1, (maxX - minX) * (maxY - minY));
+  return a / box < 0.07;
 }
 
 /* ── 一句话 → 参数（离线，不调 AI）────────────────────────────────────────── */

@@ -109,6 +109,11 @@ export const PLANET_H = 768;
 /** 归一化时用的最高峰 / 最深海沟（km） */
 export const MAX_ELEV_KM = 8.8;
 export const MAX_DEPTH_KM = 8.5;
+/** 等高线「自动淡出」的三档（位图像素）：线间距 ≤ MIN 最淡、≥ FULL 满强度、地板 FLOOR。
+ *  与 `src/mapgen/vendor/render.ts` 里 frag_drape 的 2.0 / 7.0 / 0.18 保持同值。 */
+const CONTOUR_FADE_MIN_PX = 2;
+const CONTOUR_FADE_FULL_PX = 7;
+const CONTOUR_FADE_FLOOR = 0.18;
 
 /** 档位（与局部形态的三个名字**共用**：大陆 / 群岛 / 盘古 —— 界面上一份档位两种形态通用） */
 const PRESETS = {
@@ -1060,13 +1065,21 @@ export function* renderPlanetGen(f: PlanetField, view: unknown, contourEvery = 0
           const cb = Math.floor(sm[k] * cs);
           const bl = Math.floor(sm[at(j - 1, i)] * cs);
           const bu = Math.floor(sm[at(j, i - 1)] * cs);
-          /* ⭐ 第一百零八轮：等高线抽稀（与 WebGL 那条 u_contour_every 同一套口径）：
-             手选 n ⇒ 只画档号能被 n 整除的线；自动 ⇒ 看**邻格跨了几档**（跨得多说明坡陡、
-             线本来就会挤成一片）⇒ 按 2..6 倍跳线。每 5 条一条主等高线仍加深。 */
-          const grad = Math.max(Math.abs(cb - bl), Math.abs(cb - bu));
-          const every = contourEvery > 0 ? contourEvery : (grad >= 2 ? Math.min(grad, 6) : 1);
+          /* ⭐ 第一百一十轮：自动档从「跳线」改成「**淡出**」。
+             跳线是按档号取模，间距一变就必然断线 ⇒ 小图上一片断断续续的虚线（真机截图实测）；
+             淡出没有断口：平地线间距够（≥12px）就正常画，陡坡上几十条线自动变淡，
+             合成一层浅浅的坡面过渡，而不是一块突兀的深色。
+             手动档（全部/每2条/每5条）仍按档号跳线 —— 那是用户明确要的"省略"。 */
+          const spx = Math.abs(sm[at(j + 3, i)] - sm[at(j - 3, i)]) / 6;
+          const spy = Math.abs(sm[at(j, i + 3)] - sm[at(j, i - 3)]) / 6;
+          const spacingPx = 1 / Math.max(Math.max(spx, spy) * cs, 1e-6);
+          const autoAlpha = clamp((spacingPx - CONTOUR_FADE_MIN_PX) / (CONTOUR_FADE_FULL_PX - CONTOUR_FADE_MIN_PX), CONTOUR_FADE_FLOOR, 1);
+          const every = contourEvery > 0 ? contourEvery : 0;
           const keep = every <= 1 || cb % every === 0;
-          if (keep && (cb !== bl || cb !== bu)) col = cb % 5 === 0 ? lineDark : lineC;
+          if (keep && (cb !== bl || cb !== bu)) {
+            const base = ((every > 1 ? (cb / every) | 0 : cb) % 5 === 0) ? lineDark : lineC;
+            col = contourEvery > 0 ? base : mix(col, base, autoAlpha);
+          }
         }
         /* 坡面排线（水墨 / 羊皮纸 / 蓝图）：沿坡向排线，越陡越密 */
         if (def.hatch > 0) {

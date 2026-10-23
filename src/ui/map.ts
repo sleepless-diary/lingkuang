@@ -16,7 +16,7 @@ import { currentWorld } from '../store/store';
 import { uid } from '../store/ids';
 import type { MapData } from '../store/types';
 import { escapeHtml } from './html';
-import { DEFAULT_MAP, polylinePath, smoothClosedPath } from './map-gen';
+import { DEFAULT_MAP, polylinePath, regionIsSliver, regionPaths, regionPoints, smoothClosedPath } from './map-gen';
 import {
   mountTerrain, resetTerrainPaint, terrainStats, liftOf, type TerrainHandle, type TerrainStats,
 } from './map-terrain';
@@ -194,10 +194,18 @@ export function renderMap(store: Store, host: HTMLElement): void {
     svg.style.opacity = onGlobe ? '0' : '1';
     svg.style.pointerEvents = onGlobe ? 'none' : '';
     const regions = m.regions
-      .map(
-        (r) =>
-          `<path d="${r.path}" fill="${r.fill}" fill-rule="${r.rule ?? 'nonzero'}" stroke="rgba(58,58,52,.5)" stroke-width="1" data-region="${escapeHtml(r.name)}" style="cursor:pointer;" title="${escapeHtml(r.name)}"/>`
-      )
+      /* 细长条区域不画：那是「在地图上拖了一下」被当成区域的产物，画出来就是一条斜线
+         （第一百一十轮用户报的"尖角"）。判据见 regionIsSliver。 */
+      .filter((r) => !regionIsSliver(r.points?.length >= 4 ? r.points : (regionPoints(r.path) ?? [])))
+      .map((r) => {
+        /* 老 path 里可能带着"松开补的直边"和起收笔的钩状凸起（见 regionPaths 注释）：
+           重算一遍端点再画，填色与描边分开 —— 描边只描真正画过的笔迹。 */
+        const rp = regionPaths(r.path);
+        const stroke = rp.stroke === rp.fill
+          ? ''
+          : `<path d="${rp.stroke}" fill="none" stroke="rgba(58,58,52,.5)" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>`;
+        return `<path d="${rp.fill}" fill="${r.fill}" fill-rule="${r.rule ?? 'nonzero'}" stroke="${rp.stroke === rp.fill ? 'rgba(58,58,52,.5)' : 'none'}" stroke-width="1" data-region="${escapeHtml(r.name)}" style="cursor:pointer;" title="${escapeHtml(r.name)}"/>${stroke}`;
+      })
       .join('');
     /* 开放线（手绘水系 / 轨迹）：画在区域之上、标记之下。`lines` 可选（旧数据没有）。 */
     const lines = (m.lines ?? [])
@@ -421,7 +429,9 @@ export function renderMap(store: Store, host: HTMLElement): void {
   /* 收尾统一入口。commit=true（正常 pointerup）才把区域落盘；
      其余情况（pointercancel、丢失的 pointerup）丢弃这一笔，避免半成品区域写进数据。 */
   function endDrag(commit: boolean) {
-    if (commit && mode === 'region' && drawing.length >= 3) {
+    /* 太细的一笔（面积/外接矩形 < 7%）不落盘：多半是「想拖地图/随手一划」被当成画区域，
+       存下来只会在地图上留一条斜线（第一百一十轮）。 */
+    if (commit && mode === 'region' && drawing.length >= 3 && !regionIsSliver(drawing)) {
       const pts = drawing;
       const fill = `rgba(${158 + Math.floor(Math.random() * 60)},${150 + Math.floor(Math.random() * 50)},${98},0.25)`;
       save((m) => {

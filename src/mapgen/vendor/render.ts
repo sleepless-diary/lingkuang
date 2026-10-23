@@ -599,20 +599,22 @@ const frag_drape = `
         float cFrac = fract(zLand / cInterval);
         float cDist = min(cFrac, 1.0 - cFrac) * cInterval;   /* 到最近档线的"高度距离" */
         float cPx = max(fwidth(zLand), 1e-6);
-        /* ⭐ 灵框追加（第一百零八轮）：等高线抽稀 —— 用户「有些地方因为地形陡峭导致等高线有点密集」。
-           自动档：一格里挤多少条线由 fwidth 现算 —— 线间距 < 7px 就按整数倍跳线
-           （陡坡自然变稀，平地 sp 仍是 1 ⇒ 全显示）；手选档：直接每 n 条留一条。
-           ⚠️ 跳线按**档号**取模（不是按屏幕像素）⇒ 相邻两格跨过同一个档号时仍然只画一次，
-           线与线之间不会出现"半条"。
-           ⚠️ 主等高线（每 5 条一条）不打折：抽稀后仍把它压深一点，读图时才有"计曲线"。 */
+        /* ⭐ 灵框追加（第一百零八轮起）：等高线抽稀 —— 用户「有些地方因为地形陡峭导致等高线有点密集」。
+           自动档按 fwidth 现算线间距；手选档直接每 n 条留一条。
+           ⚠️ 跳线按**档号**取模（不是按屏幕像素）⇒ 相邻两格跨过同一个档号时仍然只画一次。 */
+        /* ⭐ 灵框追加（第一百一十轮）：自动档从「跳线」改成「**淡出**」。
+           跳线是按档号取模，间距一变就断线（小图上是一片虚线）；淡出没有断口 ——
+           平地线间距够（≥12 位图像素）就正常画，陡坡自动变淡，不会糊成一块深色。
+           手动档（全部/每 2 条/每 5 条）仍按档号跳线，那是用户明确要的"省略"。
+           ⚠️ 主等高线（计曲线）仍加深，读图才有层次。 */
         float spacingPx = cInterval / cPx;
-        float autoEvery = max(1.0, floor(10.0 / max(spacingPx, 0.001) + 0.999));
-        float every = u_contour_every > 0.5 ? u_contour_every : autoEvery;
+        float autoAlpha = clamp((spacingPx - 2.0) / 5.0, 0.18, 1.0);
+        float every = u_contour_every > 0.5 ? u_contour_every : 0.0;
         float cIdx = floor(zLand / cInterval + 0.5);
         float cKeep = every <= 1.0 ? 1.0 : (1.0 - step(0.5, mod(cIdx, every)));
-        float cMajor = 1.0 - step(0.5, mod(cIdx, 5.0));
+        float cMajor = 1.0 - step(0.5, mod(floor(cIdx / max(every, 1.0)), 5.0));
         float cLine = (1.0 - smoothstep(1.0, 2.2, cDist / cPx)) * u_contour * step(0.5, z0)
-                    * cKeep * (0.55 + 0.45 * cMajor);
+                    * cKeep * (0.55 + 0.45 * cMajor) * (u_contour_every > 0.5 ? 1.0 : autoAlpha);
         /* 线色跟着风格走（地形图是褐色、蓝图是青色、极简档压根不画）：以前只会"把底色调暗一半"，
            在深色色带（蓝图）上就完全看不见线。 */
         biome_color = mix(biome_color, mix(biome_color * 0.5, u_line_color, 0.65), cLine);

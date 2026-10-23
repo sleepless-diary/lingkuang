@@ -402,16 +402,26 @@ function planetMetrics(f) {
     const ku = (i > 0 ? i - 1 : 0) * f512.w + j;
     if (b !== cl((f512.e01[kl] * 10) | 0, 0, 9) || b !== cl((f512.e01[ku] * 10) | 0, 0, 9)) cross10++;
   }
-  const rgba2 = P.renderPlanet(f512, 'contour');
-  let dark = 0;
-  for (let k = 0; k < f512.w * f512.h; k++) {
-    if (!f512.land[k]) continue;
-    const o = k * 4;
-    if (rgba2[o] < 150 && rgba2[o + 1] < 150) dark++;    /* 两种线色（#777a62 / #4a4e3a）都远深于十档浅色底 */
-  }
-  check('★21 等高线真画出来了，而且比「10 档」那版细（线像素 ≥ 1.3× 老口径，且不是糊成一片）',
-    landPx > 0 && dark >= cross10 * 1.3 && dark / landPx >= 0.02 && dark / landPx <= 0.45,
-    { darkPct: +(dark / landPx * 100).toFixed(1), cross10, vs10: +(dark / Math.max(1, cross10)).toFixed(2) });
+  const darkOf = (rgba) => {
+    let d = 0;
+    for (let k = 0; k < f512.w * f512.h; k++) {
+      if (!f512.land[k]) continue;
+      const o = k * 4;
+      if (rgba[o] < 150 && rgba[o + 1] < 150) d++;   /* 两种线色（#777a62 / #4a4e3a）都远深于十档浅色底 */
+    }
+    return d;
+  };
+  /* ⭐ 第一百一十轮：自动档从「跳线」改成「淡出」（跳线会断线，小图上一片虚线）。
+     ⇒ ★21 的口径拆成两条：手选「全部」仍要 ≥1.3× 老 10 档口径；自动档要比「全部」**浅**
+     （淡出生效）但仍有足够多的线（不是把等高线整个淡没了）。 */
+  const darkAll = darkOf(P.renderPlanet(f512, 'contour', 1));
+  const dark = darkOf(P.renderPlanet(f512, 'contour'));
+  check('★21 等高线真画出来了（手选「全部」≥1.3× 老 10 档口径，且不是糊成一片）',
+    landPx > 0 && darkAll >= cross10 * 1.3 && darkAll / landPx >= 0.02 && darkAll / landPx <= 0.45,
+    { darkPct: +(darkAll / landPx * 100).toFixed(1), cross10, vs10: +(darkAll / Math.max(1, cross10)).toFixed(2) });
+  check('★21b 自动档是「淡出」而不是「跳线」：比全部浅、但不是没有线',
+    dark < darkAll && dark >= darkAll * 0.45 && dark / landPx >= 0.015,
+    { darkAuto: dark, darkAll, ratio: +(dark / Math.max(1, darkAll)).toFixed(2) });
 }
 
 /* ── 等高线抽稀档位（第一百零八轮）──────────────────────────────────────────

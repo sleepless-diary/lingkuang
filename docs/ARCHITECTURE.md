@@ -1455,3 +1455,57 @@
 3. **合成 PointerEvent 的 `setPointerCapture` 会抛 `NotFoundError`** ⇒ 所有 `setPointerCapture` 都要
    try/catch（`src/ui/lightbox.ts`、`src/ui/map-editor.ts`），否则守卫的"无异常"一项永远红。
 4. 画布类组件要**同时**量 backing store 与 CSS 尺寸：两者不一致时手写坐标换算必错。
+
+## 2026-10-24 · 等高线"自动"改淡出 + 区域细长条/闭合钩（第一百一十轮）
+
+用户原话：「有bug，在小图情况下出现了一条非常突兀的尖角，像是等高线出问题了」。
+用真实数据起隔离实例复现（`.review/run110`：单世界「维斯莱特」，地图 `form:planet / style:continent /
+view:topo / contour:auto / seed:灵框`，带 320×160 剪影掩膜；端口 9550 的 `.review/probe-spike.cjs`），
+查出**两条互不相干**的成因 —— 用户猜的"等高线"只中了一半。
+
+### 一、那条"尖角"其实是**区域（`ws.maps[].regions`）的轮廓**
+- 数据里有两块区域。`区域 2` 的 20 个点拉成一条 142 单位长的细弧（面积 366 / 外接矩形 8556 = **4.3%**），
+  描边画出来就是一条横穿海面的斜线。逐条 `display:none` 二分（`.review/probe-line4.cjs`）确认：
+  藏掉 `#map-svg > path` 里那条描边，线立刻消失。
+- 三处修：
+  1. `src/ui/map-gen.ts` 的 `smoothClosedPath()`：Catmull-Rom 控制臂**限长**
+     （`k ≤ 2·本段长 / 邻点跨度`）。首尾缺口大时控制臂会被拉出 20+ 单位，起笔/收笔处甩出一个钩状凸起，
+     而这段几何**已经烤进存盘的 `path` 字符串**里（只改生成器救不了老数据）。
+  2. 新增 `regionPaths(d)`：把存盘 path 拆回端点、用限长规则**重算**；首尾补边比其它边中位数的 3 倍还长时，
+     描边省掉那条补边（填色仍闭合，只是一层 0.25 的淡色）。`src/ui/map.ts` 的 `renderSvg()` 改用它。
+  3. 新增 `regionIsSliver(pts)`：面积 / 外接矩形 < 0.07 的区域**不画**；`endDrag()` 也不再落盘这种细长条
+     （多半是"想拖地图 / 随手一划"被「拖拽画区域」当成画了一块）。
+- ⚠️ 拆 path 时**末尾那个点等于起点**（闭合段回到了 p0）⇒ 必须先 pop 掉再判"最后一段"，
+  否则"补边"永远是长度 0 的假段、判据恒不成立（第一版就这么白改了一轮）。
+
+### 二、等高线"自动"档原来会**断线**，陡坡还会糊成一块深色
+- 旧自动档按**相邻像素跨几档**（`grad`）跳线、倍数上限 6：`grad` 逐像素跳变 ⇒ 同一条等高线一会儿画一会儿不画，
+  1536 位图缩到 660px 的小图上就是一片虚线；陡坡上几十条线仍挤成一团深色。
+- 改成**淡出**（CPU 星球渲染与 WebGL 两处同口径）：
+  `spacingPx = 1 / (局部坡度 × contourScale)`（±3 格宽基线抗逐格噪声），
+  `alpha = clamp((spacingPx - 2) / (7 - 2), 0.18, 1)` —— 平地（≥7px）满强度、陡坡线性变淡到 18%，
+  **不跳线**（所以不会断线），稠密区自然变成一层浅浅的坡面过渡。
+  手选「全部 / 每 2 条 / 每 5 条」仍按档号跳线（那是用户明确要的"省略"），主等高线（每 5 条）照旧加深。
+  常量：`src/mapgen/planet.ts` 的 `CONTOUR_FADE_MIN_PX=2 / CONTOUR_FADE_FULL_PX=7 / CONTOUR_FADE_FLOOR=0.18`，
+  `src/mapgen/vendor/render.ts` 的 `frag_drape` 里同值写死（注释里互相指了）。
+- 实测（真实种子 + 真掩膜场，1536×768，陆地 233850 px）等高线间距分布：
+  ≤2px 4.6% / 3~6px 21.2% / 7~12px 25.9% / ≥19px 26.2% ⇒ 淡出只压在真正挤的那四分之一上。
+
+### 验证
+- `node tools/e2e/mapgen-engine.mjs` **26/26**（★21 拆两条：手选「全部」仍 ≥1.3× 老 10 档口径；
+  新增 ★21b 自动档比全部浅、但 ≥45% 且 ≥1.5% 陆地像素 —— 钉住"淡出不是淡没"）。
+- `LK_CDP_PORT=9551 node tools/e2e/map-draw.cjs` **11/11**（含 ★7 高清 2304×1152、★9 缓存命中）。
+- `node tools/e2e/map-planet.cjs` 9/12：★3/★4/★7 是**环境 flake** —— 这台机器上带 `clip` 的
+  `Page.captureScreenshot` 只返回一张 844B 空白图（`.review/probe-clip.cjs`：no-clip 74804B vs clip 844B），
+  所以"截图哈希变了"永远比不出来；几何与大图两项已手工复核（`.review/probe-bigview.cjs`：点地图 →
+  `.lk-lb` 打开、`.lk-lb__img` = 2304×1152）。
+- `npx tsc --noEmit` 0、`npx vite build` 0。
+- 截图证据：`.review/shots-spike/`（改前画布：断线 + 深色团 + 斜线）、`.review/shots-spike9/small-all.png`
+  （改后小图：三块陆地干净）、`.review/shots-modes/z-{auto,all,half,fifth}.png`（四档对照：auto 连续不断线、
+  fifth 只剩计曲线）。
+
+### 教训
+- 用户说"像是 X 出问题了"时，X 往往只是**长得像**：先用 `display:none` 逐图层二分，别一头扎进那个模块。
+- `buildPlanetField(seed, style, spec, h, mask?, ...)` **没有 view 参数** —— 离线脚本按老印象多传一个 `'topo'`
+  会被当成掩膜，渲出来是"无掩膜"的场，跟真机截图对不上（这一轮因此白比对了两轮）。
+- 存盘里带几何（区域 `path`）时，**渲染期的修复必须从 path 反解端点重算**，只改生成器对老数据无效。
