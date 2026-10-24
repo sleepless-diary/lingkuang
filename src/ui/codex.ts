@@ -932,13 +932,30 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
          （实测截图：`日常` 与 `安德雅特斯山` 糊在一起）。擦除没有重叠区 —— 左边是新的、
          右边是旧的，中间只有一条边；也不会有空白帧。 */
       const exits = rowsLeave(rowsOf(ghost, false), { dx, step, dur, easing: 'cubic-bezier(0.25, 0.1, 0.25, 1)' });
-      const wipe = ghost.animate(
-        [{ clipPath: 'inset(0 0 0 0%)' }, { clipPath: 'inset(0 0 0 100%)' }],
-        { duration: dur, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', fill: 'both' }
+      /* 退场 = **整页推走**（2026-10-24 第三版，用户：「没有文件切换的感觉」）：
+         旧内容整张卡往左滑出、新内容同时从右边推进来，两者速度、曲线完全一致 ⇒ 中间永远是一条
+         干净的竖边（左边旧、右边新），既没有重叠区、也没有空白帧，而且读起来就是"换了一页文件"。
+         为什么不用 clip-path 擦除：擦除是"旧内容原地被蚕食"，手指没动、页面没动，所以不像换文件。
+         ⚠️ 整页平移必须临时 `overflow: hidden`，否则新内容会在 `#cx-body` 外面露出来。 */
+      const w = Math.max(1, Math.round(body.getBoundingClientRect().width));
+      const EASE = 'cubic-bezier(0.22, 0.8, 0.25, 1)';
+      const prevOverflow = body.style.overflow;
+      body.style.overflow = 'hidden';
+      const out = ghost.animate(
+        [{ transform: 'translateX(0)' }, { transform: `translateX(-${w}px)` }],
+        { duration: dur, easing: EASE, fill: 'both' }
       );
-      const kill = (): void => { if (swapGhost === ghost) dropGhost(); };
+      const targets = Array.from(body.children).filter((el) => el !== ghost) as HTMLElement[];
+      const ins = targets.map((el) => el.animate(
+        [{ transform: `translateX(${w}px)` }, { transform: 'translateX(0)' }],
+        { duration: dur, easing: EASE, fill: 'both' }
+      ));
+      const kill = (): void => {
+        body.style.overflow = prevOverflow;
+        if (swapGhost === ghost) dropGhost();
+      };
       /* 没有可动画的行（全被 display:none 滤掉）时别留一层静止的重复内容 —— 直接收掉 */
-      Promise.all([...exits.map((a) => a.finished), wipe.finished]).then(kill).catch(() => { /* 被取消 */ });
+      Promise.all([out.finished, ...ins.map((a) => a.finished), ...exits.map((a) => a.finished)]).then(kill).catch(() => { body.style.overflow = prevOverflow; /* 被取消 */ });
       /* 兜底：隐藏窗口里动画不推进，`finished` 永远不来（README 铁律 6），这层幽灵不能留着 */
       window.setTimeout(kill, dur + step * 80 + 600);
     }

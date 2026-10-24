@@ -33,14 +33,14 @@ const READ = (pick) => `(pick => {
     dur: a.effect.getTiming().duration, delay: a.effect.getTiming().delay, ease: a.effect.getTiming().easing,
   }));
   const ghost = body.querySelector('.lk-cx-ghost');
-  const wipe = ghost?.getAnimations().find((a) => (a.effect?.getKeyframes?.() ?? []).some((k) => k.clipPath)) ?? null;
+  const wipe = ghost?.getAnimations().find((a) => (a.effect?.getKeyframes?.() ?? []).some((k) => typeof k.transform === 'string' && k.transform.includes('translateX'))) ?? null;
   return {
     n: rows.length,
     anims: rows.map(one),
     ghost: !!ghost,
     ghostIds: ghost ? ghost.querySelectorAll('[id]').length : 0,
     wipe: wipe ? { dur: wipe.effect.getTiming().duration, ease: wipe.effect.getTiming().easing,
-      kf: wipe.effect.getKeyframes().map((k) => k.clipPath) } : null,
+      kf: wipe.effect.getKeyframes().map((k) => k.transform) } : null,
     bodyCss: body.getAnimations().filter((a) => a.animationName).map((a) => a.animationName),
   };
 })(${JSON.stringify(pick)})`;
@@ -130,9 +130,9 @@ async function main() {
      擦除揭开的就是最终态；滑动会让被揭开的部分还在动，看起来像"一边揭一边抖"。 */
   check('★4 入场没有行级动画（新内容原地就位，只由幽灵的擦除把它揭开）',
     !!inn && inn.anims.every((a) => a.length === 0), inn?.anims);
-  check('★5 出场 = 幽灵上的裁切擦除（clip-path 从右往左，300ms，匀速感曲线）',
+  check('★5 出场 = 整页左移（幽灵 translateX 0 → -width，300ms）',
     !!out && !!out.wipe && out.wipe.dur === 300 && out.wipe.kf.length === 2
-      && String(out.wipe.kf[0]).includes('0%') && String(out.wipe.kf[1]).includes('100%'),
+      && String(out.wipe.kf[0]).includes('translateX'),
     out?.wipe);
   check('★6 整块容器自己**没有**动画（框不动 —— 动的是框里的行）',
     !!inn && inn.bodyCss.length === 0, inn?.bodyCss);

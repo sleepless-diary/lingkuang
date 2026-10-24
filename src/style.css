@@ -2052,3 +2052,14 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
 .ed-branch { display: block; }
 .ed-kids { display: block; }
 @media (prefers-reduced-motion: reduce) { .ed-kids { transition: none; } }
+
+/* ── 左树行的悬停反馈（2026-10-24）：以前 `.ed-tnode:hover` 用的是 `--surface`，
+   与列表底色同值 ⇒ 悬浮在文件夹上**看不出任何变化**。改成 `--surface-2` 并给过渡。 */
+.ed-tnode { transition: background-color 120ms var(--ease-standard), color 120ms var(--ease-standard); }
+.ed-tnode:hover { background: var(--surface-2); }
+.ed-tnode:hover .ed-tlabel { color: var(--fg); }
+.ed-tnode:hover .ed-tcaret { opacity: 1; }
+.ed-tnode.is-open:hover { background: var(--surface-2); }
+/* 行内那点小箭头默认暗一点，悬浮/展开时提到正常亮度（文件夹行尤其明显） */
+.ed-tcaret { opacity: .55; transition: opacity 120ms var(--ease-standard), transform var(--motion-fast) var(--ease-standard); }
+.ed-tnode.is-open .ed-tcaret { opacity: .95; }
