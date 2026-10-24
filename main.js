@@ -2082,6 +2082,11 @@ const DEFAULT_FORMATS = {
   ] },
 };
 
+/* 节点固定属性的键（与 src/store/types.ts 的 NodeFixedKey 对齐）。结构体管理从 2026-10-24 起能改
+   它们的显示名 / 顺序 / 隐藏，配置跟模板一起存在 formats.json 的 `props` 里 —— 读盘时必须**原样带过去**，
+   否则「改一次、重启又变回默认」（旧版这里只挑 id/name/fields，正是那个后果）。 */
+const FIXED_PROP_KEYS = ['title', 'time', 'precision', 'type', 'kind', 'desc'];
+
 /* 读取格式定义：有用户文件就以**用户文件为准**，没有才用内建默认。
    旧实现是「内建 5 个 kind + 用户浅合并」（`merged[k] = { ...v, ...parsed[k] }`）——
    后果是**内建种类删不掉**：用户在「结构体管理」里删了「角色」，下次读又冒出来，
@@ -2095,7 +2100,7 @@ function loadFormatsRaw() {
       for (const [k, v] of Object.entries(parsed)) {
         if (!v || typeof v !== 'object') continue;
         const fields = Array.isArray(v.fields) ? v.fields : [];
-        out[k] = {
+        const entry = {
           id: String(v.id ?? k),
           name: String(v.name ?? k),
           /* 只保留认识的结构，顺手过滤空字段名（手改文件写出 `{name:''}` 会让面板出现空行） */
@@ -2103,6 +2108,19 @@ function loadFormatsRaw() {
             .filter((f) => f && typeof f.name === 'string' && f.name.trim())
             .map((f) => ({ name: String(f.name).trim(), type: FORMAT_TYPES.includes(f.type) ? f.type : 'text' })),
         };
+        /* 固定属性的显示配置：只收认识的键；标签与 hidden 都是可选的，别写出空串/ false 污染文件 */
+        if (Array.isArray(v.props)) {
+          const props = [];
+          for (const p of v.props) {
+            if (!p || typeof p !== 'object' || !FIXED_PROP_KEYS.includes(p.key)) continue;
+            const item = { key: p.key };
+            if (typeof p.label === 'string' && p.label.trim()) item.label = p.label.trim();
+            if (p.hidden === true) item.hidden = true;
+            props.push(item);
+          }
+          if (props.length) entry.props = props;
+        }
+        out[k] = entry;
       }
       return out;
     }

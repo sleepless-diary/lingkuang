@@ -1560,3 +1560,59 @@ view:topo / contour:auto / seed:灵框`，带 320×160 剪影掩膜；端口 955
 - 左栏收窄是**信息架构**决定，不是隐藏：每个被搬走的工具都要在抽屉里**有名字 + 一句说明**，
   并且 `restoreSession` / e2e 都能按 `[data-tool]` 找到它，否则等于下线。
 - 「完成度」先用派生（`docLen`）而不是新字段：112 条老数据零迁移，AI 也改不坏它。
+
+## 2026-10-24 · 节点固定属性可配置 + 交互/层次（第一百一十二轮）
+
+用户原话：「页面风格单一，动效和交互感较少，还有结构体管理里面应该对内置字段也能进行修改
+（但是事件节点等触及底层的字段需要保护）」。视觉方向选了「三个都做一点，你定比例」
+⇒ A 工具感 5 : C 层次/微交互 3.5 : B 写作安静 1.5。
+
+### 一、结构体管理：固定六行终于能改（`src/store/node-props.ts` 新增）
+
+- 节点的属性面板一直是「固定六行（标题/时间/精度/类型/种类/描述）+ 模板字段 + 自定义属性」，
+  六行写死在 `props-panel.ts` 里，结构体管理改不了。现在**显示层交出来**：
+  `formats[kind].props = [{ key, label?, hidden? }]`，只影响显示，**不动数据**。
+- 新模块 `src/store/node-props.ts`：`FIXED_LABEL`（默认名，也是 `saveFixed()` 认的键）、
+  `PROTECTED_KEYS = ['time','precision','kind','type']`（底层四项，**可以改名、不可隐藏**）、
+  `DEFAULT_LAYOUT`、`resolveNodeProps(fmt)`（收敛成六行必有值、非法/重复键丢掉、保护项强制可见）、
+  `toLayout(rows)`（写回时省掉默认名，文件保持干净）。
+- `src/ui/schema.ts`：节点种类页签多一块「节点固定属性」——改名（输入框）/ ↑↓ / 隐藏 / 恢复默认；
+  底层四项不画隐藏按钮（画成「底层」标）。**左边列表还会列出「数据里有、模板里没有」的种类**
+  （真实库：历史 17 节点、人物 8 节点都没有模板）—— 点一下才进草稿，不点不写盘；
+  否则用户对**真正在用的种类**根本无从配置。保存时只写 `props`，不碰节点。
+- `src/ui/props-panel.ts`：固定行改为 `resolveNodeProps(store.data.formats[kind])` 驱动 ——
+  过滤 hidden、按配置排序、显示名用 `label`（改过名时 `title` 悬停显示原字段名）。
+  **内部键仍是中文**（`saveFixed()` 认 '时间'/'种类'…），改个名叫「发生时间」不影响写回 `year`。
+- `main.js` 的 `loadFormatsRaw()`：**必须把 `props` 原样带过去**（旧版只挑 id/name/fields，
+  这正是「改一次、重启又变回默认」的成因）。只收认识的键，label/hidden 可选，不写空值污染文件。
+
+### 二、交互与层次（`src/style.css` 末尾一节 + tokens 既有变量）
+
+按用户选的比例做，全部复用现有 token 与 `prefers-reduced-motion`：
+
+- **A（工具感）**：左栏选中项 `::before` 亮一条 2px 竖线 + 图标 `drop-shadow` 微光 + hover 上浮 1px；
+  实验室抽屉 180ms 从按钮方向展开（收起瞬时）。
+- **C（层次/微交互）**：全站 `:focus-visible` 一圈 `--accent-ink`（以前完全没有键盘焦点样式）；
+  `.lk-tool-btn/.lk-btn/.lk-chip/.lk-lab__item/.lk-tl-tab` 统一过渡 + 按下 1px 下沉；
+  树行/属性行 120ms 悬停过渡；`.lk-empty` 260ms 轻上浮；细滚动条 + `::selection`。
+- **B（写作安静）**：`#cx-body:has(#cx-doc .tiptap:focus)` 时同栏字段块压到 0.6、
+  正文左侧亮一条 `--accent` 内阴影（`:has()` 在 Electron 43 原生可用）。
+  ⚠️ 验证时窗口用 `showInactive` 起（`LINGKUANG_TEST_WINDOW_NOFOCUS=1`）会让 `:focus` 不成立，
+  必须 `Page.bringToFront` 再量 —— 否则会误判成「选择器没生效」。
+
+### 三、验证
+
+- `npx tsc --noEmit` 0、`npx vite build` 0、`node --check main.js` 0。
+- 新增守卫 `tools/e2e/fixed-props.cjs` **7/7**（6 行 / 4 锁 / 无模板种类 / 改名保存 / 节点面板生效 /
+  **跑完改回原样** / 无异常）。⚠️ 它会写一次 formats.json，所以只该在隔离实例上跑。
+- `.review/probe-r112.cjs`（改名 + 隐藏描述 → 节点面板两行验证）4/4；
+  `.review/probe-r112b.cjs` 验到「重启后改名仍在」（props 从 formats.json 读回）。
+- 截图：`.review/shots-r112/`（`10-schema` 固定属性区、`20-node-props`、`30-focus` 写作专注）。
+
+### 四、教训
+
+- **读盘时的"规整"会静默吃掉新字段**：`loadFormatsRaw` 手写重建对象，只挑三个键 ——
+  新加的 `props` 就这样被丢掉，而且「保存成功」的回执还在。凡是手写白名单的地方，
+  加字段时必须同时改白名单（或者改成展开保留）。
+- **配置面板要列出"数据里有、模板里没有"的对象**：真实库里 17 个节点的种类根本没有模板，
+  只按模板列种类的话，用户会觉得「这个功能对我没用」。

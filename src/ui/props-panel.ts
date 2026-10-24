@@ -11,8 +11,9 @@
  */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
-import type { PropValue, TimelineNode, Entity, Timeline, TimePrecision, FieldType } from '../store/types';
+import type { PropValue, TimelineNode, Entity, Timeline, TimePrecision, FieldType, NodeFixedKey } from '../store/types';
 import { PRECISION_ORDER, PRECISION_LABELS } from '../store/types';
+import { FIXED_LABEL, resolveNodeProps } from '../store/node-props';
 import { toEpoch, fromEpoch, buildYearTable, calendarOf, timePointOf } from '../calendar';
 import { isImeEnter } from './keys';
 import { parseTimeText } from './node-form';
@@ -351,24 +352,34 @@ export function createPropsPanel(deps: PropsPanelDeps): PropsPanel {
       if (status) status.textContent = '已保存 ✓';
       /* 不在此重渲染面板：scrub 控件自身更新显示，避免销毁拖拽中控件 */
     };
-    /* 固定属性行：年份数值 scrub、精度/类型下拉、标题/描述文本 */
-    /* 固定属性行：年份数值 scrub、精度/类型下拉、标题/描述文本、种类下拉（模板引用） */
-    const fixedRows: { k: string; v: string }[] = isEntity
-      ? [{ k: '名称', v: node.name ?? '' }, { k: '实体类型', v: node.typeId ?? '' }]
-      : [
-          { k: '标题', v: node.title ?? '' },
-          { k: '时间', v: node.year !== undefined ? String(node.year) : '' },
-          { k: '精度', v: node.precision ?? '' },
-          { k: '类型', v: node.type ?? '' },
-          { k: '种类', v: node.kind ?? '' },
-        ];
-    if (!isEntity) fixedRows.push({ k: '描述', v: node.desc ?? '' });
-    const addFixedRow = (appendTo: HTMLElement, k: string, v: string): void => {
+    /* 固定属性行：年份数值 scrub、精度/类型下拉、标题/描述文本、种类下拉（模板引用）
+       ⭐ 2026-10-24：顺序 / 显示名 / 隐藏由「结构体管理 → 该种类的『节点固定属性』」决定
+       （`formats[kind].props`，见 `src/store/node-props.ts`）。内部键仍是中文（`saveFixed` 认它），
+       只把**显示名**换掉 —— 改个名叫「发生时间」不影响写回 `year`。 */
+    type FixedRow = { k: string; label: string; v: string };
+    const fixedRows: FixedRow[] = isEntity
+      ? [{ k: '名称', label: '名称', v: node.name ?? '' }, { k: '实体类型', label: '实体类型', v: node.typeId ?? '' }]
+      : (() => {
+          const t = store.data.formats?.[node.kind ?? '事件'];
+          const valueOf = (key: NodeFixedKey): string => {
+            if (key === 'title') return node.title ?? '';
+            if (key === 'time') return node.year !== undefined ? String(node.year) : '';
+            if (key === 'precision') return node.precision ?? '';
+            if (key === 'type') return node.type ?? '';
+            if (key === 'kind') return node.kind ?? '';
+            return node.desc ?? '';
+          };
+          return resolveNodeProps(t)
+            .filter((r) => !r.hidden)
+            .map((r) => ({ k: FIXED_LABEL[r.key], label: r.label, v: valueOf(r.key) }));
+        })();
+    const addFixedRow = (appendTo: HTMLElement, k: string, v: string, label = k): void => {
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;align-items:center;gap:6px;margin:2px 0;';
       const keyEl = document.createElement('span');
       keyEl.style.cssText = 'flex-shrink:0;width:80px;font-size:var(--text-xs);color:var(--fg-2);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      keyEl.textContent = k;
+      keyEl.textContent = label;
+      if (label !== k) keyEl.title = k;   /* 改过名：悬停看原字段（写回用的那个键） */
       row.appendChild(keyEl);
       let ctrl: HTMLElement;
       if (k === '时间') {
@@ -509,7 +520,7 @@ export function createPropsPanel(deps: PropsPanelDeps): PropsPanel {
     const props = node.properties || {};
     host.innerHTML = `<div class="ed-props"></div>`;
     const box = host.querySelector('.ed-props') as HTMLElement;
-    fixedRows.forEach((r) => addFixedRow(box, r.k, r.v));
+    fixedRows.forEach((r) => addFixedRow(box, r.k, r.v, r.label));
     /* 格式引用：选择 kind（在 formats.json 定义应填字段）→ 按格式渲染字段 */
     /* 属性区：显示所有属性（格式字段已由 ensureAllFormatFields 补进 node.properties，起因/影响等归这里） */
     if (Object.keys(props).length) {

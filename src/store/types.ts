@@ -131,7 +131,19 @@ export type FieldType = 'text' | 'longtext' | 'number' | 'boolean' | 'list';
 
 /** 格式/结构体定义：kind → 应填字段集合（权威参考，autoFix 对照它补缺失字段） */
 export interface FormatField { name: string; type: FieldType; }
-export interface WorldFormat { id: string; name: string; fields: FormatField[]; }
+/** 节点**固定属性**的键（2026-10-24 用户：「内置字段也应该能改，但触及底层的要保护」）。
+ *  六行固定属性原来写死在属性面板里；现在可以改名 / 调顺序 / 隐藏 —— 但底下四样（时间 / 精度 /
+ *  种类 / 类型）不许藏：时间轴坐标、模板与 vault 目录、沙盘画法都靠它们，藏了会让数据没法解释。 */
+export type NodeFixedKey = 'title' | 'time' | 'precision' | 'type' | 'kind' | 'desc';
+/** 某一个种类对固定属性的显示配置（只影响显示，不动数据）。`hidden` 对保护项无效。 */
+export interface NodePropLayout { key: NodeFixedKey; label?: string; hidden?: boolean; }
+export interface WorldFormat {
+  id: string;
+  name: string;
+  fields: FormatField[];
+  /** 固定属性的显示配置；空 = 用默认顺序与默认名（见 `src/store/node-props.ts`） */
+  props?: NodePropLayout[];
+}
 
 /** 实体实例（本体 = 文稿 e.doc） */
 export interface Entity {

@@ -15,6 +15,7 @@ import type { FieldType, WorldFormat } from '../store/types';
 import { confirmDialog, promptDialog } from './confirm';
 import { escapeHtml } from './html';
 import { applyTypeSplit, planTypeSplit, typeSplitLines, typeSplitSummary } from './type-migrate';
+import { DEFAULT_LAYOUT, FIXED_LABEL, resolveNodeProps, toLayout } from '../store/node-props';
 
 /** 字段类型的中文名（面板里只显示中文，值仍用 FieldType 的字面量） */
 const TYPE_LABEL: Record<FieldType, string> = {
@@ -38,7 +39,11 @@ function readTab(store: Store, tab: Tab): Formats {
   for (const [k, v] of Object.entries(src)) {
     const t = v as WorldFormat;
     if (!t) continue;
-    out[k] = { id: t.id ?? k, name: t.name ?? k, fields: (t.fields ?? []).map((f) => ({ name: f.name, type: f.type })) };
+    const one: WorldFormat = { id: t.id ?? k, name: t.name ?? k, fields: (t.fields ?? []).map((f) => ({ name: f.name, type: f.type })) };
+    /* 固定属性的显示配置只在「节点种类」页签有意义（实体没有那六行）；整份带进草稿，
+       保存时再原样写回 —— 不带上就等于「打开面板 → 保存 → 配置被清空」。 */
+    if (tab === 'kind' && t.props) one.props = JSON.parse(JSON.stringify(t.props));
+    out[k] = one;
   }
   return out;
 }
@@ -82,8 +87,23 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
     return { nodes, filled };
   }
 
-  const dirty = (): boolean => JSON.stringify(draft) !== JSON.stringify(saved);
+  /** 数据里出现过、但 `formats` 里还没有模板的**节点种类**（按节点数从多到少）。
+   *  真实库里就有：节点 kind = 人物 / 历史，而 formats 只有 事件 / 战斗 —— 不列出来的话，
+   *  「节点固定属性」对用户真正在用的种类无从配置。 */
+  function dataKinds(): string[] {
+    const counts = new Map<string, number>();
+    for (const ws of Object.values(store.data.worldsets)) {
+      for (const tlId of ws.order ?? []) {
+        for (const n of ws.timelines?.[tlId]?.nodes ?? []) {
+          const k = n.kind ?? '事件';
+          counts.set(k, (counts.get(k) ?? 0) + 1);
+        }
+      }
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
+  }
 
+  const dirty = (): boolean => JSON.stringify(draft) !== JSON.stringify(saved);
   function say(text: string, bad = false): void {
     const el = host.querySelector('#sc-msg') as HTMLElement | null;
     if (!el) return;
@@ -117,6 +137,10 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
     const kinds = Object.keys(draft);
     if (!kinds.includes(activeKind)) activeKind = kinds[0] ?? '';
     const cur = activeKind ? draft[activeKind] : undefined;
+    /* 数据里有、但 formats.json 里还没模板的种类（真实库里就有：节点 kind = 人物 / 历史）——
+       不列出来的话，「节点固定属性」对**你真正在用的那些种类**根本无从配置。
+       它们先以「无模板」的灰行出现在左边，点一下才进草稿（不点不写盘）。 */
+    const extraKinds = tab === 'kind' ? dataKinds().filter((k) => !draft[k]) : [];
 
     const kindList = kinds
       .map((k) => {
@@ -126,6 +150,11 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
           <span style="font-size:11px;color:var(--fg-2);font-family:var(--font-mono);">${draft[k].fields.length} 字段 · ${imp.nodes} 节点</span>
         </button>`;
       })
+      .join('') + extraKinds
+      .map((k) => `<button data-kind-extra="${escapeHtml(k)}" title="数据里有 ${impact(k).nodes} 个节点用这个种类，但还没有模板 —— 点一下加进草稿，就可以配它的固定属性（字段栏留空也行）" style="display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:transparent;border:1px dashed var(--border);border-radius:var(--radius-sm);color:var(--fg-2);padding:4px 8px;font-size:var(--text-xs);cursor:pointer;">
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(k)}</span>
+          <span style="font-size:11px;color:var(--meta);font-family:var(--font-mono);">无模板 · ${impact(k).nodes} 节点</span>
+        </button>`)
       .join('');
 
     const fieldRows = !cur
@@ -141,6 +170,28 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
           .join('');
 
     const imp = activeKind ? impact(activeKind) : { nodes: 0, filled: 0 };
+    /* 节点固定属性（2026-10-24）：六行内置字段的显示配置 —— 改名 / 调顺序 / 隐藏。
+       带「底层」标的那四行（时间 / 精度 / 种类 / 类型）只许改名，不许藏：
+       时间轴坐标、模板与 vault 目录、沙盘画法都靠它们。 */
+    const propRows = cur && tab === 'kind' ? resolveNodeProps(cur) : [];
+    const fixedBlock = !cur || tab !== 'kind' ? '' : ` <div style="margin-top:14px;border-top:1px dashed var(--border-soft);padding-top:10px;">
+        <div style="display:flex;align-items:baseline;gap:8px;">
+          <div style="font-size:var(--text-sm);font-weight:600;color:var(--fg);">节点固定属性</div>
+          <span style="font-size:var(--text-2xs);color:var(--fg-2);">改名 / 调顺序 / 隐藏（带「底层」的那几行只能改名）</span>
+          <button id="sc-props-reset" style="margin-left:auto;background:transparent;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2);padding:2px 8px;font-size:var(--text-2xs);cursor:pointer;">恢复默认</button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px;margin-top:8px;">
+          ${propRows.map((r, i) => `<div data-prow="${i}" style="display:flex;align-items:center;gap:6px;${r.hidden ? 'opacity:.5;' : ''}">
+            <span style="width:42px;flex-shrink:0;font-size:var(--text-2xs);color:var(--fg-2);font-family:var(--font-mono);">${escapeHtml(FIXED_LABEL[r.key])}</span>
+            <input data-plabel="${i}" value="${escapeHtml(r.label)}" placeholder="${escapeHtml(FIXED_LABEL[r.key])}" title="显示名（只改显示，不改数据）" style="flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:3px 7px;font-size:var(--text-xs);outline:none;"/>
+            ${r.locked
+              ? '<span title="底层字段：可以改名，但不可隐藏（时间轴 / 模板 / 沙盘靠它）" style="flex-shrink:0;font-size:var(--text-2xs);color:var(--meta);border:1px solid var(--border-soft);border-radius:var(--radius-sm);padding:1px 6px;">底层</span>'
+              : `<button data-phide="${i}" title="${r.hidden ? '显示这一行' : '隐藏这一行（数据不动）'}" style="flex-shrink:0;background:transparent;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg-2);padding:1px 8px;font-size:var(--text-2xs);cursor:pointer;">${r.hidden ? '显示' : '隐藏'}</button>`}
+            <button data-pup="${i}" title="上移" style="background:none;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--fg-2);padding:1px 6px;font-size:11px;cursor:pointer;">↑</button>
+            <button data-pdown="${i}" title="下移" style="background:none;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--fg-2);padding:1px 6px;font-size:11px;cursor:pointer;">↓</button>
+          </div>`).join('')}
+        </div>
+      </div>`;
     /* 类别整理（2026-10-19 工作流评审 D 项）：只在实体类型页签算计划 —— 节点种类没有这个问题。
        计划是纯函数（`planTypeSplit`），不点按钮什么都不会写。 */
     const splitPlan = tab === 'etype' ? planTypeSplit(store) : null;
@@ -182,7 +233,7 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
                    <button id="sc-kind-del" style="margin-left:auto;background:transparent;border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius-sm);padding:3px 10px;font-size:var(--text-xs);cursor:pointer;">删除此${tab === 'kind' ? '种类' : '类型'}</button>
                  </div>
                  <div style="display:flex;flex-direction:column;gap:6px;">${fieldRows}</div>
-                 <button id="sc-field-new" style="align-self:flex-start;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:5px 12px;font-size:var(--text-xs);cursor:pointer;">＋添加字段</button>`
+                 <button id="sc-field-new" style="align-self:flex-start;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:5px 12px;font-size:var(--text-xs);cursor:pointer;">＋添加字段</button>${fixedBlock}`
               : ''}
           </div>
         </div>
@@ -228,6 +279,17 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
     });
     host.querySelectorAll<HTMLElement>('[data-kind]').forEach((el) => {
       el.addEventListener('click', () => { activeKind = el.dataset.kind ?? ''; render(); });
+    });
+    /* 「无模板」的种类：点一下才进草稿（并立刻成为当前编辑对象），不点不写盘 */
+    host.querySelectorAll<HTMLElement>('[data-kind-extra]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const k = el.dataset.kindExtra ?? '';
+        if (!k || draft[k]) return;
+        draft[k] = { id: k, name: k, fields: [] };
+        activeKind = k;
+        render();
+        say(`「${k}」还没有模板，已加进草稿 —— 可以只配固定属性，字段栏留空`);
+      });
     });
 
     host.querySelectorAll<HTMLInputElement>('[data-fname]').forEach((inp) => {
@@ -282,6 +344,51 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
           render();
         });
       });
+    });
+
+    /* ── 节点固定属性（只在「节点种类」页签）：改名 / 隐藏 / 调顺序 ──
+       全部只写 `cur.props`，节点上的值一个都不动；保存模板时跟着 formats.json 落盘。 */
+    host.querySelectorAll<HTMLInputElement>('[data-plabel]').forEach((inp) => {
+      inp.addEventListener('input', () => {
+        if (!cur) return;
+        const rows = resolveNodeProps(cur);
+        const i = Number(inp.dataset.plabel);
+        if (rows[i]) rows[i].label = (inp.value || '').trim() || FIXED_LABEL[rows[i].key];
+        cur.props = toLayout(rows);
+        syncSaveButtons();   /* 打字就点亮「保存模板」（不能 render()，那会丢焦点） */
+      });
+      inp.addEventListener('blur', () => render());
+    });
+    host.querySelectorAll<HTMLElement>('[data-phide]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (!cur) return;
+        const rows = resolveNodeProps(cur);
+        const r = rows[Number(btn.dataset.phide)];
+        if (!r || r.locked) return;          /* 底层项按钮根本不画，这里是双保险 */
+        r.hidden = !r.hidden;
+        cur.props = toLayout(rows);
+        render();
+      });
+    });
+    const moveProp = (from: number, to: number): void => {
+      if (!cur) return;
+      const rows = resolveNodeProps(cur);
+      if (to < 0 || to >= rows.length || !rows[from]) return;
+      [rows[from], rows[to]] = [rows[to], rows[from]];
+      cur.props = toLayout(rows);
+      render();
+    };
+    host.querySelectorAll<HTMLElement>('[data-pup]').forEach((btn) => {
+      btn.addEventListener('click', () => moveProp(Number(btn.dataset.pup), Number(btn.dataset.pup) - 1));
+    });
+    host.querySelectorAll<HTMLElement>('[data-pdown]').forEach((btn) => {
+      btn.addEventListener('click', () => moveProp(Number(btn.dataset.pdown), Number(btn.dataset.pdown) + 1));
+    });
+    host.querySelector('#sc-props-reset')?.addEventListener('click', () => {
+      if (!cur) return;
+      cur.props = DEFAULT_LAYOUT.map((p) => ({ ...p }));
+      render();
+      say('固定属性已恢复默认（点「保存模板」生效）');
     });
 
     host.querySelector('#sc-field-new')?.addEventListener('click', () => {
@@ -377,7 +484,10 @@ export function renderSchema(store: Store, host: HTMLElement): () => void {
           /* 规整成存档格式（去掉首尾空格、丢弃空字段），再写盘 */
           const clean: Formats = {};
           for (const [k, v] of Object.entries(draft)) {
-            clean[k] = { id: k, name: v.name || k, fields: v.fields.map((f) => ({ name: f.name.trim(), type: f.type })) };
+            const one: WorldFormat = { id: k, name: v.name || k, fields: v.fields.map((f) => ({ name: f.name.trim(), type: f.type })) };
+            /* 节点固定属性的显示配置跟着模板一起存（实体类型没有这一项） */
+            if (tab === 'kind' && v.props && v.props.length) one.props = v.props;
+            clean[k] = one;
           }
           const res = tab === 'kind'
             ? (api?.saveFormats ? await api.saveFormats(clean).catch(() => ({ ok: false as const, error: '写入失败' })) : { ok: false as const, error: '不在 Electron 环境' })

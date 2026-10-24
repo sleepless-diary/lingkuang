@@ -1893,3 +1893,104 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
 /* 画板的「留白 = 海洋」勾选（第一百零八轮）*/
 .lk-ed__check { display: flex; align-items: center; gap: 5px; font-size: var(--text-2xs); color: rgba(232, 231, 223, .78); cursor: pointer; }
 .lk-ed__check input { accent-color: var(--accent); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   2026-10-24 · 交互与层次（第一百一十二轮）
+   用户原话：「页面风格单一，动效和交互感较少」。
+   三件事，按比例：A 工具感 5 · C 层次/微交互 3.5 · B 写作安静 1.5。
+   纪律不变：颜色只用 token、界面无 emoji、尊重 prefers-reduced-motion。
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── C1 键盘焦点：全站一圈细绿环（以前 focus-visible 完全没样式，键盘/脚本操作看不出来） ── */
+:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; border-radius: 2px; }
+
+/* ── C2 可点元件的统一反馈：颜色过渡 + 按下 1px 下沉（原来多数按钮是瞬间跳色） ── */
+.lk-tool-btn,
+.lk-btn,
+.lk-chip,
+.lk-lab__item,
+.lk-tl-tab {
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard),
+    transform 90ms cubic-bezier(.3,.7,.4,1);
+}
+.lk-tool-btn:active,
+.lk-btn:active,
+.lk-chip:active,
+.lk-lab__item:active,
+.lk-tl-tab:active { transform: translateY(1px); }
+
+/* ── A1 左栏：选中的工具亮一条竖线 + 图标微微透光（工具感来自"此刻在哪"，不是加颜色） ── */
+.lk-tool-btn { position: relative; }
+.lk-tool-btn::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  width: 2px;
+  height: 0;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: height var(--motion-base) var(--ease-standard), opacity var(--motion-fast) var(--ease-standard);
+}
+.lk-tool-btn.is-active::before { height: 22px; opacity: 1; }
+.lk-tool-btn.is-active svg { filter: drop-shadow(0 0 5px rgba(158, 194, 98, .45)); }
+.lk-tool-btn:hover svg { transform: translateY(-1px); }
+.lk-tool-btn svg { transition: transform var(--motion-fast) var(--ease-standard); }
+
+/* ── A2 实验室抽屉：从按钮方向展开（180ms，收起瞬时 —— 收起再演一遍会挡视线） ── */
+.lk-lab { animation: lk-lab-in 180ms var(--ease-standard) both; transform-origin: left bottom; }
+@keyframes lk-lab-in {
+  from { opacity: 0; transform: translateY(8px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── C3 列表行：悬停 120ms 过渡（树行原本是瞬时变色，滚动时一片乱闪） ── */
+.ed-tnode-item,
+.ed-trow,
+.ed-props > div {
+  transition: background-color 120ms var(--ease-standard), color 120ms var(--ease-standard);
+}
+
+/* ── B1 写作专注：光标在正文里时，同栏的字段块压暗、正文左侧亮一条绿线 ──
+   `:has()` 是 Chromium 105+ 原生支持的；这台 Electron 43 没问题。
+   只在「中栏那一份 props-panel / 工作台正文」生效，不影响沙盘右侧详情面板。 */
+#cx-body > div[data-cx-row] { transition: opacity var(--motion-base) var(--ease-standard); }
+#cx-body:has(#cx-doc .tiptap:focus) > div[data-cx-row]:not(:last-child) { opacity: .6; }
+#cx-doc {
+  border-radius: var(--radius-sm);
+  transition: box-shadow var(--motion-base) var(--ease-standard), padding-left var(--motion-base) var(--ease-standard);
+}
+#cx-body:has(#cx-doc .tiptap:focus) #cx-doc { box-shadow: inset 2px 0 0 var(--accent); padding-left: 10px; }
+
+/* ── C4 滚动条与选中：细、深色、悬停加深（原来走系统默认，在深 chrome 上很扎眼） ── */
+* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--fg-2); background-clip: content-box; }
+::selection { background: rgba(158, 194, 98, .3); }
+
+/* ── C5 空态 / 提示条的呼吸：进入时轻轻上浮（原来是一次性出现） ── */
+.lk-empty { animation: lk-soft-in 260ms var(--ease-standard) both; }
+@keyframes lk-soft-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 尊重系统设置：关掉动画的人只看得到颜色变化 */
+@media (prefers-reduced-motion: reduce) {
+  .lk-lab, .lk-empty { animation: none; }
+  .lk-tool-btn svg, .lk-tool-btn::before, #cx-doc { transition: none; }
+  .lk-tool-btn:active, .lk-btn:active, .lk-chip:active, .lk-lab__item:active, .lk-tl-tab:active { transform: none; }
+}
