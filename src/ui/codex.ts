@@ -31,6 +31,7 @@ import { createPropsPanel, type PropsPanel } from './props-panel';
 import { createEvolutionRail, type Rail } from './evolution-rail';
 import { createVaultNotices, type VaultNotices } from './vault-notice';
 import { loadSettings } from './settings';
+import { aiChat, type ChatMsg } from './ai';
 import { setAgentFocus, setAgentFocusLive } from './agent-context';
 import { lastTarget, rememberTarget } from './session';
 import {
@@ -53,6 +54,21 @@ const NEWBTN = 'background:var(--accent);color:var(--accent-on);border:none;bord
 const NEWNUM = 'width:46px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 6px;font-size:var(--text-xs);outline:none;text-align:center;';
 /** 批量上限：一次建太多会一次落一屏 .md，也没人这么用 */
 const NEW_MAX = 20;
+
+/** AI 续写的系统提示 —— 三条都写死，是因为模型最爱犯的就是这三样：
+ *  发明新专有名词、加"以下是续写"的客套、把设定写成说明书。 */
+const AI_CONTINUE_SYS = '你在帮一位创作者写他的世界观设定。规则：只用下面给出的世界、设定、字段与已有正文，不要发明新的专有名词、势力或时间线；只输出正文段落本身（不要标题、不要解释、不要"以下是"）；200–400 字，人称与口吻跟已有正文一致。';
+
+/** 给 AI 调用套一个硬超时：中转线首字节 20–60 秒是常态（用户实测），没有超时就会一直转圈。 */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`AI 超时（${Math.round(ms / 1000)} 秒）：中转首字节常常 20–60 秒，可到「设置 → 模型」换本地 Ollama 再试`)), ms);
+    p.then(
+      (v) => { window.clearTimeout(timer); resolve(v); },
+      (e) => { window.clearTimeout(timer); reject(e); },
+    );
+  });
+}
 
 /** 正文写回哪个目标（编辑器跨条目复用，目标会变，所以是**读时取值**不是创建时捕获）。
  *  安全性由 `switchTarget` 保证：它一定先 `flush()`（此时 docTarget 还是旧目标）再改 docTarget。 */
@@ -387,6 +403,24 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     : '');
   /** 左列 chip 上的数字：当前世界正文还空着的实体数 */
   const draftCount = (): number => entities().filter(isDraft).length;
+  /** 「成稿」的门槛字数。`docLen` 已去掉 Markdown 标记，所以它约等于"看得见的字"。
+   *  选 200 不选「20 字就算成稿」：20 只是"不再是空卡"的下限（左树「草稿」标签用它），
+   *  200 才是"这条设定能拿去用"。两个数各有各的用途，别合并。 */
+  const DONE_WORDS = 200;
+  /** 正文完成度刻度（`docBar` 里那个 `#cx-meter`）：条 + 字数。
+   *  只读内存里的 `doc`，不解析 HTML、不遍历全库 —— 每敲一次保存重画一次也 < 1ms。 */
+  function syncMeter(): void {
+    const el = host.querySelector<HTMLElement>('#cx-meter');
+    if (!el) return;
+    const e = active();
+    if (!e) return;
+    const n = docLen(e);
+    const pct = Math.min(100, Math.round((n / DONE_WORDS) * 100));
+    el.classList.toggle('is-done', n >= DONE_WORDS);
+    el.title = n >= DONE_WORDS ? `正文 ${n} 字（已过 ${DONE_WORDS} 字的成稿线）` : `正文 ${n} 字 / 成稿线 ${DONE_WORDS} 字`;
+    el.querySelector<HTMLElement>('.lk-meter__num')!.textContent = n >= DONE_WORDS ? `${n} 字 ✓` : `${n} / ${DONE_WORDS} 字`;
+    el.querySelector<HTMLElement>('.lk-meter__bar i')!.style.width = pct + '%';
+  }
   /** 条目行的类名：选中 + 待填，四处置（搜索命中两处 / 树上两处）都用它，免得各写一份 */
   const itemCls = (on: boolean, name: string | undefined): string =>
     'ed-tnode-item' + (on ? ' is-on' : '') + (isStub(name) ? ' is-stub' : '');
@@ -723,6 +757,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         const vn = host.querySelector<HTMLElement>('#cx-vnote');
         if (vn) vn.textContent = versionNoteText();
         rail?.render();
+        syncMeter();          /* 正文字数刻度跟着这次保存走（AI 续写/手写同一条路） */
       } else {
         store.update((d) => {
           const n = d.worldsets[t.world]?.timelines?.[t.tlId]?.nodes.find((x) => x.id === t.nodeId);
@@ -730,6 +765,71 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         });
       }
     });
+  }
+
+  /** 「AI 续写」—— 接着已有正文往下写，只往**这条设定**上落。
+   *
+   *  为什么是「续写」而不是「生成整条」：用户库里 112 条实体 106 条正文是空的，但空的原因
+   *  不是不会起头，而是**写到一半断了**（字段卡填得齐全，正文一两句就停）。生成整张卡只会
+   *  再造 65 张抽卡模板；接着写才是补上「最后一米」。
+   *
+   *  三条纪律：
+   *   ① 上下文只给**已经存在的东西**（字段 + 已有正文结尾），prompt 里写死"不许发明新设定"；
+   *   ② 结果走 `docEditor.append()` —— 一次可撤销的 transaction，**不覆盖**已有正文，
+   *      不满意 Ctrl+Z 就没了；
+   *   ③ 60 秒硬超时 + 失败走 `say()`（存在了 20–60 秒的中转、以及没配 Key 的两条路）。 */
+  async function aiContinue(): Promise<void> {
+    const btn = host.querySelector<HTMLButtonElement>('#cx-ai');
+    if (!btn || btn.dataset.busy === '1') return;
+    const e = active();
+    const st = viewState();
+    if (!e || !st) { say('先选一条设定再续写', true); return; }
+    const cur = docEditor?.getDoc() ?? st.doc ?? '';
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    btn.textContent = '续写中…';
+    try {
+      const fields = Object.entries(st.properties ?? {})
+        .filter(([, v]) => v != null && String(v).trim())
+        .slice(0, 12)
+        .map(([k, v]) => `${k}：${String(v).slice(0, 60)}`)
+        .join('；');
+      const tail = cur.trim().slice(-1500);
+      /* 正文还空着时不能叫"接着写"（没得接）—— 实测那样模型会凭空造一个角色出来。
+         空稿走「按字段起开篇」，并且明说别新造人名/地名。 */
+      const empty = cur.trim().length < 20;
+      const msgs: ChatMsg[] = [
+        { role: 'system', content: AI_CONTINUE_SYS },
+        {
+          role: 'user',
+          content: [
+            `【世界】${store.activeWorld}`,
+            `【设定】${e.name || '未命名'}（${typeNameOf(store.activeWorld, st.typeId)}）`,
+            `【字段】${fields || '（还没填）'}`,
+            '',
+            `【已有正文${tail ? '结尾' : ''}】`,
+            tail || '（空）',
+            '',
+            empty
+              ? '正文还空着。依据上面的设定字段写 2–4 段开篇（200–400 字），不要新造人名、地名或组织名。'
+              : '接着上面往下写 200–400 字，不要引入尚未出现过的新专有名词。',
+          ].join('\n'),
+        },
+      ];
+      const reply = await withTimeout(aiChat(msgs, { temperature: 0.85, numPredict: 500 }), 60_000);
+      /* `thinkingOnly` = 模型把预算全花在思考上、正文一个字没有。那种"字"不能当正文写进设定。 */
+      if (reply.thinkingOnly) { say('这次模型只想了没写（思考占满预算）—— 再点一次，或换个模型', true); return; }
+      const text = (reply.text || '').trim();
+      if (!text) { say('AI 没返回内容，再点一次试试', true); return; }
+      docEditor?.append(text);
+      say('已续写 · 不满意可 Ctrl+Z 整段撤销');
+    } catch (err) {
+      say(err instanceof Error ? err.message : 'AI 续写失败', true);
+    } finally {
+      delete btn.dataset.busy;
+      btn.disabled = false;
+      btn.textContent = 'AI 续写';
+    }
   }
 
   /** 换目标（换条目 / 换页签）：**先把正文结算掉再改选择**。
@@ -922,6 +1022,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     }
     docTarget = next;
     if (docEditor) docEditor.setDoc(md);   /* 同一个 tiptap 实例换文档，不销毁不重建 */
+    syncMeter();                           /* 换到别一条：字数刻度跟着换 */
     renderList();                          /* 左列只动高亮：那一列没有编辑器，重建只花 DOM 钱 */
     rail?.render();                        /* 右栏那条竖线：换实体/换版本要重画高亮与摘要 */
     syncNewType();                         /* 顶栏「新建的类型」跟着换到的这条走（见 syncNewType） */
@@ -931,13 +1032,17 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     return true;
   }
 
-  /** 正文那一行的标题 + 两个小按钮（H1 / 插入图片）——
-   *  这两个动作原来是「编辑器」工具专有的（`src/ui/editor.ts` 的 `#ed-h1` / `#ed-img`），
-   *  并成工作台后搬到这里（实体与节点共用同一份）。 */
+  /** 正文那一行的标题 + 小按钮（H1 / 插图 / AI 续写）——
+   *  这几个动作原来是「编辑器」工具专有的（`src/ui/editor.ts` 的 `#ed-h1` / `#ed-img`），
+   *  并成工作台后搬到这里（实体与节点共用同一份）。
+   *  **「AI 续写」只在实体页签出现**（用户 2026-10-24：设定卡写得出来才算成稿）；
+   *  右边的 `#cx-meter` 是完成度刻度 —— 与左树「草稿」标签同一判据（正文 < 20 字 = 草稿）。 */
   const docBar = (label: string): string => `
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
       <span style="font-size:11px;color:var(--fg-2);">${label}</span>
+      ${mode === 'entity' ? '<span id="cx-meter" class="lk-meter" title="正文字数（去掉符号的空字数）：200 字算成稿"><span class="lk-meter__num">0 字</span><span class="lk-meter__bar"><i></i></span></span>' : ''}
       <span style="margin-left:auto;display:flex;gap:4px;flex-shrink:0;">
+        ${mode === 'entity' ? '<button id="cx-ai" title="让 AI 接着已有正文往下写 200–400 字（Ctrl+Z 可整段撤销）" style="background:transparent;border:1px solid var(--accent-ink);color:var(--accent-ink);border-radius:var(--radius-sm);padding:1px 8px;font-size:11px;cursor:pointer;">AI 续写</button>' : ''}
         <button id="cx-h1" title="把光标所在段落设为一级标题" style="background:transparent;border:1px solid var(--border);color:var(--fg-2);border-radius:var(--radius-sm);padding:1px 8px;font-size:11px;cursor:pointer;">H1</button>
         <button id="cx-img" title="插入图片（存进 vault 的 assets）" style="background:transparent;border:1px solid var(--border);color:var(--fg-2);border-radius:var(--radius-sm);padding:1px 8px;font-size:11px;cursor:pointer;">图片</button>
       </span>
@@ -1408,9 +1513,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         /* 正文落盘后左列不用重画（标题没变），也不该整块重渲染（会丢光标） */
       });
       docEditor.setDoc((isEntity ? viewState()?.doc : activeNode()?.doc) ?? '');
+      syncMeter();
       /* 正文那两个小按钮（原来在「编辑器」工具里）：H1 = 当前段落设为一级标题；
          图片 = 弹文件框 → 导入 vault assets → 在光标处插入（所见即所得）。 */
       host.querySelector('#cx-h1')?.addEventListener('click', () => docEditor?.toggleHeading(1));
+      /* 「AI 续写」：只在实体页签有这颗按钮（节点正文由沙盘那边管），点了就走 aiContinue() */
+      host.querySelector('#cx-ai')?.addEventListener('click', () => { void aiContinue(); });
       host.querySelector('#cx-img')?.addEventListener('click', async () => {
         const api = (window as any).lingkuangAPI;
         if (!api?.importImage || !docEditor) return;

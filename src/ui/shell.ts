@@ -313,65 +313,149 @@ function renderTimelineTabs(store: Store): void {
   }
 }
 
+/** 左栏只留三件「干活」的主入口（2026-10-24 定：世界沙盘 / 设定库 / 助手）。
+ *  其余工具收进「实验室」抽屉 —— 名字与一句说明都在，找得到，只是不占主路径。
+ *  排序仍然由壳决定、不靠注册顺序（同 2026-09-12 那轮「设置放最底下」的纪律）。 */
+const RAIL_PRIMARY = ['sandbox', 'codex', 'agent'];
+
+/** 抽屉里每一行的一句说明。工具本身没有 desc 字段，这段文案就是它的「是什么」。 */
+const LAB_HINT: Record<string, string> = {
+  inspire: '抽卡组合，出角色灵感',
+  ai: 'AI 工作台（多会话）',
+  mapgen: '地形 / 星球生成',
+  library: '词库与 vault 文件',
+  schema: '设定类型与字段模板',
+  trash: '删掉的条目在这里',
+  backup: '快照与回滚',
+};
+
 function renderToolbar(store: Store): void {
   shellStore = store; bindPanelEvents();
   const bar = document.getElementById('lk-toolbar');
   const toolHost = document.getElementById('lk-tool-host');
   if (!bar || !toolHost) return;
-  /* 左栏分两段（用户 2026-09-12：「设置放到左侧栏最底下」）：
-     上段＝创作工具（沙盘/灵感/编辑器/AI/设定库…，缺省组），下段＝管理项（结构体/回收站/备份/设置）
-     并**贴着底部**（CSS `.lk-tool-group.is-bottom { margin-top: auto }`）。
-     排序由这里决定、不靠注册顺序 —— 工具的登记顺序可以随实现方便，左栏长什么样归壳管。 */
+  /* 左栏的排序与分组**归壳管**（用户 2026-09-12：「设置放到左侧栏最底下」，2026-10-24：
+     「11 个工具太吵，收窄到 3 个主入口」）。工具的登记顺序可以随实现方便，这里只按 id 取。 */
   const all = listTools();
-  const group = (g: 'create' | 'manage'): Tool[] => all.filter((t) => (t.group ?? 'create') === g);
+  const byId = (id: string): Tool | undefined => all.find((t) => t.id === id);
+  const primary = RAIL_PRIMARY.map(byId).filter((t): t is Tool => !!t);
+  const settings = byId('settings');
+  const rest = all.filter((t) => !RAIL_PRIMARY.includes(t.id) && t.id !== 'settings');
+
   const btn = (t: Tool): string =>
     `<button class="lk-tool-btn${t.placeholder ? ' is-ph' : ''}" data-tool="${t.id}" title="${t.name}${t.placeholder ? '（占位）' : ''}">${t.icon}<span>${t.name}</span></button>`;
-  const manage = group('manage');
+  /* 「实验室」按钮：不是一个工具（没有 id），只是抽屉的开关 —— 所以不给它 `data-tool`，
+     免得 `restoreSession()` / e2e 把「上次打开的工具」错记到它头上。 */
+  const labBtn = `<button class="lk-tool-btn" id="lk-lab-btn" title="实验室：其余 ${rest.length} 个工具（灵感 / 素材库 / 地图 / 结构 / 回收站 / 备份）"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>实验室</span></button>`;
+
   bar.innerHTML =
-    `<div class="lk-tool-group">${group('create').map(btn).join('')}</div>` +
-    (manage.length ? `<div class="lk-tool-group is-bottom">${manage.map(btn).join('')}</div>` : '');
-  bar.querySelectorAll('.lk-tool-btn').forEach((el) => {
+    `<div class="lk-tool-group">${primary.map(btn).join('')}</div>` +
+    `<div class="lk-tool-group is-bottom">${labBtn}${settings ? btn(settings) : ''}</div>`;
+
+  /* ── 实验室抽屉：挂在 `.lk-app` 里、贴着左栏底（`.lk-lab`），点外面 / Esc 收起 ── */
+  const app = document.querySelector('.lk-app') as HTMLElement | null;
+  let lab = document.getElementById('lk-lab');
+  if (!lab && app) {
+    lab = document.createElement('div');
+    lab.id = 'lk-lab';
+    lab.className = 'lk-lab';
+    lab.hidden = true;
+    app.appendChild(lab);
+  }
+  if (lab) {
+    const item = (t: Tool): string =>
+      `<button class="lk-lab__item${t.placeholder ? ' is-ph' : ''}" data-tool="${t.id}" title="${t.name}"><span class="lk-lab__ic">${t.icon}</span><span class="lk-lab__tx"><b>${t.name}</b><i>${escapeHtml(LAB_HINT[t.id] ?? '')}</i></span></button>`;
+    lab.innerHTML =
+      `<div class="lk-lab__head"><b>实验室</b><span>其余 ${rest.length} 个工具 · 不占主路径</span></div>` +
+      `<div class="lk-lab__list">${rest.map(item).join('')}</div>` +
+      `<div class="lk-lab__foot">想常用哪个，说一声就搬回左栏。</div>`;
+  }
+
+  const syncRailActive = (id: string): void => {
+    for (const b of Array.from(bar.querySelectorAll<HTMLElement>('.lk-tool-btn'))) {
+      b.classList.toggle('is-active', b.dataset.tool === id);
+    }
+    /* 实验室按钮亮 = 当前开着的是抽屉里的某个工具（它们没有自己的图标位了） */
+    bar.querySelector('#lk-lab-btn')?.classList.toggle('is-active', !RAIL_PRIMARY.includes(id) && id !== 'settings');
+  };
+
+  /** 点工具＝切换视图。原来是内联在按钮监听里的，现在三个入口（主栏 / 抽屉）共用这一份 ——
+   *  两处各写一遍必漂移（这一课在「中栏字段行」上吃过）。 */
+  const activate = (id: string): void => {
+    const t = all.find((x) => x.id === id);
+    if (!t) return;
+    const moduleView = document.getElementById('lk-module-view');
+    /* 面板型工具（设置 / 助手 / 地图生成）：**不碰主区** —— 只开关那一层悬浮面板。
+       高亮只认 `syncPanelButtons()`（它按 `isOpen()` 判），**不能**再走 syncRailActive：
+       那样"关掉面板"时会把按钮按 id 重新点亮（实测：设置关掉了、左栏还亮着）。 */
+    if (t.panel) {
+      if (t.isOpen?.()) t.close?.();
+      else if (moduleView) openTool(id, moduleView, store);
+      syncPanelButtons();
+      return;
+    }
+    syncRailActive(id);
+    /* 记「上次打开的工具」——下次进灵框直接回到这个视图（见 `src/ui/session.ts`）。
+       面板型工具在上面就 return 了：它不接管主区，不该覆盖"上次在看哪个主视图"。 */
+    rememberTool(id);
+    const right = document.querySelector('.lk-right') as HTMLElement | null;
+    if (id === 'sandbox') {
+      /* 世界沙盘：恢复沙盘视图（隐藏模块，恢复右区 + tool-host）。
+         这条分支不走 openTool，得自己结算上一个工具的清理函数：
+         否则「编辑器 → 世界沙盘」会把 tiptap 实例 + 订阅 + 全局监听留在后台。 */
+      disposeCurrentTool();
+      setAgentView('世界沙盘');
+      if (moduleView) { moduleView.style.display = 'none'; moduleView.innerHTML = ''; }
+      if (toolHost) { toolHost.style.display = ''; toolHost.innerHTML = ''; }
+      if (right) right.style.display = '';
+      return;
+    }
+    /* 其他模块：隐藏右区（sandbox/worldbar），模块 flex 占满工具栏右侧（工具栏始终可见） */
+    if (moduleView) {
+      moduleView.style.display = '';
+      moduleView.innerHTML = '';
+      if (toolHost) toolHost.style.display = 'none';
+      if (right) right.style.display = 'none';
+      openTool(id, moduleView, store);
+    }
+  };
+
+  const toggleLab = (force?: boolean): void => {
+    if (!lab) return;
+    const open = force ?? !!lab.hidden;
+    lab.hidden = !open;
+    bar.querySelector('#lk-lab-btn')?.classList.toggle('is-open', open);
+  };
+
+  bar.querySelectorAll<HTMLElement>('.lk-tool-btn[data-tool]').forEach((el) => {
+    el.addEventListener('click', () => activate(el.dataset.tool as string));
+  });
+  bar.querySelector('#lk-lab-btn')?.addEventListener('click', () => toggleLab());
+  lab?.querySelectorAll<HTMLElement>('.lk-lab__item[data-tool]').forEach((el) => {
     el.addEventListener('click', () => {
-      const id = (el as HTMLElement).dataset.tool!;
-      /* 面板型工具（设置）：**不碰主区** —— 不开模块视图、不隐藏沙盘，只开关那一层悬浮面板。
-         按钮高亮跟着"面板开着没开着"走（× / Esc / 点遮罩关掉时由 `lingkuang-panel` 同步）。 */
-      const t = all.find((x) => x.id === id);
-      if (t?.panel) {
-        if (t.isOpen?.()) t.close?.();
-        else openTool(id, document.getElementById('lk-module-view') as HTMLElement, store);
-        syncPanelButtons();
-        return;
-      }
-      bar.querySelectorAll('.lk-tool-btn').forEach((b) => b.classList.remove('is-active'));
-      el.classList.add('is-active');
-      /* 记「上次打开的工具」——下次进灵框直接回到这个视图（见 `src/ui/session.ts`）。
-         面板型工具在上面就 return 了：它不接管主区，不该覆盖"上次在看哪个主视图"。 */
-      rememberTool(id);
-      const moduleView = document.getElementById('lk-module-view');
-      const toolHost = document.getElementById('lk-tool-host');
-      const right = document.querySelector('.lk-right') as HTMLElement | null;
-      if (id === 'sandbox') {
-        /* 世界沙盘：恢复沙盘视图（隐藏模块，恢复右区 + tool-host） */
-        /* 这条分支不走 openTool，得自己结算上一个工具的清理函数：
-           否则「编辑器 → 世界沙盘」会把 tiptap 实例 + 订阅 + 全局监听留在后台。 */
-        disposeCurrentTool();
-        /* 沙盘不走 openTool，界面名得自己上报（助手据此知道他现在人在沙盘里） */
-        setAgentView('世界沙盘');
-        if (moduleView) { moduleView.style.display = 'none'; moduleView.innerHTML = ''; }
-        if (toolHost) { toolHost.style.display = ''; toolHost.innerHTML = ''; }
-        if (right) right.style.display = '';
-        return;
-      }
-      /* 其他模块：隐藏右区（sandbox/worldbar），模块 flex 占满工具栏右侧（工具栏始终可见） */
-      if (moduleView) {
-        moduleView.style.display = '';
-        moduleView.innerHTML = '';
-        if (toolHost) toolHost.style.display = 'none';
-        if (right) right.style.display = 'none';
-        openTool(id, moduleView, store);
-      }
+      activate(el.dataset.tool as string);
+      toggleLab(false);
     });
   });
+  if (!labDismissBound) {
+    labDismissBound = true;
+    const closeLab = (): void => {
+      const l = document.getElementById('lk-lab');
+      if (!l || l.hidden) return;
+      l.hidden = true;
+      document.getElementById('lk-lab-btn')?.classList.remove('is-open');
+    };
+    document.addEventListener('pointerdown', (ev) => {
+      const t = ev.target as HTMLElement | null;
+      if (!t) return;
+      const l = document.getElementById('lk-lab');
+      if (!l || l.hidden) return;
+      /* 点抽屉里面、或者点开关自己 —— 都不收（开关的 click 自己会切） */
+      if (l.contains(t) || t.closest('#lk-lab-btn')) return;
+      closeLab();
+    });
+    document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeLab(); });
+  }
   syncPanelButtons();
 }
 
@@ -393,6 +477,8 @@ function syncPanelButtons(): void {
 let shellStore: Store | null = null;
 
 let panelEvtBound = false;
+/** 「实验室」抽屉的"点外面就收"只挂一次（renderToolbar 重建工具栏时会再走一遍这段） */
+let labDismissBound = false;
 function bindPanelEvents(): void {
   if (panelEvtBound) return;
   panelEvtBound = true;

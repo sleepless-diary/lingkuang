@@ -160,6 +160,64 @@ body {
   padding-top: 6px;
   border-top: 1px solid var(--chrome-2);
 }
+
+/* ── 实验室抽屉（2026-10-24 左栏收窄到 3 个主入口）───────────────────────────────
+   左栏只留 沙盘 / 设定库 / 助手，其余 7 个搬进这里。抽屉贴着左栏底、绝对定位在 `.lk-app` 里
+   （不推可见区、不盖世界栏），点外面 / Esc 收起。宽 320px 是为了放得下「名字 + 一句说明」。 */
+.lk-lab {
+  position: absolute;
+  left: 78px;
+  bottom: 10px;
+  width: 320px;
+  z-index: 40;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  padding: 10px 10px 8px;
+}
+.lk-lab[hidden] { display: none; }
+.lk-lab__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 4px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: var(--text-xs);
+  color: var(--fg-2);
+}
+.lk-lab__head b { font-size: var(--text-sm); color: var(--fg); font-weight: 600; }
+.lk-lab__list { display: flex; flex-direction: column; gap: 1px; padding: 6px 0; }
+.lk-lab__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.lk-lab__item:hover { background: var(--surface-2); }
+.lk-lab__item.is-ph { opacity: 0.5; }
+.lk-lab__ic { display: flex; color: var(--fg-2); flex-shrink: 0; }
+.lk-lab__item:hover .lk-lab__ic { color: var(--accent-ink); }
+.lk-lab__tx { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.lk-lab__tx b { font-size: var(--text-sm); font-weight: 500; }
+.lk-lab__tx i { font-size: var(--text-2xs); color: var(--fg-2); font-style: normal; }
+.lk-lab__foot { font-size: var(--text-2xs); color: var(--meta); padding: 4px 4px 0; border-top: 1px solid var(--border-soft); }
+#lk-lab-btn.is-open { background: var(--chrome-2); color: var(--fg-inverse); }
+
+/* 正文字数刻度（设定库右栏，AI 续写旁边）：细条 + 数字。
+   `is-done` = 过 200 字成稿线（用 --accent 做底色 —— 它只做底/描边，见 DESIGN.md 的用色口径）。 */
+.lk-meter { display: inline-flex; align-items: center; gap: 6px; margin-left: 2px; }
+.lk-meter__num { font-size: var(--text-2xs); color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.lk-meter__bar { display: block; width: 54px; height: 3px; background: var(--border-soft); border-radius: 2px; overflow: hidden; }
+.lk-meter__bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 240ms ease; }
+.lk-meter.is-done .lk-meter__num { color: var(--accent-ink); }
 .lk-pane { display: flex; flex-direction: column; min-height: 0; }
 .lk-pane-timeline { flex: 1; border-bottom: 1px solid var(--border); }
 .lk-pane-map { flex: 1; }

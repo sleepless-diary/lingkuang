@@ -23,6 +23,13 @@ export interface DocEditor {
   toggleHeading(level: 1 | 2 | 3): void;
   /** 在光标处插入图片（`src` 是 vault assets 里的相对路径，Image 扩展负责显示） */
   insertImage(src: string): void;
+  /** 在正文末尾追加一段纯文本（AI 续写用）。走一次可撤销的 transaction，写完立刻 flush。 */
+  append(text: string): void;
+}
+
+/** 追加进编辑器的最小转义：只挡 HTML 元字符，AI 吐的 Markdown 标记原样当文字（正文本来就允许写 **粗体**） */
+function escapeText(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 export function createDocEditor(el: HTMLElement, onFlush: (md: string) => void): DocEditor {
@@ -58,6 +65,17 @@ export function createDocEditor(el: HTMLElement, onFlush: (md: string) => void):
     },
     insertImage(src: string) {
       editor.chain().focus().setImage({ src, alt: '' }).run();
+    },
+    append(text: string) {
+      const add = String(text || '').trim();
+      if (!add) return;
+      /* 一段一段插成 `<p>`：整串塞进 insertContent 时换行会被 HTML 解析吃成空格，
+         模型给的段落就粘成一坨。空行分段、单换行当 <br>，与 Markdown 的观感一致。 */
+      const html = add.split(/\n{2,}/).map((p) => `<p>${escapeText(p).replace(/\n/g, '<br>')}</p>`).join('');
+      editor.chain().focus('end').insertContentAt(editor.state.doc.content.size, html).run();
+      /* insertContentAt 是一次正常 transaction ⇒ Ctrl+Z 能整段撤销；但失焦前不会自己落盘，
+         所以这里直接 flush（否则用户点完续写就关窗，正文只在编辑器里）。 */
+      flush();
     },
     dispose() {
       try { editor.destroy(); } catch { /* 销毁失败不挡切换 */ }

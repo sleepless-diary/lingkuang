@@ -21,9 +21,13 @@ function check(n, ok, extra) { results.push(ok); console.log(`${ok ? 'PASS' : 'F
    2026-09-17：新增第 6 个「助手」（`src/tools/register.ts` 里 `id: 'agent'`，面板型工具、
    Ctrl+K 呼出），它**落在创作组尾部**（注册顺序 = 组内顺序，shell 只按 `Tool.group` 分段）。
    2026-10-14：新增「地图生成」（`id: 'mapgen'`，同样是 `panel: true` 的悬浮面板 —— 生成控件
-   从地图栏搬进它），登记在「设定库」之后、「素材库」之前 ⇒ 创作组第 5 位。 */
-const CREATE = ['sandbox', 'inspire', 'ai', 'codex', 'mapgen', 'library', 'agent'];
-const MANAGE = ['schema', 'trash', 'backup', 'settings'];
+   从地图栏搬进它），登记在「设定库」之后、「素材库」之前 ⇒ 创作组第 5 位。
+   ⭐ 2026-10-24 左栏收窄（用户定：11 个工具太吵）：主栏只留 3 个干活入口
+   （沙盘 / 设定库 / 助手），其余 7 个搬进「实验室」抽屉（点外面 / Esc 收起）。
+   分组不再是"注册顺序"的产物 —— `src/ui/shell.ts` 的 `RAIL_PRIMARY` 与 `LAB_HINT` 说了算。 */
+const CREATE = ['sandbox', 'codex', 'agent'];
+const BOTTOM = ['lk-lab-btn', 'settings'];
+const LAB = ['inspire', 'ai', 'mapgen', 'library', 'schema', 'trash', 'backup'];
 
 async function main() {
   let target = null;
@@ -52,18 +56,22 @@ async function main() {
     const groups = [...bar.querySelectorAll('.lk-tool-group')].map((g) => {
       const r = g.getBoundingClientRect();
       return { cls: g.className, top: Math.round(r.top), bottom: Math.round(r.bottom),
-        tools: [...g.querySelectorAll('.lk-tool-btn')].map((x) => x.dataset.tool) };
+        tools: [...g.querySelectorAll('.lk-tool-btn')].map((x) => x.dataset.tool || x.id) };
     });
     return { bar: { bottom: Math.round(b.bottom) }, groups,
-      order: [...bar.querySelectorAll('.lk-tool-btn')].map((x) => x.dataset.tool) };
+      order: [...bar.querySelectorAll('.lk-tool-btn')].map((x) => x.dataset.tool || x.id),
+      labItems: [...document.querySelectorAll('#lk-lab .lk-lab__item')].map((x) => x.dataset.tool) };
   })()`);
 
   const flat = (geo.order || []).join(',');
-  check('★1 左栏两组、顺序固定：创作 7 个在上、管理 4 个在下（设置排最底）',
+  check('★1 左栏两组、顺序固定：主栏 3 个在上、实验室+设置在下（设置排最底）',
     (geo.groups || []).length === 2
       && (geo.groups[0].tools || []).join(',') === CREATE.join(',')
-      && (geo.groups[1].tools || []).join(',') === MANAGE.join(',')
-      && flat === [...CREATE, ...MANAGE].join(','), geo.groups?.map((g) => g.tools));
+      && (geo.groups[1].tools || []).join(',') === BOTTOM.join(',')
+      && flat === [...CREATE, ...BOTTOM].join(','), geo.groups?.map((g) => g.tools));
+
+  check('★1b 其余 7 个工具都在「实验室」抽屉里（一个不少）',
+    (geo.labItems || []).join(',') === LAB.join(','), geo.labItems);
 
   const g0 = geo.groups?.[0], g1 = geo.groups?.[1];
   check('★2 管理组贴底（离左栏底 ≤ 10px）且与上段之间留出空隙（> 40px）',
@@ -110,6 +118,29 @@ async function main() {
   })()`);
   check('★3b 再点一次设置按钮 = 关掉面板，高亮同步熄灭',
     closed.panel === false && closed.active === false, closed);
+
+  /* ⭐ 2026-10-24：抽屉本身能开、能点、点完自己收。这条防的是「工具被搬走后点不到了」——
+     左栏收窄如果只做了"藏"，那 7 个工具就等于下线。 */
+  const labOpen = await ev(`(() => {
+    const btn = document.getElementById('lk-lab-btn');
+    btn.click();
+    const l = document.getElementById('lk-lab');
+    const r = l.getBoundingClientRect();
+    return { hidden: l.hidden, w: Math.round(r.width), h: Math.round(r.height), n: l.querySelectorAll('.lk-lab__item').length };
+  })()`);
+  await sleep(300);
+  await ev(`document.querySelector('#lk-lab [data-tool="library"]').click()`);
+  await sleep(1200);   /* 素材库是动态 import 的，渲染完才有字 */
+  const labPick = await ev(`(() => {
+    return { hidden: document.getElementById('lk-lab').hidden,
+      shown: getComputedStyle(document.getElementById('lk-module-view')).display !== 'none',
+      text: (document.getElementById('lk-module-view').textContent || '').trim().slice(0, 40),
+      active: document.getElementById('lk-lab-btn').classList.contains('is-active') };
+  })()`);
+  check('★5 「实验室」抽屉能开、能点开里面的工具、点完自己收起（实验室按钮高亮）',
+    labOpen.hidden === false && labOpen.w > 200 && labOpen.n === LAB.length
+      && labPick.hidden === true && labPick.shown === true && labPick.active === true && labPick.text.length > 0,
+    { labOpen, labPick });
 
   const errs = await ev(`window.__errs`);
   check('★4 无未捕获异常', Array.isArray(errs) && errs.length === 0, errs);

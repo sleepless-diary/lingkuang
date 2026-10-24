@@ -131,9 +131,12 @@ export function restoreSession(store: Store): void {
     if (n) seedAgentFocus({ kind: 'node', world: store.activeWorld, id: n.id, title: n.title });
   }
   if (!s.tool || s.tool === 'sandbox') return;   /* 沙盘是默认视图，不用点 */
-  const btn = Array.from(document.querySelectorAll<HTMLElement>('.lk-tool-btn'))
+  /* 工具可能已经下线（版本升级后存档里留着旧 id）⇒ 找不到就维持默认视图，不报错。
+     ⚠️ 选择器要覆盖**实验室抽屉里的工具**（2026-10-24 左栏收窄：灵感/素材库/结构体/回收站/备份
+     都搬进了抽屉）—— 只找 `.lk-tool-btn` 会让「上次停在素材库」这种存档失效。
+     抽屉是 `hidden` 的，但 `click()` 照样触发监听，不需要先把它打开。 */
+  const btn = Array.from(document.querySelectorAll<HTMLElement>('[data-tool]'))
     .find((b) => b.dataset.tool === s.tool);
-  /* 工具可能已经下线（版本升级后存档里留着旧 id）⇒ 找不到就维持默认视图，不报错 */
   btn?.click();
 }
 

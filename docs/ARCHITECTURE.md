@@ -1509,3 +1509,54 @@ view:topo / contour:auto / seed:灵框`，带 320×160 剪影掩膜；端口 955
 - `buildPlanetField(seed, style, spec, h, mask?, ...)` **没有 view 参数** —— 离线脚本按老印象多传一个 `'topo'`
   会被当成掩膜，渲出来是"无掩膜"的场，跟真机截图对不上（这一轮因此白比对了两轮）。
 - 存盘里带几何（区域 `path`）时，**渲染期的修复必须从 path 反解端点重算**，只改生成器对老数据无效。
+
+## 2026-10-24 · 左栏收窄到 3 + 正文完成度 + AI 续写（第一百一十一轮）
+
+起点是一次外部设计评审（ai-designer 跑出 9 章 4.0 方案），校对后先落地其中「10 小时三件」里
+能独立验收的部分：**左栏收窄**与**把「写完一条设定」那一米补上**。实测数据没变：112 条实体、
+正文 ≥20 字的 6 条、有演变帧的 0 条、待补稿 106 条。
+
+### 一、左栏：3 个主入口 + 「实验室」抽屉（`src/ui/shell.ts`）
+
+- `RAIL_PRIMARY = ['sandbox', 'codex', 'agent']` 留在主栏；其余 7 个（灵感触发器 / AI / 地图生成 /
+  素材库 / 结构体 / 回收站 / 备份）搬进抽屉 `#lk-lab`，**设置仍在最底**（2026-09-12 那条没动）。
+- 排序从此由 `RAIL_PRIMARY` + 注册表决定，**不再读 `Tool.group`**（字段保留，壳不再用它）；
+  抽屉里每行一句说明来自 `LAB_HINT`（工具没有 `desc` 字段）。
+- 抽屉 = `.lk-app` 里的绝对定位块（`left:78px; bottom:10px; width:320px`），点外面 / Esc 收起；
+  `labDismissBound` 保证那两个全局监听只挂一次。
+- `restoreSession()` 的选择器从 `.lk-tool-btn` 改成 **`[data-tool]`** —— 抽屉里的工具元素在
+  DOM 里（只是 `hidden`），`click()` 照样触发监听；不改这一行，「上次停在素材库」这种存档会失效。
+- ⚠️ **面板型工具的高亮只能走 `syncPanelButtons()`**：第一版在 `activate()` 里对面板工具也调了
+  `syncRailActive(id)`，结果「再点一次关掉设置」时按钮按 id 又被点亮（e2e ★3b 当场抓到）。
+
+### 二、设定库正文：字数成稿线 + AI 续写（`src/ui/codex.ts`、`src/ui/doc-editor.ts`）
+
+- `docBar()` 里多了两样（**只在实体页签**）：`#cx-meter`（`N / 200 字` + 3px 细条，过线加 ✓ 变
+  `--accent-ink`）与 `#cx-ai`「AI 续写」。节点页签照旧（正文由沙盘那条路管）。
+- `syncMeter()` 只读 `Entity.doc` 的字数（复用 `docLen()`），**不解析 HTML、不遍历全库**；
+  三个刷新点：`writeDoc()` 落盘后、`swapBody()` 换条目后、`wireBody()` 建编辑器后。
+- `aiContinue()`：`ai.ts` 的 `aiChat()`（现有 provider 配置）→ 60 秒硬超时（`withTimeout`）→
+  `docEditor.append(text)`。`append()` 走 `insertContentAt` 一次 transaction，**Ctrl+Z 能整段撤销**，
+  不覆盖已有正文；写完立刻 `flush()`，不等失焦。
+- Prompt 分两叉：正文空（< 20 字）时「按字段起 2–4 段开篇、不许新造人名地名」；有正文时
+  「接着结尾写 200–400 字、不引入没出现过的专有名词」。**这条分叉是实测出来的**：不分叉时
+  模型会凭空造一个角色出来。
+- 降级：`thinkingOnly`（只思考没正文）不落字并提示；无 Key / 超时 / 500 都走 `#cx-msg` 一句人话，
+  按钮恢复可点。真机实测（隔离实例 + 真实 provider）：续写落 353 字、刻度 `353 字 ✓`。
+
+### 三、验证
+
+- `npx tsc --noEmit` 0、`npx vite build` 0。
+- `LK_CDP_PORT=9355 node tools/e2e/toolbar-groups.cjs` **7/7**（新增 ★1b 抽屉 7 个、★5 抽屉能点开）。
+- `.review/probe-r111.cjs` **7/7**（主栏 3 个 / 抽屉 7 个 / 设定库有刻度与续写 / 点抽屉里的
+  素材库能开且抽屉自收 / 无异常）；`.review/probe-r111b.cjs` 验到刻度随手写从 `0` 变 `32 / 200 字`。
+- 截图：`.review/shots-r111/`（`00-boot`、`10-codex`、`20-lab`、`40-ai-continue`）。
+
+### 四、教训
+
+- **本机环境里有 `ELECTRON_RUN_AS_NODE=1`**：直接 `Start-Process electron.exe` 会以 Node 模式跑
+  `main.js`，报 `Cannot read properties of undefined (reading 'commandLine')`（main.js:32）。
+  起测试实例前先 `Remove-Item Env:ELECTRON_RUN_AS_NODE`。
+- 左栏收窄是**信息架构**决定，不是隐藏：每个被搬走的工具都要在抽屉里**有名字 + 一句说明**，
+  并且 `restoreSession` / e2e 都能按 `[data-tool]` 找到它，否则等于下线。
+- 「完成度」先用派生（`docLen`）而不是新字段：112 条老数据零迁移，AI 也改不坏它。

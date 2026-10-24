@@ -28,7 +28,7 @@
 - `src/calendar.ts`：**历法系统**（`Calendar`/`toEpoch`/`fromEpoch`/`buildYearTable`，默认公历）
 - `src/store/`：数据层（`store.ts` 单一数据源 + 订阅、`actions.ts` 修改入口、`types.ts` 领域类型、`ids.ts` **id 生成** —— 一切 id 走 `uid(prefix)`，**不许手写 `'x' + Date.now()`**：同一毫秒里连建多个会撞 id、后建的把先建的覆盖掉）
 - `src/tools/`：工具栏工具注册（`registry.ts` + `register.ts`）
-- `src/ui/shell.ts`：壳 UI（世界栏 + 工具栏 + 沙盘 + 工具宿主）
+- `src/ui/shell.ts`：壳 UI（世界栏 + 工具栏 + 沙盘 + 工具宿主）。**左栏只有 3 个主入口**（沙盘 / 设定库 / 助手），其余工具在「实验室」抽屉 `#lk-lab`（`.lk-lab__item[data-tool]`）；排序看 `RAIL_PRIMARY`，**不读 `Tool.group`**——改左栏就改这里（见 ARCHITECTURE 第一百一十一轮）
 - `src/ui/session.ts`：**会话状态**（进入灵框时回到上次关闭时的样子：世界/时间线 + 上次打开的工具 + 设定库正在编的那一条；存 localStorage `lingkuang-session`，**不写数据文件**，见 ARCHITECTURE）
 - `src/ui/timeline.ts`：**世界沙盘时间线**（坐标 epoch 秒、标尺分级、循环、剧情线、时间指针）
 - `src/ui/inspire.ts` / `assoc.ts` / `codex.ts` / `map.ts` / `ai-workbench.ts` / `roleplay.ts` / `tavern.ts` / `settings.ts` / `settings-panel.ts` / `detail.ts` / `node-form.ts`
