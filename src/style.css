@@ -2063,3 +2063,26 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
 /* 行内那点小箭头默认暗一点，悬浮/展开时提到正常亮度（文件夹行尤其明显） */
 .ed-tcaret { opacity: .55; transition: opacity 120ms var(--ease-standard), transform var(--motion-fast) var(--ease-standard); }
 .ed-tnode.is-open .ed-tcaret { opacity: .95; }
+
+/* ── 世界沙盘：剧情线窄栏（2026-10-24）────────────────────────────────────
+   剧情线属于**当前这条时间线**，所以挂在面板头下面一条窄栏里（时间线 ▸ 剧情线），
+   不再和页签挤同一行。底色比面板头浅一档 + 左侧缩进，读起来是"下一层"。 */
+.lk-tl-subbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px 3px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
+  min-height: 26px;
+}
+.lk-tl-subbar__label {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  color: var(--fg-2);
+  letter-spacing: .02em;
+  padding-right: 2px;
+  border-right: 1px solid var(--border-soft);
+  margin-right: 2px;
+}

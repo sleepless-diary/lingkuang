@@ -1172,41 +1172,33 @@ export function mountTimeline(
     const lineOpts = lines
       .map((l) => `<option value="${escapeHtml(l.id)}"${l.id === activeLineId ? ' selected' : ''}>${escapeHtml(l.name)}</option>`)
       .join('');
-    const existing = TL_HEAD.querySelector('#lk-story-ui');
-    if (existing) existing.remove();
+    /* 剧情线**属于当前这条时间线**（用户 2026-10-24：「剧情线应该是附属在时间线下的」）：
+       它不再和页签挤在同一行，而是挂在面板头**下面**的一条窄栏里 —— 结构上就是"时间线 ▸ 剧情线"。
+       窄栏只放与剧情线有关的东西：「剧情线：全览/某条 ▾」+「＋剧情线」。
+       面板头的 `#lk-state` 留给画布类工具（非线性），两者不再混在一起。 */
+    const pane = TL_HEAD.parentElement as HTMLElement | null;
+    let subbar = pane?.querySelector<HTMLElement>('#lk-tl-subbar') ?? null;
+    if (pane && !subbar) {
+      subbar = document.createElement('div');
+      subbar.id = 'lk-tl-subbar';
+      subbar.className = 'lk-tl-subbar';
+      TL_HEAD.insertAdjacentElement('afterend', subbar);
+    }
+    if (!subbar) return;
+    /* 每帧重建这一条窄栏（元素很少）；旧版残留的 #lk-line-new（在 #lk-tools 里）一并收掉 */
+    TL_HEAD.querySelectorAll('#lk-line-new').forEach((el) => el.remove());
+    subbar.innerHTML = '';
     const ui = document.createElement('span');
     ui.id = 'lk-story-ui';
-    ui.style.cssText = 'display:flex;gap:4px;align-items:center;flex-shrink:0;';
-    /* 状态区（第 4.0 片 A 步）：**你正在看什么**。用户 2026-09-18：「全览和聚焦能直接做成同一个下拉窗口」——
+    ui.style.cssText = 'display:flex;gap:6px;align-items:center;flex-shrink:0;width:100%;';
+    /* 状态区：**你正在看什么**。用户 2026-09-18：「全览和聚焦能直接做成同一个下拉窗口」——
        所以只留**一个下拉**：第一项「全览」= 不聚焦（看整条时间线），其余项 = 聚焦某条剧情线（线外内容截断）。 */
     ui.innerHTML = `
+      <span class="lk-tl-subbar__label">剧情线</span>
       <select class="lk-tl-tab" id="lk-line-sel" title="全览 = 看整条时间线；选一条剧情线 = 聚焦只看它" style="font-size:11px;background:none;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--fg);padding:2px 4px;" ${lines.length ? '' : 'disabled'}>
-        <option value="">— 全览 —</option>${lineOpts}<option value="__new__">＋ 新建剧情线…</option></select>`;
-    /* 下拉底部那一项是**动作**（开右侧创建面板），不是状态：见 change 处理器里的 __new__ 分支。 */
-    /* 状态区固定在面板头**最左**（标题左边）：「左＝看什么，右＝做什么」。工具在 #lk-tools 里，两边不混。 */
-    let stateEl = TL_HEAD.querySelector('#lk-state') as HTMLElement | null;
-    if (!stateEl) {
-      stateEl = document.createElement('span');
-      stateEl.id = 'lk-state';
-      stateEl.style.cssText = 'display:flex;gap:6px;align-items:center;flex-shrink:0;margin-right:10px;padding-right:10px;border-right:1px solid var(--border-soft);';
-      TL_HEAD.insertBefore(stateEl, TL_HEAD.firstChild);
-    }
-    /* ⚠️ 只摘掉自己那一块（`ui` 的 id 就是 `#lk-story-ui`）。整块 `innerHTML = ''` 会把
-       `renderExtraTools()` 搬过来的「非线性」一起抹掉，之后它再搬一次 ⇒ **每切一次非线性就多一个按钮**
-       （用户 2026-09-19 实测）。 */
-    stateEl.querySelectorAll('#lk-story-ui').forEach((el) => el.remove());
-    stateEl.appendChild(ui);
-
-    /* 「＋剧情线」是**工具**（做一件事），放右上角 #lk-tools；左边状态区只留那个下拉。 */
-    const toolsBox = TL_HEAD.querySelector('#lk-tools');
-    if (toolsBox && !document.getElementById('lk-line-new')) {
-      const b = document.createElement('button');
-      b.className = 'lk-tl-tab is-new';
-      b.id = 'lk-line-new';
-      b.title = '新建剧情线（先覆盖整条时间线，随后在右侧面板里编辑区段）';
-      b.textContent = '＋剧情线';
-      toolsBox.appendChild(b);
-    }
+        <option value="">— 全览 —</option>${lineOpts}<option value="__new__">＋ 新建剧情线…</option></select>
+      <button class="lk-tl-tab is-new" id="lk-line-new" title="新建剧情线（先覆盖整条时间线，随后在右侧面板里编辑区段）">＋剧情线</button>`;
+    subbar.appendChild(ui);
 
     ui.querySelector('#lk-brush')?.addEventListener('click', () => {
       brushing = !brushing;

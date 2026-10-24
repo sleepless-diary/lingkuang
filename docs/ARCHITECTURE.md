@@ -1864,3 +1864,28 @@ view:topo / contour:auto / seed:灵框`，带 320×160 剪影掩膜；端口 955
 - 连点三条（40ms 间隔）后：`.lk-cx-ghost` **0 层**、`#cx-body` 的 `overflow` 已恢复（`""`）、
   左树完整（截图 `.review/shots-r119/after-rapid.png`）。
 - `npx tsc --noEmit` 0、`npx vite build` 0；守卫 `codex-swap-motion` ★3 改为"幽灵整页左移、无逐行动画"。
+
+## 2026-10-24 · 世界沙盘：剧情线降为时间线的下一层（第一百二十轮）
+
+用户：「剧情线现在和时间线放在一起了，剧情线应该是附属在时间线下的」。
+
+**原来**：`renderStoryUI()` 把「全览 / 某剧情线」下拉塞进面板头的 `#lk-state`（最左），
+和「主线 / 空线 / ＋节点 / ＋循环 / 非线性」挤在同一行 —— 视觉上剧情线像时间线的兄弟。
+
+**现在**：面板头下面多一条窄栏 `#lk-tl-subbar`（`.lk-tl-subbar`），只放与剧情线有关的两样：
+
+```
+[主线 25] [空线 4]  ＋节点  ＋循环  非线性        ← 面板头（世界本体）
+─────────────────────────────────────────────
+剧情线  [— 全览 — ▾]  ＋剧情线                    ← 窄栏（这条时间线的叙事切片）
+```
+
+- 窄栏插在 `.lk-pane-head` 之后、画布之前（`TL_HEAD.insertAdjacentElement('afterend', …)`），
+  底色 `--surface` + 左侧缩进 14px，读起来就是"下一层"。
+- `#lk-state` 不再创建；「非线性」留在 `#lk-tools`（`renderExtraTools()` 对 `#lk-state` 为 null 是安全的）。
+- 「＋剧情线」从 `#lk-tools` 搬进窄栏，和聚焦下拉放在一起（同一件事的两半）。
+- 每帧重建窄栏、按钮随元素重建 ⇒ 不会像旧实现那样每次渲染都给同一个按钮再挂一次监听。
+
+**验证**：`#lk-tl-subbar` 存在且紧跟在面板头之后、标签「剧情线」、下拉与按钮都在窄栏里、
+面板头里不再有 `#lk-line-sel`；`tsc` 0 / `vite build` 0。
+截图：`.review/shots-r120/sandbox-subbar.png`。
