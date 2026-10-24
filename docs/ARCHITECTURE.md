@@ -1840,3 +1840,27 @@ view:topo / contour:auto / seed:灵框`，带 320×160 剪影掩膜；端口 955
 - 悬停实测：`.ed-tworld` 悬浮背景 = `rgb(201,198,189)`（`--surface-2`，与底色区分）。
 - 守卫 `codex-swap-motion` 的 ★5 从"clip-path 擦除"改成"整页左移"。
 - `npx tsc --noEmit` 0、`npx vite build` 0。
+
+## 2026-10-24 · 出场幽灵盖住左树（第一百一十九轮）
+
+用户：「出场时文件会盖住左侧的文件树」。
+
+### 成因（连点才会遇到）
+
+`playSwap()` 收尾时只调 `dropGhost()`，而它**只认 `swapGhost` 这一个变量**。
+连点两次时第一层幽灵已经不在 `swapGhost` 上 ⇒ 它不会被移除，停在 `translateX(-宽)` 的位置
+（正好压在左边文件树上）；同时 `#cx-body` 的 `overflow:hidden` 已被前一轮收尾恢复
+⇒ 这层幽灵就露到了框外面。
+
+### 修法
+
+1. 每个幽灵的收尾**只收自己**：`ghost.remove()`，不再依赖 `swapGhost` 身份。
+2. `overflow` 交给**序号**管：`swapSeq` 每轮 +1，只有"最新一轮"（`activeSwap === my`）收工时
+   才恢复 `overflow` —— 前一轮既不能提前解开裁剪，也不能抹掉后一轮的记号。
+3. 顺手删掉幽灵上的逐行淡出（`rowsLeave`）：推页是"整张卡一起走"，行再自己淡出会半路空掉。
+
+### 验证
+
+- 连点三条（40ms 间隔）后：`.lk-cx-ghost` **0 层**、`#cx-body` 的 `overflow` 已恢复（`""`）、
+  左树完整（截图 `.review/shots-r119/after-rapid.png`）。
+- `npx tsc --noEmit` 0、`npx vite build` 0；守卫 `codex-swap-motion` ★3 改为"幽灵整页左移、无逐行动画"。

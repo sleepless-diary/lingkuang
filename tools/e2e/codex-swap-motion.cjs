@@ -119,17 +119,9 @@ async function main() {
   /* 出场：1/原位 → 0/往左 dx。⚠️ 2026-10-24 改口径：曲线从「慢→快」换成匀速感
      （慢→快在 300ms 里前 80% 几乎不动，用户看到的是「停一下然后突然没了」= 出场没执行）。
      另外幽灵**容器**自己也有一条淡出（那才是看得见的"出场"），行级动画保留位移。 */
-  const o0 = out?.anims?.[0]?.[0];
-  const o1 = out?.anims?.[1]?.[0];
-  check('★3 出场关键帧 = 不透明度 1 → 0 且往**左** 32px（只有 X，没有 Y），曲线匀速感',
-    !!o0 && String(o0.kf?.[0]?.o) === '1' && String(o0.kf?.[0]?.t) === 'none'
-      && String(o0.kf?.[1]?.o) === '0' && String(o0.kf?.[1]?.t) === 'translateX(-32px)'
-      && o0.ease === 'cubic-bezier(0.25, 0.1, 0.25, 1)' && o0.dur === 300, o0);
-
-  /* 入场：**没有行级动画**（用户 2026-10-24：「把入场时的滑动也撤了吧」）。
-     擦除揭开的就是最终态；滑动会让被揭开的部分还在动，看起来像"一边揭一边抖"。 */
-  check('★4 入场没有行级动画（新内容原地就位，只由幽灵的擦除把它揭开）',
-    !!inn && inn.anims.every((a) => a.length === 0), inn?.anims);
+  /* 2026-10-24：出场不再是"逐行淡出"，而是**整张幽灵卡左移**（推页）。逐行动画已移除。 */
+  check('★3 出场 = 幽灵整页左移（ghost 上没有逐行动画）',
+    !!out && !!out.wipe && (out.anims || []).every((a) => a.length === 0), { wipe: out?.wipe, rowAnims: out?.anims?.length });
   check('★5 出场 = 整页左移（幽灵 translateX 0 → -width，300ms）',
     !!out && !!out.wipe && out.wipe.dur === 300 && out.wipe.kf.length === 2
       && String(out.wipe.kf[0]).includes('translateX'),

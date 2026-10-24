@@ -135,6 +135,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   /* 换条目转场里那层"旧内容幽灵"（用户 2026-09-13 定稿的做法 P，见 playSwap）。
      同一时刻最多一层：新的一轮开始时**复用**它，而不是把"其实还没露过脸"的新内容再快照一遍。 */
   let swapGhost: HTMLElement | null = null;
+  /** 推页转场的序号与"当前有效那一轮"：**只有最新一轮收工时**才恢复 `#cx-body` 的 overflow。
+   *  用编号而不是布尔/计数：连点两次时，前一轮收尾既不能提前解开裁剪，也不能把后一轮的记号抹掉。 */
+  let swapSeq = 0;
+  let activeSwap = 0;
   /* ── 演变（版本历史，2026-09-13）─────────────────────────────────
      中/右栏显示的**不是实体身上那一份**，而是「你现在站在哪个事件上看它」那一版：
      `statesOf(实体)` 一次算出初稿 + 每一帧之后的全部样子，换版本就是换个下标取数组（O(1)）。
@@ -866,17 +870,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
           否则会多出第二个 `#cx-doc`/`#cx-fields`，`host.querySelector('#cx-fields')` 会抓到幽灵里那个；
        ③ 已经有一轮在飞时**复用**那层幽灵（它才是用户最后看见的那份内容），并把它的动画重头再来；
           否则连点两下时会把"还没显形的新内容"当成旧内容再演一遍 ⇒ 闪。 */
-  const ROW_SEL = '[data-cx-row], #cx-props .ed-props > *';
-
-  /** 转场要逐行动画的行。`skipGhost=true`（对 `#cx-body` 用）时**排除幽灵层里的行** ——
-   *  否则同一份旧内容会在"出场"和"入场"里各演一遍。给幽灵层自己用时要传 false，
-   *  不然那个 `.closest('.lk-cx-ghost')` 会把幽灵的每一行都滤掉（踩过：幽灵当场被收掉，
-   *  `exits` 为空 ⇒ `Promise.all([])` 立刻 resolve ⇒ 看起来根本没建幽灵）。 */
-  function rowsOf(root: HTMLElement, skipGhost = true): HTMLElement[] {
-    return (Array.from(root.querySelectorAll(ROW_SEL)) as HTMLElement[]).filter(
-      (el) => (!skipGhost || !el.closest('.lk-cx-ghost')) && el.getClientRects().length > 0
-    );
-  }
+  
 
   /** 收掉幽灵层（关掉转场、整块重建、工具切走时都要） */
   function dropGhost(): void {
@@ -909,8 +903,6 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (motionReduced()) { enter(body, 'lk-swap-in'); return; }
     const speed = Math.max(0.2, s.motionSpeed || 1);
     const dur = Math.round(300 / speed);
-    const step = Math.max(0, s.motionStagger ?? 10);
-    const dx = Math.max(0, s.motionEnterDx ?? 32);
     if (prevHtml !== null) {
       const ghost = document.createElement('div');
       ghost.className = 'lk-cx-ghost';
@@ -931,7 +923,6 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
          为什么不是淡出：新旧两份字叠在同一片区域里，半透明期间会同时看到两个标题
          （实测截图：`日常` 与 `安德雅特斯山` 糊在一起）。擦除没有重叠区 —— 左边是新的、
          右边是旧的，中间只有一条边；也不会有空白帧。 */
-      const exits = rowsLeave(rowsOf(ghost, false), { dx, step, dur, easing: 'cubic-bezier(0.25, 0.1, 0.25, 1)' });
       /* 退场 = **整页推走**（2026-10-24 第三版，用户：「没有文件切换的感觉」）：
          旧内容整张卡往左滑出、新内容同时从右边推进来，两者速度、曲线完全一致 ⇒ 中间永远是一条
          干净的竖边（左边旧、右边新），既没有重叠区、也没有空白帧，而且读起来就是"换了一页文件"。
@@ -941,6 +932,8 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       const EASE = 'cubic-bezier(0.22, 0.8, 0.25, 1)';
       const prevOverflow = body.style.overflow;
       body.style.overflow = 'hidden';
+      const my = ++swapSeq;      /* 这一轮的序号：只有"最新一轮"收工时才恢复 overflow */
+      activeSwap = my;
       const out = ghost.animate(
         [{ transform: 'translateX(0)' }, { transform: `translateX(-${w}px)` }],
         { duration: dur, easing: EASE, fill: 'both' }
@@ -951,13 +944,18 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         { duration: dur, easing: EASE, fill: 'both' }
       ));
       const kill = (): void => {
-        body.style.overflow = prevOverflow;
-        if (swapGhost === ghost) dropGhost();
+        /* ⚠️ 每个幽灵**只收自己**（2026-10-24：用户报「出场时文件会盖住左侧的文件树」）。
+           以前这里只调 dropGhost()，而它只认 `swapGhost` 一个变量：连点两次时第一层幽灵
+           已经不在 `swapGhost` 上，于是**永远留在 DOM 里**（停在 translateX(-宽) 的位置），
+           而 overflow:hidden 又已经被恢复 ⇒ 它就压在左边的文件树上面。
+           现在：自己 remove；overflow 用计数管（最后一个收工时才恢复，否则后一轮会被前面解开裁剪）。 */
+        ghost.remove();
+        if (swapGhost === ghost) swapGhost = null;
+        if (activeSwap === my) { activeSwap = 0; body.style.overflow = prevOverflow; }
       };
-      /* 没有可动画的行（全被 display:none 滤掉）时别留一层静止的重复内容 —— 直接收掉 */
-      Promise.all([out.finished, ...ins.map((a) => a.finished), ...exits.map((a) => a.finished)]).then(kill).catch(() => { body.style.overflow = prevOverflow; /* 被取消 */ });
+      Promise.all([out.finished, ...ins.map((a) => a.finished)]).then(kill).catch(kill);
       /* 兜底：隐藏窗口里动画不推进，`finished` 永远不来（README 铁律 6），这层幽灵不能留着 */
-      window.setTimeout(kill, dur + step * 80 + 600);
+      window.setTimeout(kill, dur + 600);
     }
     /* 入场**不再有任何行级动画**（用户 2026-10-24：「把入场时的滑动也撤了吧」）：
        擦除揭开的就是最终态 —— 滑动会让被揭开的那部分还在移动，像"一边揭一边抖"。
