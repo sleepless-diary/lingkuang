@@ -1917,8 +1917,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
               const folderName = typeNameOf(wName, e.typeId);
               /* `cx-id` / `cx-type` 是给测试与将来拖拽用的稳定抓手（树上不显示类型 —— 上一层文件夹
                  已经写着它了）；`[data-cx-id]` 这个属性名是历史约定，十几条 e2e 都按它找实体行。 */
+              /* 行尾那点字数**只在悬停时才出现**（2026-10-24）：默认一片安静，
+                 想看"这条写了多少"时把鼠标停一下就有了 —— 不占常驻的视觉带宽。 */
               frag.appendChild(keep(treeRow(itemCls(on, e.name),
-                `<span class="ed-tlabel">${escapeHtml(e.name)}</span>${stubTag(e.name)}${draftTag(e)}${sub && sub !== folderName ? `<span class="ed-tsub" title="这条的「类型」字段（结构体里的分类口径，与所在文件夹不一定是同一个词）">${escapeHtml(sub)}</span>` : ''}`,
+                `<span class="ed-tlabel">${escapeHtml(e.name)}</span>${stubTag(e.name)}${draftTag(e)}${sub && sub !== folderName ? `<span class="ed-tsub" title="这条的「类型」字段（结构体里的分类口径，与所在文件夹不一定是同一个词）">${escapeHtml(sub)}</span>` : ''}<span class="ed-thover" title="正文字数（去掉 Markdown 符号）">${docLen(e)} 字</span>`,
                 { act: 'entity', nw: wName, nid: e.id, 'cx-id': e.id, 'cx-type': folderName }),
                 'entity|' + wName + '::' + e.id, inType));
             }

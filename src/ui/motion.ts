@@ -458,6 +458,33 @@ function unpinBox(el: HTMLElement): void {
  *  实测（收起帧条）：框 `delay 174 + dur 240 = 414ms` 结束，而被让位的行还要到 `494ms` 才落定，
  *  中间那 80ms 里 `offsetWidth - clientWidth = 16px`（一条滚动条）。 */
 
+/** 数字变化不跳变（2026-10-24）：把 `el.textContent` 里的数字从当前值滚到 `to`。
+ *  用途：时间线页签的节点计数、以后的"待补稿 N"。`motionReduced()` 时直接落到终值。
+ *  ⚠️ 连点/数据连变时用 WeakMap 记住上一轮 RAF，新的进来先把旧的取消 —— 否则两个循环
+ *  同时写同一个 textContent，数字会在两个区间里抖。 */
+const numTweens = new WeakMap<HTMLElement, number>();
+export function tweenNumber(el: HTMLElement | null, to: number, o: { dur?: number; suffix?: string } = {}): void {
+  if (!el) return;
+  const dur = o.dur ?? 320;
+  const suffix = o.suffix ?? '';
+  const from = Number(String(el.textContent ?? '').replace(/[^\d.-]/g, ''));
+  const old = numTweens.get(el);
+  if (old !== undefined) { cancelAnimationFrame(old); numTweens.delete(el); }
+  if (motionReduced() || !Number.isFinite(from) || from === to || dur <= 0) {
+    el.textContent = `${to}${suffix}`;
+    return;
+  }
+  const t0 = performance.now();
+  const step = (now: number): void => {
+    const p = Math.min(1, (now - t0) / dur);
+    const eased = 1 - Math.pow(1 - p, 3);   /* ease-out：先快后慢，数字落定时不"拖" */
+    el.textContent = `${Math.round(from + (to - from) * eased)}${suffix}`;
+    if (p < 1) numTweens.set(el, requestAnimationFrame(step));
+    else numTweens.delete(el);
+  };
+  numTweens.set(el, requestAnimationFrame(step));
+}
+
 export function smoothBoxHeight(el: HTMLElement | null, from: number, o: { dur?: number; delay?: number; hold?: number } = {}): Animation | null {
   if (!el || motionReduced() || !(from > 0)) return null;
   /* ⚠️ **先钉住 overflow 再量目标高度**：`overflow:auto` 的盒子在"里面的行正演着入场"的这一刻量，

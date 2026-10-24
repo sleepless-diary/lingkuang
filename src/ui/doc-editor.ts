@@ -7,11 +7,14 @@
  * 正文最终落到 `entity.doc`，由主进程写进 vault 的 `<世界>/_设定/<类型>/<名字>.md`
  * （`#正文：` 标签之后），所以 Obsidian 里能看、也能改回来（文件为源）。
  */
-import { Editor } from '@tiptap/core';
+import { Editor, Extension } from '@tiptap/core';
+import { Plugin, PluginKey } from '@tiptap/pm/state';
+import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from '@tiptap/markdown';
 import { Image } from './image-ext';
 import { Tag } from './tag-ext';
+import { loadSettings } from './settings';
 
 export interface DocEditor {
   setDoc(md: string): void;
@@ -32,10 +35,38 @@ function escapeText(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/** 段落聚焦：给**光标所在的顶层块**挂 `.is-cur`（其余块由 CSS 压暗）。
+ *  用 ProseMirror 的 decoration 而不是自己改 DOM —— 见 createDocEditor 里那段说明。 */
+const focusParaKey = new PluginKey('lkFocusPara');
+const FocusPara = Extension.create({
+  name: 'lkFocusPara',
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: focusParaKey,
+        props: {
+          decorations(state) {
+            const { $from } = state.selection;
+            if ($from.depth < 1) return null;
+            try {
+              return DecorationSet.create(state.doc, [
+                Decoration.node($from.before(1), $from.after(1), { class: 'is-cur' }),
+              ]);
+            } catch {
+              return null;
+            }
+          },
+        },
+      }),
+    ];
+  },
+});
+
 export function createDocEditor(el: HTMLElement, onFlush: (md: string) => void): DocEditor {
+  const pFocus = loadSettings().focusParagraph !== false;
   const editor = new Editor({
     element: el,
-    extensions: [StarterKit, Markdown, Image, Tag],
+    extensions: [StarterKit, Markdown, Image, Tag, ...(pFocus ? [FocusPara] : [])],
     contentType: 'markdown',
     content: '',
     editorProps: {
@@ -53,6 +84,16 @@ export function createDocEditor(el: HTMLElement, onFlush: (md: string) => void):
     onFlush(md);
   };
   editor.on('blur', flush);
+  /* 段落聚焦（设置 → 外观，默认开）：聚焦时给编辑器挂 `.is-typing`，光标所在的**顶层块**
+     由 ProseMirror 的 decoration 打上 `.is-cur` —— 写长文时眼睛只跟着当前这一段走。
+     ⚠️ 为什么用 decoration 而不是自己 `setAttribute`：实测往 PM 管的 DOM 上写属性会被它下次
+     重排默默擦掉（`has-cur` 还在、`data-cur` 没了 ⇒ 整篇被压暗）。decoration 是 PM 认可的写法。
+     ⚠️ 只在**聚焦期间**生效（blur 摘掉），否则回看时整篇有一半是灰的。 */
+  if (loadSettings().focusParagraph !== false) {
+    const dom = editor.view.dom;
+    editor.on('focus', () => dom.classList.add('is-typing'));
+    editor.on('blur', () => dom.classList.remove('is-typing'));
+  }
   return {
     setDoc(md: string) {
       last = md || '';

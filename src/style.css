@@ -2003,3 +2003,45 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
   100% { outline: 1px solid rgba(158, 194, 98, 0); outline-offset: 2px; }
 }
 @media (prefers-reduced-motion: reduce) { #cx-doc.is-saved { animation: none; outline: 1px solid rgba(158,194,98,.35); outline-offset: 2px; } }
+
+/* ── 外观主题选择（设置 → 外观）────────────────────────────────────────────── */
+#set-theme-row .lk-theme-btn {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 5px;
+  width: 158px; padding: 8px; cursor: pointer; text-align: left;
+  background: var(--surface-2); color: var(--fg);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+#set-theme-row .lk-theme-btn:hover { border-color: var(--border-strong); }
+#set-theme-row .lk-theme-btn.is-on { border-color: var(--accent-ink); box-shadow: inset 0 0 0 1px var(--accent-ink); }
+.lk-theme-sw { display: flex; width: 100%; height: 26px; border-radius: 2px; overflow: hidden; }
+.lk-theme-sw i { flex: 1; height: 100%; }
+.lk-theme-name { font-size: var(--text-sm); font-weight: 600; }
+.lk-theme-hint { font-size: var(--text-2xs); color: var(--fg-2); line-height: 1.45; }
+
+/* ── 段落聚焦（2026-10-24）：光标所在的**顶层块**满不透明，其余块压暗。
+   标记由 ProseMirror 的 decoration 打（`.is-cur`），不是自己改 DOM —— 见 doc-editor.ts。 */
+#cx-doc .tiptap > * { transition: opacity 200ms var(--ease-standard); }
+#cx-doc .tiptap.is-typing > *:not(.is-cur) { opacity: .58; }
+#cx-doc .tiptap.is-typing > .is-cur { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { #cx-doc .tiptap > * { transition: none; } }
+
+/* ── 悬停才出现的信息（左树行尾的字数）────────────────────────────────────── */
+.ed-thover {
+  margin-left: auto; flex-shrink: 0; padding-left: 6px;
+  font-size: var(--text-2xs); color: var(--fg-2);
+  opacity: 0; transform: translateX(4px);
+  transition: opacity 120ms var(--ease-standard), transform 120ms var(--ease-standard);
+}
+.ed-tnode-item:hover .ed-thover,
+.ed-tnode-item.is-on .ed-thover { opacity: 1; transform: none; transition-delay: 180ms; }
+
+/* 时间轴指针（2026-10-24）：拖拽时 70ms 跟随缓动 —— 指针不再"贴着鼠标硬走"，
+   而是有一点重量。只在 left 上过渡（这元素本来就是绝对定位，不触发重排连锁）。 */
+.tl-cursor { transition: left 70ms linear; will-change: left; }
+@media (prefers-reduced-motion: reduce) { .tl-cursor { transition: none; } }
+
+/* 段落聚焦（decoration 版）：光标所在顶层块带 .is-cur，其余压暗；聚焦才生效。 */
+#cx-doc .tiptap > * { transition: opacity 200ms var(--ease-standard); }
+#cx-doc .tiptap.is-typing > *:not(.is-cur) { opacity: .58; }
+#cx-doc .tiptap.is-typing > .is-cur { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { #cx-doc .tiptap > * { transition: none; } }

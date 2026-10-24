@@ -174,3 +174,103 @@
     --motion-enter: 200ms;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 外观主题（2026-10-24）：只覆盖**颜色** token，字号/间距/圆角/动效一律不动。
+ * 挂法：`src/ui/theme.ts` 的 `applyTheme()` 往 <html> 上写 data-theme；
+ * `warm`（默认那套阈限暖灰）不写属性 ⇒ 与旧构建 DOM 完全一致。
+ * 选择口径：设置 → 外观。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* 夜读：深灰底 + 暖白字。强调色仍是一族的绿（亮一档，深底上才读得清）。 */
+:root[data-theme="night"] {
+  --bg: #121214;
+  --surface: #1e1e21;
+  --surface-2: #26262b;
+  --surface-warm: #232327;
+  --fg: #e9e7dd;
+  --fg-2: #b8b5a9;
+  --meta: #a9a69a;
+  --muted: #6f6d64;
+  --fg-inverse: #f2f0e8;
+  --border: #3b3b41;
+  --border-strong: #55555c;
+  --border-soft: rgba(233, 231, 221, .12);
+  --accent: #a8c96e;
+  --accent-ink: #c3dd93;
+  --accent-2: #d9b96a;
+  --accent-on: #191a12;
+  --accent-hover: #bcd98a;
+  --accent-active: #93b45c;
+  --chrome: #0d0d0f;
+  --chrome-2: #1b1b1f;
+  --success: #8fbe8f;
+  --warn: #d8b05e;
+  --danger: #e08f70;
+  --elev-bloom: 0 0 24px rgba(168, 201, 110, .22);
+  --focus-ring: 0 0 0 3px rgba(168, 201, 110, .30);
+}
+
+/* 旧纸：米黄纸面 + 墨字。chrome 收成深褐，跟纸面对比但不抢戏。 */
+:root[data-theme="paper"] {
+  --bg: #ddd2bb;
+  --surface: #efe7d6;
+  --surface-2: #e2d7c2;
+  --surface-warm: #e8ddc9;
+  --fg: #2f271b;
+  --fg-2: #5a4c39;
+  --meta: #63533f;
+  --muted: #a3937a;
+  --fg-inverse: #f2ecdf;
+  --border: #b9a98d;
+  --border-strong: #8c7c62;
+  --border-soft: rgba(47, 39, 27, .12);
+  --accent: #9bb35f;
+  --accent-ink: #4a5c1e;
+  --accent-2: #c9a24b;
+  --accent-on: #1c1a12;
+  --accent-hover: #add073;
+  --accent-active: #87a04e;
+  --chrome: #231e17;
+  --chrome-2: #332c22;
+  --success: #6f9e6f;
+  --warn: #b98a2e;
+  --danger: #8a3f24;
+  --elev-bloom: 0 0 24px rgba(155, 179, 95, .22);
+  --focus-ring: 0 0 0 3px rgba(155, 179, 95, .30);
+}
+
+/* 青灰：冷色工作台，强调色偏青（唯一换了色相的一套）。 */
+:root[data-theme="slate"] {
+  --bg: #bcc3c6;
+  --surface: #d6dbdd;
+  --surface-2: #c7ced1;
+  --surface-warm: #cfd5d7;
+  --fg: #1f2629;
+  --fg-2: #43505a;
+  --meta: #4c5960;
+  --muted: #8d9aa1;
+  --fg-inverse: #eef2f3;
+  --border: #94a0a6;
+  --border-strong: #6b7a81;
+  --border-soft: rgba(31, 38, 41, .10);
+  --accent: #6fa89a;
+  --accent-ink: #2f5a51;
+  --accent-2: #c9a24b;
+  --accent-on: #101619;
+  --accent-hover: #84b8ab;
+  --accent-active: #5b8f83;
+  --chrome: #131a1d;
+  --chrome-2: #1f282c;
+  --success: #5f9e86;
+  --warn: #b08a3a;
+  --danger: #8a3f2e;
+  --elev-bloom: 0 0 24px rgba(111, 168, 154, .24);
+  --focus-ring: 0 0 0 3px rgba(111, 168, 154, .32);
+}
+
+/* 主题切换的过渡：只给背景/文字/边框，别把布局也一起动（会像卡了一下） */
+html, body, .lk-app, .lk-toolbar, .lk-module-view, .lk-right, .lk-surface {
+  transition: background-color 220ms ease, color 220ms ease, border-color 220ms ease;
+}
+@media (prefers-reduced-motion: reduce) { html, body, .lk-app, .lk-toolbar, .lk-module-view, .lk-right { transition: none; } }

@@ -7,6 +7,8 @@ import { ensureEntityTypes, ensureEntityFields } from './store/entities';
 import { showShellAlert, removeShellAlert } from './ui/alert';
 import { watchActivity } from './ui/agent-activity';
 import { restoreSession, watchSession } from './ui/session';
+import { loadSettings } from './ui/settings';
+import { applyTheme } from './ui/theme';
 /* 颜色/间距/字号的**唯一来源**：先 tokens、后 style.css。
    style.css 只覆盖「几何 + 应用字体 + AE 风小圆角」，不再自己抄一份颜色——
    以前两处各写一份，值漂移出 4 处不一致，且 --danger/--warn/--meta/--space-1/2
@@ -467,6 +469,9 @@ async function main() {
      启动归一化写盘记成创作者的操作，助手一开口就以为他刚动过一堆东西。 */
   watchActivity(store);
   const host = document.getElementById('app')!;
+  /* 外观主题（2026-10-24）：在第一次绘制之前挂到 <html> 上，避免启动时先闪一眼默认色再跳主题。
+     `theme.ts` 只写 data-theme，颜色仍然全部来自 tokens.css。 */
+  applyTheme(loadSettings().theme);
   renderShell(store, host);
   /* 回到上次关闭时的样子（上次的世界 / 时间线 / 工具，见 `src/ui/session.ts`）。
      位置很讲究：**必须在 `renderShell()` 之后**（工具栏按钮那时才存在，恢复"上次打开的工具"

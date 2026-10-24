@@ -197,9 +197,31 @@ export function mountGlobe(canvas: HTMLCanvasElement, field: PlanetField, rgba: 
   canvas.addEventListener('wheel', onWheel, { passive: false });
 
   draw();
+  /* 空闲自转（2026-10-24，用户问「怎么才有沉浸感」）：**只在可见 + 窗口聚焦 + 没在拖**时转，
+     0.5°/秒（转一圈 ≈ 12 分钟）—— 沙盘停着时星球是"活着"的，而不是一张贴图。
+     停手条件写在一起：隐藏窗口 / 画布塌成 0 / 系统要求减少动效 / 正在拖，任一成立就不烧帧。 */
+  let idleRaf = 0;
+  let lastTs = 0;
+  const IDLE_RAD_PER_MS = ((0.5 * Math.PI) / 180) / 1000;
+  const idleOk = (): boolean => {
+    if (disposed || dragging || document.hidden || !document.hasFocus()) return false;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return false;
+    const r = canvas.getBoundingClientRect();
+    return r.width > 24 && r.height > 24;
+  };
+  const tickIdle = (): void => {
+    if (disposed) return;
+    const now = performance.now();
+    const dt = lastTs ? now - lastTs : 0;
+    lastTs = now;
+    if (idleOk() && dt > 0 && dt < 200) { yaw += IDLE_RAD_PER_MS * dt; draw(); }
+    idleRaf = window.requestAnimationFrame(tickIdle);
+  };
+  idleRaf = window.requestAnimationFrame(tickIdle);
   return {
     dispose: () => {
       disposed = true;
+      window.cancelAnimationFrame(idleRaf);
       canvas.removeEventListener('pointerdown', onDown);
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerup', onUp);

@@ -1666,3 +1666,47 @@ view:topo / contour:auto / seed:灵框`，带 320×160 剪影掩膜；端口 955
   双透明；要保住"先出后进"的手感只能压缩空窗，不能消灭它 —— 要消灭就得交叉。
 - 报"闪一下"时先**逐帧量不透明度**（`requestAnimationFrame` 里读 `getComputedStyle`），
   不要凭肉眼猜是"重渲染"还是"动画"。
+
+## 2026-10-24 · 外观主题 + 四处"沉浸感"（第一百一十四轮）
+
+用户：「可以，全做了吧，顺便再给灵框整体多做几个可选风格」。分两半：**可选主题**（4 套）
+与一批**微动效**（段落聚焦 / 数字滚动 / 悬停字数 / 指针跟随 / 星球空转）。
+
+### 一、主题（`src/ui/theme.ts` + `tokens.css` 的主题块）
+
+- 主题 = 在 `<html data-theme="…">` 上**覆盖一组颜色 token**；字号/间距/圆角/动效一律不动。
+  `warm`（出厂阈限暖灰）**不写属性** ⇒ 与旧构建的 DOM 完全一致。
+- 四套：`warm` 阈限暖灰 / `night` 夜读（深灰 + 暖白字）/ `paper` 旧纸（米黄 + 墨字）/
+  `slate` 青灰（冷色 + 青绿强调）。每套都覆盖 `--surface* / --fg* / --border* / --accent* /
+  --chrome* / --danger / --warn / --success / --elev-bloom / --focus-ring`。
+- 入口：设置 →「外观」页（色块 + 名字 + 一句说明）；`applyTheme()` 立刻生效，
+  `settings.theme` 落盘，`src/main.ts` 在 `renderShell()` **之前**应用（避免启动先闪一眼默认色）。
+- ⚠️ 新增主题时守住两条：`--accent-ink` 在 `--surface` 上 ≥ 4.5:1（强调文字用它）、
+  `--fg-inverse` 在 `--chrome` 上 ≥ 7:1（左栏工具名靠它）。
+
+### 二、微动效
+
+| # | 做了什么 | 落在哪 |
+|---|---|---|
+| ① | **段落聚焦**：光标所在的**顶层块**满不透明，其余 0.58（只在编辑器聚焦时） | `doc-editor.ts` + CSS |
+| ② | **数字不跳变**：时间线页签的节点计数用 `tweenNumber()` 滚到新值 | `motion.ts` + `shell.ts` |
+| ③ | **悬停才出现的字数**：左树行尾 `.ed-thover`，默认 `opacity:0`，悬停 180ms 后淡入 | `codex.ts` + CSS |
+| ④ | **指针跟随**：`.tl-cursor` 的 `left` 有 70ms 线性过渡（拖拽有一点"重量"） | `style.css` |
+| ⑤ | **星球空闲自转**：0.5°/秒，只在可见 + 窗口聚焦 + 没在拖 + 非减少动效时转 | `globe.ts` |
+
+- ① 的坑（值得记）：**不要往 ProseMirror 管的 DOM 上写 `data-*` 再靠 CSS 选它** —— 实测
+  `has-cur` 类还在、`data-cur` 属性被 PM 下次重排擦掉，结果整篇被压暗。正解是
+  `Decoration.node($from.before(1), $from.after(1), { class: 'is-cur' })`（`@tiptap/pm/view`）。
+  另外 `:has(> [data-cur])` 在这台 Electron 上实测不成立，别拿它做兜底。
+- ② 的坑：数字滚动必须按元素取消上一轮 `requestAnimationFrame`（`WeakMap`），否则连点两次
+  会有两个循环同时写 `textContent`，数字在两个区间之间抖。
+- ③ 的判据是"默认安静、要的时候才出现"：常驻的数字会变成噪音（112 行每行一个"0 字"）。
+
+### 三、验证
+
+- `.review/probe-r114.cjs` **7/7**：悬停字数默认不可见 / 段落聚焦（`is-typing` + 恰好一个
+  `.is-cur` + 其余 <0.9）/ 设置里有 4 套主题 / 三套主题 `<html data-theme>` 正确 / 指针有
+  `left` 过渡 / 无异常。
+- 截图：`.review/shots-r114/`（`10-warm`、`20-focus`、`30-settings-look`、
+  `40-theme-night|paper|slate`）。
+- `npx tsc --noEmit` 0、`npx vite build` 0。

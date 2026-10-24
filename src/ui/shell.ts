@@ -10,7 +10,7 @@ import { addTimeline, addWorld, removeTimeline, removeWorld, undoWithVault, redo
 import { confirmDialog, promptDialog } from './confirm';
 import { currentWorld } from '../store/store';
 import { renderNodeForm } from './node-form';
-import { staggerIn } from './motion';
+import { staggerIn, tweenNumber } from './motion';
 import { setAgentFocus, setAgentView } from './agent-context';
 import { rememberTool } from './session';
 
@@ -300,7 +300,11 @@ function renderTimelineTabs(store: Store): void {
         if (nm && nm.textContent !== label) nm.textContent = label;
         const cntText = l?.empty ? '空' : String(ws.timelines[id]?.nodes.length ?? 0);
         const cnt = el.querySelector('.cnt');
-        if (cnt && cnt.textContent !== cntText) cnt.textContent = cntText;
+        if (cnt && cnt.textContent !== cntText) {
+          /* 计数不硬跳（2026-10-24）：数字滚动到新值；「空」这种非数字直接换字 */
+          if (l?.empty) cnt.textContent = cntText;
+          else tweenNumber(cnt as HTMLElement, ws.timelines[id]?.nodes.length ?? 0);
+        }
         el.classList.toggle('is-empty', !!l?.empty);
         if (id === active) el.classList.add('is-active');
         else el.classList.remove('is-active');

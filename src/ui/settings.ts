@@ -30,6 +30,7 @@ import {
 } from './ai-providers';
 /* 助手的模式（自动 / 一轮）也存在这儿 —— 只取类型与默认值，不 import `agent.ts`（那会成环） */
 import { AGENT_STEPS_FREE, DEFAULT_MODE, type AgentMode } from './agent-mode';
+import { THEMES, applyTheme, isThemeId, type ThemeId } from './theme';
 
 /** 演变（设定库的版本历史）的三种模式，用户 2026-09-13 选「都做，把模式放到设置里面」 */
 export type EvolveMode = 'manual' | 'auto' | 'locked';
@@ -72,6 +73,10 @@ interface Settings {
      0 = **不限**（默认）—— 由它自己决定什么时候做完，不再逼创作者每 8 步打一次「继续」。
      运行时值住 `src/ui/agent-mode.ts`（面板上的 select 改它），这里只负责**落盘**。 */
   agentSteps: number;
+  /* 外观（2026-10-24 用户：「给灵框整体多做几个可选风格」）：只换颜色 token，见 tokens.css 的主题块。 */
+  theme: ThemeId;
+  /* 段落聚焦：写正文时只让光标所在段落满不透明，其余压暗（打字机感）。 */
+  focusParagraph: boolean;
 }
 
 const DEFAULTS: Settings = {
@@ -97,6 +102,8 @@ const DEFAULTS: Settings = {
   /* 默认**不限步数**（用户 2026-10-11 原话：「不能设置无上限吗」）—— 0 = 不限，
      兜底天花板在 `agent-mode.ts` 的 `AGENT_STEPS_HARD`（防它绕圈，正常碰不到）。 */
   agentSteps: AGENT_STEPS_FREE,
+  theme: 'warm',
+  focusParagraph: true,
 };
 
 /** 老的单档权限（片 2~4 的 `agentPerm`）→ 两个旋钮的迁移表。
@@ -176,6 +183,9 @@ export function loadSettings(): Settings {
   /* 步数（0 = 不限；负数 / NaN / 手改怪值一律回默认，`agent-mode.ts` 的 `setAgentSteps()` 里还会再兜一次） */
   const st = Math.floor(Number(s.agentSteps));
   s.agentSteps = Number.isFinite(st) && st > 0 ? st : AGENT_STEPS_FREE;
+  /* 外观：手改坏的 / 老版本没有的键 ⇒ 回默认（`warm` / 段落聚焦开） */
+  if (!isThemeId(s.theme)) s.theme = DEFAULTS.theme;
+  s.focusParagraph = s.focusParagraph !== false;
   return s;
 }
 export function saveSettings(s: Settings) {
@@ -191,6 +201,7 @@ export function activeProviderProfile(): ProviderProfile | null {
 /** 分页定义（顺序 = 左侧导航的顺序）。`id` 同时是 `data-page` 与 `#lk-set-page-<id>` 的后缀。 */
 const PAGES: { id: string; label: string }[] = [
   { id: 'model', label: '模型' },
+  { id: 'look', label: '外观' },
   { id: 'canvas', label: '画布' },
   { id: 'motion', label: '转场' },
   { id: 'evolve', label: '演变' },
@@ -301,6 +312,28 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
             </div>
 
             <div style="font-size:var(--text-xs);color:var(--fg-2);line-height:1.7;">灵框本体免费开源。AI 联想是可选能力：本地部署（自付电费）或第三方 API（费用由提供商收取），均与灵框无关。</div>
+          </section>
+
+          <!-- 外观（2026-10-24）：主题只换颜色 token；段落聚焦是写正文时的观感开关 -->
+          <section class="lk-set-page" id="lk-set-page-look" style="display:none;flex-direction:column;gap:12px;">
+            <div style="${card}">
+              <div style="font-size:var(--text-sm);font-weight:600;color:var(--fg);">主题</div>
+              <div style="${label}">换一套底色与强调色。<b>只改颜色</b>，字号、间距、圆角、动效都不动；点一下立刻生效。</div>
+              <div id="set-theme-row" style="display:flex;gap:8px;flex-wrap:wrap;">
+                ${THEMES.map((t) => `<button type="button" class="lk-theme-btn${t.id === s.theme ? ' is-on' : ''}" data-theme="${t.id}" title="${t.hint}">
+                  <span class="lk-theme-sw" style="background:${t.swatch[0]};"><i style="background:${t.swatch[1]};"></i><i style="background:${t.swatch[2]};"></i></span>
+                  <span class="lk-theme-name">${t.name}</span>
+                  <span class="lk-theme-hint">${t.hint}</span>
+                </button>`).join('')}
+              </div>
+            </div>
+            <div style="${card}">
+              <div style="font-size:var(--text-sm);font-weight:600;color:var(--fg);">写作</div>
+              <label style="${label}display:flex;align-items:flex-start;gap:6px;">
+                <input type="checkbox" id="set-focus-para"${s.focusParagraph ? ' checked' : ''}/>
+                <span><b>段落聚焦</b>：光标进正文后，只有你正在写的那一段是满不透明的，其余段压到 60% —— 写长文时眼睛不会被上一段拽走。关掉就是全部一样清楚。</span>
+              </label>
+            </div>
           </section>
 
           <!-- ② 画布 -->
@@ -935,6 +968,21 @@ export function renderSettingsInto(host: HTMLElement, store: Store): void {
   /* AI 会话自动起名（默认关） */
   const aiNameEl = host.querySelector('#set-ai-autoname') as HTMLInputElement | null;
   aiNameEl?.addEventListener('change', () => { s.aiAutoName = aiNameEl.checked; saveNow('已保存 ✓'); });
+  /* 外观（2026-10-24）：主题 = 覆盖一组颜色 token（<html data-theme>），立刻生效、立刻落盘 */
+  host.querySelectorAll<HTMLElement>('#set-theme-row [data-theme]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const id = b.dataset.theme as ThemeId;
+      if (!isThemeId(id)) return;
+      s.theme = id;
+      applyTheme(id);
+      for (const x of Array.from(host.querySelectorAll<HTMLElement>('#set-theme-row [data-theme]'))) {
+        x.classList.toggle('is-on', x.dataset.theme === id);
+      }
+      saveNow('已切换外观 ✓');
+    });
+  });
+  const focusParaEl = host.querySelector('#set-focus-para') as HTMLInputElement | null;
+  focusParaEl?.addEventListener('change', () => { s.focusParagraph = focusParaEl.checked; saveNow('已保存 ✓'); });
   bind('#set-motion-speed', (v) => {
     s.motionSpeed = parseFloat(v);
     (host.querySelector('#set-motion-speed-v') as HTMLElement).textContent = v + '×';
