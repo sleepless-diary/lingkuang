@@ -315,16 +315,17 @@ export function rowSlideIn(el: HTMLElement | null, o: { dx?: number; dur?: numbe
 /** 展开文件夹时，**被展开出来的那些行**从上方一点（`translateY(-dy)`）落下来 + 渐显，逐行小幅错峰。
  *  （用户 2026-09-13：「展开文件夹时文件向下弹出」）
  *  与 `rowsLeave` 对称：同样的 `maxDelay` 上限（几十行时不至于让末尾的行等近一秒）。 */
-export function rowsDropIn(rows: HTMLElement[], o: { dy?: number; dur?: number; step?: number; maxDelay?: number } = {}): Animation[] {
+export function rowsDropIn(rows: HTMLElement[], o: { dy?: number; dur?: number; step?: number; maxDelay?: number; delay?: number } = {}): Animation[] {
   if (motionReduced()) return [];
   const dy = o.dy ?? 8;
   const dur = o.dur ?? 260;
   const step = o.step ?? 22;
   const maxDelay = o.maxDelay ?? MAX_STAGGER;
+  const base = o.delay ?? 0;
   const anims = rows.map((el, i) =>
     el.animate(
       [{ opacity: 0, transform: `translateY(${-dy}px)` }, { opacity: naturalOpacity(el), transform: 'none' }],
-      { duration: dur, delay: Math.min(i * step, maxDelay), easing: EASE_DECEL, fill: 'both' }
+      { duration: dur, delay: base + Math.min(i * step, maxDelay), easing: EASE_DECEL, fill: 'both' }
     )
   );
   autoRelease(anims, dur + Math.min(step * rows.length, maxDelay) + 200);

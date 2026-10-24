@@ -265,6 +265,17 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     document.querySelectorAll<HTMLElement>('.lk-ghost-layer').forEach((lay) => { lay.style.height = `${targetH}px`; });
   }
 
+  /** 清掉页面上**所有**左树幽灵层（连带动画一起取消）。
+   *  用户 2026-10-24：「打开和收起时有时候会出现重叠」—— 根因之一就是两台幽灵叠在一起：
+   *  收起 A 的退场还没演完又收起 B，`ghostLayerFor()` 又造一层，两层各自钉在原位 ⇒ 同一行字出现两份。
+   *  现在同一时刻只允许一批：新的一批进来先把旧的整批收走（宁可截断上一段的尾巴，也不要重影）。 */
+  function dropListGhosts(): void {
+    document.querySelectorAll<HTMLElement>('.lk-ghost-layer').forEach((lay) => {
+      for (const a of lay.getAnimations({ subtree: true })) { try { a.cancel(); } catch { /* 已取消 */ } }
+      lay.remove();
+    });
+  }
+
   /** 被删掉的那一行：克隆一份**钉在原位**演一次退场，同时下面的行向上让位（FLIP）。
    *  克隆体住在**贴着左树的裁切层**里（`ghostLayerFor(#cx-list, 900)`）—— 不能直接挂 `#cx-list`（它马上
    *  会被 `innerHTML = ''` 清空），也不能裸挂 `document.body`（那样不受外框裁切，用户 2026-09-14 报的
@@ -273,6 +284,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     const row = host.querySelector<HTMLElement>('#cx-list [data-cx-id="' + id + '"]');
     const clip = host.querySelector<HTMLElement>('#cx-list');
     if (!row || !clip || motionReduced()) return null;
+    dropListGhosts();
     const lay = ghostLayerFor(clip, 900);
     if (!lay) return null;
     /* 类名与"收起文件夹"那一批统一（`lk-list-ghost`）：测试与清理逻辑都按它认幽灵 */
@@ -283,7 +295,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
    *  住在贴着左树的**裁切层**里（同一个理由：外框在缩、它们不能飘到框外面去）。 */
   function ghostRows(rows: HTMLElement[]): HTMLElement[] {
     const clip = host.querySelector<HTMLElement>('#cx-list');
-    const lay = clip ? ghostLayerFor(clip, 860) : null;
+    if (!clip) return [];
+    dropListGhosts();   /* 同一时刻只允许一批幽灵（否则两次快收留下两层，同一行字出现两份） */
+    const lay = ghostLayerFor(clip, 860);
     if (!lay) return [];
     return rows.map((row) => {
       const g = cloneIntoLayer(lay.layer, lay.rect, row);
@@ -1775,10 +1789,21 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       if (!cold) {
         /* 补位的行**越高的越先移**（`step`）：收起文件夹时它下面的整片会一行行"被抽上去"，
            而不是整块平移（用户 2026-09-14 的第二条） */
-        flipRows(now.els, keys, now.tops, prev, { delay: flipDelay, step: FLIP_STEP, maxDelay: FLIP_MAX });
-        /* 展开露出来的那批先落位，新建的那几行随后从左侧滑入（错峰 30ms，封顶 240ms） */
-        if (revealed.length) rowsDropIn(revealed);
-        fresh.forEach((el, i) => rowSlideIn(el, { delay: Math.min(i * 30, 240) }));
+        /* dur 240（默认 320）：展开时新行要等让位演完才落，320+错峰 ≈ 440ms 的"空一拍"太明显；
+           240 已经够看清楚"下面的行让开了"，总等待压到 ~300ms 以内。 */
+        const flips = flipRows(now.els, keys, now.tops, prev, { delay: flipDelay, step: FLIP_STEP, maxDelay: FLIP_MAX, dur: 240 });
+        /* 展开露出来的那批**等让位演完再落**（用户 2026-10-24：「打开和收起时有时候会出现重叠」）：
+           以前两件事同一帧起跑 —— 下面的行还在从旧位置往下滑，新行已经在最终位置淡入，
+           中间那一段就是"两行字压在一起"。现在入场延迟 = 让位动画真正结束的时刻（严格先让位、后露出），
+           跟收起那条「先出后补」是同一个口径。
+           `delay` 走 WAAPI 的 delay + `fill:'both'` ⇒ 等待期间新行保持透明，不会先亮出来再演。 */
+        const flipTotal = flips.reduce((m, a) => {
+          const t = a.effect?.getTiming?.();
+          return Math.max(m, Number(t?.delay ?? 0) + Number(t?.duration ?? 0));
+        }, 0);
+        if (revealed.length) rowsDropIn(revealed, { delay: flipTotal });
+        /* 新建的那几行（不是展开露出来的）仍在让位之后滑入，避免同上重叠 */
+        fresh.forEach((el, i) => rowSlideIn(el, { delay: flipTotal + Math.min(i * 30, 240) }));
       }
       rowTops = new Map(keys.map((k, i) => [k, now.tops[i]]));
       smoothBoxHeight(listEl, boxBefore);     /* 外框高度也演（同上，用户 2026-09-14 的第一条） */
@@ -1937,7 +1962,11 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         const ds = el.dataset;
         /* 展开（不是收起）时把这一枝的键记进 `justOpened`：`renderList()` 靠它分辨"这些行是展开
            露出来的"（⇒ 向下弹出）与"真新建出来的"（⇒ 从左侧滑入）。键与三个 collapsed* Set 对齐。 */
-        const opened = (key: string, wasOpen: boolean): void => { if (!wasOpen) justOpened = key; };
+        const opened = (key: string, wasOpen: boolean): void => {
+          if (wasOpen) return;
+          justOpened = key;
+          dropListGhosts();   /* 展开时把上一批还没演完的退场幽灵收掉：它们钉的是旧位置，会跟新行叠在一起 */
+        };
         /* **收起**时：先把这一枝下面那些行克隆成幽灵层钉在原位（`ghostRows`），等重画之后
            再让它们退场 —— 不这么做的话它们随 `innerHTML` 一起"啪"地消失
            （用户 2026-09-14：「设定文件夹收起时无动画，收起时下面的文件直接消失」）。
