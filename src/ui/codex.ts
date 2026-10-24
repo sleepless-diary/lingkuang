@@ -949,7 +949,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       /* 兜底：隐藏窗口里动画不推进，`finished` 永远不来（README 铁律 6），这层幽灵不能留着 */
       window.setTimeout(kill, dur + step * 80 + 600);
     }
-    rowsEnter(rowsOf(body), { dx, step, dur, start: dur });
+    /* ⚠️ 入场的 `start` **必须是 0，不能是 dur**（用户 2026-10-24 报的 bug：
+       「设定库里面标题和描述在切换文件时会短暂消失」）。
+       旧写法「旧内容退场 300ms → 新内容再入场」之间有一整段**两边都接近透明**的时间：
+       幽灵行淡到 0、新行还没开始，标题与描述那一片就空着 —— 眼睛看到的就是"闪了一下"。
+       现在改成**交叉淡入**：新内容从第一帧就开始进场、旧内容同时退场，任何时刻都至少有一份在。 */
+    rowsEnter(rowsOf(body), { dx, step, dur, start: 0 });
   }
 
   /* ── 就地换内容（用户 2026-09-13：「设定库中点击实体会刷新界面，我希望变成平滑切换」）────────
