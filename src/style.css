@@ -2045,3 +2045,10 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
 #cx-doc .tiptap.is-typing > *:not(.is-cur) { opacity: .58; }
 #cx-doc .tiptap.is-typing > .is-cur { opacity: 1; }
 @media (prefers-reduced-motion: reduce) { #cx-doc .tiptap > * { transition: none; } }
+
+/* ── 左树：每枝 = 一行 + 一个孩子容器（2026-10-24 重写）─────────────────────────
+   收起/展开只动 `.ed-kids` 的高度；行始终在正常文档流里 ⇒ 结构上不会重叠。
+   （旧实现是平铺行 + 幽灵层 + FLIP，靠时序对齐，任何一次重画插进来就会叠字。） */
+.ed-branch { display: block; }
+.ed-kids { display: block; }
+@media (prefers-reduced-motion: reduce) { .ed-kids { transition: none; } }

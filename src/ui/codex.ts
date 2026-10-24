@@ -38,7 +38,7 @@ import {
   epochOfNodes, frameDiff, nearestVersion, normalizeFrames, patchSummary, statesOf, versionAtNode, type EntityState,
 } from '../store/evolution';
 import { calendarOf, fromEpoch } from '../calendar';
-import { cascadeIn, cloneIntoLayer, enter, flipRows, ghostLayerFor, motionReduced, rollText, rowLeaveAndRemove, rowSlideIn, rowsDropIn, rowsLeave, rowsLeaveAndRemove, rowsLeaveTotal, smoothBoxHeight, topsOf } from './motion';
+import { cascadeIn, cloneIntoLayer, enter, flipRows, ghostLayerFor, motionReduced, rollText, rowLeaveAndRemove, rowSlideIn, rowsDropIn, rowsLeave, smoothBoxHeight, topsOf } from './motion';
 
 const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;font-family:inherit;user-select:text;';
 /* 顶栏那两组「下拉 + 新建按钮」共用同一份样式 —— 高度必须一模一样（27px），
@@ -166,22 +166,6 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
      所以自己记一份**上一次布局**：行键 → 相对 top（`rowTops`），重画后拿它做 FLIP。
      键 = 行的 `data-cx-key`（`<act>|<id>`，见 `rowKey()`）。 */
   let rowTops = new Map<string, number>();
-  /* 刚刚被**展开**的那个文件夹的键（`justOpened`）。renderList 用它分清两种"新出现的行"：
-     展开露出来的 ⇒ 向下弹出（`rowsDropIn`）；真新建出来的 ⇒ 从左侧滑入（`rowSlideIn`）。
-     渲染一次就清掉（用 `openedKey` 取走）。 */
-  let justOpened: string | null = null;
-  /* 收起文件夹时，这一枝"演退场"要花多久（`rowsLeaveTotal`）。`renderList()` 把这次重画的
-     FLIP 推迟这么多毫秒 —— 用户要的顺序是"里面的文件先消失，下面的文件夹再移上来"
-     （2026-09-14：「应该是文件先消失，下面的文件夹再移上来，现在反了，下面的移上来后文件再消失」）。
-     只对紧接着的那一次重画有效（renderList 开头取走并清零）。 */
-  let flipDelayMs = 0;
-  /** 收起时那一枝的退场参数（与展开入场的 `rowsDropIn` 对应：往上 8px、曲线倒过来 = 慢→快）。
-   *  2026-09-14 用户第二轮：「**文件收起的动画快一点，现在有一点停滞感**」⇒ 单行 260→**180ms**、
-   *  错峰 22→**14ms** 且封顶 **120ms**（否则 40 多行时最后一行要等 240ms 才动、整段拖到 500ms）。
-   *  2026-09-14 第三轮再收到：「**文件收起时下面的文字会重叠（多出来一份）**」⇒ 退场必须**先走完**，
-   *  补位一行都不许提前（实测重叠窗口 132~187ms），因此把单行时长与错峰再压一档（150ms / 12ms 封顶 96ms），
-   *  这样"里面的行消失"与"下面的行移上来"加起来仍然不到 250ms。 */
-  const EXIT = { dy: 8, dur: 150, step: 12, maxDelay: 96 } as const;
   /** 补位那一批**自己的**错峰：从上往下每行晚 14ms、封顶 120ms（与退场同档参数）。
    *  用户 2026-09-14：「文件夹收起后其下文件上移**错分方向反了**，应该是越高的越先移，
    *  现在是越下面的越先移」—— 原先所有补位的行共用一个延迟（整块一起上移），
@@ -289,44 +273,6 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (!lay) return null;
     /* 类名与"收起文件夹"那一批统一（`lk-list-ghost`）：测试与清理逻辑都按它认幽灵 */
     return cloneIntoLayer(lay.layer, lay.rect, row, 'lk-list-ghost');
-  }
-
-  /** 一批行克隆成幽灵层 —— 收起文件夹时，被收掉的那几行靠它演出场。
-   *  住在贴着左树的**裁切层**里（同一个理由：外框在缩、它们不能飘到框外面去）。 */
-  function ghostRows(rows: HTMLElement[]): HTMLElement[] {
-    const clip = host.querySelector<HTMLElement>('#cx-list');
-    if (!clip) return [];
-    dropListGhosts();   /* 同一时刻只允许一批幽灵（否则两次快收留下两层，同一行字出现两份） */
-    const lay = ghostLayerFor(clip, 860);
-    if (!lay) return [];
-    return rows.map((row) => {
-      const g = cloneIntoLayer(lay.layer, lay.rect, row);
-      /* 打个类当抓手：同一时刻页面上可能同时挂着好几批幽灵（收起 A 还没演完又收起 B），
-         测试与被收的那一枝都得能认出"这一批是我刚造出来的"。 */
-      g.classList.add('lk-list-ghost');
-      return g;
-    });
-  }
-
-  /** 一行在树里是第几层（`_设定` 与时间线平级 ⇒ 都是 1；种类/类型 2；节点/实体/空提示 3）。
-   *  收起一枝时要找出"它下面那些行"（DOM 里紧跟其后、层级更深的那些），只能按层级判。 */
-  const DEPTH_BY_CLASS: [string, number][] = [
-    ['ed-tworld', 0], ['ed-ttl', 1], ['ed-tset', 1], ['ed-tkind', 2], ['ed-ttype', 2], ['ed-tempty', 3], ['ed-tnode-item', 3],
-  ];
-  function rowDepth(el: HTMLElement): number {
-    for (const [cls, d] of DEPTH_BY_CLASS) if (el.classList.contains(cls)) return d;
-    return 3;
-  }
-  /** 点中的那一行**底下**的那些行（直到同级或更浅的行为止）。收起时拿它来演退场。 */
-  function descendantsOf(el: HTMLElement): HTMLElement[] {
-    const d = rowDepth(el);
-    const out: HTMLElement[] = [];
-    for (let s = el.nextElementSibling; s; s = s.nextElementSibling) {
-      const e = s as HTMLElement;
-      if (rowDepth(e) <= d) break;
-      out.push(e);
-    }
-    return out;
   }
 
   /* ── 节点页签的数据源：世界 → 时间线 → 种类分组（＝ vault 的目录形状）──────────
@@ -1760,10 +1706,6 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
        末尾交给 `smoothBoxHeight()` 演到新高度（动画期间它会临时 `overflow:hidden`，把行裁在框里）。 */
     const boxBefore = listEl.getBoundingClientRect().height;
     const prev = rowTops;
-    const opened = justOpened;
-    justOpened = null;
-    const flipDelay = flipDelayMs;            /* 收起文件夹时＝那一枝退场的总时长（先走完再补位） */
-    flipDelayMs = 0;                          /* 只对"这一次重画"有效 */
     const cold = prev.size === 0;             /* 本会话第一次画（或刚整块重建）⇒ 全都别演，否则整个列表飞一遍 */
     const frag = document.createElement('div');
     frag.className = 'ed-tree';
@@ -1791,7 +1733,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
            而不是整块平移（用户 2026-09-14 的第二条） */
         /* dur 240（默认 320）：展开时新行要等让位演完才落，320+错峰 ≈ 440ms 的"空一拍"太明显；
            240 已经够看清楚"下面的行让开了"，总等待压到 ~300ms 以内。 */
-        const flips = flipRows(now.els, keys, now.tops, prev, { delay: flipDelay, step: FLIP_STEP, maxDelay: FLIP_MAX, dur: 240 });
+        const flips = flipRows(now.els, keys, now.tops, prev, { step: FLIP_STEP, maxDelay: FLIP_MAX, dur: 240 });
         /* 展开露出来的那批**等让位演完再落**（用户 2026-10-24：「打开和收起时有时候会出现重叠」）：
            以前两件事同一帧起跑 —— 下面的行还在从旧位置往下滑，新行已经在最终位置淡入，
            中间那一段就是"两行字压在一起"。现在入场延迟 = 让位动画真正结束的时刻（严格先让位、后露出），
@@ -1874,41 +1816,50 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       rowTops = new Map();
       return;
     }
+
+    /* ── 树 = 嵌套的「行 + 孩子容器」（2026-10-24 重写）──────────────────────────────
+       旧实现是**平铺**的行 + 幽灵层 + FLIP + 错峰，靠"时序"拼出「打开/收起」：
+       收起时克隆一份幽灵钉在原位退场、下面的行延后 FLIP 补位。平铺结构里**没有"一枝"这个东西**，
+       所以只能靠时间对齐来假装；只要有一次重画插进来，时序就错开 ⇒ 同一行字两份（就是那个"重叠"）。
+       现在改成**结构上正确**的做法：每一枝 = 一行 + 一个 `.ed-kids` 孩子容器，收起/展开只动
+       容器的高度。行始终在正常文档流里 ⇒ **不可能重叠**；也不需要幽灵、FLIP、错峰、延时。 */
+    const kidsBox = (): HTMLElement => { const d = document.createElement('div'); d.className = 'ed-kids'; return d; };
+    const branch = (key: string, open: boolean, row: HTMLElement, kids: HTMLElement): HTMLElement => {
+      const el = document.createElement('div');
+      el.className = 'ed-branch';
+      el.setAttribute('data-branch', key);
+      row.classList.toggle('is-open', open);
+      if (!open) kids.style.display = 'none';   /* 收起：不占位，也不吃掉后续行的高度 */
+      el.append(row, kids);
+      return keep(el, 'branch|' + key);
+    };
+
     for (const wName of worlds) {
       const wOpen = isOpen(collapsedWorlds, wName);
-      const inW = opened === wName;           /* 刚展开的正好是这个世界 ⇒ 它底下的一切都是"弹出来的" */
-      frag.appendChild(keep(treeRow('ed-tworld' + (wOpen ? ' is-open' : ''),
-        `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(wName)}</span>`,
-        { act: 'world', nw: wName }), 'world|' + wName, inW));
-      if (!wOpen) continue;
+      const wRow = treeRow('ed-tworld', `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(wName)}</span>`, { act: 'world', nw: wName });
+      const wKids = kidsBox();
 
       /* ① 时间线分支 */
       for (const g of allGroups.filter((x) => x.world === wName)) {
         const tlKey = g.world + '::' + g.tlId;
         const tOpen = isOpen(collapsedTls, tlKey);
-        const inTl = inW || opened === tlKey;
         const total = [...g.kinds.values()].reduce((n, l) => n + l.length, 0);
-        frag.appendChild(keep(treeRow('ed-ttl' + (tOpen ? ' is-open' : ''),
-          `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(g.tlName)}</span><span class="ed-tcount">${total}</span>`,
-          { act: 'tl', nw: g.world, ntl: g.tlId }), 'tl|' + tlKey, inTl));
-        if (!tOpen) continue;
+        const tRow = treeRow('ed-ttl', `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(g.tlName)}</span><span class="ed-tcount">${total}</span>`, { act: 'tl', nw: g.world, ntl: g.tlId });
+        const tKids = kidsBox();
         for (const [kind, nodes] of g.kinds) {
           const kKey = tlKey + '::' + kind;
           const kOpen = isOpen(collapsedKinds, kKey);
-          const inKind = inTl || opened === kKey;
-          frag.appendChild(keep(treeRow('ed-tkind' + (kOpen ? ' is-open' : ''),
-            `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(kind)}</span><span class="ed-tcount">${nodes.length}</span>`,
-            { act: 'tkind', nw: g.world, ntl: g.tlId, nk: kind }), 'tkind|' + kKey, inKind));
-          if (!kOpen) continue;
+          const kRow = treeRow('ed-tkind', `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(kind)}</span><span class="ed-tcount">${nodes.length}</span>`, { act: 'tkind', nw: g.world, ntl: g.tlId, nk: kind });
+          const kKids = kidsBox();
           for (const n of nodes) {
-            /* ⚠️ 高亮必须**同时**看「选的是谁」和「现在在编哪一类」——只是 nodeTarget 匹配的话，
-               切到实体后这一行还亮着（用户 2026-09-13：「从事件节点切换到实体节点时，事件节点保持选中状态」）。 */
             const on = mode === 'node' && !!nodeTarget && nodeTarget.world === g.world && nodeTarget.tlId === g.tlId && nodeTarget.nodeId === n.id;
-            frag.appendChild(keep(treeRow(itemCls(on, n.title),
+            kKids.appendChild(treeRow('ed-tnode-item' + (on ? ' is-on' : '') + (isStub(n.title) ? ' is-stub' : ''),
               `<span class="ed-tlabel">${escapeHtml(n.title)}</span>${stubTag(n.title)}`,
-              { act: 'node', nw: g.world, ntl: g.tlId, nid: n.id }), 'node|' + g.world + '::' + n.id, inKind));
+              { act: 'node', nw: g.world, ntl: g.tlId, nid: n.id }));
           }
+          tKids.appendChild(branch('tkind|' + kKey, kOpen, kRow, kKids));
         }
+        wKids.appendChild(branch('tl|' + tlKey, tOpen, tRow, tKids));
       }
 
       /* ② `_设定` 分支（实体）—— 与时间线平级 */
@@ -1916,118 +1867,82 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       if (sg) {
         const setKey = 'setting::' + wName;
         const sOpen = isOpen(collapsedTls, setKey);
-        const inSet = inW || opened === setKey;
         const total = sg.groups.reduce((n, t) => n + t.list.length, 0);
-        frag.appendChild(keep(treeRow('ed-tset' + (sOpen ? ' is-open' : ''),
-          `<span class="ed-tcaret"></span><span class="ed-tlabel">_设定</span><span class="ed-tcount">${total}</span>`,
-          { act: 'wset', nw: wName }), 'wset|' + wName, inSet));
-        if (sOpen) {
-          for (const t of sg.groups) {
-            /* 类型行：一个实体都没有也列（置灰 + 展开时给一句人话） */
-            const tKey = 'etype::' + wName + '::' + t.id;
-            const tOpen = isOpen(collapsedKinds, tKey);
-            const inType = inSet || opened === tKey;
-            frag.appendChild(keep(treeRow('ed-ttype ed-tset-type' + (tOpen ? ' is-open' : '') + (t.list.length ? '' : ' is-empty'),
-              `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(t.name)}</span><span class="ed-tcount">${t.list.length}</span>`,
-              { act: 'etype', nw: wName, nk: t.id }), 'etype|' + tKey, inType));
-            if (!tOpen) continue;
-            if (!t.list.length) { frag.appendChild(keep(emptyRow('这个类型还没有实体'), 'empty|' + tKey, inType)); continue; }
-            for (const e of t.list) {
-              const on = mode === 'entity' && store.activeWorld === wName && e.id === activeId;
-              /* 副类型（用户 2026-10-17 评审：「112 个实体全挂在『角色』下，真实类别写在
-                 properties['类型'] 里，树里看不出谁是谁」）—— 把那个字段当小药丸挂在行尾。
-                 与文件夹同名就不重复画（那只是同一件事的两种写法）。 */
-              const subRaw = e.properties?.['类型'];
-              const sub = typeof subRaw === 'string' ? subRaw.trim() : '';
-              const folderName = typeNameOf(wName, e.typeId);
-              /* `cx-id` / `cx-type` 是给测试与将来拖拽用的稳定抓手（树上不显示类型 —— 上一层文件夹
-                 已经写着它了）；`[data-cx-id]` 这个属性名是历史约定，十几条 e2e 都按它找实体行。 */
-              /* 行尾那点字数**只在悬停时才出现**（2026-10-24）：默认一片安静，
-                 想看"这条写了多少"时把鼠标停一下就有了 —— 不占常驻的视觉带宽。 */
-              frag.appendChild(keep(treeRow(itemCls(on, e.name),
-                `<span class="ed-tlabel">${escapeHtml(e.name)}</span>${stubTag(e.name)}${draftTag(e)}${sub && sub !== folderName ? `<span class="ed-tsub" title="这条的「类型」字段（结构体里的分类口径，与所在文件夹不一定是同一个词）">${escapeHtml(sub)}</span>` : ''}<span class="ed-thover" title="正文字数（去掉 Markdown 符号）">${docLen(e)} 字</span>`,
-                { act: 'entity', nw: wName, nid: e.id, 'cx-id': e.id, 'cx-type': folderName }),
-                'entity|' + wName + '::' + e.id, inType));
-            }
+        const sRow = treeRow('ed-tset', `<span class="ed-tcaret"></span><span class="ed-tlabel">_设定</span><span class="ed-tcount">${total}</span>`, { act: 'wset', nw: wName });
+        const sKids = kidsBox();
+        for (const t of sg.groups) {
+          const tKey = 'etype::' + wName + '::' + t.id;
+          const tOpen = isOpen(collapsedKinds, tKey);
+          const tRow = treeRow('ed-ttype ed-tset-type' + (t.list.length ? '' : ' is-empty'), `<span class="ed-tcaret"></span><span class="ed-tlabel">${escapeHtml(t.name)}</span><span class="ed-tcount">${t.list.length}</span>`, { act: 'etype', nw: wName, nk: t.id });
+          const tKids = kidsBox();
+          if (!t.list.length) tKids.appendChild(emptyRow('这个类型还没有实体'));
+          for (const e of t.list) {
+            const on = mode === 'entity' && store.activeWorld === wName && e.id === activeId;
+            /* 副类型：真实类别写在 properties['类型'] 里时，行尾挂一颗小药丸（与文件夹同名就不重复画） */
+            const subRaw = e.properties?.['类型'];
+            const sub = typeof subRaw === 'string' ? subRaw.trim() : '';
+            const folderName = typeNameOf(wName, e.typeId);
+            /* data-cx-id / data-cx-type 是 e2e 与将来拖拽的稳定抓手（历史上按它找实体行） */
+            tKids.appendChild(treeRow('ed-tnode-item' + (on ? ' is-on' : '') + (isStub(e.name) ? ' is-stub' : ''),
+              `<span class="ed-tlabel">${escapeHtml(e.name)}</span>${stubTag(e.name)}${draftTag(e)}${sub && sub !== folderName ? `<span class="ed-tsub" title="这条的「类型」字段（结构体里的分类口径，与所在文件夹不一定是同一个词）">${escapeHtml(sub)}</span>` : ''}<span class="ed-thover" title="正文字数（去掉 Markdown 符号）">${docLen(e)} 字</span>`,
+              { act: 'entity', nw: wName, nid: e.id, 'cx-id': e.id, 'cx-type': folderName }));
           }
+          sKids.appendChild(branch('etype|' + tKey, tOpen, tRow, tKids));
         }
+        wKids.appendChild(branch('wset|' + wName, sOpen, sRow, sKids));
       }
+      frag.appendChild(branch('world|' + wName, wOpen, wRow, wKids));
     }
     done();
   }
+  /** 展开/收起一个孩子容器：**只动高度**，DOM 不重建。
+   *  - 打开：display 恢复 → height 0 → 内容自然高 → 结束后把 height 交还给 CSS（auto）
+   *  - 收起：从当前高 → 0 → 结束后 display:none
+   *  行始终在正常文档流里随容器一起被裁 → 任何时刻都不会有两行叠在同一个位置。 */
+  function animateKids(kids: HTMLElement, open: boolean): void {
+    for (const a of kids.getAnimations()) { try { a.cancel(); } catch { /* 已取消 */ } }
+    if (motionReduced()) {
+      kids.style.display = open ? '' : 'none';
+      kids.style.height = '';
+      kids.style.overflow = '';
+      return;
+    }
+    const dur = 220;
+    if (open) {
+      kids.style.display = '';
+      const h = kids.scrollHeight;
+      kids.style.overflow = 'hidden';
+      const anim = kids.animate([{ height: '0px' }, { height: h + 'px' }], { duration: dur, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' });
+      anim.onfinish = () => { kids.style.height = ''; kids.style.overflow = ''; };
+      anim.oncancel = () => { kids.style.height = ''; kids.style.overflow = ''; };
+    } else {
+      const h = kids.getBoundingClientRect().height;
+      kids.style.overflow = 'hidden';
+      const anim = kids.animate([{ height: h + 'px' }, { height: '0px' }], { duration: Math.round(dur * 0.8), easing: 'cubic-bezier(0.4, 0, 0.2, 1)' });
+      anim.onfinish = () => { kids.style.display = 'none'; kids.style.height = ''; kids.style.overflow = ''; };
+    }
+  }
+
 
   function bindTreeClicks(frag: HTMLElement): void {
     frag.querySelectorAll<HTMLElement>('.ed-tnode').forEach((el) => {
       el.addEventListener('click', () => {
         const ds = el.dataset;
-        /* 展开（不是收起）时把这一枝的键记进 `justOpened`：`renderList()` 靠它分辨"这些行是展开
-           露出来的"（⇒ 向下弹出）与"真新建出来的"（⇒ 从左侧滑入）。键与三个 collapsed* Set 对齐。 */
-        const opened = (key: string, wasOpen: boolean): void => {
-          if (wasOpen) return;
-          justOpened = key;
-          dropListGhosts();   /* 展开时把上一批还没演完的退场幽灵收掉：它们钉的是旧位置，会跟新行叠在一起 */
+
+        /* 展开/收起 = 只动这一枝的 `.ed-kids` 高度（不重画、不造幽灵、不 FLIP）⇒ 行永远在各自位置上。 */
+        const toggle = (key: string, set: Set<string>, row: HTMLElement): void => {
+          const kids = row.closest('.ed-branch')?.querySelector<HTMLElement>(':scope > .ed-kids');
+          const open = !isOpen(set, key);
+          toggleOpen(set, key);
+          row.classList.toggle('is-open', open);
+          if (kids) animateKids(kids, open);
         };
-        /* **收起**时：先把这一枝下面那些行克隆成幽灵层钉在原位（`ghostRows`），等重画之后
-           再让它们退场 —— 不这么做的话它们随 `innerHTML` 一起"啪"地消失
-           （用户 2026-09-14：「设定文件夹收起时无动画，收起时下面的文件直接消失」）。
-           退场 = **展开入场（`rowsDropIn`）的倒放**（用户 2026-09-14：「文件出场动画改成入场的反向
-           就行了」）：同样是"从上方 8px 的位移收回去"，只是方向相反（往上 8px 升走）、曲线倒过来
-           （入场 快→慢 的倒放 = 慢→快）、时长与错峰档次一模一样（150ms / 12ms，见 EXIT）；⚠️ 但**时长不再相等**：入场是 rowsDropIn 的默认档（260ms / 22ms），退场走 EXIT（150ms / 12ms）—— 退场要快，否则"先出后补"加起来会拖出"停一拍"的观感。
-           ⚠️ **顺序不再反转**（第一版 `[...ghosts].reverse()` 让最后落地的那行先走）：用户看到的是
-           「**没有像入场一样的错分**」—— 入场是从上往下一行行出来，退场就该是从上往下一行行走；
-           倒过来播等于波浪反向，跟入场对不上。
-            ⚠️ **"下面的行补位"要等这一枝彻底走完** —— 用户 2026-09-14 第三轮：
-            「文件收起时下面的文字会**重叠（多出来一份）**」。中间试过"咬合 55%"（提前 40ms 起跑）
-            来消掉"停一拍"，实测**那正是重叠的来源**：幽灵还在半透明（实测 132~187ms）时，补位的行
-            已经滑进同一个位置，屏幕上就是同一行文字出现两份 ⇒ **严格先出后补**（rowsLeaveTotal 原值）。 */
-        const collapse = (wasOpen: boolean): HTMLElement[] => {
-          if (!wasOpen) return [];
-          const g = ghostRows(descendantsOf(el));
-          /* 最后一个幽灵淡完的时刻＝补位起跑（严格先出后补；提前咬合正是"文字重叠"的来源） */
-          flipDelayMs = rowsLeaveTotal(g.length, EXIT);
-          return g;
-        };
-        const leave = (ghosts: HTMLElement[]): void => { if (ghosts.length) rowsLeaveAndRemove(ghosts, EXIT); flipDelayMs = 0; };
-        if (ds.act === 'world') {
-          const wasOpen = isOpen(collapsedWorlds, ds.nw!);
-          const ghosts = collapse(wasOpen);
-          opened(ds.nw!, wasOpen);
-          toggleOpen(collapsedWorlds, ds.nw!);
-          renderList();
-          leave(ghosts);
-        } else if (ds.act === 'tl') {
-          const k = ds.nw + '::' + ds.ntl;
-          const wasOpen = isOpen(collapsedTls, k);
-          const ghosts = collapse(wasOpen);
-          opened(k, wasOpen);
-          toggleOpen(collapsedTls, k);
-          renderList();
-          leave(ghosts);
-        } else if (ds.act === 'tkind') {
-          const k = ds.nw + '::' + ds.ntl + '::' + ds.nk;
-          const wasOpen = isOpen(collapsedKinds, k);
-          const ghosts = collapse(wasOpen);
-          opened(k, wasOpen);
-          toggleOpen(collapsedKinds, k);
-          renderList();
-          leave(ghosts);
-        } else if (ds.act === 'wset') {
-          const k = 'setting::' + ds.nw;
-          const wasOpen = isOpen(collapsedTls, k);
-          const ghosts = collapse(wasOpen);
-          opened(k, wasOpen);
-          toggleOpen(collapsedTls, k);
-          renderList();
-          leave(ghosts);
-        } else if (ds.act === 'etype') {
-          const k = 'etype::' + ds.nw + '::' + ds.nk;
-          const wasOpen = isOpen(collapsedKinds, k);
-          const ghosts = collapse(wasOpen);
-          opened(k, wasOpen);
-          toggleOpen(collapsedKinds, k);
-          renderList();
-          leave(ghosts);
-        } else if (ds.act === 'node') {
+        if (ds.act === 'world') toggle(ds.nw!, collapsedWorlds, el);
+        else if (ds.act === 'tl') toggle(ds.nw + '::' + ds.ntl, collapsedTls, el);
+        else if (ds.act === 'tkind') toggle(ds.nw + '::' + ds.ntl + '::' + ds.nk, collapsedKinds, el);
+        else if (ds.act === 'wset') toggle('setting::' + ds.nw, collapsedTls, el);
+        else if (ds.act === 'etype') toggle('etype::' + ds.nw + '::' + ds.nk, collapsedKinds, el);
+        else if (ds.act === 'node') {
           switchTarget(() => {
             mode = 'node';
             nodeTarget = { world: ds.nw!, tlId: ds.ntl!, nodeId: ds.nid! };
