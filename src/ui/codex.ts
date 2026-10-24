@@ -969,7 +969,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (renderedMode !== mode) {
       if (mode === 'entity') { normalizeEntitySelection(); ensureRailSelection(); }
       if (!mountBody(prevHtml, animate)) return false;
-      renderList();          /* 左列只动高亮 —— 那一列同时装着两类条目，不用重建 */
+      syncSelection();       /* 只动高亮，**不重建树**（重建会打断正在演的展开动画） */
       rail?.render();        /* 帧条跟着换（节点模式它藏着，重画无害） */
       pendingEnter = false;  /* 骨架没重建 ⇒ 不该有整块错峰 */
       bodySig = bodySignature();
@@ -1018,7 +1018,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     docTarget = next;
     if (docEditor) docEditor.setDoc(md);   /* 同一个 tiptap 实例换文档，不销毁不重建 */
     syncMeter();                           /* 换到别一条：字数刻度跟着换 */
-    renderList();                          /* 左列只动高亮：那一列没有编辑器，重建只花 DOM 钱 */
+    syncSelection();                       /* 只动高亮：不重建树（用户 2026-10-24：切换文件时不该重建） */
     rail?.render();                        /* 右栏那条竖线：换实体/换版本要重画高亮与摘要 */
     syncNewType();                         /* 顶栏「新建的类型」跟着换到的这条走（见 syncNewType） */
     pendingEnter = false;                  /* 骨架没重建 ⇒ 不该有整块错峰 */
@@ -1697,10 +1697,46 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
    *      ⇒ 从左侧滑入（`rowSlideIn`，靠 `justOpened` 这个键分辨）；
    *    · **其余行**位置变了 ⇒ FLIP（`flipRows`，用上一次的 `rowTops` 快照），这就是"下面的行平滑让位"。
    *  左树每次都是 `innerHTML` 整块换掉（元素是新建的、没有旧位置），所以位置快照必须自己存。 */
+  /** 只同步「哪一行是选中的」——**不重建树**。
+   *  用户 2026-10-24：「切换文件时有时候会重建文件树」：swapBody() 原来调 renderList()（整棵
+   *  innerHTML 重建），每点一条都要付一次 DOM 重建，正在演的展开动画也会被打断。 */
+  function syncSelection(): void {
+    const listEl = host.querySelector<HTMLElement>('#cx-list');
+    if (!listEl) return;
+    for (const el of Array.from(listEl.querySelectorAll<HTMLElement>('.ed-tnode-item'))) {
+      const ds = el.dataset;
+      const on = ds.act === 'entity'
+        ? mode === 'entity' && store.activeWorld === ds.nw && ds.nid === activeId
+        : mode === 'node' && !!nodeTarget && nodeTarget.world === ds.nw && nodeTarget.tlId === ds.ntl && nodeTarget.nodeId === ds.nid;
+      el.classList.toggle('is-on', on);
+    }
+  }
+
+  /** 树要不要重建：只认**结构/文字**（世界、时间线、节点标题与种类、实体名/类型/副类型/草稿态）。
+   *  ⚠️ 不把正文长度放进来（每次击键都变 ⇒ 打着字重建左树）；选中态也不在（走 syncSelection()）。 */
+  function treeSignature(): string {
+    const out: string[] = [];
+    for (const [wName, ws] of Object.entries(store.data.worldsets)) {
+      out.push('w:' + wName);
+      for (const tlId of ws.order ?? []) {
+        const tl = ws.timelines?.[tlId];
+        if (!tl) continue;
+        out.push('t:' + tlId + ':' + (tl.name ?? ''));
+        for (const n of tl.nodes ?? []) out.push('n:' + n.id + ':' + (n.title ?? '') + ':' + (n.kind ?? ''));
+      }
+      for (const e of Object.values(ws.entities ?? {})) {
+        out.push('e:' + e.id + ':' + (e.name ?? '') + ':' + (e.typeId ?? '') + ':' + (isDraft(e) ? 1 : 0) + ':' + String(e.properties?.['类型'] ?? ''));
+      }
+    }
+    return out.join('\n');
+  }
+  let lastTreeSig = '';
+
   function renderList(): void {
     if (listHold) return;                     /* 批量改动期间攒着，末尾一次画完（见 withListHold） */
     const listEl = host.querySelector<HTMLElement>('#cx-list');
     if (!listEl) return;
+    lastTreeSig = treeSignature();            /* 记下这一版的结构签名（store 订阅据此决定要不要重建） */
     /* "最外面那个框"自己的高度也要平滑（用户 2026-09-14：「文件树**最外面的框**也要做平滑切换」）：
        外框高度是内容撑的，收起一个文件夹时它**同一 tick** 就从 327px 缩到 23px。先在改动前把旧高度量下来，
        末尾交给 `smoothBoxHeight()` 演到新高度（动画期间它会临时 `overflow:hidden`，把行裁在框里）。 */
@@ -1901,24 +1937,31 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
    *  行始终在正常文档流里随容器一起被裁 → 任何时刻都不会有两行叠在同一个位置。 */
   function animateKids(kids: HTMLElement, open: boolean): void {
     for (const a of kids.getAnimations()) { try { a.cancel(); } catch { /* 已取消 */ } }
+    const rows = Array.from(kids.querySelectorAll<HTMLElement>('.ed-tnode'));
     if (motionReduced()) {
       kids.style.display = open ? '' : 'none';
       kids.style.height = '';
       kids.style.overflow = '';
       return;
     }
-    const dur = 220;
     if (open) {
       kids.style.display = '';
-      const h = kids.scrollHeight;
+      const h = kids.scrollHeight;          /* ⚠️ 必须在 display 恢复之后量（否则是 0 ⇒ 看起来"没动画"） */
       kids.style.overflow = 'hidden';
-      const anim = kids.animate([{ height: '0px' }, { height: h + 'px' }], { duration: dur, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' });
+      /* 展开 = 容器撑开 **+ 行向下弹出（一行比一行晚 12ms）**。
+         行只有 transform/opacity、不动布局 ⇒ 不会互相压住（第一百一十六轮那条前提仍成立）。 */
+      const rowAnims = rowsDropIn(rows, { dy: 8, dur: 220, step: 12, maxDelay: 180 });
+      const rowTotal = rowAnims.reduce((m, x) => { const t = x.effect?.getTiming(); return Math.max(m, Number(t?.delay ?? 0) + Number(t?.duration ?? 0)); }, 0);
+      const anim = kids.animate([{ height: '0px' }, { height: h + 'px' }], { duration: Math.max(220, rowTotal), easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' });
       anim.onfinish = () => { kids.style.height = ''; kids.style.overflow = ''; };
       anim.oncancel = () => { kids.style.height = ''; kids.style.overflow = ''; };
     } else {
       const h = kids.getBoundingClientRect().height;
       kids.style.overflow = 'hidden';
-      const anim = kids.animate([{ height: h + 'px' }, { height: '0px' }], { duration: Math.round(dur * 0.8), easing: 'cubic-bezier(0.4, 0, 0.2, 1)' });
+      /* 收起 = 行往上收起（一行比一行晚 10ms）+ 容器同时收到 0 */
+      const rowAnims = rowsLeave(rows, { dy: 8, dur: 160, step: 10, maxDelay: 140, easing: 'cubic-bezier(0.25, 0.7, 0.3, 1)' });
+      const rowTotal = rowAnims.reduce((m, x) => { const t = x.effect?.getTiming(); return Math.max(m, Number(t?.delay ?? 0) + Number(t?.duration ?? 0)); }, 0);
+      const anim = kids.animate([{ height: h + 'px' }, { height: '0px' }], { duration: Math.max(160, rowTotal), easing: 'cubic-bezier(0.25, 0.7, 0.3, 1)' });
       anim.onfinish = () => { kids.style.display = 'none'; kids.style.height = ''; kids.style.overflow = ''; };
     }
   }
@@ -1975,9 +2018,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (!host.isConnected || !host.querySelector('#cx-root')) { unsub(); return; }
     /* 物化结果缓存作废：数据可能被外部回扫换过（同一个实体 id，但帧/正文已不同） */
     statesId = '';
-    /* 左列照旧重画：那一列没有编辑器，重建只花 DOM 钱，而且实体/节点增删必须立刻反映
-       （展开态记在 collapsed* 三个 Set 里，重画不会把用户收起来的那几枝又撑开） */
-    renderList();
+    /* 左列：**只有结构/文字变了才重建**，否则只同步高亮（2026-10-24）。
+       以前每次 store 通知都整棵重建 —— 自动落盘每隔几百毫秒来一次，于是"切文件时树会重建"、
+       正在演的展开动画也被打断。 */
+    if (treeSignature() !== lastTreeSig) renderList(); else syncSelection();
     /* ★ 中/右栏按**内容签名**决定要不要重建 —— 这是本节最容易踩的坑：
        自动落盘 → vault watcher 回扫 → store.update 这条链**每次编辑后约 360ms 都会走到
        这里一次**（实测：改「描述」落盘 t=1234ms，正文编辑器被换掉 t=1597ms）。
