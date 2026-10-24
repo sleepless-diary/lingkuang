@@ -33,11 +33,14 @@ const READ = (pick) => `(pick => {
     dur: a.effect.getTiming().duration, delay: a.effect.getTiming().delay, ease: a.effect.getTiming().easing,
   }));
   const ghost = body.querySelector('.lk-cx-ghost');
+  const wipe = ghost?.getAnimations().find((a) => (a.effect?.getKeyframes?.() ?? []).some((k) => k.clipPath)) ?? null;
   return {
     n: rows.length,
     anims: rows.map(one),
     ghost: !!ghost,
     ghostIds: ghost ? ghost.querySelectorAll('[id]').length : 0,
+    wipe: wipe ? { dur: wipe.effect.getTiming().duration, ease: wipe.effect.getTiming().easing,
+      kf: wipe.effect.getKeyframes().map((k) => k.clipPath) } : null,
     bodyCss: body.getAnimations().filter((a) => a.animationName).map((a) => a.animationName),
   };
 })(${JSON.stringify(pick)})`;
@@ -123,16 +126,14 @@ async function main() {
       && String(o0.kf?.[1]?.o) === '0' && String(o0.kf?.[1]?.t) === 'translateX(-32px)'
       && o0.ease === 'cubic-bezier(0.25, 0.1, 0.25, 1)' && o0.dur === 300, o0);
 
-  /* 入场：从右 dx 滑到原位，**不透明**（`fade:false`）—— 新内容立刻可见，不靠动画出现 */
-  const i0 = inn?.anims?.[0]?.[0];
-  const i1 = inn?.anims?.[1]?.[0];
-  check('★4 入场关键帧 = 从右 32px 滑到原位（不透明度恒为 1），曲线快→慢，时长 300',
-    !!i0 && String(i0.kf?.[0]?.o) === '1' && String(i0.kf?.[0]?.t) === 'translateX(32px)'
-      && String(i0.kf?.[1]?.o) === '1' && String(i0.kf?.[1]?.t) === 'none'
-      && i0.ease === 'cubic-bezier(0.16, 1, 0.3, 1)' && i0.dur === 300, i0);
-  check('★5 逐行错峰 10ms；入场与出场**同时开始**（delay = 0 / i*10，不再有空白窗口）',
-    !!o1 && o1.delay === 10 && !!i0 && i0.delay === 0 && !!i1 && i1.delay === 10,
-    { 出场首行: o0?.delay, 出场次行: o1?.delay, 入场首行: i0?.delay, 入场次行: i1?.delay });
+  /* 入场：**没有行级动画**（用户 2026-10-24：「把入场时的滑动也撤了吧」）。
+     擦除揭开的就是最终态；滑动会让被揭开的部分还在动，看起来像"一边揭一边抖"。 */
+  check('★4 入场没有行级动画（新内容原地就位，只由幽灵的擦除把它揭开）',
+    !!inn && inn.anims.every((a) => a.length === 0), inn?.anims);
+  check('★5 出场 = 幽灵上的裁切擦除（clip-path 从右往左，300ms，匀速感曲线）',
+    !!out && !!out.wipe && out.wipe.dur === 300 && out.wipe.kf.length === 2
+      && String(out.wipe.kf[0]).includes('0%') && String(out.wipe.kf[1]).includes('100%'),
+    out?.wipe);
   check('★6 整块容器自己**没有**动画（框不动 —— 动的是框里的行）',
     !!inn && inn.bodyCss.length === 0, inn?.bodyCss);
 

@@ -1994,3 +1994,12 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
   .lk-tool-btn svg, .lk-tool-btn::before, #cx-doc { transition: none; }
   .lk-tool-btn:active, .lk-btn:active, .lk-chip:active, .lk-lab__item:active, .lk-tl-tab:active { transform: none; }
 }
+/* 落盘微光（第一百一十三轮）：正文框边缘亮一下再灭 —— 不需要读字就知道"存住了"。
+   用 outline（不是 box-shadow）：正文框在写作专注态已经占着 inset box-shadow 画那条绿线。 */
+#cx-doc.is-saved { animation: lk-saved 700ms var(--ease-standard); }
+@keyframes lk-saved {
+  0%   { outline: 1px solid rgba(158, 194, 98, 0); outline-offset: 2px; }
+  22%  { outline: 1px solid rgba(158, 194, 98, .55); outline-offset: 2px; }
+  100% { outline: 1px solid rgba(158, 194, 98, 0); outline-offset: 2px; }
+}
+@media (prefers-reduced-motion: reduce) { #cx-doc.is-saved { animation: none; outline: 1px solid rgba(158,194,98,.35); outline-offset: 2px; } }

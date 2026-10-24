@@ -275,11 +275,15 @@ async function main() {
     const body = document.querySelector('#cx-body');
     if (!root || !list || !body) return { missing: true };
     const rows = [...body.querySelectorAll('[data-cx-row], #cx-props .ed-props > *')].filter((el) => !el.closest('.lk-cx-ghost'));
+    const ghostEl = body.querySelector('.lk-cx-ghost');
     return {
       root: map(root.children).filter((x) => x.length),
       list: map(list.children).filter((x) => x.length),
       stagger: root.classList.contains('lk-enter-stagger'),
-      ghost: !!body.querySelector('.lk-cx-ghost'),
+      ghost: !!ghostEl,
+      /* 2026-10-24：换条目的动效从"行级转场"改成"擦除"（幽灵卡片 clip-path 从右往左裁），
+         入场不再有行动画（用户：「把入场时的滑动也撤了吧」）⇒ 这里守的是**幽灵身上那条裁切动画**。 */
+      wipe: !!ghostEl && ghostEl.getAnimations().some((a) => (a.effect?.getKeyframes?.() ?? []).some((k) => k.clipPath)),
       bodyCssAnims: body.getAnimations().filter((a) => a.animationName).map((a) => a.animationName),
       rowN: rows.length,
       rowAnims: rows.reduce((n, el) => n + el.getAnimations().filter((a) => !a.animationName).length, 0),
@@ -294,14 +298,14 @@ async function main() {
      参数与设置旋钮由 `tools/e2e/codex-swap-motion.cjs` 细查，这里只守"接力棒交到了它手上"。 */
   check('★13 工作台换类别（设定条目 → 时间线节点）**不重播整块错峰**，改播行级转场（幽灵层 + 行动画）',
     !a6.missing && a6.root.length === 0 && a6.list.length === 0 && a6.stagger === false
-      && a6.bodyCssAnims.length === 0 && a6.ghost === true && a6.rowAnims > 0, a6);
+      && a6.bodyCssAnims.length === 0 && a6.ghost === true && a6.wipe === true, a6);
 
   await sleep(700);
   const a7 = await swapProbe(`document.querySelector('#cx-list [data-cx-id]').click();`);
   const backName = await waitFor(`!!document.querySelector('#cx-name')`);
   check('★14 换回设定条目同样只换内容（无整块错峰 + 行级转场），且中栏真的换成实体版',
     !a7.missing && a7.root.length === 0 && a7.list.length === 0 && a7.stagger === false
-      && a7.bodyCssAnims.length === 0 && a7.ghost === true && a7.rowAnims > 0 && backName === true, { a7, backName });
+      && a7.bodyCssAnims.length === 0 && a7.ghost === true && a7.wipe === true && backName === true, { a7, backName });
 
   /* ── ⑦ 减少动效降级：DESIGN.md:159（关掉错峰，只留短淡入） ── */
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });

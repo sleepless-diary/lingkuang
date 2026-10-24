@@ -38,7 +38,7 @@ import {
   epochOfNodes, frameDiff, nearestVersion, normalizeFrames, patchSummary, statesOf, versionAtNode, type EntityState,
 } from '../store/evolution';
 import { calendarOf, fromEpoch } from '../calendar';
-import { cascadeIn, cloneIntoLayer, enter, flipRows, ghostLayerFor, motionReduced, rollText, rowLeaveAndRemove, rowSlideIn, rowsDropIn, rowsEnter, rowsLeave, rowsLeaveAndRemove, rowsLeaveTotal, smoothBoxHeight, topsOf } from './motion';
+import { cascadeIn, cloneIntoLayer, enter, flipRows, ghostLayerFor, motionReduced, rollText, rowLeaveAndRemove, rowSlideIn, rowsDropIn, rowsLeave, rowsLeaveAndRemove, rowsLeaveTotal, smoothBoxHeight, topsOf } from './motion';
 
 const INP = 'flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);padding:4px 7px;font-size:var(--text-sm);outline:none;font-family:inherit;user-select:text;';
 /* 顶栏那两组「下拉 + 新建按钮」共用同一份样式 —— 高度必须一模一样（27px），
@@ -758,13 +758,29 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
         if (vn) vn.textContent = versionNoteText();
         rail?.render();
         syncMeter();          /* 正文字数刻度跟着这次保存走（AI 续写/手写同一条路） */
+        pulseSaved();         /* 落盘的微光：不弹字、不打断，边缘亮一下 */
       } else {
         store.update((d) => {
           const n = d.worldsets[t.world]?.timelines?.[t.tlId]?.nodes.find((x) => x.id === t.nodeId);
           if (n) n.doc = md;
         });
+        pulseSaved();
       }
     });
+  }
+
+  /** 落盘后的一次微光：正文框边缘亮一下再灭（700ms）。
+   *  为什么不用 `say('已保存 ✓')`：那是**字**，每次失焦都弹一句会打断写作；
+   *  这里的反馈不需要读，只要余光感觉到"存住了"。 */
+  let savedTimer: number | undefined;
+  function pulseSaved(): void {
+    const el = host.querySelector<HTMLElement>('#cx-doc');
+    if (!el) return;
+    el.classList.remove('is-saved');
+    void el.offsetWidth;                     /* 强制重排：连着写两次也能重播 */
+    el.classList.add('is-saved');
+    if (savedTimer) window.clearTimeout(savedTimer);
+    savedTimer = window.setTimeout(() => el.classList.remove('is-saved'), 750);
   }
 
   /** 「AI 续写」—— 接着已有正文往下写，只往**这条设定**上落。
@@ -966,14 +982,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       /* 兜底：隐藏窗口里动画不推进，`finished` 永远不来（README 铁律 6），这层幽灵不能留着 */
       window.setTimeout(kill, dur + step * 80 + 600);
     }
-    /* ⚠️ 入场的 `start` **必须是 0，不能是 dur**（用户 2026-10-24 报的 bug：
-       「设定库里面标题和描述在切换文件时会短暂消失」）。
-       旧写法「旧内容退场 300ms → 新内容再入场」之间有一整段**两边都接近透明**的时间。
-       现在新内容从第一帧就位（`fade:false`，始终不透明、只做位移动画），幽灵在上面淡出 ——
-       任何时刻屏幕上都有内容，而且只有**一份**字。
-       （`fade:false` 也是防"窗口不可见 / 动画被节流"这类环境的兜底：即使动画一帧都没走，
-       新内容也是可见的，不会留下一片空白。） */
-    rowsEnter(rowsOf(body), { dx, step, dur, start: 0, fade: false });
+    /* 入场**不再有任何行级动画**（用户 2026-10-24：「把入场时的滑动也撤了吧」）：
+       擦除揭开的就是最终态 —— 滑动会让被揭开的那部分还在移动，像"一边揭一边抖"。
+       所以新内容先原地就位（`rowsEnter` 整段拿掉），动的只有上面那张正在被裁掉的旧卡片。 */
   }
 
   /* ── 就地换内容（用户 2026-09-13：「设定库中点击实体会刷新界面，我希望变成平滑切换」）────────
