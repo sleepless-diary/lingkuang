@@ -924,6 +924,9 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
   function playSwap(body: HTMLElement, prevHtml: string | null): void {
     const s = loadSettings();
     dropGhost();
+    /* 兜底：只认 `swapGhost` 一个变量的话，上一轮若因为窗口不可见/动画没推进而没被收掉，
+       后面就会**叠着好几层旧内容**（实测：切到 B 时屏幕上还是 A 的标题与字段）。整片清干净。 */
+    for (const g of Array.from(body.querySelectorAll('.lk-cx-ghost'))) g.remove();
     if (s.motionSwap === false) return;
     /* 系统「减少动态效果」：只留一次短淡入（DESIGN.md:159），不摆行、不建幽灵层
        —— motion.ts 那两个函数在 reduced 下会返回空数组，幽灵层会留在屏幕上没人收，所以这里先拦。 */
@@ -936,25 +939,41 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       const ghost = document.createElement('div');
       ghost.className = 'lk-cx-ghost';
       ghost.setAttribute('aria-hidden', 'true');
+      /* **不透明底**：幽灵压在正文上面，新内容在它下面。以前幽灵是透明的，退场时新旧两份字
+         叠在一起（实测截图：同一个位置两行不同的名字），既看不清也像"闪了一下"。
+         现在退场是一层"卡片淡出"，遮住新内容直到自己淡完 —— 任何时刻屏幕上只有一份字。 */
+      ghost.style.background = 'var(--surface)';
+      ghost.style.borderRadius = 'var(--radius-sm)';
       ghost.innerHTML = prevHtml;
       /* ⚠️ 克隆体里的 id 全部摘掉：`#cx-doc`/`#cx-fields`/`#cx-name` 各多出一份的话，
          `host.querySelector('#cx-fields')` 就可能抓到幽灵里那一份（接线/断言全线错位）。 */
       for (const el of Array.from(ghost.querySelectorAll('[id]'))) el.removeAttribute('id');
       body.appendChild(ghost);
       swapGhost = ghost;
-      const exits = rowsLeave(rowsOf(ghost, false), { dx, step, dur });
+      /* 退场 = **擦除**（wipe）：幽灵是一张不透明卡片，`clip-path` 从右往左把它裁掉，
+         下面的新内容像被"揭开"一样露出来。
+         为什么不是淡出：新旧两份字叠在同一片区域里，半透明期间会同时看到两个标题
+         （实测截图：`日常` 与 `安德雅特斯山` 糊在一起）。擦除没有重叠区 —— 左边是新的、
+         右边是旧的，中间只有一条边；也不会有空白帧。 */
+      const exits = rowsLeave(rowsOf(ghost, false), { dx, step, dur, easing: 'cubic-bezier(0.25, 0.1, 0.25, 1)' });
+      const wipe = ghost.animate(
+        [{ clipPath: 'inset(0 0 0 0%)' }, { clipPath: 'inset(0 0 0 100%)' }],
+        { duration: dur, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', fill: 'both' }
+      );
       const kill = (): void => { if (swapGhost === ghost) dropGhost(); };
       /* 没有可动画的行（全被 display:none 滤掉）时别留一层静止的重复内容 —— 直接收掉 */
-      Promise.all(exits.map((a) => a.finished)).then(kill).catch(() => { /* 被取消 */ });
+      Promise.all([...exits.map((a) => a.finished), wipe.finished]).then(kill).catch(() => { /* 被取消 */ });
       /* 兜底：隐藏窗口里动画不推进，`finished` 永远不来（README 铁律 6），这层幽灵不能留着 */
       window.setTimeout(kill, dur + step * 80 + 600);
     }
     /* ⚠️ 入场的 `start` **必须是 0，不能是 dur**（用户 2026-10-24 报的 bug：
        「设定库里面标题和描述在切换文件时会短暂消失」）。
-       旧写法「旧内容退场 300ms → 新内容再入场」之间有一整段**两边都接近透明**的时间：
-       幽灵行淡到 0、新行还没开始，标题与描述那一片就空着 —— 眼睛看到的就是"闪了一下"。
-       现在改成**交叉淡入**：新内容从第一帧就开始进场、旧内容同时退场，任何时刻都至少有一份在。 */
-    rowsEnter(rowsOf(body), { dx, step, dur, start: 0 });
+       旧写法「旧内容退场 300ms → 新内容再入场」之间有一整段**两边都接近透明**的时间。
+       现在新内容从第一帧就位（`fade:false`，始终不透明、只做位移动画），幽灵在上面淡出 ——
+       任何时刻屏幕上都有内容，而且只有**一份**字。
+       （`fade:false` 也是防"窗口不可见 / 动画被节流"这类环境的兜底：即使动画一帧都没走，
+       新内容也是可见的，不会留下一片空白。） */
+    rowsEnter(rowsOf(body), { dx, step, dur, start: 0, fade: false });
   }
 
   /* ── 就地换内容（用户 2026-09-13：「设定库中点击实体会刷新界面，我希望变成平滑切换」）────────

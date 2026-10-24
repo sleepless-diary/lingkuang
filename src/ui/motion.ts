@@ -145,6 +145,12 @@ export interface RowMotionOpts {
   start?: number;
   /** 错峰总量的上限（默认 240ms）—— 几十行时不让最后一行等到近一秒才动 */
   maxDelay?: number;
+  /** 覆盖出场曲线（默认 `EASE_ACCEL` 慢→快）。2026-10-24 加：慢→快在 300ms 里前 80% 几乎不动，
+   *  用户看到的是「停一下、然后突然没了」（原话：出场动画没有执行）。工作台换条目改传匀速感的曲线。 */
+  easing?: string;
+  /** 入场是否带透明度（默认 true）。`false` = 只位移、始终不透明 —— 底下有幽灵垫着时用，
+   *  避免"新内容先从透明开始"造成任何空窗。 */
+  fade?: boolean;
 }
 
 /** 错峰默认上限：超过这个总量之后所有行一起动 */
@@ -208,7 +214,7 @@ export function rowsLeave(rows: HTMLElement[], o: RowMotionOpts = {}): Animation
   const anims = rows.map((el, i) =>
     el.animate(
       [{ opacity: naturalOpacity(el), transform: 'none' }, { opacity: 0, transform: out }],
-      { duration: dur, delay: Math.min(i * step, maxDelay), easing: EASE_ACCEL, fill: 'both' }
+      { duration: dur, delay: Math.min(i * step, maxDelay), easing: o.easing ?? EASE_ACCEL, fill: 'both' }
     )
   );
   autoRelease(anims, dur + Math.min(step * rows.length, maxDelay));
@@ -229,8 +235,10 @@ export function rowsEnter(rows: HTMLElement[], o: RowMotionOpts = {}): Animation
   const maxDelay = o.maxDelay ?? MAX_STAGGER;
   const anims = rows.map((el, i) =>
     el.animate(
-      [{ opacity: 0, transform: `translateX(${dx}px)` }, { opacity: naturalOpacity(el), transform: 'none' }],
-      { duration: dur, delay: start + Math.min(i * step, maxDelay), easing: EASE_DECEL, fill: 'both' }
+      o.fade === false
+        ? [{ opacity: naturalOpacity(el), transform: `translateX(${dx}px)` }, { opacity: naturalOpacity(el), transform: 'none' }]
+        : [{ opacity: 0, transform: `translateX(${dx}px)` }, { opacity: naturalOpacity(el), transform: 'none' }],
+      { duration: dur, delay: start + Math.min(i * step, maxDelay), easing: o.easing ?? EASE_DECEL, fill: 'both' }
     )
   );
   autoRelease(anims, start + dur + Math.min(step * rows.length, maxDelay));
