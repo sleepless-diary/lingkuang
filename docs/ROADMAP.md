@@ -19,6 +19,41 @@
 4. **AI 原生但本地优先**：本地 Ollama（免费离线）或 API，隐私不外包
 5. 审美（阈限梦核）只是**默认主题**，不是卖点——UI 支持自定义窗口/主题（进行中），不押注单一美术
 
+## 🧹 工程与渲染层改进待办（2026-10-19 全项目审查 · 未动手）
+
+> 来源：2026-10-19 一次全仓库通读 + `docs/ARCHITECTURE.md` 后给出的建议，用户当次明确「先不用动手」。
+> 排序 = 建议动手顺序；每条都写了「为什么」，动手前先复述一遍。
+
+### 一、仓库卫生（最低风险）
+- [ ] **清掉误入库的系统缓存**：`git ls-tree` 里有 `%SystemDrive%/ProgramData/Microsoft/Windows/Caches/...` 与搜狗输入法 `.bin`；仓库根还有一个字面名为 `%SystemDrive%` 的目录。`.gitignore` 加 `%SystemDrive%/` → `git rm -r --cached` 那几个 → 删本地目录。
+- [ ] `build/source-icon.png`（2141.9KB）是源图，不必入库；`build/icon.png`（1278.8KB）打包要用，留着。
+- [ ] 删死代码：`src/ui/sectioned-editor.ts` + `src/ui/section-markdown.ts`（vite 不打包，但已无引用，见 `EDITOR-ESAY-TODO.md` 的说明）。
+
+### 二、CI 与类型检查（当天可收）
+- [ ] `package.json` 加 `"typecheck": "tsc --noEmit"`（tsconfig 已是 strict + noUnusedLocals，缺的只是入口）。
+- [ ] 新增 `.github/workflows/ci.yml`：push 跑 typecheck + e2e 冒烟子集（`tools/e2e/` 共 106 个 `.cjs`，全跑不现实，挑 5~8 个）。
+- [ ] 给 `tools/e2e/` 加统一 runner（`run-smoke.mjs` + 冒烟清单），否则「哪几个是关键脚本」只存在脑子里。
+
+### 三、fs 安全边界可测化
+- [ ] `main.js` 的 `fsNorm()` / `fsMatchRoot()` 是 fs 通道**唯一安全边界**（realpath + 小写正斜杠前缀比较，白名单在 userData/agent-roots.json）。`main.js` 2314 行、CJS，跑不了单测。
+- [ ] 抽成 `src/main/fs-sandbox.js` **纯函数**（不改行为），用 `node:test` 写**负向**用例：`..` 穿越、软链指到白名单外、大小写/正斜杠变体、Windows 8.3 短名（`PROGRA~1`）。
+- [ ] 断言必须是「失败即拒绝」，不允许出现默认允许的分支。
+
+### 四、渲染层（`src/ui/map-terrain.ts` / `planet-view.ts` / `globe.ts` / `props-panel.ts`）
+> 顺序：**DOM 整块重渲染 > 纹理上传/mipmap > 地形 Worker**。
+
+- [ ] **DOM 侧整块重渲染（最贵）**：`src/ui/props-panel.ts` 每次 store 通知就整块重渲；`src/ui/codex.ts` 正文编辑器每 ~360ms 整块重建。方向：细粒度订阅 / 脏标记，只在相关字段变化时重画。
+- [ ] **球体纹理上传成本**：`mountGlobe(canvas, field, rgba)` 每次换风格都 `texImage2D` 整张纹理（主线程）；`planet-view.ts` 的上色缓存（≈45ms）省了生成、没省上传。方向：拖动/旋转时用低分辨率纹理，静止 200ms 后再传高清。
+- [ ] **核一下球体 mipmap**：UV 网格只有 96×48，纹理是高分辨率等距圆柱图；若无 `gl.generateMipmap` + `MIN_FILTER = LINEAR_MIPMAP_LINEAR`，缩小会闪烁/摩尔纹。
+- [ ] **地形生成在主线程**：`terrainEngine()` 建网格 30~70ms + 生成 30~60ms（最多缓存 8 个引擎），工作室拖参数连续改会卡。方向：debounce 到 `pointerup`，或搬 Worker（`src/mapgen/planet.ts` 是纯 TS、零渲染依赖，条件已具备）。
+- 备注：`src/ui/timeline.ts` 的标尺（DOM diff、文字 opacity 是位置纯函数、`scaleFading` 账本、`EASE_STALL_MS = 250` 看门狗）已经接近最优，**不要再动**。
+
+### 五、明确不做（记下理由，防止以后重复讨论）
+- 不引三方渲染库：`globe.ts` 自写最小 WebGL 是刻意选择。
+- 不重写渲染层；不为「将来可能需要」做抽象。
+
+---
+
 ## ⚠️ 重要修复（优先于新功能）
 
 - [x] **撤销功能修复**：已有 undo/redo 实现（undoStack + pushUndo + undoTimeline），用户反馈未修好——现象待复现确认（疑点：编辑面板内联编辑/拖动年份等路径是否全部入栈、渲染重建后撤销状态、redo 栈）
