@@ -638,6 +638,31 @@ export function mountTimeline(
 
   /* ── 渲染节点 ── */
   let selectedId: string | null = null;
+  /* 节点名防重叠（2026-10-25，来自沙盘方案的「阶梯换行」）：按 x 排好，逐个放进
+     第一个"放得下"的层（最多 3 层，层高 18px）。标签是 DOM，宽度直接读 `offsetWidth`，
+     不需要 measureText/canvas —— 一次 O(n) 扫描，只在**重画节点之后**跑。 */
+  function layoutNodeLabels(): void {
+    const nodes = Array.from(track.querySelectorAll<HTMLElement>('.tl__n'));
+    if (nodes.length < 2) { for (const n of nodes) delete n.dataset.tier; return; }
+    /* ⚠️ 必须用**屏幕坐标**（getBoundingClientRect）而不是 style.left + offsetWidth：
+       画布是 transform: scale()，缩小时标签的视觉间距比 CSS 宽度小得多 —— 用 CSS 值算会漏判。 */
+    const items = nodes.map((n) => {
+      const name = n.querySelector<HTMLElement>('.tl__name');
+      const r = name?.getBoundingClientRect();
+      return { n, left: r?.left ?? 0, right: r?.right ?? 0 };
+    }).sort((a, b) => a.left - b.left);
+    /* 5 层（22 / 40 / 58 / 76 / 94px）：时间线上下各有余量。5 层都排不下的（极密区），
+       折叠成点 + 悬停看名字（`.tl__n[data-tier="hide"]`），不再硬挤成一片糊。 */
+    const lastRight = [-1e9, -1e9, -1e9, -1e9, -1e9];
+    for (const it of items) {
+      let tier = 0;
+      while (tier < 4 && it.left < lastRight[tier] + 4) tier++;
+      if (tier === 4 && it.left < lastRight[4] + 4) { it.n.dataset.tier = 'hide'; continue; }
+      lastRight[tier] = Math.max(lastRight[tier], it.right);
+      it.n.dataset.tier = String(tier);
+    }
+  }
+
   function renderBase() {
     const tl = timeline();
     if (!tl) {
@@ -652,6 +677,7 @@ export function mountTimeline(
       nodes
         .map((n) => nodeHtml(n, timeToX(nodeEpoch(n)), n.id === selectedId))
         .join('');
+    layoutNodeLabels();
     renderScale();
     updateCursor();
   }
@@ -1377,6 +1403,7 @@ export function mountTimeline(
     if (tl && storyMode === 'focus' && activeLine()) {
       const nodes = tl.nodes.filter((n) => inLine(n.year));
       track.innerHTML = lineHtmlOf(nodes);
+      layoutNodeLabels();
       renderScale();
       updateCursor();
     } else {
@@ -1821,6 +1848,7 @@ export function mountTimeline(
             `<div style="font-size:8px;color:var(--fg-2);position:absolute;top:${yearTop};left:${x}px;transform:translateX(-50%);">${node.year}</div>`;
         })
         .join('');
+    layoutNodeLabels();
     updateCursor();
     /* 时间指针的横坐标在这个模式下没有意义（x 是序列序），藏掉指针本身 ——
        只能写在这里：`updateCursor` 在 `let nonlinearMode` 声明**之前**就会被调用

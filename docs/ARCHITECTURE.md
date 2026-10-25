@@ -1889,3 +1889,19 @@ view:topo / contour:auto / seed:灵框`，带 320×160 剪影掩膜；端口 955
 **验证**：`#lk-tl-subbar` 存在且紧跟在面板头之后、标签「剧情线」、下拉与按钮都在窄栏里、
 面板头里不再有 `#lk-line-sel`；`tsc` 0 / `vite build` 0。
 截图：`.review/shots-r120/sandbox-subbar.png`。
+
+## 2026-10-25 · 沙盘方案落地第一步：节点名阶梯换行（第一百二十一轮）
+
+ai-designer 的沙盘方案（`lingkuang-sandbox-v2`，7 章 + 评审）第一条就是「标签防重叠」。
+按它的思路实现（但按真实代码改写：标签是 **DOM span**，不是 canvas 文本）：
+
+`src/ui/timeline.ts` 新增 `layoutNodeLabels()`：重画节点后跑一次 O(n) 扫描 ——
+用**屏幕坐标**（`getBoundingClientRect`，画布是 `transform: scale()`，用 CSS 宽度会漏判）
+按 x 排序，逐个放进第一个「右边 + 4px 放得下」的层，共 5 层（22/40/58/76/94px）；
+5 层都放不下的折叠成点（`data-tier="hide"`，悬停才显示名字）。
+
+- 实测（25 节点真实库）：可见标签 **0 处重叠**（修前 43 对，其中含隐藏的；可见的也有 20+）。
+- 极密区 8 个标签默认隐藏 —— 这是刻意的取舍：宁可少显示，也不糊成一片。
+- 三个重画入口都调了：常规 `renderBase()`、剧情线聚焦、非线性序列。
+
+截图：`.review/shots-r121/labels-after.png`。

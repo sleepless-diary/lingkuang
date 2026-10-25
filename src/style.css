@@ -2086,3 +2086,17 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
   border-right: 1px solid var(--border-soft);
   margin-right: 2px;
 }
+
+/* ── 节点名防重叠（2026-10-25）：`layoutNodeLabels()` 给每个 .tl__n 算一个层级 data-tier，
+   标签按层级往下错开（每层 18px）。只在节点重画后跑一次（O(n)，不碰布局循环）。 */
+.tl__n[data-tier="1"] .tl__name { top: 40px; }
+.tl__n[data-tier="2"] .tl__name { top: 58px; }
+
+/* 5 层阶梯（每层 18px） */
+.tl__n[data-tier="1"] .tl__name { top: 40px; }
+.tl__n[data-tier="2"] .tl__name { top: 58px; }
+.tl__n[data-tier="3"] .tl__name { top: 76px; }
+.tl__n[data-tier="4"] .tl__name { top: 94px; }
+/* 排不下的（极密区）折叠：默认只有点，悬停才出名字 */
+.tl__n[data-tier="hide"] .tl__name { opacity: 0; transition: opacity 120ms var(--ease-standard); }
+.tl__n[data-tier="hide"]:hover .tl__name { opacity: 1; }
