@@ -432,8 +432,8 @@ body.lk-split-drag, body.lk-split-drag * { cursor: row-resize !important; }
 .tl__n.is-event .cap { background: var(--fg); border-color: var(--fg); }
 .tl__n .tl__name {
   position: absolute;
-  top: 22px;
-  left: 50%;
+  top: var(--lk-top, 22px);   /* 层高由 layoutNodeLabels() 写进 --lk-top（默认＝紧贴圆点下方） */
+  left: calc(50% + var(--lk-dx, 0px));   /* 越往下/上的层往一侧让一点（扇开，引线才分得清） */
   transform: translateX(-50%);
   font-size: 12px;
   color: var(--fg);
@@ -442,8 +442,8 @@ body.lk-split-drag, body.lk-split-drag * { cursor: row-resize !important; }
   text-shadow: 0 1px 0 var(--bg);
 }
 /* 节点类型位置：剧情事件名称在时间线上方，世界事件名称在下方（默认） */
-.tl__n.is-story .tl__name { top: -19px; color: var(--fg); }
-.tl__n.is-world .tl__name { top: 22px; }
+.tl__n.is-story .tl__name { top: var(--lk-top, -19px); color: var(--fg); }
+.tl__n.is-world .tl__name { top: var(--lk-top, 22px); }
 /* 时间线（照搬 legacy .tl__axis）：3px 粗结构线，常驻贯穿全宽，垂直居中 */
 .tl-line {
   position: absolute;
@@ -2122,16 +2122,13 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
   margin-right: 2px;
 }
 
-/* ── 节点名防重叠（2026-10-25）：`layoutNodeLabels()` 给每个 .tl__n 算一个层级 data-tier，
-   标签按层级往下错开（每层 18px）。只在节点重画后跑一次（O(n)，不碰布局循环）。 */
-.tl__n[data-tier="1"] .tl__name { top: 40px; }
-.tl__n[data-tier="2"] .tl__name { top: 58px; }
-
-/* 5 层阶梯（每层 18px） */
-.tl__n[data-tier="1"] .tl__name { top: 40px; }
-.tl__n[data-tier="2"] .tl__name { top: 58px; }
-.tl__n[data-tier="3"] .tl__name { top: 76px; }
-.tl__n[data-tier="4"] .tl__name { top: 94px; }
-/* 排不下的（极密区）折叠：默认只有点，悬停才出名字 */
+/* ── 节点名分层（第一百二十三轮：从「固定 5 层」改成自适应）────────────────
+   层数由 `layoutNodeLabels()` 按**可用高度**现算，每层的 top 写在节点上的
+   `--lk-top` 变量里（剧情事件往上叠、世界事件往下叠，两侧各自算）。
+   这里只留兜底值与折叠态：排到没地方才折叠成点、悬停出名字。 */
 .tl__n[data-tier="hide"] .tl__name { opacity: 0; transition: opacity 120ms var(--ease-standard); }
 .tl__n[data-tier="hide"]:hover .tl__name { opacity: 1; }
+/* 引线（被挪开的标签连回自己的节点）：细、半透明、不吃鼠标事件。
+   画在 .tl-track 里、节点之前 ⇒ 天然压在圆点和文字下面。 */
+.tl-leaders { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.tl-leaders path { fill: none; stroke: var(--border-strong); stroke-width: 1; opacity: .55; }

@@ -638,29 +638,146 @@ export function mountTimeline(
 
   /* ── 渲染节点 ── */
   let selectedId: string | null = null;
-  /* 节点名防重叠（2026-10-25，来自沙盘方案的「阶梯换行」）：按 x 排好，逐个放进
-     第一个"放得下"的层（最多 3 层，层高 18px）。标签是 DOM，宽度直接读 `offsetWidth`，
-     不需要 measureText/canvas —— 一次 O(n) 扫描，只在**重画节点之后**跑。 */
+  /* ── 节点名分层 + 引线（第一百二十三轮重写）─────────────────────────────────
+     用户 2026-10-25：「节点密集时节点名称会重叠，能不能做自适应分层，同时一条细线连接
+     节点名称和节点」。
+     旧实现（第一百二十一轮）是**固定 5 层、只往下叠**，两个毛病：
+       ① 层数写死：密集区只能折叠成点（实测 31 个节点里 4 个名字被迫消失）；
+       ② 剧情事件的名字本来在线上方（`.is-story → top:-19px`），一旦被挪到第 1 层就
+          掉到了**线下面**，跟世界事件的名字混在一起，看不出这行字属于哪个点。
+     现在：
+       - **两带各自叠**：剧情往上（-19 - k·18）、世界往下（22 + k·18），层数按**可用高度**
+         现算（自适应），上限 8 层；都放不下才折叠成点（悬停出名字）。
+       - **被挪开的标签画一条细引线**（tier ≥ 1）：从圆点边缘垂到自己那行字，垂直一条，
+         因为名字是 `translateX(-50%)` 居中的，竖线正好落在同一个 x 上，不会指错。
+         第 0 层不画（就贴着圆点，画了反而糊）。
+       - 标签 top 写在节点的 `--lk-top` 上（CSS 只留兜底值），所以层数不再受 CSS 限制。 */
+  const TIER_STEP = 18;     /* 每层 18px（12px 字 + 6px 气口） */
+  const TIER_GAP = 4;       /* 同一层里两行字之间至少留 4px */
+  const TIER_DX = 10;       /* 被挪开的标签统一**左对齐到圆点右侧 10px**（剧情事件是左侧 10px） */
+  const MAX_TIERS = 8;      /* 单侧上限：再多就折叠（再往下会离节点太远，引线比字还长） */
   function layoutNodeLabels(): void {
     const nodes = Array.from(track.querySelectorAll<HTMLElement>('.tl__n'));
-    if (nodes.length < 2) { for (const n of nodes) delete n.dataset.tier; return; }
-    /* ⚠️ 必须用**屏幕坐标**（getBoundingClientRect）而不是 style.left + offsetWidth：
-       画布是 transform: scale()，缩小时标签的视觉间距比 CSS 宽度小得多 —— 用 CSS 值算会漏判。 */
+    /* 先复位：不留下上一轮的层高、横移与折叠态 */
+    for (const n of nodes) {
+      delete n.dataset.tier;
+      n.style.removeProperty('--lk-top');
+      n.style.removeProperty('--lk-dx');
+    }
+    if (nodes.length < 2) { drawLeaderLines(); return; }
+    /* 量宽度 + 节点中心（都用屏幕坐标，与像素一致）。 */
     const items = nodes.map((n) => {
       const name = n.querySelector<HTMLElement>('.tl__name');
-      const r = name?.getBoundingClientRect();
-      return { n, left: r?.left ?? 0, right: r?.right ?? 0 };
-    }).sort((a, b) => a.left - b.left);
-    /* 5 层（22 / 40 / 58 / 76 / 94px）：时间线上下各有余量。5 层都排不下的（极密区），
-       折叠成点 + 悬停看名字（`.tl__n[data-tier="hide"]`），不再硬挤成一片糊。 */
-    const lastRight = [-1e9, -1e9, -1e9, -1e9, -1e9];
+      const lr = name?.getBoundingClientRect();
+      const nr = n.getBoundingClientRect();
+      return {
+        n,
+        story: n.classList.contains('is-story'),
+        cx: nr.left + nr.width / 2,
+        w: lr?.width ?? 0,
+      };
+    }).sort((a, b) => a.cx - b.cx);
+    /* 每带能叠几层：轨道中线到边缘的可用高度 / 层高。留 26px 给圆点与边距。 */
+    const half = Math.max(40, (track.clientHeight || 240) / 2);
+    const tiersOf = (): number => Math.max(2, Math.min(MAX_TIERS, Math.floor((half - 26) / TIER_STEP)));
+    const nUp = tiersOf();
+    const nDown = tiersOf();
+    const lastUp = new Array(nUp).fill(-1e9);
+    const lastDown = new Array(nDown).fill(-1e9);
+    const trackW = track.clientWidth || 0;
     for (const it of items) {
+      const last = it.story ? lastUp : lastDown;
+      /* 层 0 居中（贴着圆点）；层 ≥1 一律**贴到圆点一侧**（世界在右、剧情在左），
+         这样同一簇的层叠成一根整齐的竖列，引线用"主干 + 短横钩"就永远不会穿过文字。 */
+      const dxOf = (k: number): number => (k === 0 ? 0 : (it.story ? -1 : 1) * (it.w / 2 + TIER_DX));
       let tier = 0;
-      while (tier < 4 && it.left < lastRight[tier] + 4) tier++;
-      if (tier === 4 && it.left < lastRight[4] + 4) { it.n.dataset.tier = 'hide'; continue; }
-      lastRight[tier] = Math.max(lastRight[tier], it.right);
+      let left = 0;
+      let right = 0;
+      for (; tier < last.length; tier++) {
+        let dx = dxOf(tier);
+        /* 不许把名字让出轨道（边界各留 4px），让不下就压回来 */
+        if (trackW > 40) {
+          dx = Math.max(dx, 4 - (it.cx - it.w / 2));
+          dx = Math.min(dx, trackW - 4 - (it.cx + it.w / 2));
+        }
+        left = it.cx - it.w / 2 + dx;
+        right = it.cx + it.w / 2 + dx;
+        if (left >= last[tier] + TIER_GAP) break;
+      }
+      if (tier >= last.length) {
+        it.n.dataset.tier = 'hide';
+        continue;
+      }
+      let dx = dxOf(tier);
+      if (trackW > 40) {
+        dx = Math.max(dx, 4 - (it.cx - it.w / 2));
+        dx = Math.min(dx, trackW - 4 - (it.cx + it.w / 2));
+      }
+      last[tier] = Math.max(last[tier], right);
       it.n.dataset.tier = String(tier);
+      /* 层 0 用默认值（CSS 兜底）；其余写死到 --lk-top / --lk-dx */
+      if (tier > 0) {
+        const top = it.story ? -19 - tier * TIER_STEP : 22 + tier * TIER_STEP;
+        it.n.style.setProperty('--lk-top', top + 'px');
+      }
+      if (dx !== 0) it.n.style.setProperty('--lk-dx', dx + 'px');
     }
+    drawLeaderLines();
+  }
+
+  /** 被挪开的标签（tier ≥ 1）与自己的圆点之间的引线：**主干 + 短横钩**。
+   *
+   *     ●
+   *     │  铸钟          ← 层 0 不加线（就贴着圆点）
+   *     ├── 冬临
+   *     ├── 围城
+   *     └── 退位
+   *
+   *  为什么不是一条斜线直连：同一时刻挤一堆时，去第 4 层的斜线会**从第 1~3 层那几行字上穿过去**
+   *  （实测截图里正是这样，字被线切断很难读）。主干竖直走在圆点那一列（标签已让开 10px），
+   *  每行只在行心伸一小段横钩到字的近边 ⇒ 线永远不压到任何一行字。
+   *  ⚠️ 画在 `.tl-track` 的 SVG 里、且在节点**之前** ⇒ 压在圆点和字下面（见 style.css）。 */
+  function drawLeaderLines(): void {
+    const svg = track.querySelector<SVGSVGElement>('.tl-leaders');
+    if (!svg) return;
+    const tr = track.getBoundingClientRect();
+    const out: string[] = [];
+    const r2 = (v: number): number => Math.round(v * 2) / 2;
+    const nodes = Array.from(track.querySelectorAll<HTMLElement>('.tl__n'));
+    /* 先把每个节点的几何量出来：算主干起点时要避开"同列第一行（tier 0）"的字，
+       否则竖直主干会从那行字上穿过去（实测截图里正是这样）。 */
+    const geo = nodes.map((n) => {
+      const nr = n.getBoundingClientRect();
+      const name = n.querySelector<HTMLElement>('.tl__name');
+      const lr = name?.getBoundingClientRect();
+      return {
+        n,
+        tier: n.dataset.tier ?? '',
+        story: n.classList.contains('is-story'),
+        cx: nr.left + nr.width / 2 - tr.left,
+        ny: nr.top - tr.top,
+        nh: nr.height,
+        label: lr ? { left: lr.left - tr.left, right: lr.right - tr.left, top: lr.top - tr.top, bottom: lr.bottom - tr.top } : null,
+      };
+    });
+    for (const g of geo) {
+      if (!g.tier || g.tier === '0' || g.tier === 'hide' || !g.label) continue;
+      const x0 = g.cx;
+      let y0 = g.story ? g.ny - 2 : g.ny + g.nh + 2;
+      /* 同一列、同一侧、tier 0 的那行字会挡住主干 —— 主干从它外侧起步。
+         判"挡住"用**标签盒是否盖住主干这条竖线**（不能用节点 x 距离：同一簇的节点
+         也会差 4~5px，实测 3px 阈值漏判了 5 条线，主干正好从"铸钟"上穿过去）。 */
+      for (const s of geo) {
+        if (s.tier !== '0' || s.story !== g.story || !s.label) continue;
+        if (x0 < s.label.left - 1 || x0 > s.label.right + 1) continue;
+        y0 = g.story ? Math.min(y0, s.label.top - 2) : Math.max(y0, s.label.bottom + 2);
+      }
+      const cy = (g.label.top + g.label.bottom) / 2;          /* 行心：横钩画在这里 */
+      if (Math.abs(cy - y0) < 3) continue;                   /* 已经贴上了，不需要线 */
+      const xEnd = g.story ? g.label.right + 2 : g.label.left - 2;
+      out.push(`<path data-id="${g.n.dataset.id ?? ''}" d="M${r2(x0)} ${r2(y0)} L${r2(x0)} ${r2(cy)} L${r2(xEnd)} ${r2(cy)}"/>`);
+    }
+    svg.innerHTML = out.join('');
   }
 
   function renderBase() {
@@ -671,7 +788,7 @@ export function mountTimeline(
       return;
     }
     const nodes = tl.nodes;
-    const lineHtml = '<div class="tl-line"></div>';   /* 时间线常驻贯穿（无限画布） */
+    const lineHtml = '<div class="tl-line"></div><svg class="tl-leaders"></svg>';   /* 时间线 + 引线层（引线在节点之前 ⇒ 压在下面） */
     track.innerHTML =
       lineHtml +
       nodes
@@ -1903,7 +2020,7 @@ export function mountTimeline(
        标尺正是这个模式要排除的「时间干扰」，清空（切回线性时 baseRender 会重画）。 */
     clearScale();
     track.innerHTML =
-      `<div class="tl-line" style="left:0;right:0;"></div>` +
+      `<div class="tl-line" style="left:0;right:0;"></div><svg class="tl-leaders"></svg>` +
       ordered
         .map((node, i) => {
           const x = 50 + i * pitch + nlPan;
@@ -2018,22 +2135,25 @@ export function mountTimeline(
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCtx(); });
 
-  /* ── 宿主宽度变化时补一次重画（2026-09-26 第 ⑤ 片顺带修）─────────────────────────────────
+  /* ── 宿主尺寸变化时补一次重画（2026-09-26 第 ⑤ 片顺带修；2026-10-25 第一百二十三轮补高度）──
      病根：`renderScale()` 的刻度范围是按 `wrap.clientWidth` 算的，而**宿主被藏起来时它是 0**
      —— 于是只画得出**一根**刻度（实测 `majors: 1, minors: 0`），`fitAll()` 也会按 0 宽算出
      `spacing = 下限 0.05`（等于没 fit）。而"切回沙盘"那条路（`src/ui/shell.ts` 里 `id === 'sandbox'`
      的分支）只**恢复显示**、不重画 ⇒ 这根孤零零的刻度会一直挂着。
-     触发场景是现成的：会话恢复（`src/ui/session.ts`，09-19 加的）让应用**开局停在设定库**，
-     于是沙盘宿主是"隐藏着挂载"的，用户第一次切回沙盘就看到一根刻度 + 没 fit 的视图。
-     这里兜底：宽度**变了**就重画（重画不动视图，只是按新宽度重算刻度）；
+     ⚠️ 第一百二十三轮补：原来只 `if (w === lastW) return`，**高度变化被当成没变化** ——
+     拖动上下分割条 / 地图收起展开之后，标签分层与引线都还按旧高度算（实测：引线的起点
+     差了 7px、8 条断言挂掉）。高度变了同样要重画：层数本来就是按高度自适应算的。
      其中"从 0 变成真宽度"那一次额外补 `fitAll()` —— 之前那次 fit 是按 0 宽算的，不算数。 */
   let lastW = wrap.clientWidth;
+  let lastH = wrap.clientHeight;
   new ResizeObserver(() => {
     const w = wrap.clientWidth;
-    if (w === lastW) return;
+    const h = wrap.clientHeight;
+    if (w === lastW && h === lastH) return;
     const wasZero = lastW === 0;
     lastW = w;
-    if (w === 0) return;          /* 又被藏起来了：这一帧画什么都看不见，等它出来再画 */
+    lastH = h;
+    if (w === 0 || h === 0) return;   /* 又被藏起来了：这一帧画什么都看不见，等它出来再画 */
     if (wasZero) fitAll();
     render();
   }).observe(wrap);

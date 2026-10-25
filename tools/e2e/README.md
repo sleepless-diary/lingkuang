@@ -57,6 +57,20 @@ node tools\e2e\cold-start-entity-vault.cjs
 `LK_CDP_PORT` 可改端口（默认 `9334`）。**每个 pwsh 调用都是全新进程**，
 cwd 与环境变量不跨调用保留 —— 环境变量要和命令写在同一次调用里。
 
+## 时间线的布局守卫（第一百二十二 / 二十三轮）
+
+| 套件 | 守什么 |
+| --- | --- |
+| `timeline-cursor-split.cjs` | ① 指针与节点**同帧**：取首尾节点算归一化相对位置 `p`，平移/缩放的逐帧抖动必须 ≤ 0.002（**含自检**：把旧的 `.tl-cursor{transition:left 70ms}` 临时加回去，判据必须报警，否则这条断言是空转的）；② 点画布落点 ±1px、拖指针跟手；③ 面板头四簇（三条分组线）+「非线性」在新容器里仍能切换；④ 上下分割可拖、比例进 localStorage、刷新后还在、地图能收起/展开 |
+| `timeline-labels-dense.cjs` | ① 可见标签**两两矩形相交 > 2px** 记一次重叠，要求 0；② 折叠数（越少越好）；③ 每条被挪开的标签都有引线，起点不越过圆点、主干竖直、横钩在行心且贴着自己那行字、**主干不压在任何一个名字上**；④ 缩到很小（12 格 Alt+滚轮）仍 0 重叠 |
+
+密集夹具要先造一份（⚠️ **别写进仓库目录**：应用会回写数据文件，仓库会变脏）：
+
+```powershell
+node tools\e2e\fixtures\make-dense-timeline.cjs "$env:TEMP\lk-dense\data.json"
+# 起实例时把 LINGKUANG_TEST_DATA 指过去，再跑 timeline-labels-dense.cjs（默认端口 9334）
+```
+
 ## 两条铁律（踩过坑）
 
 1. **验证「外部改 `.md` 有没有生效」必须读活 UI（DOM），不能读 `worldbuilding.json`。**
