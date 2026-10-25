@@ -670,6 +670,7 @@ export function mountTimeline(
     }
     if (nodes.length < 2) { drawLeaderLines(); return; }
     /* 量宽度 + 节点中心（都用屏幕坐标，与像素一致）。 */
+    const wrapRect = wrap.getBoundingClientRect();
     const items = nodes.map((n) => {
       const name = n.querySelector<HTMLElement>('.tl__name');
       const lr = name?.getBoundingClientRect();
@@ -679,6 +680,11 @@ export function mountTimeline(
         story: n.classList.contains('is-story'),
         cx: nr.left + nr.width / 2,
         w: lr?.width ?? 0,
+        /* 圆点整个在视口外（用户 2026-10-25：「节点在屏幕外时名字会留在画面内」）：
+           被挪开的标签会往一侧让 10~40px，让完可能正好落回画面里 —— 看着就是
+           "没有圆点、却有一行字飘在那儿"。这种节点直接不排版（不占层、不出引线、
+           标签整行藏掉），滚回来再照常出现。 */
+        off: nr.right < wrapRect.left - 1 || nr.left > wrapRect.right + 1,
       };
     }).sort((a, b) => a.cx - b.cx);
     /* 每带能叠几层：轨道中线到边缘的可用高度 / 层高。留 26px 给圆点与边距。 */
@@ -690,6 +696,9 @@ export function mountTimeline(
     const lastDown = new Array(nDown).fill(-1e9);
     const trackW = track.clientWidth || 0;
     for (const it of items) {
+      /* 圆点在视口外的：不排版、不占层、不出引线（标签由 CSS 的 [data-off="1"] 整行藏掉） */
+      if (it.off) { it.n.dataset.off = '1'; delete it.n.dataset.tier; continue; }
+      delete it.n.dataset.off;
       const last = it.story ? lastUp : lastDown;
       /* 层 0 居中（贴着圆点）；层 ≥1 一律**贴到圆点一侧**（世界在右、剧情在左），
          这样同一簇的层叠成一根整齐的竖列，引线用"主干 + 短横钩"就永远不会穿过文字。 */
@@ -766,6 +775,7 @@ export function mountTimeline(
     });
     for (const g of geo) {
       if (!g.tier || g.tier === '0' || g.tier === 'hide' || !g.label) continue;
+      if (g.n.dataset.off === '1') continue;   /* 点已经在画面外：连引线一起不画 */
       const x0 = g.cx;
       let y0 = g.story ? g.ny - 2 : g.ny + g.nh + 2;
       /* 同一列、同一侧、tier 0 的那行字会挡住主干 —— 主干从它外侧起步。
