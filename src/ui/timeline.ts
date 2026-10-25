@@ -3,6 +3,8 @@
  */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
+import { planGroups, fitGroups } from './timeline-groups';
+import type { GroupNode, GroupPlan } from './timeline-groups';
 import { getTimeline, setTimeCursor, saveNodeDoc, addLoop, setLoopCount, removeLoop, copyNode, removeNode } from '../store/actions';
 import { uid } from '../store/ids';
 import type { Timeline, TimelineNode, Storyline, Loop } from '../store/types';
@@ -660,13 +662,15 @@ export function mountTimeline(
   const TIER_GAP = 4;       /* 同一层里两行字之间至少留 4px */
   const MAX_TIERS = 8;      /* 单侧上限：再多就折叠（再往下会离节点太远，引线比字还长） */
   function layoutNodeLabels(): void {
-    const nodes = Array.from(track.querySelectorAll<HTMLElement>('.tl__n'));
-    /* 先复位：不留下上一轮的层高、横移与折叠态 */
-    for (const n of nodes) {
+    const all = Array.from(track.querySelectorAll<HTMLElement>('.tl__n'));
+    /* 先复位：不留下上一轮的层高、横移与折叠态（**所有**节点都要清，包括刚进组的） */
+    for (const n of all) {
       delete n.dataset.tier;
       n.style.removeProperty('--lk-top');
       n.style.removeProperty('--lk-dx');
     }
+    /* 已经进了"时间组"的节点不参与分层（名字由那一列负责；悬停仍会单独露出来） */
+    const nodes = all.filter((n) => n.dataset.grouped !== '1');
     if (nodes.length < 2) { drawLeaderLines(); return; }
     /* 量宽度 + 节点中心（都用屏幕坐标，与像素一致）。 */
     const items = nodes.map((n) => {
@@ -718,7 +722,6 @@ export function mountTimeline(
   }
 
   /** 名字与圆点之间**不再画线**（第一百二十六轮）。
-   *
    *  用户 2026-10-25：「要不还是名称横坐标直接对准节点吧，现在从侧边拉一条线只能通过线和
    *  节点对应起来」——名字居中到节点正上/正下之后，"这行字属于谁"一眼就能看出来，线是多余的。
    *  两种画法都试过且都失败：直通竖线会穿过中间几行字；只画行间空隙那段，邻居标签的盒子
@@ -727,6 +730,115 @@ export function mountTimeline(
   function drawLeaderLines(): void {
     const svg = track.querySelector<SVGSVGElement>('.tl-leaders');
     if (svg && svg.childNodes.length) svg.innerHTML = '';
+  }
+
+  /* ── 密集区"时间组"（第一百二十七轮）──────────────────────────────────────
+     用户 2026-10-25 讨论后定的方向：静态画面只保证"这一段有几件事" ——
+     把同一小段时间里的事件收成一列（列头 = 年份区间，或 AI 起的名字），
+     放不下的收成 "+N"；一年不到 1.2px（远看）时整列收成"列头 ×N"（语义缩放）。
+     分组的"看法"可以交给 AI：读 `%APPDATA%\lingkuang\sandbox-groups.json`
+     （MCP 工具 `timeline_groups_set` 写它，主进程 watch 后推 `groups:changed`）。
+     没有方案（或方案里没这些节点）就按**屏幕像素**自动聚 —— 见 timeline-groups.ts。 */
+  let groupPlans: { worlds?: Record<string, Record<string, GroupPlan>> } | null = null;
+  let groupSig = '';
+  const groupEls = new Map<string, HTMLElement>();
+
+  async function loadGroupPlans(): Promise<void> {
+    try {
+      const api = (window as unknown as {
+        lingkuangAPI?: { groupsLoad?: () => Promise<{ ok: boolean; data: unknown }> };
+      }).lingkuangAPI;
+      const res = await api?.groupsLoad?.();
+      groupPlans = res?.ok ? (res.data as typeof groupPlans) : null;
+    } catch {
+      groupPlans = null;
+    }
+    render();
+  }
+
+  function renderLabelGroups(): void {
+    const layer = track.querySelector<HTMLElement>('.tl-groups');
+    if (!layer) return;
+    const tl = timeline();
+    if (!tl || !tl.nodes.length) {
+      layer.innerHTML = '';
+      groupSig = '';
+      groupEls.clear();
+      return;
+    }
+    const tr = track.getBoundingClientRect();
+    const nodes: GroupNode[] = [];
+    for (const n of tl.nodes) {
+      const el = nodeEls.get(n.id);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      nodes.push({
+        id: n.id,
+        title: n.title,
+        year: n.year ?? 0,
+        story: n.type === 'story_event',
+        x: r.left + r.width / 2 - tr.left,
+      });
+    }
+    const worldName = currentWorld(store).name;
+    const tlId = activeTimelineId() ?? '';
+    const plan = groupPlans?.worlds?.[worldName]?.[tlId] ?? null;
+    const half = Math.max(40, (track.clientHeight || 240) / 2);
+    const maxRows = Math.max(1, Math.floor((half - 40) / 18) - 1);
+    const groups = fitGroups(planGroups(nodes, plan, { minGapPx: 64 }), { maxRows, pxPerYear: view.spacing });
+    const multi = groups.filter((g) => g.nodes.length > 1);
+    /* 进了列的节点：自己的名字让给列（悬停时仍然单独显出来，见 CSS） */
+    for (const el of nodeEls.values()) delete el.dataset.grouped;
+    for (const g of multi) for (const m of g.nodes) { const el = nodeEls.get(m.id); if (el) el.dataset.grouped = '1'; }
+    /* 结构签名没变就只挪位置：拖指针时每帧重建文字会"闪"（第一百二十四轮的教训） */
+    const sig = multi
+      .map((g) => `${g.key}|${g.head}|${g.rows}|${g.hidden}|${g.collapsed}|${g.story}`)
+      .join('\n');
+    if (sig !== groupSig) {
+      groupSig = sig;
+      groupEls.clear();
+      layer.innerHTML = '';
+      for (const g of multi) {
+        const box = document.createElement('div');
+        box.className = `tl-grp${g.story ? ' is-story' : ''}${g.collapsed ? ' is-collapsed' : ''}`;
+        box.dataset.key = g.key;
+        const head = document.createElement('div');
+        head.className = 'tl-grp__head';
+        head.textContent = g.head;
+        const badge = document.createElement('span');
+        badge.className = 'tl-grp__n';
+        badge.textContent = String(g.nodes.length);
+        head.appendChild(badge);
+        box.appendChild(head);
+        if (!g.collapsed) {
+          for (const n of g.nodes.slice(0, g.rows)) {
+            const row = document.createElement('div');
+            row.className = 'tl-grp__row';
+            row.dataset.id = n.id;
+            row.textContent = n.title;
+            box.appendChild(row);
+          }
+          if (g.hidden > 0) {
+            const more = document.createElement('div');
+            more.className = 'tl-grp__more';
+            more.textContent = `+${g.hidden}`;
+            box.appendChild(more);
+          }
+        }
+        layer.appendChild(box);
+        groupEls.set(g.key, box);
+      }
+    }
+    /* 定位：世界事件在下方（列头贴着时间线往下排），剧情事件在上方（列头在最外） */
+    const centerY = half;
+    for (const g of multi) {
+      const box = groupEls.get(g.key);
+      if (!box) continue;
+      const lines = box.children.length;
+      const top = g.story ? centerY - 22 - (lines - 1) * 18 : centerY + 22;
+      box.style.left = `${g.cx}px`;
+      box.style.top = `${top}px`;
+    }
   }
 
   function renderBase() {
@@ -739,7 +851,7 @@ export function mountTimeline(
       return;
     }
     const nodes = tl.nodes;
-    const lineHtml = '<div class="tl-line"></div><svg class="tl-leaders"></svg>';   /* 时间线 + 引线层（引线在节点之前 ⇒ 压在下面） */
+    const lineHtml = '<div class="tl-line"></div><svg class="tl-leaders"></svg><div class="tl-groups"></div>';   /* 时间线 + 引线层 + 时间组层 */
     /* ── 结构没变就**不重建 DOM**（第一百二十四轮）─────────────────────────────
        用户 2026-10-25：「部分节点名在拖动指针时会闪烁」。
        真因：这段原来**每帧 `track.innerHTML = …`**，拖指针时每次 pointermove 都会
@@ -764,6 +876,9 @@ export function mountTimeline(
         if (el.dataset.id) nodeEls.set(el.dataset.id, el);
       }
     }
+    /* 先算"时间组"（会给进列的节点打 data-grouped），再排散落的单点标签：
+       顺序不能反 —— 进了列的名字不该再占分层的位置。 */
+    renderLabelGroups();
     layoutNodeLabels();
     renderScale();
     updateCursor();
@@ -2038,6 +2153,11 @@ export function mountTimeline(
 
   renderExtraTools();
   renderLoops();
+  /* 时间组的"看法"（AI 写在 sandbox-groups.json）：开局拉一次，之后主进程 watch 到变化就重拉 */
+  void loadGroupPlans();
+  (window as unknown as {
+    lingkuangAPI?: { onGroupsChanged?: (cb: () => void) => () => void };
+  }).lingkuangAPI?.onGroupsChanged?.(() => { void loadGroupPlans(); });
 
   /* ══════════ 右键菜单（重新设计：工具已常驻，右键=快捷操作）══════════ */
   let ctxMenu: HTMLElement | null = null;

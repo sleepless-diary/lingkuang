@@ -49,6 +49,12 @@ const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json');
 const FORMATS_FILE = () => process.env.LINGKUANG_TEST_DATA
   ? path.join(path.dirname(process.env.LINGKUANG_TEST_DATA), 'formats.json')
   : path.join(app.getPath('userData'), 'formats.json');
+/* 沙盘"密集区时间组"的整理方案（第一百二十七轮）：AI / 用户给的分组，存独立 JSON。
+   为什么独立文件而不是塞进 worldbuilding.json：它是**看法**不是**数据** ——
+   删掉这个文件，界面就退回自动分组，节点一个都不少。测试后门同上。 */
+const GROUPS_FILE = () => process.env.LINGKUANG_TEST_DATA
+  ? path.join(path.dirname(process.env.LINGKUANG_TEST_DATA), 'sandbox-groups.json')
+  : path.join(app.getPath('userData'), 'sandbox-groups.json');
 /* vault 根目录（节点 .md 文件存储，Obsidian 可打开编辑）。测试后门 LINGKUANG_VAULT。 */
 const VAULT_DIR = () => process.env.LINGKUANG_VAULT
   ? process.env.LINGKUANG_VAULT
@@ -2064,6 +2070,53 @@ ipcMain.handle('settings:load', () => {
     return { ok: false, error: e.code || String(e) };
   }
 });
+
+/* ── IPC: 沙盘"时间组"方案（第一百二十七轮）─────────────────────
+   结构：{ version: 1, worlds: { [worldName]: { [timelineId]: { source, title, groups:[…] } } } }
+   读：文件不存在 ⇒ { ok:true, data:null }（表示"没有 AI 方案，走自动分组"）。
+   写：`groups:save` 收整棵树（渲染层/AI 都只调这一个入口）。
+   变更通知：`fs.watchFile` 盯文件（MCP 那座进程写完，界面要**立刻**跟着变）。 */
+function readGroupsRaw() {
+  try {
+    const raw = fs.readFileSync(GROUPS_FILE(), 'utf8');
+    const d = JSON.parse(raw);
+    if (d && typeof d === 'object' && d.worlds) return d;
+    return { version: 1, worlds: {} };
+  } catch {
+    return { version: 1, worlds: {} };
+  }
+}
+ipcMain.handle('groups:load', () => {
+  try {
+    const d = readGroupsRaw();
+    const empty = !d || !d.worlds || !Object.keys(d.worlds).length;
+    return { ok: true, data: empty ? null : d };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+ipcMain.handle('groups:save', (_e, tree) => {
+  try {
+    const dir = path.dirname(GROUPS_FILE());
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(GROUPS_FILE(), JSON.stringify(tree ?? { version: 1, worlds: {} }, null, 2), 'utf8');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+/* 盯文件：AI（MCP 进程）改了方案，界面不用重启 */
+let groupsWatcher = null;
+function watchGroupsFile() {
+  try {
+    fs.watchFile(GROUPS_FILE(), { interval: 700 }, (cur, prev) => {
+      if (!cur || (cur.mtimeMs === prev.mtimeMs && cur.size === prev.size)) return;
+      try { mainWin?.webContents?.send('groups:changed'); } catch { /* 窗口关了就算了 */ }
+    });
+    groupsWatcher = true;
+  } catch { groupsWatcher = null; }
+}
+app.whenReady().then(() => { if (!groupsWatcher) watchGroupsFile(); });
 
 /* ── 内建默认格式定义（kind 直接对应格式；用户可在 formats.json 增改）── */
 /* 字段允许的类型（与 src/store/types.ts 的 FieldType 对齐）。
