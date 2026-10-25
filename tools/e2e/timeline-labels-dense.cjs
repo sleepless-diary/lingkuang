@@ -111,6 +111,51 @@ async function main() {
   console.log('centered =', JSON.stringify(centered));
   if (centered) ok('每个名字的横向中心对准自己的节点（±1px）', centered.badCount === 0, centered);
 
+  /* ②b 年份（第一百二十八轮）：**排得开才显示**（track 挂 `.is-year`），弱一档；
+     挤的时候收起来，但节点的 title 里仍有「名字 · 年份」。 */
+  const years = await ev(`(() => {
+    const track = document.querySelector('.tl-track');
+    const on = track.classList.contains('is-year');
+    const nodes = [...document.querySelectorAll('.tl__n')];
+    const bad = [];
+    let checked = 0;
+    for (const n of nodes) {
+      if (n.dataset.tier === 'hide') continue;
+      const name = n.querySelector('.tl__name');
+      const y = n.querySelector('.tl__year');
+      if (!y) { bad.push({ id: n.dataset.id, why: '没有年份元素' }); continue; }
+      const shown = getComputedStyle(y).display !== 'none';
+      checked++;
+      if (on && !shown) bad.push({ id: n.dataset.id, why: '排得开却没显示年份' });
+      if (!shown) {
+        if (!/\\d/.test(n.getAttribute('title') || '')) bad.push({ id: n.dataset.id, why: '收起后 title 里没有年份' });
+        continue;
+      }
+      const fsName = parseFloat(getComputedStyle(name).fontSize);
+      const fsYear = parseFloat(getComputedStyle(y).fontSize);
+      if (!(fsYear < fsName) || getComputedStyle(name).color === getComputedStyle(y).color) {
+        bad.push({ id: n.dataset.id, why: '年份没弱化', fsName, fsYear });
+      }
+    }
+    return { mode: on ? 'shown' : 'hidden', checked, badCount: bad.length, bad: bad.slice(0, 5) };
+  })()`);
+  console.log('years =', JSON.stringify(years));
+  if (years) ok('年份的显示策略成立（排得开才显示，且更小更淡 / 否则收进 title）', years.badCount === 0 && years.checked > 0, years);
+
+  /* ②c 放大到节点拉得开 → 年份自动出现（语义规则真的会翻面） */
+  const yearFlip = await ev(`(async () => {
+    const wrap = document.querySelector('.tl-wrap');
+    const r = wrap.getBoundingClientRect();
+    const before = document.querySelector('.tl-track').classList.contains('is-year');
+    for (let i = 0; i < 6; i++) wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, altKey: true, bubbles: true, cancelable: true, clientX: r.left + r.width * 0.5, clientY: r.top + 120 }));
+    await new Promise((res) => setTimeout(res, 700));
+    const after = document.querySelector('.tl-track').classList.contains('is-year');
+    const shown = [...document.querySelectorAll('.tl__year')].filter((e) => getComputedStyle(e).display !== 'none').length;
+    return { before, after, shown };
+  })()`);
+  console.log('yearFlip =', JSON.stringify(yearFlip));
+  if (yearFlip) ok('放大后年份出现', yearFlip.before === false && yearFlip.after === true && yearFlip.shown > 0, yearFlip);
+
   /* ③ 连接线：**穿行于行间空隙**的一根竖虚线（不再从侧边拉钩），永远不压字 */
   const leaders = await ev(`(() => {
     const svg = document.querySelector('.tl-track .tl-leaders');
@@ -170,7 +215,9 @@ async function main() {
     const nodes = [...document.querySelectorAll('.tl__n')];
     nodes.forEach((n, i) => { n.dataset.mark = 'm' + i; });
     /* 选最右边那个节点，用来观察淡化 */
-    const target = nodes[nodes.length - 1];
+    /* 别选滚出画面的节点（放大后最后一个可能已经在视口外，取样全是 0） */
+    const wr = wrap.getBoundingClientRect();
+    const target = nodes.find((n) => { const r = n.getBoundingClientRect(); return r.left > wr.left + 20 && r.right < wr.right - 20; }) || nodes[nodes.length - 1];
     const tx = target.getBoundingClientRect().left - r.left + 13;
     handle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, buttons: 1, clientX: r.left + start, clientY: r.top + 10, pointerId: 21 }));
     let replaced = 0;

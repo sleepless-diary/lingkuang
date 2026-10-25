@@ -16,14 +16,6 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
   /* 格式/结构体定义（kind → 应填字段集合） */
   loadFormats: () => ipcRenderer.invoke('formats:load'),
   saveFormats: (formats) => ipcRenderer.invoke('formats:save', formats),
-  /* 沙盘"密集区时间组"的整理方案（AI / 用户给的分组，独立文件，删掉即回到自动分组） */
-  groupsLoad: () => ipcRenderer.invoke('groups:load'),
-  groupsSave: (tree) => ipcRenderer.invoke('groups:save', tree),
-  onGroupsChanged: (cb) => {
-    const h = () => { try { cb(); } catch { /* 渲染层自己兜 */ } };
-    ipcRenderer.on('groups:changed', h);
-    return () => ipcRenderer.removeListener('groups:changed', h);
-  },
   /* character generator word bank (data/character_lib.json) */
   loadCharLib: () => ipcRenderer.invoke('lib:load'),
   /* 灵框助手：对话历史 + 长期记忆（主进程写 userData/agent/*.json，与 vault 一样是可备份的资产） */

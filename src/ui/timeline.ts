@@ -3,8 +3,6 @@
  */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
-import { planGroups, fitGroups } from './timeline-groups';
-import type { GroupNode, GroupPlan } from './timeline-groups';
 import { getTimeline, setTimeCursor, saveNodeDoc, addLoop, setLoopCount, removeLoop, copyNode, removeNode } from '../store/actions';
 import { uid } from '../store/ids';
 import type { Timeline, TimelineNode, Storyline, Loop } from '../store/types';
@@ -669,9 +667,17 @@ export function mountTimeline(
       n.style.removeProperty('--lk-top');
       n.style.removeProperty('--lk-dx');
     }
-    /* 已经进了"时间组"的节点不参与分层（名字由那一列负责；悬停仍会单独露出来） */
-    const nodes = all.filter((n) => n.dataset.grouped !== '1');
+    const nodes = all;
     if (nodes.length < 2) { drawLeaderLines(); return; }
+    /* 「名字旁边的年份」只在**排得开**的时候显示（第一百二十八轮）。
+       带年份的名字宽一倍（80 → 120px），密处直接多藏一半名字 —— 实测 25 个里多了 11 个折叠。
+       所以先按节点之间的屏幕间距判一次：平均间距 ≥ 140px 才把年份放出来（class 挂在 track 上，
+       CSS 里 `.tl__year` 默认 display:none）。窄的时候靠 `title` 悬停看年份。 */
+    const xs = nodes.map((n) => n.getBoundingClientRect().left + n.getBoundingClientRect().width / 2).sort((a, b) => a - b);
+    let gapSum = 0;
+    for (let i = 1; i < xs.length; i++) gapSum += xs[i] - xs[i - 1];
+    const avgGap = xs.length > 1 ? gapSum / (xs.length - 1) : 999;
+    track.classList.toggle('is-year', avgGap >= 110);
     /* 量宽度 + 节点中心（都用屏幕坐标，与像素一致）。 */
     const items = nodes.map((n) => {
       const name = n.querySelector<HTMLElement>('.tl__name');
@@ -732,115 +738,6 @@ export function mountTimeline(
     if (svg && svg.childNodes.length) svg.innerHTML = '';
   }
 
-  /* ── 密集区"时间组"（第一百二十七轮）──────────────────────────────────────
-     用户 2026-10-25 讨论后定的方向：静态画面只保证"这一段有几件事" ——
-     把同一小段时间里的事件收成一列（列头 = 年份区间，或 AI 起的名字），
-     放不下的收成 "+N"；一年不到 1.2px（远看）时整列收成"列头 ×N"（语义缩放）。
-     分组的"看法"可以交给 AI：读 `%APPDATA%\lingkuang\sandbox-groups.json`
-     （MCP 工具 `timeline_groups_set` 写它，主进程 watch 后推 `groups:changed`）。
-     没有方案（或方案里没这些节点）就按**屏幕像素**自动聚 —— 见 timeline-groups.ts。 */
-  let groupPlans: { worlds?: Record<string, Record<string, GroupPlan>> } | null = null;
-  let groupSig = '';
-  const groupEls = new Map<string, HTMLElement>();
-
-  async function loadGroupPlans(): Promise<void> {
-    try {
-      const api = (window as unknown as {
-        lingkuangAPI?: { groupsLoad?: () => Promise<{ ok: boolean; data: unknown }> };
-      }).lingkuangAPI;
-      const res = await api?.groupsLoad?.();
-      groupPlans = res?.ok ? (res.data as typeof groupPlans) : null;
-    } catch {
-      groupPlans = null;
-    }
-    render();
-  }
-
-  function renderLabelGroups(): void {
-    const layer = track.querySelector<HTMLElement>('.tl-groups');
-    if (!layer) return;
-    const tl = timeline();
-    if (!tl || !tl.nodes.length) {
-      layer.innerHTML = '';
-      groupSig = '';
-      groupEls.clear();
-      return;
-    }
-    const tr = track.getBoundingClientRect();
-    const nodes: GroupNode[] = [];
-    for (const n of tl.nodes) {
-      const el = nodeEls.get(n.id);
-      if (!el) continue;
-      const r = el.getBoundingClientRect();
-      nodes.push({
-        id: n.id,
-        title: n.title,
-        year: n.year ?? 0,
-        story: n.type === 'story_event',
-        x: r.left + r.width / 2 - tr.left,
-      });
-    }
-    const worldName = currentWorld(store).name;
-    const tlId = activeTimelineId() ?? '';
-    const plan = groupPlans?.worlds?.[worldName]?.[tlId] ?? null;
-    const half = Math.max(40, (track.clientHeight || 240) / 2);
-    const maxRows = Math.max(1, Math.floor((half - 40) / 18) - 1);
-    const groups = fitGroups(planGroups(nodes, plan, { minGapPx: 64 }), { maxRows, pxPerYear: view.spacing });
-    const multi = groups.filter((g) => g.nodes.length > 1);
-    /* 进了列的节点：自己的名字让给列（悬停时仍然单独显出来，见 CSS） */
-    for (const el of nodeEls.values()) delete el.dataset.grouped;
-    for (const g of multi) for (const m of g.nodes) { const el = nodeEls.get(m.id); if (el) el.dataset.grouped = '1'; }
-    /* 结构签名没变就只挪位置：拖指针时每帧重建文字会"闪"（第一百二十四轮的教训） */
-    const sig = multi
-      .map((g) => `${g.key}|${g.head}|${g.rows}|${g.hidden}|${g.collapsed}|${g.story}`)
-      .join('\n');
-    if (sig !== groupSig) {
-      groupSig = sig;
-      groupEls.clear();
-      layer.innerHTML = '';
-      for (const g of multi) {
-        const box = document.createElement('div');
-        box.className = `tl-grp${g.story ? ' is-story' : ''}${g.collapsed ? ' is-collapsed' : ''}`;
-        box.dataset.key = g.key;
-        const head = document.createElement('div');
-        head.className = 'tl-grp__head';
-        head.textContent = g.head;
-        const badge = document.createElement('span');
-        badge.className = 'tl-grp__n';
-        badge.textContent = String(g.nodes.length);
-        head.appendChild(badge);
-        box.appendChild(head);
-        if (!g.collapsed) {
-          for (const n of g.nodes.slice(0, g.rows)) {
-            const row = document.createElement('div');
-            row.className = 'tl-grp__row';
-            row.dataset.id = n.id;
-            row.textContent = n.title;
-            box.appendChild(row);
-          }
-          if (g.hidden > 0) {
-            const more = document.createElement('div');
-            more.className = 'tl-grp__more';
-            more.textContent = `+${g.hidden}`;
-            box.appendChild(more);
-          }
-        }
-        layer.appendChild(box);
-        groupEls.set(g.key, box);
-      }
-    }
-    /* 定位：世界事件在下方（列头贴着时间线往下排），剧情事件在上方（列头在最外） */
-    const centerY = half;
-    for (const g of multi) {
-      const box = groupEls.get(g.key);
-      if (!box) continue;
-      const lines = box.children.length;
-      const top = g.story ? centerY - 22 - (lines - 1) * 18 : centerY + 22;
-      box.style.left = `${g.cx}px`;
-      box.style.top = `${top}px`;
-    }
-  }
-
   function renderBase() {
     const tl = timeline();
     if (!tl) {
@@ -851,7 +748,7 @@ export function mountTimeline(
       return;
     }
     const nodes = tl.nodes;
-    const lineHtml = '<div class="tl-line"></div><svg class="tl-leaders"></svg><div class="tl-groups"></div>';   /* 时间线 + 引线层 + 时间组层 */
+    const lineHtml = '<div class="tl-line"></div><svg class="tl-leaders"></svg>';   /* 时间线 + 引线层（引线在节点之前 ⇒ 压在下面） */
     /* ── 结构没变就**不重建 DOM**（第一百二十四轮）─────────────────────────────
        用户 2026-10-25：「部分节点名在拖动指针时会闪烁」。
        真因：这段原来**每帧 `track.innerHTML = …`**，拖指针时每次 pointermove 都会
@@ -876,9 +773,6 @@ export function mountTimeline(
         if (el.dataset.id) nodeEls.set(el.dataset.id, el);
       }
     }
-    /* 先算"时间组"（会给进列的节点打 data-grouped），再排散落的单点标签：
-       顺序不能反 —— 进了列的名字不该再占分层的位置。 */
-    renderLabelGroups();
     layoutNodeLabels();
     renderScale();
     updateCursor();
@@ -1023,8 +917,12 @@ export function mountTimeline(
   /* 节点 HTML（legacy 结构：.tl__n + .cap + .tl__name） */
   function nodeHtml(n: TimelineNode, x: number, sel: boolean): string {
     const typeCls = n.type === 'story_event' ? ' is-story' : n.type === 'world_event' ? ' is-world' : '';
-    return `<div class="tl__n${sel ? ' is-sel' : ''}${typeCls}" data-id="${n.id}" style="left:${x}px;">
-      <div class="cap"></div><div class="tl__name">${escapeHtml(n.title)}</div>
+    /* 年份跟在名字后面，**弱一档**（第一百二十八轮，用户提的）：
+       密集时位置只能表达"大概什么时候"，准确年份得靠这串字读；
+       样式在 `.tl__year`（10px / --fg-2 / 稍透明），排版量宽度时自然把它算进去。 */
+    const yearTxt = n.year < 0 ? `前 ${-n.year} 年` : `${n.year} 年`;
+    return `<div class="tl__n${sel ? ' is-sel' : ''}${typeCls}" data-id="${n.id}" style="left:${x}px;" title="${escapeHtml(n.title)} · ${yearTxt}">
+      <div class="cap"></div><div class="tl__name">${escapeHtml(n.title)}<span class="tl__year">${yearTxt}</span></div>
     </div>`;
   }
   /* ── 指针与画布同帧（第一百二十二轮）─────────────────────────────────────────
@@ -2153,11 +2051,6 @@ export function mountTimeline(
 
   renderExtraTools();
   renderLoops();
-  /* 时间组的"看法"（AI 写在 sandbox-groups.json）：开局拉一次，之后主进程 watch 到变化就重拉 */
-  void loadGroupPlans();
-  (window as unknown as {
-    lingkuangAPI?: { onGroupsChanged?: (cb: () => void) => () => void };
-  }).lingkuangAPI?.onGroupsChanged?.(() => { void loadGroupPlans(); });
 
   /* ══════════ 右键菜单（重新设计：工具已常驻，右键=快捷操作）══════════ */
   let ctxMenu: HTMLElement | null = null;

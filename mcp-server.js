@@ -38,20 +38,6 @@ function loadData() {
   return { timelines: global.window.__SEED_TIMELINES__ || {} };
 }
 
-/* 沙盘"时间组"方案文件（与 App 同一个路径；App 用 fs.watch 盯着，改完界面立刻变） */
-const GROUPS_FILE = () => path.join(userDir(), 'sandbox-groups.json');
-function loadGroups() {
-  try {
-    const d = JSON.parse(fs.readFileSync(GROUPS_FILE(), 'utf8'));
-    if (d && typeof d === 'object' && d.worlds) return d;
-  } catch { /* 没有就当空 */ }
-  return { version: 1, worlds: {} };
-}
-function saveGroups(tree) {
-  fs.mkdirSync(path.dirname(GROUPS_FILE()), { recursive: true });
-  fs.writeFileSync(GROUPS_FILE(), JSON.stringify(tree, null, 2), 'utf8');
-}
-
 /* helper: 收集某时间线的全部可查节点（普通 + 循环展开） */
 function collectNodes(tl) {
   return (tl.nodes || []).map((n) => ({ ...n, __source: 'plain' }));
@@ -156,100 +142,6 @@ server.tool(
       }).join('\n');
     });
     return { content: [{ type: 'text', text: lines.join('\n\n') }] };
-  }
-);
-
-/* ── timeline_groups_get: 给 AI 看"现在怎么分的" + 可用的节点清单 ── */
-server.tool(
-  'timeline_groups_get',
-  '沙盘"密集区时间组"：读出当前的整理方案（AI 或用户给的），以及这条时间线的节点清单（id/年份/标题），供重新分组用',
-  {
-    world: z.string().optional().describe('世界名（缺省：所有世界观）'),
-    timeline: z.string().optional().describe('时间线 id（缺省：该世界全部时间线）'),
-  },
-  async ({ world, timeline }) => {
-    const { timelines } = loadData();
-    const tree = loadGroups();
-    const lines = [];
-    for (const [tid, tl] of Object.entries(timelines)) {
-      if (timeline && tid !== timeline) continue;
-      const wname = tl.__world || '?';
-      if (world && wname !== world) continue;
-      const plan = tree.worlds?.[wname]?.[tid];
-      const nodes = collectNodes(tl);
-      lines.push(`【${wname} / ${tl.name}】(id=${tid}, 节点 ${nodes.length} 个)`);
-      if (plan && plan.groups && plan.groups.length) {
-        lines.push(`  当前方案（${plan.source || '未知来源'}${plan.updatedAt ? ' · ' + plan.updatedAt : ''}）：`);
-        for (const g of plan.groups) {
-          const range = g.from !== undefined && g.to !== undefined ? `${g.from}–${g.to}` : '?';
-          lines.push(`   - [${g.id}] ${g.title || '(无标题)'}  ${range}  ${(g.nodes || []).length} 个：${(g.nodes || []).join(', ')}`);
-        }
-      } else {
-        lines.push('  当前方案：无（界面按"相邻点像素距离"自动分组）');
-      }
-      lines.push('  节点清单：');
-      for (const n of nodes.slice().sort((a, b) => (a.year ?? 0) - (b.year ?? 0))) {
-        lines.push(`   - ${n.id}  ${n.year}  ${n.title}  [${n.type === 'story_event' ? '剧情' : '世界'}]`);
-      }
-    }
-    return { content: [{ type: 'text', text: lines.join('\n') || '(没有匹配的时间线)' }] };
-  }
-);
-
-/* ── timeline_groups_set: AI 写回整理方案 ──────────────────── */
-server.tool(
-  'timeline_groups_set',
-  '写回沙盘"密集区时间组"的整理方案（按世界/时间线覆盖）。写完 App 会自动刷新；传空数组 = 清掉该时间线的方案（回到自动分组）',
-  {
-    world: z.string().describe('世界名，如 维斯莱特'),
-    timeline: z.string().describe('时间线 id，如 tl-主线'),
-    groups: z.array(z.object({
-      id: z.string().optional().describe('组 id（稳定标识，缺省自动生成）'),
-      title: z.string().optional().describe('这一组的名字，如「第一蚀渊入侵时期」（可省略，界面会显示年份区间）'),
-      from: z.number().optional().describe('起始年（用于列头显示）'),
-      to: z.number().optional().describe('结束年'),
-      nodes: z.array(z.string()).describe('这一组包含的节点 id'),
-      note: z.string().optional().describe('为什么这样分（可留空）'),
-    })).describe('分组方案；空数组 = 清除'),
-    source: z.string().optional().describe('来源标记，缺省 ai'),
-  },
-  async ({ world, timeline, groups, source }) => {
-    const { timelines } = loadData();
-    const tl = timelines[timeline];
-    if (!tl) return { content: [{ type: 'text', text: `⚠️ 找不到时间线 ${timeline}` }] };
-    const known = new Set(collectNodes(tl).map((n) => n.id));
-    const unknown = [];
-    groups.forEach((g) => (g.nodes || []).forEach((id) => { if (!known.has(id)) unknown.push(id); }));
-    const tree = loadGroups();
-    tree.worlds = tree.worlds || {};
-    tree.worlds[world] = tree.worlds[world] || {};
-    if (!groups.length) {
-      delete tree.worlds[world][timeline];
-    } else {
-      tree.worlds[world][timeline] = {
-        source: source || 'ai',
-        updatedAt: new Date().toISOString(),
-        groups: groups.map((g, i) => ({
-          id: g.id || `g${i + 1}`,
-          title: g.title || '',
-          from: g.from,
-          to: g.to,
-          nodes: g.nodes || [],
-          note: g.note || '',
-        })),
-      };
-    }
-    tree.version = 1;
-    saveGroups(tree);
-    const msg = groups.length
-      ? `已写入 ${groups.length} 组（覆盖 ${new Set(groups.flatMap((g) => g.nodes || [])).size} 个节点）`
-      : '已清空该时间线的方案（界面回到自动分组）';
-    return {
-      content: [{
-        type: 'text',
-        text: msg + (unknown.length ? `\n⚠️ 这些 id 不存在、已原样保留（界面会忽略）：${unknown.join(', ')}` : '') + `\n文件：${GROUPS_FILE()}`,
-      }],
-    };
   }
 );
 
