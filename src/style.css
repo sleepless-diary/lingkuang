@@ -415,7 +415,13 @@ body.lk-split-drag, body.lk-split-drag * { cursor: row-resize !important; }
   cursor: pointer;
   text-align: center;
   z-index: 2;
+  /* 「已发生 / 未发生」的淡化（updateCursor 写 opacity）：给它一点过渡，
+     拖指针扫过节点时才是渐隐渐显，而不是一帧闪一下（用户 2026-10-25：「会闪烁」）。
+     ⚠️ 这条只有在节点 DOM **被复用**时才有效 —— 第一百二十四轮之前每帧重建，
+     过渡每帧归零，等于没有。 */
+  transition: opacity 160ms linear;
 }
+@media (prefers-reduced-motion: reduce) { .tl__n { transition: none; } }
 .tl__n:hover { z-index: 9999; }
 .tl__n .cap {
   position: absolute;

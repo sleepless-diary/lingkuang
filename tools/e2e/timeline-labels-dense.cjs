@@ -150,7 +150,67 @@ async function main() {
     ok('引线层存在', false, leaders);
   }
 
-  /* ③ 缩到很小：节点全挤在一起 —— 允许折叠，但**不允许重叠**，且折叠的悬停仍能出字 */
+  /* ③ 上/下分侧：剧情事件的名字必须在线上方、世界事件在下方（第一百二十四轮复核） */
+  const sides = await ev(`(() => {
+    const tr = document.querySelector('.tl-track').getBoundingClientRect();
+    const mid = tr.top + tr.height / 2;
+    const bad = [];
+    for (const n of document.querySelectorAll('.tl__n')) {
+      if (n.dataset.tier === 'hide') continue;
+      const nm = n.querySelector('.tl__name');
+      const r = nm.getBoundingClientRect();
+      const story = n.classList.contains('is-story');
+      if (story && r.bottom > mid + 2) bad.push({ text: nm.textContent, kind: '剧情但跑到线下面', y: Math.round(r.top - tr.top) });
+      if (!story && r.top < mid - 2) bad.push({ text: nm.textContent, kind: '世界但跑到线上面', y: Math.round(r.top - tr.top) });
+    }
+    return { bad, total: document.querySelectorAll('.tl__n').length };
+  })()`);
+  console.log('sides =', JSON.stringify(sides));
+  if (sides) ok('剧情名字全在线上方、世界名字全在线下方', sides.bad.length === 0, sides);
+
+  /* ④ 拖指针：节点元素**不许**被每帧重建，淡化要渐变（第一百二十四轮「闪烁」） */
+  const drag = await ev(`(async () => {
+    const wrap = document.querySelector('.tl-wrap');
+    const r = wrap.getBoundingClientRect();
+    const cur = document.querySelector('.tl-cursor');
+    const handle = document.querySelector('.tl-cursor-handle');
+    const start = Math.max(40, cur.getBoundingClientRect().left - r.left);
+    const frame = () => new Promise((res) => requestAnimationFrame(res));
+    const nodes = [...document.querySelectorAll('.tl__n')];
+    nodes.forEach((n, i) => { n.dataset.mark = 'm' + i; });
+    /* 选最右边那个节点，用来观察淡化 */
+    const target = nodes[nodes.length - 1];
+    const tx = target.getBoundingClientRect().left - r.left + 13;
+    handle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, buttons: 1, clientX: r.left + start, clientY: r.top + 10, pointerId: 21 }));
+    let replaced = 0;
+    let prev = document.querySelector('.tl__n');
+    for (let i = 0; i <= 12; i++) {
+      window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 1, clientX: r.left + start + i * 12, clientY: r.top + 10, pointerId: 21 }));
+      await frame();
+      const now = document.querySelector('.tl__n');
+      if (now !== prev) replaced++;
+      prev = now;
+    }
+    /* 再把指针拖过那个节点，逐帧记它的 opacity（应先暗后亮、有中间帧） */
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 1, clientX: r.left + Math.max(20, tx - 150), clientY: r.top + 10, pointerId: 21 }));
+    for (let i = 0; i < 14; i++) await frame();
+    const trail = [];
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 1, clientX: r.left + tx + 40, clientY: r.top + 10, pointerId: 21 }));
+    for (let i = 0; i < 16; i++) { await frame(); trail.push(Number(getComputedStyle(target).opacity)); }
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 21 }));
+    const mids = trail.filter((v) => v > 0.45 && v < 0.95).length;
+    let maxJump = 0;
+    for (let i = 1; i < trail.length; i++) maxJump = Math.max(maxJump, Math.abs(trail[i] - trail[i - 1]));
+    const survivors = [...document.querySelectorAll('.tl__n')].filter((n) => n.dataset.mark).length;
+    return { replaced, survivors, total: nodes.length, mids, maxJump: +maxJump.toFixed(3) };
+  })()`);
+  console.log('drag =', JSON.stringify(drag));
+  if (drag) {
+    ok('拖指针时不重建节点元素（旧元素一个不少）', drag.replaced === 0 && drag.survivors === drag.total, drag);
+    ok('淡化是渐变的（有中间帧、单帧不跳变）', drag.mids >= 2 && drag.maxJump <= 0.5, drag);
+  }
+
+  /* ⑤ 缩到很小：节点全挤在一起 —— 允许折叠，但**不允许重叠**，且折叠的悬停仍能出字 */
   const zoomed = await ev(`(async () => {
     const wrap = document.querySelector('.tl-wrap');
     const r = wrap.getBoundingClientRect();

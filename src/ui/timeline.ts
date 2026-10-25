@@ -638,6 +638,10 @@ export function mountTimeline(
 
   /* ── 渲染节点 ── */
   let selectedId: string | null = null;
+  /* 节点 DOM 的复用账本（第一百二十四轮）：结构签名没变就只挪位置、不重建（见 renderBase）。
+     非线性分支走另一套排版，它重建之后要把签名清掉，否则切回线性会命中"结构没变"的旧 DOM。 */
+  let nodeSig = '';
+  const nodeEls = new Map<string, HTMLElement>();
   /* ── 节点名分层 + 引线（第一百二十三轮重写）─────────────────────────────────
      用户 2026-10-25：「节点密集时节点名称会重叠，能不能做自适应分层，同时一条细线连接
      节点名称和节点」。
@@ -784,16 +788,37 @@ export function mountTimeline(
     const tl = timeline();
     if (!tl) {
       track.innerHTML = '<div style="padding:20px;font-size:var(--text-sm);color:var(--fg-2);">无时间线 · 待建</div>';
+      nodeSig = '';
+      nodeEls.clear();
       clearScale();
       return;
     }
     const nodes = tl.nodes;
     const lineHtml = '<div class="tl-line"></div><svg class="tl-leaders"></svg>';   /* 时间线 + 引线层（引线在节点之前 ⇒ 压在下面） */
-    track.innerHTML =
-      lineHtml +
-      nodes
-        .map((n) => nodeHtml(n, timeToX(nodeEpoch(n)), n.id === selectedId))
-        .join('');
+    /* ── 结构没变就**不重建 DOM**（第一百二十四轮）─────────────────────────────
+       用户 2026-10-25：「部分节点名在拖动指针时会闪烁」。
+       真因：这段原来**每帧 `track.innerHTML = …`**，拖指针时每次 pointermove 都会
+       触发一次 store 通知 ⇒ 31 个节点元素全被换掉（实测拖 13 帧、13 次全部换新，
+       带着记号的旧元素一个不剩）。元素一换：文字要重新栅格化（细看就是抖）、
+       任何 CSS 过渡归零、`:hover` 也丢 ⇒ 看着就是"闪"。
+       现在按**结构签名**（id/标题/类型/选中）判断：一样就只挪 left，不动 DOM。
+       签名字段是"画在 HTML 里的全部东西"——`nodeHtml()` 只写这几个，改它记得同步这里。 */
+    const sig = nodes
+      .map((n) => `${n.id}|${n.title}|${n.type}|${n.id === selectedId ? 1 : 0}`)
+      .join('\n');
+    if (sig === nodeSig && nodeEls.size === nodes.length) {
+      for (const n of nodes) {
+        const el = nodeEls.get(n.id);
+        if (el) el.style.left = timeToX(nodeEpoch(n)) + 'px';
+      }
+    } else {
+      nodeSig = sig;
+      track.innerHTML = lineHtml + nodes.map((n) => nodeHtml(n, timeToX(nodeEpoch(n)), n.id === selectedId)).join('');
+      nodeEls.clear();
+      for (const el of Array.from(track.querySelectorAll<HTMLElement>('.tl__n'))) {
+        if (el.dataset.id) nodeEls.set(el.dataset.id, el);
+      }
+    }
     layoutNodeLabels();
     renderScale();
     updateCursor();
@@ -2019,6 +2044,9 @@ export function mountTimeline(
     /* 顶部标尺是按**时间**画刻度的，而这里的 x 是序列序 → 刻度与节点对不上；
        标尺正是这个模式要排除的「时间干扰」，清空（切回线性时 baseRender 会重画）。 */
     clearScale();
+    /* 非线性那套 DOM 不能给线性视图复用：清签名，切回线性时强制重建 */
+    nodeSig = '';
+    nodeEls.clear();
     track.innerHTML =
       `<div class="tl-line" style="left:0;right:0;"></div><svg class="tl-leaders"></svg>` +
       ordered
