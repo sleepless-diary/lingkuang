@@ -658,7 +658,6 @@ export function mountTimeline(
        - 标签 top 写在节点的 `--lk-top` 上（CSS 只留兜底值），所以层数不再受 CSS 限制。 */
   const TIER_STEP = 18;     /* 每层 18px（12px 字 + 6px 气口） */
   const TIER_GAP = 4;       /* 同一层里两行字之间至少留 4px */
-  const TIER_DX = 10;       /* 被挪开的标签统一**左对齐到圆点右侧 10px**（剧情事件是左侧 10px） */
   const MAX_TIERS = 8;      /* 单侧上限：再多就折叠（再往下会离节点太远，引线比字还长） */
   function layoutNodeLabels(): void {
     const nodes = Array.from(track.querySelectorAll<HTMLElement>('.tl__n'));
@@ -690,125 +689,44 @@ export function mountTimeline(
     const lastDown = new Array(nDown).fill(-1e9);
     for (const it of items) {
       const last = it.story ? lastUp : lastDown;
-      /* 层 0 居中（贴着圆点）；层 ≥1 一律**贴到圆点一侧**（世界在右、剧情在左），
-         这样同一簇的层叠成一根整齐的竖列，引线用"主干 + 短横钩"就永远不会穿过文字。
-         ⚠️ 这里**不许**再把 dx 夹到轨道范围内（第一百二十五轮）：那样一来，
-         快滚出画面的名字会被硬推回画面里 —— 节点走了、字还贴在边上不动。
-         用户 2026-10-25：「不要钳制，就和节点一样正常出场」⇒ 让名字跟着节点一起
-         被画布的 overflow:hidden 裁掉，跟圆点是同一套出场方式。 */
-      const dxOf = (k: number): number => (k === 0 ? 0 : (it.story ? -1 : 1) * (it.w / 2 + TIER_DX));
+      /* 名字**一律居中在节点正上/正下**（第一百二十六轮）：用户 2026-10-25
+         「要不还是名称横坐标直接对准节点吧，现在从侧边拉一条线只能通过线和节点对应起来」。
+         之前为了让引线不压字，把层 ≥1 的名字让到一侧（`--lk-dx = w/2+10`），代价是
+         "这行字属于谁"要靠引线去认。现在不留横向位移：同一列的名字就是同一个点的，
+         竖直方向越靠下（剧情越靠上）层越深。冲突判定仍在同一层内按 x 做，所以不会重叠。 */
       let tier = 0;
       let left = 0;
       let right = 0;
       for (; tier < last.length; tier++) {
-        const dx = dxOf(tier);
-        left = it.cx - it.w / 2 + dx;
-        right = it.cx + it.w / 2 + dx;
+        left = it.cx - it.w / 2;
+        right = it.cx + it.w / 2;
         if (left >= last[tier] + TIER_GAP) break;
       }
       if (tier >= last.length) {
         it.n.dataset.tier = 'hide';
         continue;
       }
-      const dx = dxOf(tier);
       last[tier] = Math.max(last[tier], right);
       it.n.dataset.tier = String(tier);
-      /* 层 0 用默认值（CSS 兜底）；其余写死到 --lk-top / --lk-dx */
+      /* 层 0 用默认值（CSS 兜底）；其余写死到 --lk-top */
       if (tier > 0) {
         const top = it.story ? -19 - tier * TIER_STEP : 22 + tier * TIER_STEP;
         it.n.style.setProperty('--lk-top', top + 'px');
       }
-      if (dx !== 0) it.n.style.setProperty('--lk-dx', dx + 'px');
     }
     drawLeaderLines();
   }
 
-  /** 被挪开的标签（tier ≥ 1）与自己的圆点之间的引线：**主干 + 短横钩**。
+  /** 名字与圆点之间**不再画线**（第一百二十六轮）。
    *
-   *     ●
-   *     │  铸钟          ← 层 0 不加线（就贴着圆点）
-   *     ├── 冬临
-   *     ├── 围城
-   *     └── 退位
-   *
-   *  为什么不是一条斜线直连：同一时刻挤一堆时，去第 4 层的斜线会**从第 1~3 层那几行字上穿过去**
-   *  （实测截图里正是这样，字被线切断很难读）。主干竖直走在圆点那一列（标签已让开 10px），
-   *  每行只在行心伸一小段横钩到字的近边 ⇒ 线永远不压到任何一行字。
-   *  ⚠️ 画在 `.tl-track` 的 SVG 里、且在节点**之前** ⇒ 压在圆点和字下面（见 style.css）。 */
+   *  用户 2026-10-25：「要不还是名称横坐标直接对准节点吧，现在从侧边拉一条线只能通过线和
+   *  节点对应起来」——名字居中到节点正上/正下之后，"这行字属于谁"一眼就能看出来，线是多余的。
+   *  两种画法都试过且都失败：直通竖线会穿过中间几行字；只画行间空隙那段，邻居标签的盒子
+   *  又会盖住这条竖线的 x（实测 24 段里 45 处压字）。与其留一堆断断续续还压字的碎线，不如不画。
+   *  函数保留（三个重画入口都在调），只负责把旧线清干净。 */
   function drawLeaderLines(): void {
     const svg = track.querySelector<SVGSVGElement>('.tl-leaders');
-    if (!svg) return;
-    const tr = track.getBoundingClientRect();
-    const out: string[] = [];
-    const r2 = (v: number): number => Math.round(v * 2) / 2;
-    const nodes = Array.from(track.querySelectorAll<HTMLElement>('.tl__n'));
-    /* 先把每个节点的几何量出来：算主干起点时要避开"同列第一行（tier 0）"的字，
-       否则竖直主干会从那行字上穿过去（实测截图里正是这样）。 */
-    const geo = nodes.map((n) => {
-      const nr = n.getBoundingClientRect();
-      const name = n.querySelector<HTMLElement>('.tl__name');
-      const lr = name?.getBoundingClientRect();
-      return {
-        n,
-        tier: n.dataset.tier ?? '',
-        story: n.classList.contains('is-story'),
-        cx: nr.left + nr.width / 2 - tr.left,
-        ny: nr.top - tr.top,
-        nh: nr.height,
-        label: lr ? { left: lr.left - tr.left, right: lr.right - tr.left, top: lr.top - tr.top, bottom: lr.bottom - tr.top } : null,
-      };
-    });
-    for (const g of geo) {
-      if (!g.tier || g.tier === '0' || g.tier === 'hide' || !g.label) continue;
-      const x0 = g.cx;
-      /* 起点贴着**圆点（cap，14px）**的边缘，不是 26px 的外框：外框底边比圆点低 6px，
-         正好落进"贴着圆点下方"那行字里（实测 3 条引线的起点横段都压在那行字上）。 */
-      let y0 = g.story ? g.ny + 6 - 1 : g.ny + 20 + 1;
-      /* 同一列、同一侧、tier 0 的那行字会挡住主干 —— 主干从它外侧起步。
-         判"挡住"用**标签盒是否盖住主干这条竖线**（不能用节点 x 距离：同一簇的节点
-         也会差 4~5px，实测 3px 阈值漏判了 5 条线，主干正好从"铸钟"上穿过去）。 */
-      for (const s of geo) {
-        if (s.tier !== '0' || s.story !== g.story || !s.label) continue;
-        if (x0 < s.label.left - 1 || x0 > s.label.right + 1) continue;
-        y0 = g.story ? Math.min(y0, s.label.top - 2) : Math.max(y0, s.label.bottom + 2);
-      }
-      const cy = (g.label.top + g.label.bottom) / 2;          /* 行心：横钩画在这里 */
-      if (Math.abs(cy - y0) < 3) continue;                   /* 已经贴上了，不需要线 */
-      /* 主干**让到挡路标签的外侧**（第一百二十四轮补）：同一带里每个节点的列边不齐
-         （dx 是相对各自圆点的 w/2+10），所以 A 的主干可能正好插进 B 那行字里
-         —— 真实数据实测 16 条里有 4 条。这里把主干平移到"所有竖直跨度内标签"的外侧，
-         再在起点/终点各拐一下（圆点 → 让位处 → 行心 → 字的近边）。 */
-      const myId = g.n.dataset.id;
-      const ylo = Math.min(cy, y0), yhi = Math.max(cy, y0);
-      /* 起点：贴着**自己这行字**的外侧（横钩只有 4px），而不是从圆点直接竖上去 ——
-         真实数据里一节挤 5 个节点时，圆点那列正好落在隔壁那一列的中间，
-         从圆点竖上去会横穿别人的字、横钩也要拉 40px，整片看着像梯子。 */
-      let xs = g.story ? g.label.right + 4 : g.label.left - 4;
-      for (let pass = 0; pass < 3; pass++) {
-        for (const s of geo) {
-          if (!s.label || s.n.dataset.id === myId) continue;
-          if (s.label.bottom < ylo - 1 || s.label.top > yhi + 1) continue;
-          if (g.story) { if (xs > s.label.left - 4 && xs < s.label.right + 4) xs = s.label.right + 4; }
-          else { if (xs < s.label.right + 4 && xs > s.label.left - 4) xs = s.label.left - 4; }
-        }
-      }
-      /* 起点那段横线（圆点 → 主干）会从别的字上横穿过去（实测 3 条：起点正贴着
-         "圆点下方那行字"的顶边，差 1px 也算压）。把 y0 整段让到那行字的外侧再走：
-         世界事件往下让到字底 +3，剧情事件往上让到字顶 -3。 */
-      for (let pass = 0; pass < 2; pass++) {
-        const xlo = Math.min(x0, xs), xhi = Math.max(x0, xs);
-        for (const s of geo) {
-          if (!s.label || s.n.dataset.id === myId) continue;
-          if (s.label.right < xlo + 1 || s.label.left > xhi - 1) continue;
-          if (y0 > s.label.top - 3 && y0 < s.label.bottom + 3) {
-            y0 = g.story ? s.label.top - 3 : s.label.bottom + 3;
-          }
-        }
-      }
-      const xEnd = g.story ? g.label.right + 2 : g.label.left - 2;
-      out.push(`<path data-id="${myId ?? ''}" d="M${r2(x0)} ${r2(y0)} L${r2(xs)} ${r2(y0)} L${r2(xs)} ${r2(cy)} L${r2(xEnd)} ${r2(cy)}"/>`);
-    }
-    svg.innerHTML = out.join('');
+    if (svg && svg.childNodes.length) svg.innerHTML = '';
   }
 
   function renderBase() {

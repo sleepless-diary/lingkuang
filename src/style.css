@@ -439,7 +439,7 @@ body.lk-split-drag, body.lk-split-drag * { cursor: row-resize !important; }
 .tl__n .tl__name {
   position: absolute;
   top: var(--lk-top, 22px);   /* 层高由 layoutNodeLabels() 写进 --lk-top（默认＝紧贴圆点下方） */
-  left: calc(50% + var(--lk-dx, 0px));   /* 越往下/上的层往一侧让一点（扇开，引线才分得清） */
+  left: 50%;   /* 名字一律居中在节点正上/正下（第一百二十六轮） */
   transform: translateX(-50%);
   font-size: 12px;
   color: var(--fg);

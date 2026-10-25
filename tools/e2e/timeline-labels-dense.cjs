@@ -95,63 +95,50 @@ async function main() {
   ok('可见标签 0 重叠', overlaps === 0, { overlaps, pairs });
   ok('折叠数 ≤ 2（尽量都显示）', hidden.length <= 2, { hidden: hidden.map((h) => h.text) });
 
-  /* ② 引线：主干 + 短横钩（path）。每条被挪开的标签都该有一条；
-     起点对准自己的圆点中心（±2px），横钩在**行心**、伸到**自己那行字**的近边（±3px）。 */
+  /* ② 名字必须**横坐标对准节点**（用户 2026-10-25：「名称横坐标直接对准节点吧」）——
+     这是这一轮的核心要求：不再靠"从侧边拉一条线"去认归属。 */
+  const centered = await ev(`(() => {
+    const nodes = [...document.querySelectorAll('.tl__n')];
+    const bad = [];
+    for (const n of nodes) {
+      if (n.dataset.tier === 'hide') continue;
+      const nr = n.getBoundingClientRect(), lr = n.querySelector('.tl__name').getBoundingClientRect();
+      const dc = Math.abs((lr.left + lr.right) / 2 - (nr.left + nr.width / 2));
+      if (dc > 1) bad.push({ text: n.querySelector('.tl__name').textContent, dc: Math.round(dc * 10) / 10 });
+    }
+    return { total: nodes.length, badCount: bad.length, bad: bad.slice(0, 5) };
+  })()`);
+  console.log('centered =', JSON.stringify(centered));
+  if (centered) ok('每个名字的横向中心对准自己的节点（±1px）', centered.badCount === 0, centered);
+
+  /* ③ 连接线：**穿行于行间空隙**的一根竖虚线（不再从侧边拉钩），永远不压字 */
   const leaders = await ev(`(() => {
     const svg = document.querySelector('.tl-track .tl-leaders');
     const nodes = [...document.querySelectorAll('.tl__n')];
     const tr = document.querySelector('.tl-track').getBoundingClientRect();
     const paths = svg ? [...svg.querySelectorAll('path')].map((p) => {
       const nums = (p.getAttribute('d') || '').match(/-?[\\d.]+/g)?.map(Number) || [];
-      /* d = M x0 y0 L xs y0 L xs cy L xEnd cy —— 主干在 xs（可能为让开别人的字而平移） */
-      return {
-        id: p.getAttribute('data-id'),
-        x0: nums[0], y0: nums[1], xs: nums[4], cy: nums[5], xEnd: nums[6],
-        stroke: getComputedStyle(p).stroke, w: getComputedStyle(p).strokeWidth,
-      };
+      return { x1: nums[0], y1: nums[1], x2: nums[2], y2: nums[3] };
     }) : [];
-    const need = nodes.filter((n) => n.dataset.tier && n.dataset.tier !== '0' && n.dataset.tier !== 'hide').length;
-    const boxes = new Map(nodes.map((n) => {
-      const nr = n.getBoundingClientRect(), lr = n.querySelector('.tl__name').getBoundingClientRect();
-      return [n.dataset.id, {
-        story: n.classList.contains('is-story'),
-        cx: nr.left + nr.width / 2 - tr.left, ny: nr.top - tr.top, nh: nr.height,
-        left: lr.left - tr.left, right: lr.right - tr.left, top: lr.top - tr.top, bottom: lr.bottom - tr.top,
-      }];
-    }));
-    let badStart = 0, badElbow = 0, badEnd = 0, cross = 0;
+    const boxes = [...nodes].map((n) => {
+      const lr = n.querySelector('.tl__name').getBoundingClientRect();
+      return { left: lr.left - tr.left, right: lr.right - tr.left, top: lr.top - tr.top, bottom: lr.bottom - tr.top };
+    });
+    /* 万一以后又把线加回来：任何线段都不许和名字盒相交（这条一直有效） */
+    let cross = 0;
     for (const p of paths) {
-      const b = boxes.get(p.id);
-      if (!b) { badStart++; continue; }
-      /* 起点：不越过自己的圆点（cap 是 14px、居中在 26px 外框里：上沿 ny+6、下沿 ny+20） */
-      const okSide = b.story ? p.y0 <= b.ny + 7 : p.y0 >= b.ny + 19;
-      if (!okSide) { badStart++; continue; }
-      /* 主干必须是竖的（x 不变），横钩必须落在字行的心上 */
-      if (!(p.xs === p.xs)) badElbow++;
-      if (Math.abs(p.cy - (b.top + b.bottom) / 2) > 2) badElbow++;
-      /* 横钩终点贴着自己那行字的近边（世界在左、剧情在右） */
-      const nearEdge = b.story ? b.right + 2 : b.left - 2;
-      if (Math.abs(p.xEnd - nearEdge) > 3) badEnd++;
-      /* 主干（竖段）与起点横段都不许压在**任何一行字**上 */
-      const ylo = Math.min(p.y0, p.cy), yhi = Math.max(p.y0, p.cy);
-      for (const bb of boxes.values()) {
-        const hitSpine = p.xs >= bb.left - 1 && p.xs <= bb.right + 1 && yhi > bb.top + 1 && ylo < bb.bottom - 1;
-        const xlo = Math.min(p.x0, p.xs), xhi = Math.max(p.x0, p.xs);
-        const hitJog = p.y0 > bb.top - 1 && p.y0 < bb.bottom + 1 && xhi > bb.left + 1 && xlo < bb.right - 1;
-        if (hitSpine || hitJog) cross++;
+      const ylo = Math.min(p.y1, p.y2), yhi = Math.max(p.y1, p.y2);
+      for (const b of boxes) {
+        if (p.x1 >= b.left - 1 && p.x1 <= b.right + 1 && yhi > b.top + 1 && ylo < b.bottom - 1) cross++;
       }
     }
-    return { hasSvg: !!svg, paths: paths.length, need, badStart, badElbow, badEnd, cross, sample: paths.slice(0, 3) };
+    return { hasSvg: !!svg, paths: paths.length, cross };
   })()`);
   console.log('leaders =', JSON.stringify(leaders));
-  if (leaders && leaders.hasSvg) {
-    ok('被挪开的标签都有引线', leaders.paths >= leaders.need, leaders);
-    ok('引线起点不越过自己的圆点', leaders.badStart === 0, leaders);
-    ok('主干竖直 + 横钩在行心', leaders.badElbow === 0, leaders);
-    ok('横钩终点贴着自己那行字', leaders.badEnd === 0, leaders);
-    ok('主干不压在任何一个名字上', leaders.cross === 0, leaders);
-  } else {
-    ok('引线层存在', false, leaders);
+  if (leaders) {
+    /* 第一百二十六轮：名字居中到节点之后，线是多余的（试过两种画法都压字/断断续续）⇒ 不画 */
+    ok('不再从侧边拉线（名字已经对准节点）', leaders.paths === 0, leaders);
+    ok('没有线压在名字上', leaders.cross === 0, leaders);
   }
 
   /* ③ 上/下分侧：剧情事件的名字必须在线上方、世界事件在下方（第一百二十四轮复核） */
