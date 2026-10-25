@@ -490,13 +490,16 @@ export function renderMap(store: Store, host: HTMLElement): void {
     if (openView) void openBigView();
   };
   const onCancel = () => { endDrag(false); };
-  const onResize = () => fitView();
+  /* 第一百二十二轮：地图**可以收起了**（上下分割条 / 标题栏按钮）。收起时这一格高度 ≈ 0，
+     `fitView()` 会把缩放算成 0 或负数，展开后要么一片空白、要么比例全错 ——
+     所以高度不够就**不要量**，等展开后的那次 ResizeObserver 再算。 */
+  const onResize = () => { if ((stage.parentElement?.clientHeight ?? 0) >= 60) fitView(); };
   /* 工作室的「清空旧笔迹」：只清老局部地形留下的手刷笔迹（第一百零九轮画笔条已退场）。*/
   const onClearEvt = () => clearLegacyPaint();
   /* ⭐ 只监听 window.resize 是不够的：地图栏**自己**也会变高变矮 —— 上面那行状态文字一变长
      （生成地形后正是如此）就换行、工具栏变高、下面的格子变矮，而缩放还按老高度算 ⇒
      图被切掉一截（第九十三轮实测：格子 289→261，缩放仍按 289）。ResizeObserver 一并盯住。 */
-  const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => fitView()) : null;
+  const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => onResize()) : null;
   if (ro && stage.parentElement) ro.observe(stage.parentElement);
   mapCleanup?.();
   window.addEventListener('pointermove', onMove);

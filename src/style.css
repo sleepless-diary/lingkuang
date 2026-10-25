@@ -221,6 +221,39 @@ body {
 .lk-pane { display: flex; flex-direction: column; min-height: 0; }
 .lk-pane-timeline { flex: 1; border-bottom: 1px solid var(--border); }
 .lk-pane-map { flex: 1; }
+/* 收起态（第一百二十二轮）：地图只留标题栏。`flex:0 0 auto` 由 JS 一起设，
+   这里负责藏 body —— 只藏 body 不藏 head，是因为「展开」按钮就在 head 上。 */
+.lk-pane-map.is-collapsed .lk-pane-body { display: none; }
+.lk-pane-map.is-collapsed { border-top: 0; }
+/* 面板头的分组竖线（第一百二十二轮）：1px、12px 高，把「撤销/视图 / 页签 / 新建」分开。
+   用伪元素而不是 border，是因为它夹在 flex 行里，不想参与任何宽度计算。 */
+.lk-tl-sep { flex: 0 0 auto; width: 1px; height: 12px; background: var(--border); margin: 0 2px; }
+/* 地图标题栏右端的收起按钮（第一百二十二轮） */
+#lk-map-toggle { margin-left: auto; flex-shrink: 0; }
+/* 上下分割条（第一百二十二轮）：6px 的抓握区 + 1px 的视觉线。
+   抓握区比线宽，是因为 1px 的线用鼠标去够太累；hover / 拖动时线变强调色。 */
+.lk-split {
+  position: relative;
+  flex: 0 0 auto;
+  height: 6px;
+  margin: -3px 0 -3px;          /* 上下各压 3px：视觉上仍是一条 1px 的分隔线，不吃布局 */
+  cursor: row-resize;
+  z-index: 6;
+  touch-action: none;
+}
+.lk-split::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; top: 2.5px;
+  height: 1px;
+  background: var(--border);
+  transition: background 120ms var(--ease-standard);
+}
+.lk-split:hover::after, .lk-split.is-drag::after { background: var(--accent); }
+.lk-split:focus-visible { outline: none; }
+.lk-split:focus-visible::after { background: var(--accent); height: 2px; top: 2px; }
+/* 拖分割条时整窗都是 row-resize，指针扫过地图/画布也不会变成别的光标 */
+body.lk-split-drag, body.lk-split-drag * { cursor: row-resize !important; }
 .lk-pane-head {
   padding: 6px 12px;
   font-size: var(--text-xs);
@@ -2035,10 +2068,12 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
 .ed-tnode-item:hover .ed-thover,
 .ed-tnode-item.is-on .ed-thover { opacity: 1; transform: none; transition-delay: 180ms; }
 
-/* 时间轴指针（2026-10-24）：拖拽时 70ms 跟随缓动 —— 指针不再"贴着鼠标硬走"，
-   而是有一点重量。只在 left 上过渡（这元素本来就是绝对定位，不触发重排连锁）。 */
-.tl-cursor { transition: left 70ms linear; will-change: left; }
-@media (prefers-reduced-motion: reduce) { .tl-cursor { transition: none; } }
+/* 时间轴指针（第一百二十二轮改）：**不要 CSS transition**。
+   2026-10-24 这里写过 `transition: left 70ms linear`（想让指针"有点重量"），但那是浏览器自己的
+   时钟：视图缓动每帧把节点推到新位置，指针却还要再走 70ms —— 实测平移时两者相对位移 720px
+   （.review/probe-r122.cjs）。现在指针的时间值在 timeline.ts 的同一个 rAF 里缓动，
+   位置每帧现算，和节点同帧落位。这条规则留着只为**覆盖旧版残留**（热更新/旧缓存）。 */
+.tl-cursor { transition: none; }
 
 /* 段落聚焦（decoration 版）：光标所在顶层块带 .is-cur，其余压暗；聚焦才生效。 */
 #cx-doc .tiptap > * { transition: opacity 200ms var(--ease-standard); }

@@ -31,8 +31,11 @@ export function renderShell(store: Store, host: HTMLElement): void {
               <div class="lk-pane-head"></div>
               <div class="lk-pane-body lk-placeholder">时间线视图</div>
             </div>
+            <div class="lk-split" id="lk-split" role="separator" aria-orientation="horizontal" tabindex="0"
+                 aria-label="拖动调整时间线与地图的上下比例；双击收起/展开地图"
+                 title="拖动调整上下比例（双击收起/展开地图）"></div>
             <div class="lk-pane lk-pane-map" id="lk-pane-map">
-              <div class="lk-pane-head">地图 <span class="lk-ph">手绘 / 生成地形</span></div>
+              <div class="lk-pane-head">地图 <span class="lk-ph">手绘 / 生成地形</span><button class="lk-tl-tab is-new" id="lk-map-toggle" title="收起地图，让时间线独占全高">收起</button></div>
               <div class="lk-pane-body lk-placeholder">地图视图</div>
             </div>
           </section>
@@ -66,6 +69,7 @@ export function renderShell(store: Store, host: HTMLElement): void {
     mapBody.classList.remove('lk-placeholder');
     import('./map').then((m) => m.renderMap(store, mapBody));
   }
+  mountSandboxSplit();
   store.subscribe(() => {
     renderWorldTabs(store);
     renderTimelineTabs(store);
@@ -76,6 +80,94 @@ export function renderShell(store: Store, host: HTMLElement): void {
    拖动节点时每帧被调一次，无条件重写 innerHTML 会每帧重建整个世界栏并重绑监听。 */
 let worldTabsSig = '';
 
+/* ══════════ 上下分割（第一百二十二轮）══════════
+   方案里那条「上下分割可拖拽 + 地图可折叠，比例存 localStorage」。
+   以前是写死的 `flex:1 / flex:1`：地图太挤只能改代码重开，时间线太挤再改回来
+   （设计稿里作者为此单次 5 分钟、近一月 6 次）。
+   做法：**只改 flex-grow**（basis 固定 0），不写 height —— 地图那边靠 ResizeObserver
+   `fitView()`，改 flex 它自然会重新量；写 height 反而会与它的观测打架。
+   比例是**会话态**（这台机器看这张图的习惯），存 localStorage，不进数据文件。 */
+const SPLIT_KEY = 'lingkuang-split';
+const SPLIT_COLLAPSED_KEY = 'lingkuang-split-collapsed';
+const SPLIT_MIN = 0.18;      /* 再小时间线就放不下标尺 + 节点名了 */
+const SPLIT_MAX = 0.82;      /* 再小地图只剩一条缝，跟收起没区别 */
+function clampSplit(v: number): number { return Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, v)); }
+function readSplit(): number {
+  const v = Number(localStorage.getItem(SPLIT_KEY));
+  return Number.isFinite(v) && v > 0 ? clampSplit(v) : 0.5;
+}
+function mountSandboxSplit(): void {
+  const sandbox = document.getElementById('lk-sandbox');
+  const tl = document.getElementById('lk-pane-timeline');
+  const map = document.getElementById('lk-pane-map');
+  const bar = document.getElementById('lk-split');
+  const toggle = document.getElementById('lk-map-toggle');
+  if (!sandbox || !tl || !map || !bar) return;
+  let ratio = readSplit();
+  let collapsed = localStorage.getItem(SPLIT_COLLAPSED_KEY) === '1';
+  const apply = (): void => {
+    if (collapsed) {
+      /* 收起 = 地图只留标题栏（body 藏起来、pane 不吸剩余空间），时间线独占 */
+      tl.style.flex = '1 1 0';
+      map.style.flex = '0 0 auto';
+      map.classList.add('is-collapsed');
+      if (toggle) toggle.textContent = '展开';
+    } else {
+      tl.style.flex = `${ratio} 1 0`;
+      map.style.flex = `${1 - ratio} 1 0`;
+      map.classList.remove('is-collapsed');
+      if (toggle) toggle.textContent = '收起';
+    }
+    bar.setAttribute('aria-valuenow', String(Math.round((collapsed ? 1 : ratio) * 100)));
+  };
+  const setCollapsed = (v: boolean): void => {
+    collapsed = v;
+    localStorage.setItem(SPLIT_COLLAPSED_KEY, v ? '1' : '0');
+    apply();
+    /* 展开后让地图重新量一次（它自己也有 ResizeObserver，这里只是多给一帧保险） */
+    if (!v) requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+  };
+  toggle?.addEventListener('click', () => setCollapsed(!collapsed));
+  /* 拖拽：用 setPointerCapture 收 move —— 指针拖到地图上/窗口外也不会丢事件 */
+  let dragging = false;
+  bar.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    if (collapsed) setCollapsed(false);
+    dragging = true;
+    try { bar.setPointerCapture(e.pointerId); } catch { /* 老内核没有捕获也无妨 */ }
+    bar.classList.add('is-drag');
+    document.body.classList.add('lk-split-drag');
+    e.preventDefault();
+  });
+  bar.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const r = sandbox.getBoundingClientRect();
+    if (r.height < 80) return;
+    ratio = clampSplit((e.clientY - r.top) / r.height);
+    apply();
+  });
+  const endDragSplit = (): void => {
+    if (!dragging) return;
+    dragging = false;
+    bar.classList.remove('is-drag');
+    document.body.classList.remove('lk-split-drag');
+    localStorage.setItem(SPLIT_KEY, String(Math.round(ratio * 1000) / 1000));
+  };
+  bar.addEventListener('pointerup', endDragSplit);
+  bar.addEventListener('pointercancel', endDragSplit);
+  bar.addEventListener('lostpointercapture', endDragSplit);
+  bar.addEventListener('dblclick', () => setCollapsed(!collapsed));
+  /* 键盘：分割条能 Tab 到，↑↓ 调比例（不用鼠标也能改，顺便满足 aria 的基本要求） */
+  bar.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    if (collapsed) setCollapsed(false);
+    ratio = clampSplit(ratio + (e.key === 'ArrowUp' ? -0.03 : 0.03));
+    apply();
+    localStorage.setItem(SPLIT_KEY, String(Math.round(ratio * 1000) / 1000));
+    e.preventDefault();
+  });
+  apply();
+}
 /* ↶ ↷ 的可用状态。`store.canUndo()/canRedo()` 一直是 store 的公开接口，但全仓**零调用点**——
    按钮永远可点，撤销栈空时点了静默无反应（用户会以为「撤销坏了」）。
    这里把状态映射成 disabled + 降透明度，让「现在能不能撤销」一眼可见。 */
@@ -201,8 +293,13 @@ function renderTimelineTabs(store: Store): void {
   let redoBtn = head.querySelector('#lk-redo') as HTMLElement | null;
   let nodeBtn = head.querySelector('#lk-node-new') as HTMLElement | null;
   if (!tabs) {
+    /* 面板头分三个区（第一百二十二轮 · 方案里的「工具栏分组」）：
+       [撤销/重做] │ [画布状态：非线性] │ 页签 │ [新建：节点 / 循环]
+       —— 左簇是"看什么"（视图状态），右簇是"造什么"（写数据），中间是切换时间线。
+       ⚠️ `#lk-state` 以前只被 timeline.ts **查询**、从没人创建（死分支：非线性永远留在
+       #lk-tools 里，和「＋循环」挤在一起）。这里把它建出来，那条搬移逻辑才真的生效。 */
     head.innerHTML =
-      `<button class="lk-tl-tab is-new" id="lk-undo" title="撤销 (Ctrl+Z)">↶</button><button class="lk-tl-tab is-new" id="lk-redo" title="重做 (Ctrl+Y)">↷</button><span class="lk-tl-tabs"></span><button class="lk-tl-tab is-new" id="lk-node-new" title="新建节点">＋节点</button><span id="lk-tools" style="display:flex;gap:4px;align-items:center;flex-shrink:0;"></span>`;
+      `<button class="lk-tl-tab is-new" id="lk-undo" title="撤销 (Ctrl+Z)">↶</button><button class="lk-tl-tab is-new" id="lk-redo" title="重做 (Ctrl+Y)">↷</button><span class="lk-tl-sep"></span><span id="lk-state" style="display:flex;gap:4px;align-items:center;flex-shrink:0;"></span><span class="lk-tl-sep"></span><span class="lk-tl-tabs"></span><span class="lk-tl-sep"></span><button class="lk-tl-tab is-new" id="lk-node-new" title="新建节点">＋节点</button><span id="lk-tools" style="display:flex;gap:4px;align-items:center;flex-shrink:0;"></span>`;
     tabs = head.querySelector('.lk-tl-tabs') as HTMLElement;
     undoBtn = head.querySelector('#lk-undo');
     redoBtn = head.querySelector('#lk-redo');

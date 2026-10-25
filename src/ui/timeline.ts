@@ -825,6 +825,53 @@ export function mountTimeline(
       <div class="cap"></div><div class="tl__name">${escapeHtml(n.title)}</div>
     </div>`;
   }
+  /* ── 指针与画布同帧（第一百二十二轮）─────────────────────────────────────────
+     病根：`.tl-cursor` 挂着 `transition: left 70ms linear` —— 那是**浏览器自己的时钟**，
+     和视图缓动（上面 `kickEase` 的 rAF）没关系。平移/缩放时节点每帧已经落到位，
+     指针还要再走 70ms ⇒ 实测两者相对位移 **720px**（.review/probe-r122.cjs）。
+     现在：指针的**时间值**在同一个 rAF 里缓动（时间域插值），位置每帧仍用 `timeToX()`
+     现算 —— 只要视图在动，指针与节点就是同一帧、同一个 view，不可能错开。
+     时间域插值还有两个好处：缩放时指针不会按像素"抄近路"穿过节点；指针上的日期跟着滚。
+     ⚠️ 不用 CSS transition 兜底：那正是这次要拆的东西。 */
+  let cursorT = 0;            /* 屏幕上**正在显示**的时间（epoch 秒） */
+  let cursorTarget = 0;       /* 想显示到哪（= 数据里的 timeCursor） */
+  let cursorSeeded = false;
+  let cursorRaf = 0;
+  let cursorWatchdog = 0;
+  let cursorLastFrame = 0;
+  const CURSOR_EASE_K = 20;   /* ≈ 120ms 到位（视图是 14 ≈ 250ms）：指针要跟手一点 */
+  const CURSOR_STALL_MS = 200;
+  function snapCursor(): void { cursorT = cursorTarget; cursorSeeded = true; }
+  /* 指针还差多少**像素**（按当前缩放换算）：判"到位"用像素而不是秒 ——
+     放大到 4px/年时 1 秒差 0.004px 无意义，缩到 0.05px/年时 1 秒差 0.00005px 却要很久。 */
+  function cursorGapPx(): number { return Math.abs(cursorTarget - cursorT) * (view.spacing / SEC_PER_YEAR); }
+  function kickCursor(): void {
+    if (cursorRaf) return;
+    if (document.visibilityState === 'hidden') { snapCursor(); return; }
+    let last = performance.now();
+    cursorLastFrame = last;
+    const step = (now: number): void => {
+      const dt = Math.min(0.1, (now - last) / 1000);
+      last = now;
+      cursorLastFrame = now;
+      cursorT += (cursorTarget - cursorT) * (1 - Math.exp(-CURSOR_EASE_K * dt));
+      render();                  /* 指针必须跟节点同帧重画，否则它要等视图那圈 rAF 才更新 */
+      if (cursorGapPx() < 0.25) { snapCursor(); render(); cursorRaf = 0; window.clearTimeout(cursorWatchdog); return; }
+      cursorRaf = requestAnimationFrame(step);
+    };
+    cursorRaf = requestAnimationFrame(step);
+    /* 看门狗：后台/节流时 rAF 会停摆，指针不能停在半路（与视图缓动同一条纪律） */
+    window.clearTimeout(cursorWatchdog);
+    const watch = (): void => {
+      if (performance.now() - cursorLastFrame <= CURSOR_STALL_MS) {
+        cursorWatchdog = window.setTimeout(watch, CURSOR_STALL_MS);
+        return;
+      }
+      if (cursorRaf) { cancelAnimationFrame(cursorRaf); cursorRaf = 0; }
+      snapCursor(); render();
+    };
+    cursorWatchdog = window.setTimeout(watch, CURSOR_STALL_MS);
+  }
   function updateCursor() {
     const ws = currentWorld(store);
     let t = ws.timeCursor;
@@ -834,11 +881,22 @@ export function mountTimeline(
     } else {
       lastCursorT = t;
     }
+    /* 首帧直接落值；「减少动态效果」或页面不可见时也不做动画。
+       **按住拖（画布空白 / 指针手柄）例外**：每一帧都要跟手，缓动只会让它拖在鼠标后面
+       （实测拖手柄时指针落后 94px —— 见 .review/probe-r122.cjs 的 drag 一项）。 */
+    if (!cursorSeeded || cursorDrag || handleDrag || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      cursorTarget = t;
+      cursorT = t;
+      cursorSeeded = true;
+    } else if (t !== cursorTarget) {
+      cursorTarget = t;
+      kickCursor();
+    }
     cursorEl.style.display = '';
-    cursorEl.style.left = timeToX(t) + 'px';
-    /* t 是 epoch 秒：直接 fromEpoch 反推显示（不再当"年"换算，避免 O(巨大年份) 累加卡死） */
-    cursorTimeEl.textContent = epochText(t, currentScaleUnit);
-    /* 未发生节点淡化 */
+    cursorEl.style.left = timeToX(cursorT) + 'px';
+    /* cursorT 是 epoch 秒：直接 fromEpoch 反推显示（不再当"年"换算，避免 O(巨大年份) 累加卡死） */
+    cursorTimeEl.textContent = epochText(cursorT, currentScaleUnit);
+    /* 未发生节点淡化：按**真实时间**（不是动画中的 cursorT）算，否则淡入淡出会跟着指针一起抖 */
     track.querySelectorAll('.tl__n').forEach((el) => {
       const n = (el as HTMLElement).dataset.id;
       const node = timeline()?.nodes.find((x) => x.id === n);
@@ -873,6 +931,9 @@ export function mountTimeline(
   let dragging = false;        // 空格平移
   let lastX = 0;
   let cursorDrag = false;      // 空白拖动指针
+  /* 拖指针手柄（第一百二十二轮：挪到这里声明 —— `updateCursor()` 要读它决定"要不要跟手不缓动"，
+     原来声明在手柄那一节（`render()` 之后），读起来太靠运气）。 */
+  let handleDrag = false;
   let lastCursorT = 0;         // 记住最近一次有效时间指针位置（timeCursor 被清空时兜底，不跳回最早节点）
   let currentScaleUnit = '年';  // 当前标尺档位（renderScale 更新，updateCursor 用它裁剪指针文字）
   let nodeDragId: string | null = null;
@@ -1049,7 +1110,6 @@ export function mountTimeline(
 
   /* 指针手柄拖动 */
   const handle = cursorEl.querySelector('.tl-cursor-handle') as HTMLElement;
-  let handleDrag = false;
   handle.addEventListener('pointerdown', (e) => {
     if (cursorEl.style.display === 'none') return;   /* 仅真正隐藏时不能拖；常显('')可拖 */
     handleDrag = true;
@@ -1738,7 +1798,14 @@ export function mountTimeline(
   function renderExtraTools() {
     if (!TL_HEAD) return;
     let ext: HTMLElement | null = TL_HEAD.querySelector('#lk-extras');
-    if (ext) ext.remove();
+    /* 已经建过：**只同步激活态**，不再拆了重建（第一百二十二轮）。
+       以前每次 render 都 `ext.remove()` + 重新 createElement：store 每几百毫秒通知一次，
+       工具栏就重建一次 —— 正在点的按钮变成脱离文档的旧节点（监听还挂着，会"点一下动两次"），
+       焦点/悬停态也一起丢。 */
+    if (ext) {
+      TL_HEAD.querySelector('#lk-nonlinear')?.classList.toggle('is-active', nonlinearMode);
+      return;
+    }
     ext = document.createElement('span');
     ext.id = 'lk-extras';
     ext.style.cssText = 'display:flex;gap:4px;align-items:center;flex-shrink:0;';    ext.innerHTML = `

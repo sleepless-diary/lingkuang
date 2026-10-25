@@ -1882,13 +1882,69 @@ view:topo / contour:auto / seed:灵框`，带 320×160 剪影掩膜；端口 955
 
 - 窄栏插在 `.lk-pane-head` 之后、画布之前（`TL_HEAD.insertAdjacentElement('afterend', …)`），
   底色 `--surface` + 左侧缩进 14px，读起来就是"下一层"。
-- `#lk-state` 不再创建；「非线性」留在 `#lk-tools`（`renderExtraTools()` 对 `#lk-state` 为 null 是安全的）。
+- ~~`#lk-state` 不再创建；「非线性」留在 `#lk-tools`~~（**第一百二十二轮改**：`#lk-state` 已真的建出来，
+  非线性搬进去；见上面「面板头分簇」一节）。
 - 「＋剧情线」从 `#lk-tools` 搬进窄栏，和聚焦下拉放在一起（同一件事的两半）。
 - 每帧重建窄栏、按钮随元素重建 ⇒ 不会像旧实现那样每次渲染都给同一个按钮再挂一次监听。
 
 **验证**：`#lk-tl-subbar` 存在且紧跟在面板头之后、标签「剧情线」、下拉与按钮都在窄栏里、
 面板头里不再有 `#lk-line-sel`；`tsc` 0 / `vite build` 0。
 截图：`.review/shots-r120/sandbox-subbar.png`。
+
+## 2026-10-25 · 沙盘方案落地第 1→3 步：指针同帧 / 面板头分组 / 上下分割（第一百二十二轮）
+
+上一轮做了「阶梯换行」；这一轮按同一条方案的顺序做 1→3：
+**指针与画布同一帧** → **工具栏分簇** → **上下分割可拖 + 地图可收起**。
+方案是外部设计模型写的（`ai-designer/out/lingkuang-sandbox-v2/05-FINAL.md`），它对代码的三处判断是错的
+（时间线是 canvas、`#lk-tools` 有 9 个按钮、preload 暴露 store）—— 所以每条都**先在真实 DOM 上量**再动手。
+
+### 一、时间指针与节点同帧（"甩尾"的真因是 CSS transition）
+
+`.tl-cursor` 原来挂着 `transition: left 70ms linear`。那是**浏览器自己的时钟**，与视图缓动
+（`kickEase()` 的 rAF，`view += (target - view) × (1 − exp(−14·dt))`）毫无关系：
+节点每帧已经落到新位置，指针还要再走 70ms。测试实例里窗口未聚焦 ⇒ `noSmooth()` 直接落值 ⇒
+节点一帧到位、指针拖 70ms，现象最明显。
+
+**判据**（`.review/probe-r122.cjs`）：取首尾两个节点，算 `p = (指针 x − A 中心) / (B 中心 − A 中心)`。
+时间轴是线性的 ⇒ 平移/缩放时 p 必须纹丝不动；p 抖一下就是不同帧。
+两个坑：① `renderBase()` 每帧重建 innerHTML，**元素会被换掉**，必须每帧按 `data-id` 重查；
+② 节点 left 带 `-13px`（26px 盒 + `margin:-13px`），要用**中心**，否则缩放时那 13px 常数会让 p 漂 1%。
+实测：旧 CSS 下 p 抖动 **1.12**；新实现 **0.0001**。
+
+**实现**（`src/ui/timeline.ts`）：指针缓动的是**时间值**（`cursorT → cursorTarget`，`K = 20`），
+位置每帧 `timeToX(cursorT)` 现算 ⇒ 视图怎么动，指针都与节点同帧、同一 view。
+- 拖指针手柄 / 在画布上按下（`handleDrag` / `cursorDrag`）**不缓动**，要跟手；
+- `prefers-reduced-motion` 直接落值；
+- 看门狗 200ms：rAF 停摆（后台/节流）时 snap，绝不能停在半路。
+
+### 二、面板头分簇（`#lk-state` 从死代码变成真的）
+
+`renderExtraTools()` 一直会查 `#lk-state` 并把「非线性」搬进去，但**没有任何地方创建它** ——
+那条搬移永远不生效。这轮在 `shell.ts` 建出面板头骨架：
+
+```
+[撤销/重做] │ [画布状态：#lk-state → 非线性] │ 页签 │ [新建：＋节点 ＋循环]
+```
+
+三条 `.lk-tl-sep` 是 1px 分组线（980px 宽实测不溢出，`.review/measure-narrow.cjs`）。
+顺带修掉 `renderExtraTools()` 每次 render 都重建按钮的问题（旧节点还挂着监听 ⇒ 点一下动两次）。
+
+### 三、上下分割（可拖 / 比例记忆 / 地图可收起）
+
+`#lk-split` 是 6px 的抓握区（`margin:-3px` 让它视觉上仍是一条 1px 线），
+拖动改的是两个 pane 的 **flex-grow**（basis 固定 0），**不写 height** ——
+地图那边靠 `ResizeObserver → fitView()`，改 flex 它会自己重量；写 height 会与它打架。
+比例存 `localStorage['lingkuang-split']`（0.18~0.82），是**会话态**，不进数据文件。
+收起 = `localStorage['lingkuang-split-collapsed']='1'` + 地图 pane `flex:0 0 auto` 且 body 隐藏
+（标题栏留着，因为「展开」按钮在标题栏上）；双击分割条也能收起/展开。
+键盘：分割条可 Tab，↑↓ 每次 3%。
+
+⚠️ 地图 `fitView()` 加了高度闸门：`clientHeight < 60` 时不量 —— 收起时那一格只有 37px，
+按它算会得到 0/负缩放，展开后一片空白。
+
+**验证**：`.review/probe-r122.cjs` 12 项全 PASS（含"把旧 CSS 加回去、判据必须报警"的自检），
+`tsc --noEmit` 0、`vite build` 0。夹具与启动脚本：`.review/make-fixture-r122.mjs`、`.review/launch-r122.ps1`。
+截图：`.review/shots-r122/10-split-45.png`、`11-map-collapsed.png`。
 
 ## 2026-10-25 · 沙盘方案落地第一步：节点名阶梯换行（第一百二十一轮）
 

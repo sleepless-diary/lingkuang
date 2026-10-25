@@ -24,3 +24,6 @@ Thumbs.db
 
 # user runtime data（用户数据在系统 AppData，不随仓库分发）
 *.local.json
+
+# 自动化验收产物（CDP 夹具 / 截图 / 隔离实例的 Electron 缓存，单轮能到 1GB；只在本机留档）
+.review/
