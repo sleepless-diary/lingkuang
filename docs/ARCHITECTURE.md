@@ -2205,3 +2205,44 @@ ai-designer 的沙盘方案（`lingkuang-sandbox-v2`，7 章 + 评审）第一�
   （见上面「节点名自适应分层 + 引线」一节）。
 
 截图：`.review/shots-r121/labels-after.png`。
+
+## 2026-10-25 · 首启评审落地：空画布引导 / 帮助面板 / 改名 / 工作台原语（第一百二十九轮）
+
+先看 `docs/FIRST-RUN-REVIEW-2026-10-25.md`（零基础第一次打开的真跑记录），
+逐条改动与实测在 `docs/BUGS.md` 第一百二十九轮。代码地图上新增/变更的位置：
+
+- **`src/ui/help-panel.ts`（新）**：左栏常驻「帮助」浮层（快捷键 / 鼠标 / 手册 / 数据目录 / 版本）。
+  与 `settings-panel.ts` 同一套「panel 型工具」写法（`isOpen` / `close` / `open` + 广播 `lingkuang-panel`），
+  但**不压暗主区**（`position:fixed;left:76px;bottom:10px`）。注册在 `src/tools/register.ts`（`id: 'help'`），
+  壳里与「设置」一样排在左下角（`RAIL_PRIMARY` 之外、`rest` 之外 —— 它不该进实验室抽屉）。
+- **主进程新增 IPC**（`main.js` + `preload.js`）：
+  `vault:rename-world` / `vault:rename-timeline`（**改名 = 先 fs.rename 目录**，再改 store；
+  只改 store 会让旧目录在下次扫描时变成"另一个世界/时间线"）、
+  `app:open-external`（只认 https）、`app:open-data-dir`、`app:info`（版本 + 数据目录）。
+- **`src/store/actions.ts`**：`addWorld()` 顺手 `ensureEntityTypes()`（否则新世界在设定库里是死的）；
+  新增 `renameWorld()` / `renameTimeline()`（先挪目录、失败就不改名）、`addSampleWorld()`（示例世界，代码里种）。
+- **`src/main.ts`**：启动时对每个世界 `vaultEnsureWorld()` —— `loadData()` 是"vault 扫到任意世界就整体
+  替换 JSON"，没有目录的空世界下次启动会消失。必须排在 `vaultWatch()` 之前，否则自己的 mkdir 会被当成外部改动。
+- **`src/ui/timeline.ts`**：
+  `renderBase()` 的空分支用哨兵值 `\u0000none`，0 节点的时间线用 `\u0000empty`（以前两者都是 `''`，
+  撞上"结构没变"快路径 ⇒「无时间线 · 待建」永远留在画布上）；
+  新增 `emptyCanvasHtml()` / `wireEmptyCanvas()` / `ensureTimelineHere()` —— 空画布上的引导卡，
+  点击走"建主线 + 开表单"或"让助手起个头"（后者派发 `lingkuang-open-agent`，由 `shell.ts` 的
+  `bindPanelEvents()` 接；**不能**挂在 `renderToolbar()` 里，那里每次渲染都跑、会堆重复监听）。
+  `.tl-empty` 在 `wrap` 的 `pointerdown` / `dblclick` 里被排除，卡片上的点击不会挪时间指针。
+- **`src/ui/shell.ts`**：`ensureTimeline()`（＋节点顺手建主线）、`openMenu()`（页签尾部的「⋯」）、
+  `renameWorldFlow` / `renameTimelineFlow` / `deleteWorldFlow` / `deleteTimelineFlow`（右键与 ⋯ 同一份实现）。
+- **`src/style.css` 末尾新增三块原语**（都带注释写清"为什么"）：
+  ① `:disabled` 统一 `cursor:not-allowed !important` + opacity（压住各处内联 `cursor:pointer`）；
+  ② `.tl-empty*` 空画布卡；③ `.lk-tbg` / `.lk-tbsep` / `.lk-tbx` / `.lk-seg`（工具栏与分段控件，
+  **地图栏**与**剧情线窄栏**都换成这一套；以后新面板头一律用它，别再各写内联样式）。
+- **`src/ui/map.ts`**：地图栏按用途分四簇（动作 ｜ 画法 ｜ 模式 ｜ 危险），模式改成 `.lk-seg` 分段控件，
+  选中态改用 `is-on` 类（以前写内联 `style.background`），高度统一 24px。
+- **`src/ui/codex.ts`**：`nodeTarget.world !== activeWorld` 就清掉目标（换世界后中栏不再显示上个世界的事件）；
+  世界没有类型时 `#cx-new` 置灰 + 一行说明（以前点了完全没反应）；两个 `create*()` 的早期 return 各补一句人话。
+- **文案**：7 处「左栏「结构体管理 / 备份管理」」全部改成「实验室 → …」（实验室抽屉是 2026-10-24 才收进去的，
+  文案没跟上）。节点表单里两个都叫"类型"的下拉改名：「事件种类」/「画在哪一侧」。
+
+⚠️ 改这块前请记住两条：
+1. **任何"改名"都必须同时挪 vault 目录**（`<世界>/<时间线>/…` 是文件系统里的真实路径，vault 是源）。
+2. **空态不许指向禁用按钮**（本轮 A7 就是这种文案）；禁用按钮必须在 title 里写清原因。

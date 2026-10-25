@@ -464,6 +464,18 @@ async function main() {
   /* 在落盘订阅注册后才补全，确保 store.update 能触发落盘写回 .md（type/precision/kind + 格式字段） */
   ensureAllFormatFields(store);
   ensureEntityLayer(store);
+  /* ⭐ 2026-10-25 首启评审 B4：**保证每个世界在 vault 里都有目录**。
+     `loadData()` 是「vault 扫到任意世界就整体替换 JSON 世界」，而首启那个默认世界
+     从来没写过东西 ⇒ vault 里没有它的目录 ⇒ 用户建了第二个世界后重启，第一个世界**凭空消失**
+     （实测：`新世界` 建完 `新世界 2` 后重启，只剩后者）。新手的第一反应是"这软件会丢数据"。
+     这里逐个 mkdir（`vault:ensure-world` 是幂等的），下一次扫描就能把它扫回来。
+     必须在 `vaultWatch()` 之前做，否则我们自己的 mkdir 会被监听当成「外部改动」触发一轮回扫。 */
+  const apiDirs = (window as any).lingkuangAPI;
+  if (apiDirs?.vaultEnsureWorld) {
+    for (const name of Object.keys(store.data.worldsets)) {
+      try { await apiDirs.vaultEnsureWorld(name); } catch (e) { /* 建目录失败不挡启动 */ }
+    }
+  }
   /* 助手要读的「他最近做过的事」（操作流水）：差分式记在内存里 + 防抖落盘。
      必须挂在上面两条**之后** —— 它们在补全格式字段时也会 store.update，早挂就会把
      启动归一化写盘记成创作者的操作，助手一开口就以为他刚动过一堆东西。 */

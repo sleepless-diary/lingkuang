@@ -73,24 +73,39 @@ export function renderMap(store: Store, host: HTMLElement): void {
   let drawing: [number, number][] = [];
 
   host.style.overflow = 'hidden';
+  /* 地图栏（2026-10-25 工作台化 D）：
+     原来 10 个控件挤在一行、三种高度（19/23/24px）、还有一个孤零零的竖线分隔符，
+     顺序是「生成地形 / 等高线 / 球体看 / 风格 / 立体 / 区域 | 标记 / 手绘 / 移动 / 清空标记」——
+     动作、画法、模式三件事交叉混排，看不出哪几个是一组。
+     现在按**用途**排成四簇，中间用 `.lk-tbsep` 竖线隔开，模式收成一件分段控件：
+       [生成地形][地形·手绘] ｜ [等高线][风格][立体][球体看] ｜ [移动|区域|标记] ｜ [清空标记]
+     高度统一 24px（`.lk-tbx` / `.lk-seg`），与时间线面板头同一套原语。 */
   host.innerHTML = `
     <div style="display:flex;flex-direction:column;height:100%;">
       <div style="display:flex;flex-wrap:wrap;gap:6px;row-gap:4px;padding:6px 10px;border-bottom:1px solid var(--border-soft);background:var(--surface-2);align-items:center;">
         <span style="font-size:var(--text-xs);font-weight:600;color:var(--fg);">地图 · ${escapeHtml(curMap()?.name ?? '默认地图')}</span>
         <span id="map-gen-note" style="font-size:var(--text-xs);color:var(--fg-2);"></span>
         <span style="flex:1;"></span>
-        <button id="map-gen" title="打开地图生成面板：自己一个个调参数 / AI 直出 / 抽卡" style="background:none;border:1px solid var(--accent);color:var(--accent-ink);border-radius:var(--radius-sm);font-size:11px;padding:3px 10px;cursor:pointer;">生成地形…</button>
-        <select id="map-contour" title="等高线画法：自动 = 按屏幕线距自动跳线（陡坡变稀 / 平地全显示）；也可以强制「全部 / 减半 / 每五条」" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${CONTOUR_MODES.map((c) => `<option value="${c.id}" title="${escapeHtml(c.hint)}">${escapeHtml(c.label)}</option>`).join('')}</select>
-        <button id="map-globe" class="lk-btn lk-btn--ghost lk-btn--sm" title="球体看：把星球图贴到一颗真球上（拖动旋转、滚轮缩放）—— 只在星球形态下出现" style="display:none;background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:3px 10px;cursor:pointer;">球体看</button>
-        <select id="map-view" title="看的方式：地形怎么画（八档：自然 / 地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简）—— 只换画法，不重算地形" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;">${TERRAIN_STYLES.map((s) => `<option value="${s.id}" title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}</option>`).join('')}</select>
-        <select id="map-lift" title="立体度：立体 = 山有厚度（能看到山坡侧面）；顶视 = 从正上方看（没有侧壁，只有色带与明暗）—— 只换看法，不重算地形" style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--fg);font-size:11px;padding:2px 6px;cursor:pointer;"><option value="solid" title="山有厚度：能看见山坡侧面与投影（默认）">立体</option><option value="flat" title="正上方俯视：山只靠色带与明暗表达高度，没有侧壁">顶视</option></select>
-        <button data-mode="region" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" >区域</button>
-        <span style="width:1px;height:16px;background:var(--border-soft);"></span>
-        <button data-mode="marker" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" >标记</button>
-        <button id="map-editor" class="lk-btn lk-btn--ghost lk-btn--sm" title="手绘大陆与海洋：全屏画板（可滚动缩放、拖动），画完按剪影生成整颗星球">地形 · 手绘…</button>
-        <button data-mode="move" class="map-mode lk-btn lk-btn--ghost lk-btn--sm" >移动</button>
-        <button id="map-clear" class="lk-btn lk-btn--danger lk-btn--sm" >清空标记</button>
-        <span id="map-hint" style="font-size:var(--text-xs);color:var(--fg-2);">拖拽画区域（松开闭合）</span>
+        <span class="lk-tbg">
+          <button id="map-gen" class="lk-tbx lk-tbx--accent" title="打开地图生成面板：自己一个个调参数 / AI 直出 / 抽卡">生成地形…</button>
+          <button id="map-editor" class="lk-tbx" title="手绘大陆与海洋：全屏画板（可滚动缩放、拖动），画完按剪影生成整颗星球">地形 · 手绘…</button>
+        </span>
+        <span class="lk-tbsep"></span>
+        <span class="lk-tbg">
+          <select id="map-contour" class="lk-tbx" title="等高线画法：自动 = 按屏幕线距自动跳线（陡坡变稀 / 平地全显示）；也可以强制「全部 / 减半 / 每五条」">${CONTOUR_MODES.map((c) => `<option value="${c.id}" title="${escapeHtml(c.hint)}">${escapeHtml(c.label)}</option>`).join('')}</select>
+          <select id="map-view" class="lk-tbx" title="看的方式：地形怎么画（八档：自然 / 地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简）—— 只换画法，不重算地形">${TERRAIN_STYLES.map((s) => `<option value="${s.id}" title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}</option>`).join('')}</select>
+          <select id="map-lift" class="lk-tbx" title="立体度：立体 = 山有厚度（能看到山坡侧面）；顶视 = 从正上方看（没有侧壁，只有色带与明暗）—— 只换看法，不重算地形"><option value="solid" title="山有厚度：能看见山坡侧面与投影（默认）">立体</option><option value="flat" title="正上方俯视：山只靠色带与明暗表达高度，没有侧壁">顶视</option></select>
+          <button id="map-globe" class="lk-tbx" title="球体看：把星球图贴到一颗真球上（拖动旋转、滚轮缩放）—— 只在星球形态下出现" style="display:none;">球体看</button>
+        </span>
+        <span class="lk-tbsep"></span>
+        <span class="lk-seg" id="map-modes">
+          <button data-mode="move" class="map-mode" title="平移：拖拽平移；点一下看大图（双击放大 / 滚轮缩放）">移动</button>
+          <button data-mode="region" class="map-mode" title="区域：拖拽画区域（松开闭合）">区域</button>
+          <button data-mode="marker" class="map-mode" title="标记：点击放置标记">标记</button>
+        </span>
+        <span class="lk-tbsep"></span>
+        <button id="map-clear" class="lk-tbx lk-tbx--danger" title="清空这张地图上的全部标记">清空标记</button>
+        <span id="map-hint" style="font-size:var(--text-2xs);color:var(--fg-2);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">拖拽平移</span>
       </div>
       <div style="flex:1;position:relative;overflow:hidden;">
         <div id="map-stage" style="position:absolute;left:0;top:0;transform-origin:0 0;">
@@ -120,14 +135,14 @@ export function renderMap(store: Store, host: HTMLElement): void {
   function setMode(m: Mode) {
     mode = m;
     drawing = [];
-    host.querySelectorAll('.map-mode').forEach((b) => (b as HTMLElement).style.background = 'none');
-    const btn = host.querySelector(`.map-mode[data-mode="${m}"]`) as HTMLElement;
-    if (btn) btn.style.background = 'rgba(158,194,98,.2)';
+    /* 分段控件的高亮交给 CSS（`.lk-seg > button.is-on`）——
+       原来这里直接写 `style.background`，于是"选中态"和别的面板的按钮长得不是一套。 */
+    host.querySelectorAll('.map-mode').forEach((b) => (b as HTMLElement).classList.toggle('is-on', (b as HTMLElement).dataset.mode === m));
     /* 提示行两段：短名 + 悬停说明（照旧是中栏那行的写法，不加图标） */
     const tips: Record<Mode, [string, string]> = {
-      region: ['区域', '拖拽画区域（松开闭合）'],
-      marker: ['标记', '点击放置标记'],
-      move: ['平移', '拖拽平移；点一下看大图（双击放大 / 滚轮缩放）'],
+      region: ['拖拽画区域（松开闭合）', '拖拽画区域（松开闭合）'],
+      marker: ['点击放置标记', '点击放置标记'],
+      move: ['拖拽平移 · 点一下看大图', '拖拽平移；点一下看大图（双击放大 / 滚轮缩放）'],
     };
     hint.textContent = tips[m][0];
     hint.title = tips[m][1];

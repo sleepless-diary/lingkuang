@@ -39,6 +39,13 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
   vaultDeleteWorld: (wsName) => ipcRenderer.invoke('vault:delete-world', { wsName }),
   /* 建世界时**把 vault 目录一起建出来**（否则下一次 vault 回扫这个世界就没了，见 main.js 那条注释） */
   vaultEnsureWorld: (name) => ipcRenderer.invoke('vault:ensure-world', { name }),
+  /* 改名 = 改目录名（只在 store 里改名会让旧目录变成"另一个世界/时间线"，见 main.js 的注释） */
+  vaultRenameWorld: (from, to) => ipcRenderer.invoke('vault:rename-world', { from, to }),
+  vaultRenameTimeline: (wsName, from, to) => ipcRenderer.invoke('vault:rename-timeline', { wsName, from, to }),
+  /* 「帮助」面板：打开使用手册 / 打开数据目录 / 版本信息 */
+  openExternal: (url) => ipcRenderer.invoke('app:open-external', { url }),
+  openDataDir: () => ipcRenderer.invoke('app:open-data-dir'),
+  appInfo: () => ipcRenderer.invoke('app:info'),
   /* 回收站（vault/.trash + index.json）：列表 / 恢复 / 彻底删除 */
   trashList: () => ipcRenderer.invoke('vault:trash-list'),
   trashRestore: (items) => ipcRenderer.invoke('vault:trash-restore', { items }),

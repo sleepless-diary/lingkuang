@@ -271,7 +271,14 @@ export function createEvolutionRail(deps: RailDeps): Rail {
           <span class="lk-rail__n">节点已删除</span>
           <span class="lk-rail__s">${escapeHtml(patchSummary((e?.frames ?? [])[o.version - 1]?.patch))}</span>
         </div>`).join('')}
-        ${rs.length + orphans.length ? '' : `<div class="lk-rail__empty">还没有版本<br>${mode === 'auto' ? '改一下字段就会自动记一版' : '选好事件，点下面的 ＋'}</div>`}
+        ${rs.length + orphans.length ? '' : `<div class="lk-rail__empty">还没有版本<br>${
+          /* 空态不许指向一颗禁用按钮（2026-10-25 首启评审 A7）：
+             原来无论有没有事件节点都写「选好事件，点下面的 ＋」，而世界还没有事件时那颗 ＋ 是灰的 ——
+             用户按提示去点，点不动，也不知道该去哪儿。现在按"下一步到底在不在本面板里"分三种说法。 */
+          mode === 'auto' ? '改一下字段就会自动记一版'
+            : anchor ? '点下面的「＋ 记一帧」就记下第一版'
+            : '这个世界还没有事件 —— 先去时间线建一个事件，再回来记第一版'
+        }</div>`}
       </div>
       <div class="lk-rail__foot">
         <div class="lk-rail__pick">

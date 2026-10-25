@@ -1,4 +1,4 @@
-/** 属性面板（公共模块）——给**时间线节点**与**实体**渲染同一套可编辑属性：
+﻿/** 属性面板（公共模块）——给**时间线节点**与**实体**渲染同一套可编辑属性：
  *  标题/时间（历法 scrub）/精度/类型/种类/描述 + 模板字段 + 自定义属性增删。
  *
  *  从 `src/ui/editor.ts` 抽出：编辑器与设定库（`src/ui/codex.ts`）共用这一份「改字段」实现，
@@ -488,7 +488,7 @@ export function createPropsPanel(deps: PropsPanelDeps): PropsPanel {
         const ids = Object.keys(types);
         (ids.length ? ids : ['']).forEach((tid) => { const o = document.createElement('option'); o.value = tid; o.textContent = tid ? (types[tid].name || tid) : '（还没有类型）'; sel.appendChild(o); });
         sel.value = v && types[v] ? v : (ids[0] ?? '');
-        sel.title = '实体类型（模板）：决定这个实体有哪些字段，在左栏「结构体管理」的“实体类型”里定义';
+        sel.title = '实体类型（模板）：决定这个实体有哪些字段，在「实验室 → 结构体管理」的“实体类型”里定义';
         sel.addEventListener('change', () => {
           saveFixed({ 实体类型: sel.value });
           window.dispatchEvent(new CustomEvent('lingkuang-formats-changed'));

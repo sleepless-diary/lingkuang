@@ -6,13 +6,14 @@ import { registerAllTools } from '../tools/register';
 import { mountTimeline } from './timeline';
 import { renderNodeDetail } from './detail';
 import { escapeHtml } from './html';
-import { addTimeline, addWorld, removeTimeline, removeWorld, undoWithVault, redoWithVault } from '../store/actions';
+import { addTimeline, addWorld, removeTimeline, removeWorld, undoWithVault, redoWithVault, renameWorld, renameTimeline } from '../store/actions';
 import { confirmDialog, promptDialog } from './confirm';
 import { currentWorld } from '../store/store';
 import { renderNodeForm } from './node-form';
 import { staggerIn, tweenNumber } from './motion';
 import { setAgentFocus, setAgentView } from './agent-context';
 import { rememberTool } from './session';
+import { showShellAlert } from './alert';
 
 export function renderShell(store: Store, host: HTMLElement): void {
   registerAllTools();
@@ -35,7 +36,7 @@ export function renderShell(store: Store, host: HTMLElement): void {
                  aria-label="拖动调整时间线与地图的上下比例；双击收起/展开地图"
                  title="拖动调整上下比例（双击收起/展开地图）"></div>
             <div class="lk-pane lk-pane-map" id="lk-pane-map">
-              <div class="lk-pane-head">地图 <span class="lk-ph">手绘 / 生成地形</span><button class="lk-tl-tab is-new" id="lk-map-toggle" title="收起地图，让时间线独占全高">收起</button></div>
+              <div class="lk-pane-head"><span class="lk-pane-title">地图</span><button class="lk-tl-tab is-new" id="lk-map-toggle" title="收起地图，让时间线独占全高">收起</button></div>
               <div class="lk-pane-body lk-placeholder">地图视图</div>
             </div>
           </section>
@@ -185,6 +186,77 @@ function syncHistoryButtons(store: Store): void {
   }
 }
 
+/** 页签上的「⋯」菜单（2026-10-25 首启评审 C2）：把"只藏在右键里"的动作外露出来。
+ *
+ *  为什么加：加节点、删节点、删世界、删时间线**全靠右键**，而新手不右键（实测的第一个结论）。
+ *  这里与右键菜单**同一批动作**（改名 / 删除），只是多一个看得见的入口 —— 两处都调同一份实现。
+ *  样式沿用节点右键菜单那一套（深 chrome + `--fg-inverse`），字号 12px 与工具栏一致。 */
+function openMenu(anchor: HTMLElement, items: { label: string; onClick: () => void }[]): void {
+  document.querySelectorAll('.lk-menu').forEach((el) => el.remove());
+  const menu = document.createElement('div');
+  menu.className = 'lk-menu';
+  menu.style.cssText =
+    'position:fixed;z-index:2400;min-width:156px;padding:3px;background:var(--chrome);border:1px solid var(--border-strong);border-radius:var(--radius-sm);box-shadow:var(--elev-raised);';
+  const close = (): void => {
+    menu.remove();
+    document.removeEventListener('mousedown', onDoc, true);
+    document.removeEventListener('keydown', onKey);
+  };
+  const onDoc = (e: MouseEvent): void => { if (!menu.contains(e.target as Node)) close(); };
+  const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') close(); };
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = it.label;
+    b.style.cssText =
+      'display:block;width:100%;text-align:left;background:none;border:none;color:var(--fg-inverse);font-size:12px;padding:5px 8px;cursor:pointer;border-radius:var(--radius-sm);';
+    b.addEventListener('mouseenter', () => (b.style.background = 'var(--chrome-2)'));
+    b.addEventListener('mouseleave', () => (b.style.background = 'none'));
+    b.addEventListener('click', () => { close(); it.onClick(); });
+    menu.appendChild(b);
+  }
+  document.body.appendChild(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.left = Math.min(r.left, window.innerWidth - 176) + 'px';
+  menu.style.top = Math.min(r.bottom + 2, window.innerHeight - items.length * 32 - 16) + 'px';
+  /* 捕获阶段监听：页签自己的 click 会先跑，等这一轮事件过去再挂，免得"点开就关" */
+  setTimeout(() => {
+    document.addEventListener('mousedown', onDoc, true);
+    document.addEventListener('keydown', onKey);
+  }, 0);
+}
+
+/** 改名（世界 / 时间线）：走 promptDialog；目录挪不动时说明原因，不改名。 */
+async function renameWorldFlow(store: Store, oldName: string): Promise<void> {
+  const name = await promptDialog({ title: '重命名世界观', label: '名称', value: oldName, confirmText: '保存' });
+  if (name === null) return;
+  const ok = await renameWorld(store, oldName, name);
+  if (!ok) showShellAlert({ id: 'rename-failed', tone: 'warn', title: '改名没成功', body: '新名字和已有的世界重名，或 vault 目录挪不动。名字没有变。' });
+}
+
+async function renameTimelineFlow(store: Store, tlId: string, oldName: string): Promise<void> {
+  const name = await promptDialog({ title: '重命名时间线', label: '名称', value: oldName, confirmText: '保存' });
+  if (name === null) return;
+  const ok = await renameTimeline(store, tlId, name);
+  if (!ok) showShellAlert({ id: 'rename-failed', tone: 'warn', title: '改名没成功', body: '新名字和已有的时间线重名，或 vault 目录挪不动。名字没有变。' });
+}
+
+/** 删除世界观（右键与「⋯」菜单共用一份：确认文案里把要删掉多少说清楚）。 */
+function deleteWorldFlow(store: Store, name: string): void {
+  const ws = store.data.worldsets[name];
+  const tlCount = ws ? Object.keys(ws.timelines ?? {}).length : 0;
+  const nodeCount = ws
+    ? Object.values(ws.timelines ?? {}).reduce((a, t) => a + (t.nodes?.length ?? 0), 0)
+    : 0;
+  void confirmDialog({
+    title: `删除世界观「${name}」？`,
+    message: `将移除 ${tlCount} 条时间线、${nodeCount} 个节点；vault 里整个目录会移入回收站。`,
+    detail: '可从工具栏「回收站」恢复。删掉最后一个世界时会自动补一个空世界。',
+    confirmText: '删除',
+    danger: true,
+  }).then((okDel) => { if (okDel) removeWorld(store, name); });
+}
+
 function renderWorldTabs(store: Store): void {
   const tabs = document.getElementById('lk-world-tabs');
   if (!tabs) return;
@@ -196,28 +268,28 @@ function renderWorldTabs(store: Store): void {
     worlds
       .map(
         (w) =>
-          `<button class="lk-world-tab${w === store.activeWorld ? ' is-active' : ''}" data-world="${escapeHtml(w)}" title="${escapeHtml(w)}（右键删除）">${escapeHtml(w)}</button>`
+          `<button class="lk-world-tab${w === store.activeWorld ? ' is-active' : ''}" data-world="${escapeHtml(w)}" title="${escapeHtml(w)}（右键可删除）">${escapeHtml(w)}</button>`
       )
-      .join('') + `<button class="lk-world-tab is-new" id="lk-world-new" title="新建世界观">＋</button>`;
+      .join('')
+    + `<button class="lk-world-tab is-new" id="lk-world-new" title="新建世界观">＋</button>`
+    + `<button class="lk-world-tab is-new lk-tab-more" id="lk-world-more" title="当前世界：改名 / 删除">⋯</button>`;
   tabs.querySelectorAll('.lk-world-tab[data-world]').forEach((el) => {
     const name = (el as HTMLElement).dataset.world!;
     el.addEventListener('click', () => store.setActiveWorld(name));
     /* 右键删除：与沙盘节点右键菜单同一套入口约定（避免误点即删） */
     el.addEventListener('contextmenu', (ev) => {
       ev.preventDefault();
-      const ws = store.data.worldsets[name];
-      const tlCount = ws ? Object.keys(ws.timelines ?? {}).length : 0;
-      const nodeCount = ws
-        ? Object.values(ws.timelines ?? {}).reduce((a, t) => a + (t.nodes?.length ?? 0), 0)
-        : 0;
-      void confirmDialog({
-        title: `删除世界观「${name}」？`,
-        message: `将移除 ${tlCount} 条时间线、${nodeCount} 个节点；vault 里整个目录会移入回收站。`,
-        detail: '可从工具栏「回收站」恢复。删掉最后一个世界时会自动补一个空世界。',
-        confirmText: '删除',
-        danger: true,
-      }).then((okDel) => { if (okDel) removeWorld(store, name); });
+      deleteWorldFlow(store, name);
     });
+  });
+  /* 「⋯」= 当前世界的动作（改名 / 删除）。新手不右键 —— 这是唯一"看得见"的删除入口。 */
+  tabs.querySelector('#lk-world-more')?.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const w = store.activeWorld;
+    openMenu(ev.currentTarget as HTMLElement, [
+      { label: '重命名这个世界…', onClick: () => { void renameWorldFlow(store, w); } },
+      { label: '删除这个世界…', onClick: () => deleteWorldFlow(store, w) },
+    ]);
   });
   /* 页签错峰入场。只在这个分支里调：签名没变就早退了，拖动节点时不会重放。
      延迟按子项序号由 CSS 给（style.css 的 .lk-enter-stagger），所以之后新加的页签也有错峰。 */
@@ -239,6 +311,23 @@ function activeTimelineId(store: Store): string | undefined {
   const valid = (ws.order ?? []).find((id) => ws.timelines[id]);
   if (store.activeTimeline && ws.timelines[store.activeTimeline]) return store.activeTimeline;
   return valid || Object.keys(ws.timelines)[0];
+}
+
+/** 当前世界还没有时间线时，先建一条「主线」并选中它 —— 返回可用的时间线 id。
+ *
+ *  ⭐ 2026-10-25 首启评审 A1：零基础第一次打开时，右上角「＋节点」是首屏**唯一**像"新建内容"的
+ *  按钮，而它原来的处理是 `if (!tl) return;` —— **静默失败**（没弹窗、没提示、数据不变）。
+ *  新手第一下就撞死，且得不到任何解释。现在改成"顺手建一条主线"，点一次就能开始写。 */
+function ensureTimeline(store: Store): string | undefined {
+  const id = activeTimelineId(store);
+  if (id) return id;
+  const ws = currentWorld(store);
+  const taken = new Set(Object.values(ws.timelines ?? {}).map((t) => String(t.name ?? '').trim()));
+  let base = '主线';
+  for (let i = 2; taken.has(base); i++) base = `主线 ${i}`;
+  const nid = addTimeline(store, base);
+  store.setActiveTimeline(nid);
+  return nid || undefined;
 }
 
 /* 时间线 tabs 的两份缓存（用户 2026-09-19：「点创建节点时主线页签会上下弹动」）：
@@ -271,6 +360,18 @@ async function newTimelineFlow(store: Store): Promise<void> {
   const dup = Object.values(ws?.timelines ?? {}).find((t) => String(t.name ?? '').trim() === nm);
   if (dup) { store.setActiveTimeline(dup.id); return; }
   store.setActiveTimeline(addTimeline(store, nm));
+}
+
+/** 删除时间线（右键与「⋯」菜单共用）。 */
+function deleteTimelineFlow(store: Store, id: string): void {
+  const tl = currentWorld(store).timelines[id];
+  void confirmDialog({
+    title: `删除时间线「${tl?.name ?? '?'}」？`,
+    message: `将移除该时间线的 ${tl?.nodes.length ?? 0} 个节点；vault 里对应目录会移入回收站。`,
+    detail: '可从工具栏「回收站」恢复。',
+    confirmText: '删除',
+    danger: true,
+  }).then((okDel) => { if (okDel) removeTimeline(store, id); });
 }
 
 /** 时间线 tabs（沙盘 pane-head）：切换时间线 + 新建 */
@@ -307,7 +408,8 @@ function renderTimelineTabs(store: Store): void {
     undoBtn?.addEventListener('click', () => undoWithVault(store));
     redoBtn?.addEventListener('click', () => redoWithVault(store));
     nodeBtn?.addEventListener('click', () => {
-      const id = activeTimelineId(store);
+      /* 没有时间线就先建一条（见 `ensureTimeline`）—— 绝不再静默 return */
+      const id = ensureTimeline(store);
       const tl = id ? currentWorld(store).timelines[id] : undefined;
       if (!tl) return;
       const toolHost = document.getElementById('lk-tool-host');
@@ -362,6 +464,7 @@ function renderTimelineTabs(store: Store): void {
         })
         .join('');
       tabs.innerHTML = tabsHtml + `<button class="lk-tl-tab is-new" id="lk-tl-new" title="新建时间线">＋</button>`
+        + (ids.length ? `<button class="lk-tl-tab is-new lk-tab-more" id="lk-tl-more" title="当前时间线：改名 / 删除">⋯</button>` : '')
         + (emptyIds.length || showEmpty ? `<button class="lk-tl-tab is-new" id="lk-tl-empty" title="${showEmpty ? '收起 0 节点的时间线' : '展开 0 节点的时间线'}">${showEmpty ? '收起空线' : `空线 ${emptyIds.length}`}</button>` : '');
       staggerIn(tabs);   /* 页签错峰入场：只有「页签集合变了」这一条路会重建 DOM */
       tabs.querySelectorAll('.lk-tl-tab[data-tl]').forEach((el) => {
@@ -369,15 +472,19 @@ function renderTimelineTabs(store: Store): void {
         el.addEventListener('click', () => store.setActiveTimeline(id));
         el.addEventListener('contextmenu', (ev) => {
           ev.preventDefault();
-          const tl = ws.timelines[id];
-          void confirmDialog({
-            title: `删除时间线「${tl?.name ?? '?'}」？`,
-            message: `将移除该时间线的 ${tl?.nodes.length ?? 0} 个节点；vault 里对应目录会移入回收站。`,
-            detail: '可从工具栏「回收站」恢复。',
-            confirmText: '删除',
-            danger: true,
-          }).then((okDel) => { if (okDel) removeTimeline(store, id); });
+          deleteTimelineFlow(store, id);
         });
+      });
+      /* 「⋯」= 当前时间线的动作（改名 / 删除）：与右键同源，只是把它变成看得见的入口 */
+      tabs.querySelector('#lk-tl-more')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const id = activeTimelineId(store);
+        const tl = id ? ws.timelines[id] : undefined;
+        if (!id || !tl) return;
+        openMenu(ev.currentTarget as HTMLElement, [
+          { label: '重命名这条时间线…', onClick: () => { void renameTimelineFlow(store, id, String(tl.name)); } },
+          { label: '删除这条时间线…', onClick: () => deleteTimelineFlow(store, id) },
+        ]);
       });
       tabs.querySelector('#lk-tl-new')?.addEventListener('click', () => { void newTimelineFlow(store); });
       /* 「空线 N」：展开/收起（只重画页签，不碰 sandbox 挂在 head 尾巴上的工具位） */
@@ -441,7 +548,10 @@ function renderToolbar(store: Store): void {
   const byId = (id: string): Tool | undefined => all.find((t) => t.id === id);
   const primary = RAIL_PRIMARY.map(byId).filter((t): t is Tool => !!t);
   const settings = byId('settings');
-  const rest = all.filter((t) => !RAIL_PRIMARY.includes(t.id) && t.id !== 'settings');
+  /* 「帮助」与「设置」一样是**面板型**、常驻左下角：应用没有原生菜单（`Menu.setApplicationMenu(null)`），
+     这一个格子就是「快捷键在哪 / 手册在哪 / 数据在哪」的唯一稳定入口。 */
+  const help = byId('help');
+  const rest = all.filter((t) => !RAIL_PRIMARY.includes(t.id) && t.id !== 'settings' && t.id !== 'help');
 
   const btn = (t: Tool): string =>
     `<button class="lk-tool-btn${t.placeholder ? ' is-ph' : ''}" data-tool="${t.id}" title="${t.name}${t.placeholder ? '（占位）' : ''}">${t.icon}<span>${t.name}</span></button>`;
@@ -451,7 +561,7 @@ function renderToolbar(store: Store): void {
 
   bar.innerHTML =
     `<div class="lk-tool-group">${primary.map(btn).join('')}</div>` +
-    `<div class="lk-tool-group is-bottom">${labBtn}${settings ? btn(settings) : ''}</div>`;
+    `<div class="lk-tool-group is-bottom">${labBtn}${help ? btn(help) : ''}${settings ? btn(settings) : ''}</div>`;
 
   /* ── 实验室抽屉：挂在 `.lk-app` 里、贴着左栏底（`.lk-lab`），点外面 / Esc 收起 ── */
   const app = document.querySelector('.lk-app') as HTMLElement | null;
@@ -605,6 +715,15 @@ function bindPanelEvents(): void {
     e.preventDefault();
     if (t.isOpen?.()) t.close?.();
     else if (shellStore) openTool('agent', document.getElementById('lk-module-view') as HTMLElement, shellStore);
+    syncPanelButtons();
+  });
+  /* 空画布卡片上的「问问助手」走这一条（`src/ui/timeline.ts`）：与 Ctrl+J/K 同一条打开逻辑。
+     必须挂在这里（`bindPanelEvents` 有 `panelEvtBound` 守卫，只挂一次）——
+     `renderToolbar` 每次渲染都跑，挂在那儿会堆出一串重复监听。 */
+  window.addEventListener('lingkuang-open-agent', () => {
+    const t = listTools().find((x) => x.id === 'agent');
+    if (!t?.panel) return;
+    if (!t.isOpen?.() && shellStore) openTool('agent', document.getElementById('lk-module-view') as HTMLElement, shellStore);
     syncPanelButtons();
   });
 }

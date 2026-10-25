@@ -2152,3 +2152,156 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
    画在 .tl-track 里、节点之前 ⇒ 天然压在圆点和文字下面。 */
 .tl-leaders { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
 .tl-leaders path { fill: none; stroke: var(--border-strong); stroke-width: 1; opacity: .55; }
+
+/* ══════════ 2026-10-25 首启评审：禁用态 / 空画布引导 / 工具栏原语 ══════════ */
+
+/* A5 禁用态必须"看起来不能点"。
+   实测（首启）：地图栏三个下拉 `disabled` 却仍是 `cursor:pointer` + opacity .7，颜色与旁边可用按钮
+   几乎一样 —— 新手会点、会再点、会以为坏了。这里用 !important 压住各处**内联**写死的
+   `cursor:pointer`（map.ts / node-form.ts 里都有），否则 CSS 管不到它们。 */
+button:disabled,
+select:disabled,
+input:disabled,
+textarea:disabled {
+  cursor: not-allowed !important;
+  opacity: .5;
+}
+/* 内置 `lk-btn` 的禁用更弱一点（它本来就有 .45 的规矩，别叠成看不见） */
+.lk-btn:disabled { opacity: .45; }
+
+/* B 空画布引导卡：居中的一块，不挡画布事件（拖动/右键仍作用于空白）。
+   卡片本身 `pointer-events:auto`，`.tl-empty` 外层不吃事件 —— 这样"点卡片外面"依旧是画布。 */
+.tl-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 3;
+}
+.tl-empty__card {
+  pointer-events: auto;
+  max-width: 420px;
+  padding: 18px 20px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-raised);
+  text-align: left;
+}
+.tl-empty__title { font-size: var(--text-base); font-weight: 600; color: var(--fg); }
+.tl-empty__hint { margin-top: 6px; font-size: var(--text-xs); color: var(--fg-2); line-height: 1.75; }
+.tl-empty__acts { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+.tl-empty__foot { margin-top: 12px; font-size: var(--text-2xs); color: var(--fg-2); opacity: .85; }
+
+/* D 工作台化：工具栏原语。
+   病根是"每个面板各写一套内联样式"——时间线面板头的按钮 24px、地图栏 19px、
+   分隔符有的 16px 有的干脆没有，视觉上就成了"一堆工具糊在一起"。
+   以后面板头统一用这三件：`.lk-tbg`（一组）+ `.lk-tbsep`（组间竖线）+ `.lk-tbx`（按钮/下拉）。 */
+.lk-tbg { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.lk-tbsep { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; margin: 0 2px; }
+.lk-tbx {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 9px;
+  font-size: var(--text-xs);
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.lk-tbx:hover { border-color: var(--border-strong); background: var(--surface); }
+.lk-tbx.is-on { background: var(--surface); border-color: var(--border-strong); color: var(--fg); }
+.lk-tbx--accent { border-color: var(--accent); color: var(--accent-ink); }
+.lk-tbx--accent:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.lk-tbx--danger { border-color: var(--danger); color: var(--danger); }
+select.lk-tbx { padding: 0 6px; }
+
+/* 分段控件（AE/Figma 那种连在一起的模式切换）：把「移动 / 区域 / 标记」从三颗散按钮
+   收成一件，选中的那格才上底 —— 一眼看出"这是一个单选"，而不是三个独立命令。 */
+.lk-seg {
+  display: inline-flex;
+  align-items: stretch;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.lk-seg > button {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: var(--text-xs);
+  color: var(--fg-2);
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.lk-seg > button:last-child { border-right: none; }
+.lk-seg > button:hover { background: var(--surface); color: var(--fg); }
+.lk-seg > button.is-on { background: var(--surface); color: var(--fg); box-shadow: inset 0 -2px 0 var(--accent); }
+.lk-seg > button:disabled { opacity: .45; }
+
+/* C 页签上的「⋯」：与页签同高，但弱一档（次要动作不该抢页签的注意力） */
+.lk-tab-more { color: var(--fg-2); font-size: 13px; line-height: 1; padding: 0 6px; }
+.lk-tab-more:hover { color: var(--fg); }
+
+/* C3 帮助面板（左栏常驻的小浮层）：速查卡，不压暗主区 */
+.lk-help__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.lk-help__head > b { font-size: var(--text-base); color: var(--fg); font-weight: 600; }
+.lk-help__head > span { font-size: var(--text-2xs); color: var(--fg-2); }
+.lk-help__head > button {
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  line-height: 1;
+  font-size: 15px;
+  color: var(--fg-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.lk-help__body { padding: 10px 12px 12px; }
+.lk-help__sec {
+  margin: 10px 0 4px;
+  font-size: var(--text-2xs);
+  letter-spacing: .06em;
+  color: var(--fg-2);
+}
+.lk-help__sec:first-child { margin-top: 0; }
+.lk-help__row { display: flex; align-items: baseline; gap: 10px; padding: 3px 0; }
+.lk-help__k {
+  flex: 0 0 132px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--fg);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  text-align: center;
+}
+.lk-help__v { font-size: var(--text-xs); color: var(--fg-2); line-height: 1.6; }
+.lk-help__acts { display: flex; gap: 8px; margin-top: 14px; }
+.lk-help__foot {
+  margin-top: 10px;
+  font-size: var(--text-2xs);
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  word-break: break-all;
+}

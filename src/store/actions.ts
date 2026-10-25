@@ -2,6 +2,7 @@
 import type { Store } from './store';
 import { currentWorld } from './store';
 import { uid } from './ids';
+import { ensureEntityTypes } from './entities';
 import type { Timeline, TimelineNode, Entity, Worldset, WorldData, PropValue } from './types';
 
 export function addTimeline(store: Store, name: string): string {
@@ -209,7 +210,14 @@ export function addWorld(store: Store, name: string): string {
   let i = 2;
   while (store.data.worldsets[finalName]) finalName = `${base} ${i++}`;
   store.update((d) => {
-    d.worldsets[finalName] = { name: finalName, timelines: {}, order: [], docs: {} };
+    /* ⚠️ 必须**顺手把内建实体类型种上**（2026-10-25 首启评审 B3）：
+       以前这里只写 `{name,timelines,order,docs}`，而补类型的 `ensureEntityTypes()`
+       只在启动时跑一次 ⇒ 新建出来的世界在设定库里一个类型都没有，
+       「＋新建实体」点了**静默无效**（`createEntities()` 拿不到 typeId 就 return），
+       要重启才好。新手"给世界起个名字"是必经动作，不能死在这儿。 */
+    const ws: Worldset = { name: finalName, timelines: {}, order: [], docs: {} };
+    ensureEntityTypes(ws);
+    d.worldsets[finalName] = ws;
   });
   store.setActiveWorld(finalName);
   /* ⭐ 2026-10-12：**在 vault 里把这个世界的目录建出来**。`src/main.ts` 的 `vaultToWorldData()`
@@ -220,9 +228,121 @@ export function addWorld(store: Store, name: string): string {
   return finalName;
 }
 
+/** 改世界观名字（**先把 vault 目录挪过去**，再改 key —— 顺序反了会多出一个"另一个世界"）。 */
+export async function renameWorld(store: Store, from: string, to: string): Promise<string | null> {
+  const name = to.trim();
+  if (!name || name === from) return null;
+  let finalName = name;
+  for (let i = 2; store.data.worldsets[finalName] && finalName !== from; i++) finalName = `${name} ${i}`;
+  const api = (window as unknown as { lingkuangAPI?: { vaultRenameWorld?: (a: string, b: string) => Promise<{ ok: boolean; error?: string }> } }).lingkuangAPI;
+  try {
+    const r = await api?.vaultRenameWorld?.(from, finalName);
+    if (r && r.ok === false) return null;   /* 目录挪不动就**不改名**：否则旧目录会成为另一个世界 */
+  } catch { return null; }
+  store.update((d) => {
+    const ws = d.worldsets[from];
+    if (!ws) return;
+    delete d.worldsets[from];
+    ws.name = finalName;
+    d.worldsets[finalName] = ws;
+  });
+  if (store.activeWorld === from) {
+    /* setActiveWorld 会自己 notify；上面那次 update 已经把数据改好了 */
+    const ws = store.data.worldsets[finalName];
+    if (ws) store.setActiveWorld(finalName);
+  }
+  return finalName;
+}
+
+/** 改时间线名字（同样先挪目录）。 */export async function renameTimeline(store: Store, tlId: string, to: string): Promise<string | null> {
+  const ws0 = currentWorld(store);
+  const tl = ws0.timelines?.[tlId];
+  const name = to.trim();
+  if (!tl || !name || name === tl.name) return null;
+  let finalName = name;
+  const taken = new Set(Object.values(ws0.timelines).filter((t) => t.id !== tlId).map((t) => String(t.name ?? '')));
+  for (let i = 2; taken.has(finalName); i++) finalName = `${name} ${i}`;
+  const api = (window as unknown as { lingkuangAPI?: { vaultRenameTimeline?: (w: string, a: string, b: string) => Promise<{ ok: boolean; error?: string }> } }).lingkuangAPI;
+  try {
+    const r = await api?.vaultRenameTimeline?.(store.activeWorld, String(tl.name), finalName);
+    if (r && r.ok === false) return null;
+  } catch { return null; }
+  store.update((d) => {
+    const t = d.worldsets[store.activeWorld]?.timelines[tlId];
+    if (t) t.name = finalName;
+  });
+  return finalName;
+}
+
+/** 「先看看示例」：种一个**小而完整**的示例世界（1 条主线 9 个事件 + 3 条设定）。
+ *
+ *  为什么在代码里种、不读 `data/worldbuilding.js`：那个文件是 **旧结构**
+ *  （`{id,name,absOffset,nodes}`，localStorage 时代的形状），首启早就不读它了；照着当前
+ *  `Worldset` 形状种一份更可靠，也能保证示例里正好是"新手第一天该见到的东西"：
+ *  事件按年份排开（一眼看懂时间线）、两条剧情事件（看懂类型）、三条设定（看懂设定库与演变）。
+ *
+ *  它是**独立的一个世界**（名字带「示例 ·」），不会动用户已有的任何东西 —— 看完右键删掉即可。 */
+export function addSampleWorld(store: Store): string {
+  const base = '示例 · 白石大陆';
+  let name = base;
+  for (let i = 2; store.data.worldsets[name]; i++) name = `${base} ${i}`;
+  const tlId = uid('tl');
+  const mk = (
+    year: number, title: string, type: TimelineNode['type'], desc: string, doc: string, kind = '事件'
+  ): TimelineNode => ({ id: uid('n'), title, year, precision: 'year', type, kind, desc, doc, tag: '', people: [], places: [], properties: {} });
+  const nodes: TimelineNode[] = [
+    mk(-800, '上古之门开启', 'world_event', '传说中连通异界的门扉首次开启，秩序与混乱自此交织。', '#事件：\n门不是被谁造出来的，它一直开着。\n'),
+    mk(-312, '裂蹄时代', 'world_event', '大陆裂变，诸城邦并起，史称裂蹄时代。', '#事件：\n地动之后，山脊裂成七段，后来每条商道都从裂缝上过。\n'),
+    mk(0, '王城奠基', 'world_event', '第一座王城落成，白石纪年由此开始。', '#事件：\n纪年的零点不是巧合 —— 奠基那天，门第一次安静了整整一夜。\n'),
+    mk(426, '艾琳出生', 'story_event', '后来的「雾中旅人」出生在白石城外的盐村。', '#事件：\n她出生那天海上有雾，村里人说这孩子会认得路。\n'),
+    mk(612, '黑潮之战', 'world_event', '来自海上的黑潮淹没沿岸三城，历时九年方退。', '#事件：\n退潮之后，沙滩上留下一排没被冲走的灯。\n'),
+    mk(980, '三界分立', 'world_event', '天、地、上三界正式分离，通界之法失传。', '#事件：\n从那以后，过界要等雾。\n'),
+    mk(1204, '雾中醒来', 'story_event', '艾琳在无名海岸醒来，记得的只有一盏灯。', '#事件：\n她不记得自己走了多远，只记得灯还亮着。\n'),
+    mk(1450, '静默期', 'world_event', '近两百年的「静默期」，很少有重大事件被记录。', '#事件：\n不是没发生，是没人写下来。\n'),
+    mk(1600, '无名之海', 'world_event', '第一批航海图绘出无名之海，故事从这里开始。', '#事件：\n你正在写的这一页，就从这里开始。\n'),
+  ];
+  store.update((d) => {
+    const ws: Worldset = {
+      name,
+      timelines: {
+        [tlId]: { id: tlId, name: '主线', absOffset: 0, nodes, loops: [], storylines: [] },
+      },
+      order: [tlId],
+      docs: {},
+      entities: {},
+      maps: [{ id: uid('m'), name: '默认地图', width: 900, height: 500, regions: [], markers: [], paths: [] }],
+      timeCursor: null,
+    };
+    /* 类型先种内建那 5 个，再把三条示例设定挂进去（不写死类型表，免得以后内建类型改了这里漂移） */
+    ensureEntityTypes(ws);
+    const entities: Entity[] = [
+      {
+        id: uid('e'), typeId: '角色', name: '艾琳',
+        properties: { 性别: '女', 种族: '人类', 年龄: '不详', 发色: '灰白', 瞳色: '浅琥珀', 身高: 168, 外貌: '总像刚从雾里走出来，头发上还带着水汽。', 性格: '话少，记得路。', 能力: '在雾里认方向；认得每一种灯。', 所属: '无', 别名: [] },
+        doc: '## 她是谁\n\n盐村出生，黑潮之后离岸，是三界分立以来第一个从无名之海走回来的人。\n\n## 你可用的钩子\n\n她记得一盏灯 —— 灯在谁手里，是下一个故事的问题。\n',
+      },
+      {
+        id: uid('e'), typeId: '地点', name: '王城',
+        properties: { 所属区域: '白石大陆中部', 规模: '都会', 气候: '温带湿润', 描述: '第一座王城，建在裂缝交汇处。', 别名: ['白石城'] },
+        doc: '## 一眼看\n\n城是沿着裂缝长出来的，所以它没有正门 —— 七个城口朝着七条商道。\n',
+      },
+      {
+        id: uid('e'), typeId: '物品', name: '雾灯',
+        properties: { 种类: '遗物', 持有者: '艾琳', 能力: '在雾里指明方向，代价是带着它的人会忘记来路。', 说明: '黑潮之战的遗留物，世上不止一盏。' },
+        doc: '## 它为何重要\n\n灯不是道具，是代价：用一次，忘一段路。\n',
+      },
+    ];
+    for (const e of entities) ws.entities![e.id] = e;
+    d.worldsets[name] = ws;
+  });
+  store.setActiveWorld(name);
+  const api = (window as unknown as { lingkuangAPI?: { vaultEnsureWorld?: (n: string) => Promise<unknown> } }).lingkuangAPI;
+  void api?.vaultEnsureWorld?.(name)?.catch(() => { /* 建目录失败不挡 UI */ });
+  return name;
+}
+
 /** 删除整条时间线：store 移除 + vault 对应目录移进回收站（可恢复）。
- *  删的是当前时间线时切到剩下的第一条，否则 activeTimeline 悬空、沙盘空白。 */
-export function removeTimeline(store: Store, tlId: string): void {
+ *  删的是当前时间线时切到剩下的第一条，否则 activeTimeline 悬空、沙盘空白。 */export function removeTimeline(store: Store, tlId: string): void {
   const ws0 = currentWorld(store);
   const tlName = ws0.timelines?.[tlId]?.name;
   const wsName = store.activeWorld;

@@ -1,4 +1,4 @@
-/** 节点详情面板（TS 版）——分区就地编辑：点哪块编辑哪块，点区域外 blur 自动保存 */
+﻿/** 节点详情面板（TS 版）——分区就地编辑：点哪块编辑哪块，点区域外 blur 自动保存 */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import type { TimelineNode, TimePrecision, FormatField } from '../store/types';
@@ -123,7 +123,7 @@ export function renderNodeDetail(
         </div>
         <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
           <span id="d-ty" style="font-size:11px;color:var(--fg);background:rgba(158,194,98,.1);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;cursor:pointer;">${cur.type === 'story_event' ? '剧情事件' : cur.type === 'world_event' ? '世界事件' : cur.type === 'loop-boundary' ? '循环边界' : '节点'}</span>
-          <span id="d-kind" title="种类（模板）：决定这个节点有哪些属性字段，在左栏「结构体管理」里定义" style="font-size:11px;color:var(--fg-2);background:var(--surface-2);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;">${escapeHtml(kind)}</span>
+          <span id="d-kind" title="种类（模板）：决定这个节点有哪些属性字段，在「实验室 → 结构体管理」里定义" style="font-size:11px;color:var(--fg-2);background:var(--surface-2);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:1px 8px;">${escapeHtml(kind)}</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
           <span style="font-size:var(--text-xs);color:var(--fg-2);">精度</span>
@@ -132,7 +132,7 @@ export function renderNodeDetail(
         <div id="d-d" style="font-size:var(--text-sm);color:var(--fg-2);line-height:1.6;border-left:2px solid var(--accent);padding-left:8px;cursor:text;min-height:18px;">${cur.desc ? mdRender(cur.desc) : '<span style="color:var(--fg-2);">(无描述)</span>'}</div>
         ${tmplFields.length
           ? `<div id="d-props" style="display:flex;flex-direction:column;gap:5px;border-top:1px dashed var(--border-soft);padding-top:8px;">
-               <div style="font-size:11px;color:var(--fg-2);">${escapeHtml(kind)} · 模板字段（在左栏「结构体管理」里增删字段）</div>
+               <div style="font-size:11px;color:var(--fg-2);">${escapeHtml(kind)} · 模板字段（在「实验室 → 结构体管理」里增删字段）</div>
                ${tmplFields.map((f) => propRow(f, cur)).join('')}
              </div>`
           : ''}

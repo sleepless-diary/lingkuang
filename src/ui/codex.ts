@@ -1069,7 +1069,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     if (!(t?.fields ?? []).length) {
       const hint = document.createElement('div');
       hint.style.cssText = 'font-size:var(--text-xs);color:var(--fg-2);';
-      hint.textContent = '这个类型还没有字段 —— 到左栏「结构体管理」的“实体类型”里加。';
+      hint.textContent = '这个类型还没有字段 —— 到「实验室 → 结构体管理」的“实体类型”里加。';
       el.appendChild(hint);
     }
     for (const f of t?.fields ?? []) {
@@ -1253,6 +1253,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     propsPanel = null;   /* 旧面板的宿主元素马上要被换掉，留着没用 */
     /* 目标没了（外部删掉 / 换世界）→ 清掉，免得面板显示一条不存在的数据 */
     if (nodeTarget && !activeNode()) nodeTarget = null;
+    /* 换了世界还把别的世界的节点留在中栏（2026-10-25）：头行写着「新世界 2」的条目，
+       中栏却在编「白石大陆」的事件 —— 两份身份对不上，看起来就是"工作台串台了"。
+       换世界＝换工作区：这一栏的目标跟着清掉（节点没丢，回那个世界还能再点开）。 */
+    if (nodeTarget && nodeTarget.world !== store.activeWorld) nodeTarget = null;
     const isEntity = mode === 'entity';
     normalizeEntitySelection();
     ensureRailSelection();   /* 实体页签：把"站在哪个事件上看"与各版本的样子准备好 */
@@ -1281,11 +1285,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       <div class="cx-root lk-page lk-page--lg" style="padding:14px 16px 12px;display:flex;flex-direction:column;gap:8px;height:100%;overflow:auto;" id="cx-root">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <div style="font-size:17px;font-weight:600;color:var(--fg);">设定库</div>
-          <span style="font-size:var(--text-xs);color:var(--fg-2);">「${escapeHtml(store.activeWorld || '（未选世界）')}」的条目 · 字段由模板决定（在左栏「结构体管理」里改模板）</span>
+          <span style="font-size:var(--text-xs);color:var(--fg-2);">「${escapeHtml(store.activeWorld || '（未选世界）')}」的条目 · 字段由模板决定（在「实验室 → 结构体管理」里改模板）</span>
           <span id="cx-newbox" style="margin-left:auto;gap:6px;align-items:center;display:flex;">
             <span id="cx-new-entity" style="gap:6px;align-items:center;display:${isEntity ? 'flex' : 'none'};">${newCtl}</span>
             <span id="cx-new-node" style="gap:6px;align-items:center;display:${isEntity ? 'none' : 'flex'};">${nodeCtl}</span>
-            <button id="cx-new" style="${NEWBTN}" data-off-entity="${kinds.length ? '' : '1'}" data-off-node="${tlNewOpts.length ? '' : '1'}">＋新建<span class="lk-roll"><span class="lk-roll__t">${isEntity ? '实体' : '节点'}</span></span></button>
+            ${isEntity && !kinds.length ? '<span style="font-size:var(--text-2xs);color:var(--fg-2);">这个世界还没有类型 —— 到「实验室 → 结构体管理」加一个</span>' : ''}
+            <button id="cx-new" style="${NEWBTN}"${isEntity && !kinds.length ? ' disabled title="先给这个世界加一个设定类型"' : ''} data-off-entity="${kinds.length ? '' : '1'}" data-off-node="${tlNewOpts.length ? '' : '1'}">＋新建<span class="lk-roll"><span class="lk-roll__t">${isEntity ? '实体' : '节点'}</span></span></button>
           </span>
         </div>
         <div id="cx-hint" style="display:none;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:rgba(217,101,92,.12);font-size:var(--text-xs);color:var(--fg);line-height:1.5;"></div>
@@ -1375,7 +1380,12 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     const createEntities = (): void => {
       const sel = host.querySelector('#cx-new-type') as HTMLSelectElement | null;
       const typeId = sel?.value ?? '';
-      if (!typeId) return;
+      if (!typeId) {
+        /* 以前这里直接 return ⇒ 按钮点了**毫无反应**（2026-10-25 首启评审 A3：
+           新建出来的世界没有类型，新手在设定库里第一次点它就撞死）。现在至少说清下一步。 */
+        say('这个世界还没有设定类型 —— 去「实验室 → 结构体管理」加一个类型');
+        return;
+      }
       const n = readCount('#cx-new-count');
       const taken = new Set(entities().map((e) => e.name || ''));
       const ids: string[] = [];
@@ -1397,7 +1407,10 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
     const createNodes = (): void => {
       const sel = host.querySelector('#cx-new-tl') as HTMLSelectElement | null;
       const tlId = sel?.value ?? '';
-      if (!tlId) return;
+      if (!tlId) {
+        say('这个世界还没有时间线 —— 先在「世界沙盘」里建一条，或直接点右上角「＋节点」');
+        return;
+      }
       const n = readCount('#cx-new-node-count');
       const kind = nodeNewKind(tlId);
       const year = cursorYear(tlId);
@@ -1552,7 +1565,7 @@ export function renderCodex(store: Store, host: HTMLElement): () => void {
       void confirmDialog({
         title: `删除实体「${c.name || '未命名'}」？`,
         message: '这条设定（含它的字段值与正文）会被移除。',
-        detail: '可以先用左栏「备份管理」的「立即备份」留一份，或在回收站里找它的正文文件。',
+        detail: '可以先用「实验室 → 备份管理」的「立即备份」留一份，或在回收站里找它的正文文件。',
         confirmText: '删除',
         danger: true,
       }).then((ok) => {

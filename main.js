@@ -1129,6 +1129,63 @@ ipcMain.handle('vault:ensure-world', (e, payload) => {
   } catch (err) { return { ok: false, error: String(err) }; }
 });
 
+/* 改世界观 / 时间线名字 = 改**目录名**（vault 里 `<世界>/<时间线>/…`）。
+   为什么必须在这一层做：只改 store 里的名字，下次写盘会把 .md 写进新目录，而旧目录连同旧文件
+   留在原地 —— 回扫时它们是**另一个世界 / 另一条时间线**，于是重命名之后页签多一个、内容还重复。
+   所以先把目录挪过去、再改名字（见 `src/store/actions.ts` 的 renameWorld / renameTimeline）。 */
+ipcMain.handle('vault:rename-world', (e, { from, to } = {}) => {
+  try {
+    const a = safeName(String(from || '').trim());
+    const b = safeName(String(to || '').trim());
+    if (!a || !b) return { ok: false, error: '名字不能为空' };
+    if (a === b) return { ok: true, moved: 0 };
+    const root = VAULT_DIR();
+    const src = path.join(root, a);
+    const dst = path.join(root, b);
+    if (!fs.existsSync(src)) { if (!fs.existsSync(dst)) return { ok: false, error: '源目录不存在' }; return { ok: true, moved: 0 }; }
+    if (fs.existsSync(dst)) return { ok: false, error: `目标已存在：${b}` };
+    fs.renameSync(src, dst);
+    return { ok: true, moved: 1 };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+
+ipcMain.handle('vault:rename-timeline', (e, { wsName, from, to } = {}) => {
+  try {
+    const ws = safeName(String(wsName || '').trim());
+    const a = safeName(String(from || '').trim());
+    const b = safeName(String(to || '').trim());
+    if (!ws || !a || !b) return { ok: false, error: '名字不能为空' };
+    if (a === b) return { ok: true, moved: 0 };
+    const src = path.join(VAULT_DIR(), ws, a);
+    const dst = path.join(VAULT_DIR(), ws, b);
+    if (!fs.existsSync(src)) { if (!fs.existsSync(dst)) return { ok: false, error: '源目录不存在' }; return { ok: true, moved: 0 }; }
+    if (fs.existsSync(dst)) return { ok: false, error: `目标已存在：${b}` };
+    fs.renameSync(src, dst);
+    return { ok: true, moved: 1 };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+
+/* 「帮助」面板要的两个入口：打开使用手册（只认 https，避免被数据里的字符串带去开本地文件）、
+   打开数据目录（用户手册里写的那条 `%APPDATA%\lingkuang\`）。 */
+ipcMain.handle('app:open-external', (e, { url } = {}) => {
+  try {
+    const u = String(url || '');
+    if (!/^https:\/\//i.test(u)) return { ok: false, error: '只允许 https 链接' };
+    void shell.openExternal(u);
+    return { ok: true };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+
+ipcMain.handle('app:open-data-dir', () => {
+  try {
+    const dir = app.getPath('userData');
+    void shell.openPath(dir);
+    return { ok: true, path: dir };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+
+ipcMain.handle('app:info', () => ({ version: app.getVersion(), dataDir: app.getPath('userData'), vault: VAULT_DIR() }));
+
 /* ── IPC: 回收站列表 = 索引登记项 + 孤儿项 ── */
 ipcMain.handle('vault:trash-list', () => {
   try {

@@ -149,12 +149,12 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
         <input id="nf-title" type="text" placeholder="节点名字" style="${INP}"/>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;">
-        <label style="${LBL}" for="nf-time">年份（默认 = 时间指针）</label>
-        <input id="nf-time" type="text" value="${escapeHtml(defaultYear)}" placeholder="312 或 312年7月 / 312年7月15日 / 312-7-15" style="${INP}"/>
+        <label style="${LBL}" for="nf-time">年份（留空 = 用时间指针那一年）</label>
+        <input id="nf-time" type="text" value="${escapeHtml(defaultYear)}" placeholder="例：312 / 312年7月 / 312-7-15" style="${INP}"/>
         <div id="nf-time-hint" style="font-size:11px;color:var(--fg-2);font-family:var(--font-mono);min-height:14px;"></div>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;">
-        <label style="${LBL}" for="nf-kind">种类（模板 · 在左栏「结构体管理」里定义）</label>
+        <label style="${LBL}" for="nf-kind">事件种类（决定这条事件有哪些字段；在「实验室 → 结构体管理」里改）</label>
         <select id="nf-kind" style="${INP}cursor:pointer;">${kindOpts}</select>
       </div>
       <div id="nf-props" style="display:flex;flex-direction:column;gap:6px;border-top:1px dashed var(--border-soft);padding-top:8px;"></div>
@@ -162,7 +162,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
       <div id="nf-err" style="font-size:var(--text-xs);color:var(--danger);display:none;"></div>
       <div style="display:flex;flex-direction:column;gap:10px;border-top:1px dashed var(--border-soft);padding-top:8px;">
           <div style="display:flex;flex-direction:column;gap:4px;">
-            <label style="${LBL}" for="nf-type">类型</label>
+            <label style="${LBL}" for="nf-type">画在哪一侧（世界事件在轴线下方，剧情事件在上方）</label>
             <select id="nf-type" style="${INP}cursor:pointer;">
               <option value="world_event">世界事件</option>
               <option value="story_event">剧情事件</option>
@@ -209,7 +209,7 @@ export function renderNodeForm(store: Store, host: HTMLElement, tlId: string, tl
     propsBox.textContent = '';
     const head = document.createElement('div');
     head.style.cssText = LBL;
-    head.textContent = fields.length ? `${kind} · 模板字段` : `「${kind}」这个种类还没有字段（在左栏「结构体管理」里加）`;
+    head.textContent = fields.length ? `${kind} · 模板字段` : `「${kind}」这个种类还没有字段（在「实验室 → 结构体管理」里加）`;
     propsBox.appendChild(head);
     for (const f of fields) {
       propsBox.appendChild(fieldRow(f, props[f.name], (v) => { props[f.name] = v; }, 58));

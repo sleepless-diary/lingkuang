@@ -1,4 +1,4 @@
-/** 外部改动提示条 —— 原来长在 `src/ui/editor.ts` 里（编辑器工具下线时搬出来的）。
+﻿/** 外部改动提示条 —— 原来长在 `src/ui/editor.ts` 里（编辑器工具下线时搬出来的）。
  *
  *  两件事：
  *  ① 用户在 Obsidian 里把某个节点的 `.md` 改坏（删掉 `「#描述：」` / `「#正文：」` 标签、
@@ -145,7 +145,7 @@ export function createVaultNotices(deps: {
     if (localStorage.getItem('lingkuang-hide-auto-fix-notice') === '1') return;
     const list = (e as CustomEvent<string[]>).detail || [];
     if (!list.length) return;
-    addHint('autofix', `已自动修复：${list.join('、')} 的格式（已补回标准「#描述：」/「#正文：」标签）。字段集合只能在左栏「结构体管理」里调整，内容值随意。`, undefined, { text: '不再提示此类', onClick: () => { localStorage.setItem('lingkuang-hide-auto-fix-notice', '1'); removeHint('autofix'); } });
+    addHint('autofix', `已自动修复：${list.join('、')} 的格式（已补回标准「#描述：」/「#正文：」标签）。字段集合只能在「实验室 → 结构体管理」里调整，内容值随意。`, undefined, { text: '不再提示此类', onClick: () => { localStorage.setItem('lingkuang-hide-auto-fix-notice', '1'); removeHint('autofix'); } });
   }) as EventListener;
   window.addEventListener('lingkuang-vault-auto-fixed', onAutoFixed);
 

@@ -3,7 +3,7 @@
  */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
-import { getTimeline, setTimeCursor, saveNodeDoc, addLoop, setLoopCount, removeLoop, copyNode, removeNode } from '../store/actions';
+import { getTimeline, setTimeCursor, saveNodeDoc, addLoop, setLoopCount, removeLoop, copyNode, removeNode, addTimeline, addSampleWorld } from '../store/actions';
 import { uid } from '../store/ids';
 import type { Timeline, TimelineNode, Storyline, Loop } from '../store/types';
 import { renderNodeForm } from './node-form';
@@ -641,6 +641,10 @@ export function mountTimeline(
   /* 节点 DOM 的复用账本（第一百二十四轮）：结构签名没变就只挪位置、不重建（见 renderBase）。
      非线性分支走另一套排版，它重建之后要把签名清掉，否则切回线性会命中"结构没变"的旧 DOM。 */
   let nodeSig = '';
+  /* 上一帧的节点数：0 → 1 那一下把视图**居中到新节点**。
+     不居中的话，第一件事永远贴在最左边（实测：0 年建成后落在 x≈90，正好在左边缘，
+     右边一屏空白），新手会以为"是不是没建成功/只建了一半"。 */
+  let lastNodeCount = 0;
   const nodeEls = new Map<string, HTMLElement>();
   /* ── 节点名分层 + 引线（第一百二十三轮重写）─────────────────────────────────
      用户 2026-10-25：「节点密集时节点名称会重叠，能不能做自适应分层，同时一条细线连接
@@ -738,13 +742,79 @@ export function mountTimeline(
     if (svg && svg.childNodes.length) svg.innerHTML = '';
   }
 
+  /* ══════════ 空画布引导（2026-10-25 首启评审 B）══════════
+   *  目的不是"教"，是**把第一件事变成一次点击**：零基础第一次打开时画布是一整块灰的
+   *  （实测首屏 93 个字、22 个控件、0 句"从哪开始"），而唯一像"新建"的按钮当时还会静默失败。
+   *  两块卡的差别只有一件事：**有没有时间线**。有就写第一件事，没有就先建一条「主线」。
+   *  卡片放在 `.tl-track` 里（居中、`pointer-events:auto`），所以拖动/右键仍然作用于画布空白。 */
+  const SIG_NONE = '\u0000none';     /* 没有时间线 */
+  const SIG_EMPTY = '\u0000empty';   /* 有时间线但 0 节点（与 SIG_NONE 必须不同，见 renderBase） */
+
+  function ensureTimelineHere(): string | undefined {
+    const id = activeTimelineId();
+    if (id) return id;
+    const ws = currentWorld(store);
+    const taken = new Set(Object.values(ws.timelines ?? {}).map((t) => String(t.name ?? '').trim()));
+    let base = '主线';
+    for (let i = 2; taken.has(base); i++) base = `主线 ${i}`;
+    const nid = addTimeline(store, base);
+    store.setActiveTimeline(nid);
+    return nid || undefined;
+  }
+
+  function openNodeFormHere(): void {
+    const id = ensureTimelineHere();
+    const tl = id ? store.data.worldsets[store.activeWorld]?.timelines[id] : undefined;
+    const toolHost = document.getElementById('lk-tool-host');
+    if (id && tl && toolHost) renderNodeForm(store, toolHost, id, tl.name);
+  }
+
+  function emptyCanvasHtml(kind: 'no-timeline' | 'empty-timeline'): string {
+    const tlName = timeline()?.name ?? '这条时间线';
+    const title = kind === 'no-timeline' ? '这个世界还没有时间线' : `「${escapeHtml(tlName)}」还没有内容`;
+    const hint = kind === 'no-timeline'
+      ? '一条时间线就是一串按年份排开的事。点下面的按钮会先建一条「主线」，再打开新建事件的表单。'
+      : '先写下第一件事 —— 只有名字也能存，年份默认用时间指针那一年。';
+    const acts = kind === 'no-timeline'
+      ? '<button class="lk-btn lk-btn--primary lk-btn--sm" data-tl-act="start">开始写第一件事</button>'
+        + '<button class="lk-btn lk-btn--ghost lk-btn--sm" data-tl-act="sample">先看看示例世界</button>'
+      : '<button class="lk-btn lk-btn--primary lk-btn--sm" data-tl-act="new-node">写下第一件事</button>'
+        + '<button class="lk-btn lk-btn--ghost lk-btn--sm" data-tl-act="agent">让助手起个头</button>';
+    return `<div class="tl-empty"><div class="tl-empty__card">
+        <div class="tl-empty__title">${title}</div>
+        <div class="tl-empty__hint">${hint}</div>
+        <div class="tl-empty__acts">${acts}</div>
+        <div class="tl-empty__foot">右键空白处也能加节点 · 拖动平移 · Alt+滚轮缩放</div>
+      </div></div>`;
+  }
+
+  function wireEmptyCanvas(): void {
+    const card = track.querySelector('.tl-empty');
+    if (!card) return;
+    card.querySelectorAll<HTMLElement>('[data-tl-act]').forEach((b) => {
+      b.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const act = b.dataset.tlAct;
+        if (act === 'start' || act === 'new-node') openNodeFormHere();
+        else if (act === 'sample') addSampleWorld(store);
+        else if (act === 'agent') window.dispatchEvent(new CustomEvent('lingkuang-open-agent'));
+      });
+    });
+  }
+
   function renderBase() {
     const tl = timeline();
     if (!tl) {
-      track.innerHTML = '<div style="padding:20px;font-size:var(--text-sm);color:var(--fg-2);">无时间线 · 待建</div>';
-      nodeSig = '';
+      track.innerHTML = emptyCanvasHtml('no-timeline');
+      /* ⚠️ 哨兵值不能是空串（2026-10-25 首启评审 A2）：以前这里写 `nodeSig = ''`，而"有时间线但
+         0 个节点"时的 `sig` 也等于 `''` ⇒ 新建第一条时间线后走"结构没变"的快路径，
+         `track.innerHTML` 永不替换，画布上**一直挂着「无时间线 · 待建」**（尺子却已经画出来了）。
+         新手会以为自己刚才那步没成功、于是再建一条。 */
+      nodeSig = SIG_NONE;
       nodeEls.clear();
       clearScale();
+      wireEmptyCanvas();
+      lastNodeCount = 0;
       return;
     }
     const nodes = tl.nodes;
@@ -757,9 +827,7 @@ export function mountTimeline(
        任何 CSS 过渡归零、`:hover` 也丢 ⇒ 看着就是"闪"。
        现在按**结构签名**（id/标题/类型/选中）判断：一样就只挪 left，不动 DOM。
        签名字段是"画在 HTML 里的全部东西"——`nodeHtml()` 只写这几个，改它记得同步这里。 */
-    const sig = nodes
-      .map((n) => `${n.id}|${n.title}|${n.type}|${n.id === selectedId ? 1 : 0}`)
-      .join('\n');
+    const sig = nodes.length ? nodes.map((n) => `${n.id}|${n.title}|${n.type}|${n.id === selectedId ? 1 : 0}`).join('\n') : SIG_EMPTY;
     if (sig === nodeSig && nodeEls.size === nodes.length) {
       for (const n of nodes) {
         const el = nodeEls.get(n.id);
@@ -767,15 +835,20 @@ export function mountTimeline(
       }
     } else {
       nodeSig = sig;
-      track.innerHTML = lineHtml + nodes.map((n) => nodeHtml(n, timeToX(nodeEpoch(n)), n.id === selectedId)).join('');
+      track.innerHTML = lineHtml + (nodes.length ? '' : emptyCanvasHtml('empty-timeline')) + nodes.map((n) => nodeHtml(n, timeToX(nodeEpoch(n)), n.id === selectedId)).join('');
       nodeEls.clear();
       for (const el of Array.from(track.querySelectorAll<HTMLElement>('.tl__n'))) {
         if (el.dataset.id) nodeEls.set(el.dataset.id, el);
       }
+      if (!nodes.length) wireEmptyCanvas();
     }
     layoutNodeLabels();
     renderScale();
     updateCursor();
+    /* 0 → 1：把视图居中到那唯一一个节点（见 lastNodeCount 的注释）。
+       只在"从没有节点变成有节点"这一下做，之后加节点不改视图 —— 否则每建一个就跳一次画布。 */
+    if (lastNodeCount === 0 && nodes.length > 0) requestAnimationFrame(() => fitAll(true));
+    lastNodeCount = nodes.length;
   }
 
   /* 因果线：从发起节点(n) 指向目标 cause(c)（用户在本节点添加 -> 箭头从本节点出发指向所选节点）。
@@ -1005,7 +1078,7 @@ export function mountTimeline(
   }
 
   /* ── fit 视图（缩放适配全部节点）── */
-  function fitAll() {
+  function fitAll(center = false) {
     const tl = timeline();
     if (!tl || !tl.nodes.length) { view.panX = 0; view.spacing = 2; targetView.panX = 0; targetView.spacing = 2; return; }
     /* 先按节点原始年份范围建历法年表，让 nodeEpoch/fromEpoch 走 O(1)，避免 O(年数) 累加卡顿 */
@@ -1020,8 +1093,13 @@ export function mountTimeline(
     const loE = Math.min(...epochs), hiE = Math.max(...epochs);
     const lo = year2w(loE / SEC_PER_YEAR), hi = year2w(hiE / SEC_PER_YEAR);  /* 压缩轴上的年 */
     const span = Math.max(1, hi - lo);
-    targetView.spacing = Math.min(40, Math.max(0.05, (wrap.clientWidth - 120) / span));
-    targetView.panX = 40 - lo * targetView.spacing;
+    /* 只有一个节点时不要用"撑满整屏"的 spacing（40px/年 ⇒ 屏幕只剩 ±15 年，像放大镜怼在轴上）。
+       这一档按 2px/年 居中放它：看得见"左右还有很多年"，也看得见这一件事。 */
+    const single = (fitNodes.length ? fitNodes : tl.nodes).length === 1;
+    targetView.spacing = single ? 2 : Math.min(40, Math.max(0.05, (wrap.clientWidth - 120) / span));
+    /* `center=true`：把内容放到画布**正中**（只有"第一件事"那一下用）。
+       默认的左留白 40px 是为多节点 fit 设计的；只有一个节点时它会把内容顶到最左边。 */
+    targetView.panX = (center || single ? wrap.clientWidth / 2 : 40) - lo * targetView.spacing;
     kickEase();
     render();
   }
@@ -1047,6 +1125,8 @@ export function mountTimeline(
        空白处右键也会顺带把时间指针挪到点击位置。 */
     if (e.button !== 0) return;
     if (typeof brushing !== 'undefined' && brushing) return;   /* 笔刷模式：交给笔刷分支 */
+    /* 空画布卡片上的按钮不该顺手把时间指针挪走（它的 click 自己处理） */
+    if ((e.target as HTMLElement).closest('.tl-empty')) return;
     wrap.classList.add('is-dragging');   /* 拖动中关掉节点悬停（否则折叠的名字会被指针扫得忽隐忽现） */
     wrap.style.cursor = 'grabbing';           /* 任何拖动都变抓手（endDrag 复原） */
     const nodeEl = (e.target as HTMLElement).closest('.tl__n') as HTMLElement | null;
@@ -1199,7 +1279,7 @@ export function mountTimeline(
   );
   wrap.style.cursor = 'grab';               /* 画布默认抓手（拖动时变 grabbing） */
   wrap.addEventListener('dblclick', (e) => {
-    if ((e.target as HTMLElement).closest('.tl__n')) return;
+    if ((e.target as HTMLElement).closest('.tl__n, .tl-empty')) return;
     if (nonlinearMode) { nlPan = 0; nlZoom = 1; render(); return; }   /* 非线性：双击＝回到"刚好铺满" */
     fitAll();
   });
@@ -1384,9 +1464,9 @@ export function mountTimeline(
        所以只留**一个下拉**：第一项「全览」= 不聚焦（看整条时间线），其余项 = 聚焦某条剧情线（线外内容截断）。 */
     ui.innerHTML = `
       <span class="lk-tl-subbar__label">剧情线</span>
-      <select class="lk-tl-tab" id="lk-line-sel" title="全览 = 看整条时间线；选一条剧情线 = 聚焦只看它" style="font-size:11px;background:none;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--fg);padding:2px 4px;" ${lines.length ? '' : 'disabled'}>
+      <select class="lk-tbx" id="lk-line-sel" title="全览 = 看整条时间线；选一条剧情线 = 聚焦只看它" ${lines.length ? '' : 'disabled'}>
         <option value="">— 全览 —</option>${lineOpts}<option value="__new__">＋ 新建剧情线…</option></select>
-      <button class="lk-tl-tab is-new" id="lk-line-new" title="新建剧情线（先覆盖整条时间线，随后在右侧面板里编辑区段）">＋剧情线</button>`;
+      <button class="lk-tbx" id="lk-line-new" ${timeline() ? '' : 'disabled'} title="${timeline() ? '新建剧情线（先覆盖整条时间线，随后在右侧面板里编辑区段）' : '先建一条时间线'}">＋剧情线</button>`;
     subbar.appendChild(ui);
 
     ui.querySelector('#lk-brush')?.addEventListener('click', () => {
@@ -1898,6 +1978,16 @@ export function mountTimeline(
   }
 
   /* 沙盘头加「＋循环」「非线性」常驻工具 */
+  function syncLoopBtn(): void {
+    /* 没有时间线时「＋循环」点了只会静默 return（旧行为）。与其留一颗"能点但没用"的按钮，
+       不如置灰并把原因写在 title 里（禁用态的光标/亮度由 style.css 的 :disabled 统一管）。 */
+    const b = TL_HEAD?.querySelector<HTMLButtonElement>('#lk-loop-new');
+    if (!b) return;
+    const has = !!timeline();
+    b.disabled = !has;
+    b.title = has ? '新建循环（选起终节点）' : '先建一条时间线';
+  }
+
   function renderExtraTools() {
     if (!TL_HEAD) return;
     let ext: HTMLElement | null = TL_HEAD.querySelector('#lk-extras');
@@ -1907,6 +1997,7 @@ export function mountTimeline(
        焦点/悬停态也一起丢。 */
     if (ext) {
       TL_HEAD.querySelector('#lk-nonlinear')?.classList.toggle('is-active', nonlinearMode);
+      syncLoopBtn();
       return;
     }
     ext = document.createElement('span');
@@ -1923,6 +2014,7 @@ export function mountTimeline(
     /* 放进固定容器 #lk-tools（与 story-ui 同容器，extras 居后，位置固定不乱跑） */
     const tools = TL_HEAD.querySelector('#lk-tools');
     if (tools) tools.appendChild(ext); else TL_HEAD.insertBefore(ext, TL_HEAD.querySelector('#lk-node-new') ?? TL_HEAD.lastChild);
+    syncLoopBtn();
     ext.querySelector('#lk-loop-new')?.addEventListener('click', () => {
       const tl = timeline();
       if (!tl) return;

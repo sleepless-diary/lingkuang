@@ -3,6 +3,7 @@ import { registerTool } from './registry';
 import { isSettingsPanelOpen, closeSettingsPanel, openSettingsPanel } from '../ui/settings-panel';
 import { isAgentPanelOpen, closeAgentPanel, openAgentPanel } from '../ui/agent';
 import { isMapStudioOpen, closeMapStudio, openMapStudio } from '../ui/map-studio';
+import { isHelpPanelOpen, closeHelpPanel, openHelpPanel } from '../ui/help-panel';
 
 /** Lucide 风格图标（内联 SVG，线性） */
 const IC = {
@@ -16,12 +17,13 @@ const IC = {
   codex: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/><path d="M9 7h7M9 11h5"/></svg>',
   agent: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.3 0-2.5-.3-3.6-.9L4 21l1.5-4.3A8.5 8.5 0 1 1 21 11.5Z"/><path d="M12 8.5v6"/><path d="M9 11.5h6"/></svg>',
   map: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4.5 3 7v13l6-2.5 6 2.5 6-2.5V4.5L15 7Z"/><path d="M9 4.5v13"/><path d="M15 7v13"/></svg>',
+  help: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.5 2.5 0 0 1 4.8.8c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17h.01"/></svg>',
 };
 
 export function registerAllTools(): void {
   /* 模块（左栏）：大的功能视图。语义联想=灵感触发器；多分支/推演/导出=世界沙盘附属——都不单独成模块 */
   registerTool({
-    id: 'sandbox', name: '世界沙盘', icon: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><circle cx="6" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="18" cy="12" r="2"/></svg>',
+    id: 'sandbox', name: '世界沙盘', icon: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="1.5"/><line x1="8.5" y1="5" x2="8.5" y2="19"/><line x1="12" y1="12" x2="21" y2="12"/><circle cx="15.5" cy="9" r="1.4" fill="currentColor" stroke="none"/><circle cx="18.5" cy="15" r="1.4" fill="currentColor" stroke="none"/></svg>',
     open(host) { host.innerHTML = ''; },   /* 点击回到沙盘主视图（清空右侧面板） */
   });
   registerTool({
@@ -115,6 +117,18 @@ export function registerAllTools(): void {
     open(_host, store) {
       if (!store) return;
       return openSettingsPanel(store);
+    },
+  });
+  /* 「帮助」：左栏常驻的小浮层（快捷键 / 手册 / 数据目录）。
+     应用没有原生菜单，这一格是「说明书在哪、数据在哪」的唯一稳定入口（2026-10-25 首启评审 C3）。 */
+  registerTool({
+    id: 'help', name: '帮助', icon: IC.help, group: 'manage',
+    panel: true,
+    isOpen: () => isHelpPanelOpen(),
+    close: () => closeHelpPanel(),
+    open(_host, store) {
+      if (!store) return;
+      return openHelpPanel(store);
     },
   });
   /* 灵框助手（`panel: true`）：**右侧停靠**的对话框，Ctrl+K 也能呼出（见 `src/ui/shell.ts`）。
