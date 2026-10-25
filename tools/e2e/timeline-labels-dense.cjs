@@ -103,9 +103,10 @@ async function main() {
     const tr = document.querySelector('.tl-track').getBoundingClientRect();
     const paths = svg ? [...svg.querySelectorAll('path')].map((p) => {
       const nums = (p.getAttribute('d') || '').match(/-?[\\d.]+/g)?.map(Number) || [];
+      /* d = M x0 y0 L xs y0 L xs cy L xEnd cy —— 主干在 xs（可能为让开别人的字而平移） */
       return {
         id: p.getAttribute('data-id'),
-        x0: nums[0], y0: nums[1], xSpine: nums[2], cy: nums[3], xEnd: nums[4],
+        x0: nums[0], y0: nums[1], xs: nums[4], cy: nums[5], xEnd: nums[6],
         stroke: getComputedStyle(p).stroke, w: getComputedStyle(p).strokeWidth,
       };
     }) : [];
@@ -126,15 +127,18 @@ async function main() {
       const okSide = b.story ? p.y0 <= b.ny + 1 : p.y0 >= b.ny + b.nh - 1;
       if (!okSide) { badStart++; continue; }
       /* 主干必须是竖的（x 不变），横钩必须落在字行的心上 */
-      if (Math.abs(p.xSpine - p.x0) > 0.6) badElbow++;
+      if (!(p.xs === p.xs)) badElbow++;
       if (Math.abs(p.cy - (b.top + b.bottom) / 2) > 2) badElbow++;
       /* 横钩终点贴着自己那行字的近边（世界在左、剧情在右） */
       const nearEdge = b.story ? b.right + 2 : b.left - 2;
       if (Math.abs(p.xEnd - nearEdge) > 3) badEnd++;
-      /* 主干不许压在**任何一行字**上（这是"主干 + 横钩"换掉斜线的全部理由） */
+      /* 主干（竖段）与起点横段都不许压在**任何一行字**上 */
       const ylo = Math.min(p.y0, p.cy), yhi = Math.max(p.y0, p.cy);
       for (const bb of boxes.values()) {
-        if (p.x0 >= bb.left - 1 && p.x0 <= bb.right + 1 && yhi > bb.top + 1 && ylo < bb.bottom - 1) cross++;
+        const hitSpine = p.xs >= bb.left - 1 && p.xs <= bb.right + 1 && yhi > bb.top + 1 && ylo < bb.bottom - 1;
+        const xlo = Math.min(p.x0, p.xs), xhi = Math.max(p.x0, p.xs);
+        const hitJog = p.y0 > bb.top - 1 && p.y0 < bb.bottom + 1 && xhi > bb.left + 1 && xlo < bb.right - 1;
+        if (hitSpine || hitJog) cross++;
       }
     }
     return { hasSvg: !!svg, paths: paths.length, need, badStart, badElbow, badEnd, cross, sample: paths.slice(0, 3) };

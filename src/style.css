@@ -2134,6 +2134,14 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
    这里只留兜底值与折叠态：排到没地方才折叠成点、悬停出名字。 */
 .tl__n[data-tier="hide"] .tl__name { opacity: 0; transition: opacity 120ms var(--ease-standard); }
 .tl__n[data-tier="hide"]:hover .tl__name { opacity: 1; }
+/* 拖动中不响应节点悬停（第一百二十四轮）：
+   折叠的名字是靠 `:hover` 显形的，而拖时间指针 / 平移画布时指针会**扫过**一串节点 ——
+   每个被扫过的折叠名字都会"显形 → 缩回"，看起来就是"部分节点名在闪"（用户报的正是这个）。
+   拖动时本来也读不了名字，索性把悬停效果整个停掉（圆点放大也一起停）。 */
+.tl-wrap.is-dragging .tl__n[data-tier="hide"]:hover .tl__name { opacity: 0; }
+/* 拖动中连过渡也关掉：否则上一刻还亮着的那个名字会"余晖"式地再淡出一次（实测残留 0.17） */
+.tl-wrap.is-dragging .tl__n[data-tier="hide"] .tl__name { transition: none; }
+.tl-wrap.is-dragging .tl__n:hover .cap { transform: none; }
 /* 引线（被挪开的标签连回自己的节点）：细、半透明、不吃鼠标事件。
    画在 .tl-track 里、节点之前 ⇒ 天然压在圆点和文字下面。 */
 .tl-leaders { position: absolute; inset: 0; overflow: visible; pointer-events: none; }

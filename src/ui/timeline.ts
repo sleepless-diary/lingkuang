@@ -778,8 +778,26 @@ export function mountTimeline(
       }
       const cy = (g.label.top + g.label.bottom) / 2;          /* 行心：横钩画在这里 */
       if (Math.abs(cy - y0) < 3) continue;                   /* 已经贴上了，不需要线 */
+      /* 主干**让到挡路标签的外侧**（第一百二十四轮补）：同一带里每个节点的列边不齐
+         （dx 是相对各自圆点的 w/2+10），所以 A 的主干可能正好插进 B 那行字里
+         —— 真实数据实测 16 条里有 4 条。这里把主干平移到"所有竖直跨度内标签"的外侧，
+         再在起点/终点各拐一下（圆点 → 让位处 → 行心 → 字的近边）。 */
+      const myId = g.n.dataset.id;
+      const ylo = Math.min(cy, y0), yhi = Math.max(cy, y0);
+      /* 起点：贴着**自己这行字**的外侧（横钩只有 4px），而不是从圆点直接竖上去 ——
+         真实数据里一节挤 5 个节点时，圆点那列正好落在隔壁那一列的中间，
+         从圆点竖上去会横穿别人的字、横钩也要拉 40px，整片看着像梯子。 */
+      let xs = g.story ? g.label.right + 4 : g.label.left - 4;
+      for (let pass = 0; pass < 3; pass++) {
+        for (const s of geo) {
+          if (!s.label || s.n.dataset.id === myId) continue;
+          if (s.label.bottom < ylo - 1 || s.label.top > yhi + 1) continue;
+          if (g.story) { if (xs > s.label.left - 4 && xs < s.label.right + 4) xs = s.label.right + 4; }
+          else { if (xs < s.label.right + 4 && xs > s.label.left - 4) xs = s.label.left - 4; }
+        }
+      }
       const xEnd = g.story ? g.label.right + 2 : g.label.left - 2;
-      out.push(`<path data-id="${g.n.dataset.id ?? ''}" d="M${r2(x0)} ${r2(y0)} L${r2(x0)} ${r2(cy)} L${r2(xEnd)} ${r2(cy)}"/>`);
+      out.push(`<path data-id="${myId ?? ''}" d="M${r2(x0)} ${r2(y0)} L${r2(xs)} ${r2(y0)} L${r2(xs)} ${r2(cy)} L${r2(xEnd)} ${r2(cy)}"/>`);
     }
     svg.innerHTML = out.join('');
   }
@@ -1089,6 +1107,7 @@ export function mountTimeline(
        空白处右键也会顺带把时间指针挪到点击位置。 */
     if (e.button !== 0) return;
     if (typeof brushing !== 'undefined' && brushing) return;   /* 笔刷模式：交给笔刷分支 */
+    wrap.classList.add('is-dragging');   /* 拖动中关掉节点悬停（否则折叠的名字会被指针扫得忽隐忽现） */
     wrap.style.cursor = 'grabbing';           /* 任何拖动都变抓手（endDrag 复原） */
     const nodeEl = (e.target as HTMLElement).closest('.tl__n') as HTMLElement | null;
     if (nodeEl) {
@@ -1170,6 +1189,7 @@ export function mountTimeline(
     nodeDragSnapshotted = false;
     dragging = false;
     cursorDrag = false;
+    wrap.classList.remove('is-dragging');
     /* 吸管模式下光标是 copy，不要一律打回 default */
     wrap.style.cursor = wrap.classList.contains('lk-eyedrop') ? 'copy' : 'default';
     wrap.style.cursor = 'grab';           /* 拖动结束复原（eyedrop 会再覆盖成 copy） */
@@ -1255,6 +1275,7 @@ export function mountTimeline(
   handle.addEventListener('pointerdown', (e) => {
     if (cursorEl.style.display === 'none') return;   /* 仅真正隐藏时不能拖；常显('')可拖 */
     handleDrag = true;
+    wrap.classList.add('is-dragging');
     e.stopPropagation();
   });
   window.addEventListener('pointermove', (e) => {
