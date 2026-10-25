@@ -1,4 +1,5 @@
-/* 地形「风格」开关（第九十七轮三档 → 第一百零三轮八档）：自然 / 地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简。
+/* 地形「风格」开关（第九十七轮三档 → 第一百零三轮八档 → 第一百三十轮九档）：
+ * 自然 / 地形图 / 等高线地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简。
  *
  *  用户 2026-10-14：「这个山怎么是立体的，不应该是等高线那一种的吗」→ 选了「做成开关，三档都留着」。
  *  这套件钉三件事：
@@ -127,10 +128,10 @@ async function main() {
     && (await ev(`!!document.getElementById('lk-map-studio')`)) === false
     && !(diskMap()?.terrain),
     { views: v0 && v0.ids, disabled: v0disabled, terrain: diskMap()?.terrain ?? null });
-  /* ★1 三档齐全（两个入口同一套 id / 文案）*/
-  check('★1 风格八档 = 自然 / 地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简（地图栏）',
-    !!v0 && v0.n === 8 && v0.ids.join(',') === 'natural,topo,paper,ink,blueprint,dreamcore,satellite,minimal'
-    && v0.labels.join(',') === '自然,地形图,羊皮纸,水墨,蓝图,梦核,卫星,极简',
+  /* ★1 九档齐全（两个入口同一套 id / 文案）*/
+  check('★1 风格九档 = 自然 / 地形图 / 等高线地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简（地图栏）',
+    !!v0 && v0.n === 9 && v0.ids.join(',') === 'natural,topo,atlas,paper,ink,blueprint,dreamcore,satellite,minimal'
+    && v0.labels.join(',') === '自然,地形图,等高线地形图,羊皮纸,水墨,蓝图,梦核,卫星,极简',
     { ids: v0 && v0.ids, labels: v0 && v0.labels });
 
   /* ★2 工作室「自己调」页也有这个控件 + 悬停说明跟着换 */
@@ -142,7 +143,7 @@ async function main() {
   await sleep(600);
   const hint1 = await ev(`(document.getElementById('ms-view-hint') || {}).textContent || ''`);
   check('★2 工作室也有风格控件，且说明文字随档位换',
-    !!v1 && v1.n === 8 && v1.ids.join(',') === 'natural,topo,paper,ink,blueprint,dreamcore,satellite,minimal' && v1.value === 'natural'
+    !!v1 && v1.n === 9 && v1.ids.join(',') === 'natural,topo,atlas,paper,ink,blueprint,dreamcore,satellite,minimal' && v1.value === 'natural'
     && /真实地形配色/.test(hint0) && /等高线/.test(hint1) && hint0 !== hint1,
     { ids: v1 && v1.ids, value0: v1 && v1.value, hint0: hint0.slice(0, 24), hint1: hint1.slice(0, 24) });
 
@@ -152,24 +153,24 @@ async function main() {
   check('★3 开局出一张预览 + 统计行报数字', p0.ok && p0.len > 5000 && /块陆地/.test(p0.note),
     { len: p0.len, note: p0.note.slice(0, 50) });
 
-  /* ★4 ⭐同一片地，三档出三张**不同**的图（像素哈希两两不等）*/
+  /* ★4 ⭐同一片地，四档出四张**不同**的图（像素哈希两两不等；新增的 atlas 也必须自己一张）*/
   const sig = {};
-  for (const v of ['natural', 'topo', 'minimal']) {
+  for (const v of ['natural', 'topo', 'atlas', 'minimal']) {
     await setSel('#ms-view', v);
     await sleep(2600);                        /* 一张一张出图：换档要重新渲染一次 */
     sig[v] = await preview();
   }
-  const uniq = new Set([sig.natural.sum, sig.topo.sum, sig.minimal.sum]);
-  check('★4 三档 = 三张不同的图（同一片地，只换画法）',
-    sig.natural.ok && sig.topo.ok && sig.minimal.ok && uniq.size === 3,
-    { natural: sig.natural.sum, topo: sig.topo.sum, minimal: sig.minimal.sum });
+  const uniq = new Set([sig.natural.sum, sig.topo.sum, sig.atlas.sum, sig.minimal.sum]);
+  check('★4 四档 = 四张不同的图（同一片地，只换画法；atlas 不是 topo 的别名）',
+    sig.natural.ok && sig.topo.ok && sig.atlas.ok && sig.minimal.ok && uniq.size === 4,
+    { natural: sig.natural.sum, topo: sig.topo.sum, atlas: sig.atlas.sum, minimal: sig.minimal.sum });
 
-  /* ★6 ⭐换风格**不重算地形**：统计行逐字不变（三档之间），且此刻磁盘一个字节没动 */
+  /* ★6 ⭐换风格**不重算地形**：统计行逐字不变（四档之间），且此刻磁盘一个字节没动 */
   const note = sig.natural.note;
   const stat = (s) => s.replace(/ · 种子.*$/, '');   /* 去掉可能带风格字样的尾巴，只比地形数字 */
   const sigBefore = JSON.stringify(diskMap()?.terrain ?? null);
-  check('★6 换风格不重算地形：三档的统计数字逐字相同、且预览阶段不落盘',
-    stat(sig.topo.note) === stat(note) && stat(sig.minimal.note) === stat(note)
+  check('★6 换风格不重算地形：四档的统计数字逐字相同、且预览阶段不落盘',
+    stat(sig.topo.note) === stat(note) && stat(sig.atlas.note) === stat(note) && stat(sig.minimal.note) === stat(note)
     && JSON.stringify(diskMap()?.terrain ?? null) === sigBefore,
     { note: note.slice(0, 60), same: stat(sig.topo.note) === stat(note) });
 

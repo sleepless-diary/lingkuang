@@ -256,14 +256,18 @@ const areaWater = (eng, y0, y1) => {
     { dirty, after: E.paintedSoFar(), painted: +wDirty.toFixed(3), cleared: +wClean.toFixed(3) });
 }
 
-/* ★14 「看的方式」八档（第九十七轮三档 → 第一百零三轮八档）：它只是**一组渲染参数**（纯函数），
-   与"生成什么地形"无关 ⇒ 缺省/认不出的值都必须落回默认档（自然），这是"不传就什么都不变"的保证。
-   另外两条第一百零三轮的新契约：
+/* ★14 「看的方式」九档（第九十七轮三档 → 第一百零三轮八档 → 第一百三十轮加「等高线地形图」）：
+   它只是**一组渲染参数**（纯函数），与"生成什么地形"无关 ⇒ 缺省/认不出的值都必须落回默认档（自然），
+   这是"不传就什么都不变"的保证。另外几条新契约：
      · 每档都带**色带**（陆地 8 个等距采样点 ×3、海 6×3）与线/河色 —— 缺一项那一档就只剩"调亮度"；
-     · 旧 id（relief/contour/flat）必须仍能归一化（老数据不炸）。 */
+     · 旧 id（relief/contour/flat）必须仍能归一化（老数据不炸）；
+     · 新增的 `atlas`（等高线地形图）必须**真的分层设色 + 等高线**（bands > 1 且 contour = 1），
+       色带要比 `topo` 更鲜艳（色度更高）—— 用户 2026-10-25：「现在的颜色几乎看不出分层设色，
+       可以做成课本里面那样鲜艳颜色的形式吗」。 */
 {
   const r = E.styleRenderParams('natural');
   const t = E.styleRenderParams('topo');
+  const a = E.styleRenderParams('atlas');
   const m = E.styleRenderParams('minimal');
   const legacy = E.styleRenderParams('relief');
   const unknown = E.styleRenderParams('不认识的东西');
@@ -275,22 +279,35 @@ const areaWater = (eng, y0, y1) => {
     && Array.isArray(p.line_color) && p.line_color.length === 3
     && Array.isArray(p.river_color) && p.river_color.length === 3
     && p.land_ramp.every((v) => v >= 0 && v <= 1);
-  const ok = E.TERRAIN_STYLES.length === 8
-    && ids === 'natural,topo,paper,ink,blueprint,dreamcore,satellite,minimal'
+  /* 色带着色度（max-min）的均值：`atlas` 要比 `topo` 的浅淡色带明显鲜艳 */
+  const chroma = (p) => {
+    let s = 0;
+    for (let i = 0; i < p.land_ramp.length; i += 3) {
+      const r0 = p.land_ramp[i], g0 = p.land_ramp[i + 1], b0 = p.land_ramp[i + 2];
+      s += Math.max(r0, g0, b0) - Math.min(r0, g0, b0);
+    }
+    return s / (p.land_ramp.length / 3);
+  };
+  const ok = E.TERRAIN_STYLES.length === 9
+    && ids === 'natural,topo,atlas,paper,ink,blueprint,dreamcore,satellite,minimal'
     && E.TERRAIN_STYLES.every((s) => s.label && s.hint)
     && d.shade === 1 && d.contour === 0 && d.contour_scale === 10 && d.bands === 0
     && E.TERRAIN_STYLE_DEFS.every((def) => rampOk(E.styleRenderParams(def.id)))
     && r.shade === 1 && r.contour === 0 && r.bands === 0 && r.grade === 1
     && t.shade > 0 && t.shade < 1 && t.contour === 1 && t.contour_scale > 1 && t.bands > 1
+    && a.shade > 0 && a.shade < 1 && a.contour === 1 && a.contour_scale > 1 && a.bands > 1
+    && chroma(a) > chroma(t) * 1.15
     && m.shade === 0 && m.detail === 0 && m.contour === 0 && m.bands === 0
     && JSON.stringify(unknown) === JSON.stringify(r) && JSON.stringify(none) === JSON.stringify(r)
     && JSON.stringify(legacy) === JSON.stringify(r)
-    && E.isTerrainStyle('topo') && !E.isTerrainStyle('contour') && !E.isTerrainStyle(null)
+    && E.isTerrainStyle('topo') && E.isTerrainStyle('atlas') && !E.isTerrainStyle('contour') && !E.isTerrainStyle(null)
     && E.terrainStyleOf('contour') === 'topo' && E.terrainStyleOf('flat') === 'minimal'
     && E.terrainStyleOf('乱写') === 'natural'
-    && E.terrainStyleLabel('topo') === '地形图' && E.terrainStyleLabel(undefined) === '自然';
-  check('★14 风格八档是一组渲染参数（每档带色带；旧 id 走别名；缺省/认不出落回自然）', ok,
-    { ids, natural: r, topo: t, minimal: m, legacyFallsBack: JSON.stringify(legacy) === JSON.stringify(r) });
+    && E.terrainStyleLabel('topo') === '地形图' && E.terrainStyleLabel('atlas') === '等高线地形图'
+    && E.terrainStyleLabel(undefined) === '自然';
+  check('★14 风格九档是一组渲染参数（每档带色带；atlas 分层设色更鲜艳；旧 id 走别名；缺省/认不出落回自然）', ok,
+    { ids, chroma: { atlas: +chroma(a).toFixed(3), topo: +chroma(t).toFixed(3) },
+      natural: r, topo: t, atlas: a, minimal: m, legacyFallsBack: JSON.stringify(legacy) === JSON.stringify(r) });
 }
 
 /* ── 星球形态：**大陆感**（第九十九轮）──────────────────────────────────────────

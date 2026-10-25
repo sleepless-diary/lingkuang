@@ -83,7 +83,7 @@ export interface MapgenRenderParams {
   contour: number;        /* 0/1：等高线 */
   contour_scale: number;  /* 整个高度范围画几条等高线（10 ⇒ 每 0.1 高度一条） */
   bands: number;          /* >1 = 分层设色档数（0/1 = 关） */
-  /* ⭐ 灵框追加（第一百零三轮）：八档风格的真实感旋钮 + 色带。全是可选 ⇒ 不填即上游原样。
+  /* ⭐ 灵框追加（第一百零三轮）：九档风格的真实感旋钮 + 色带。全是可选 ⇒ 不填即上游原样。
      值的来源只有一处：`src/mapgen/styles.ts` 的 `styleRenderParams()`。 */
   grade?: number;              /* 0 = 用上游色带；1 = 完全用下面两条色带 */
   detail?: number;             /* 山体细节噪声强度 */
@@ -183,7 +183,7 @@ export const APPLY_NOTES = [
 
 /* ── 渲染风格（「看的方式」）——注册表已搬到 `src/mapgen/styles.ts`（第一百零三轮）──
    这里只做**转出口**：老代码 `import { TERRAIN_STYLES } from '../mapgen'` 一行都不用改。
-   八档 + 旧 id 别名（relief→natural / contour→topo / flat→minimal）都在 `styles.ts` 里定义，
+   九档 + 旧 id 别名（relief→natural / contour→topo / flat→minimal）都在 `styles.ts` 里定义，
    值也只有那一个来源 —— 别再往这里加第二份表。 */
 export {
   CONTOUR_MODES, DEFAULT_TERRAIN_STYLE, TERRAIN_STYLES, TERRAIN_STYLE_ALIASES, TERRAIN_STYLE_DEFS,

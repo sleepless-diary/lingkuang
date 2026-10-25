@@ -483,8 +483,19 @@ const frag_drape = `
            u_grade = 0 ⇒ 整段跳过：旧调用方（离线脚本 / 没设风格的测试）拿到的还是上游逐字结果。 */
         if (u_grade > 0.0) {
             float landT = clamp((zLand - 0.5) / 0.425, 0.0, 1.0);
+            /* ⭐ 灵框追加（第一百三十轮）：u_bands 的**分层设色**在风格色带上真正生效。
+               以前这里直接拿连续的 landT 查色带 —— 上面的 zc 只量化了上游 colormap，
+               而 u_grade = 1 的九档全部用色带覆盖掉它 ⇒ 八档里唯一带 bands 的「地形图」
+               其实一直是一条连续渐变（用户 2026-10-25：「现在的颜色几乎看不出分层设色」）。
+               现在按 u_bands 量化**查色带用的**高度，档内保留 0.35 渐变（平得不像色卡）；
+               landT 本身仍保留连续值，交给气候色 / 岩 / 雪 / 陡坡判断，免得雪线也一起变成台阶。 */
+            float rampT = landT;
+            if (u_bands > 1.0) {
+                float bl = rampT * u_bands;
+                rampT = (floor(bl) + 0.35 * (bl - floor(bl))) / u_bands;
+            }
             float seaT  = clamp((0.5 - z0) / 0.275, 0.0, 1.0);
-            float f8 = landT * 7.0;
+            float f8 = rampT * 7.0;
             int i8 = int(floor(f8));
             vec3 landC = mix(u_land_ramp[i8], u_land_ramp[min(i8 + 1, 7)], fract(f8));
             float f6 = seaT * 5.0;

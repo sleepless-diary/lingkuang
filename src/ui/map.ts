@@ -93,7 +93,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
         <span class="lk-tbsep"></span>
         <span class="lk-tbg">
           <select id="map-contour" class="lk-tbx" title="等高线画法：自动 = 按屏幕线距自动跳线（陡坡变稀 / 平地全显示）；也可以强制「全部 / 减半 / 每五条」">${CONTOUR_MODES.map((c) => `<option value="${c.id}" title="${escapeHtml(c.hint)}">${escapeHtml(c.label)}</option>`).join('')}</select>
-          <select id="map-view" class="lk-tbx" title="看的方式：地形怎么画（八档：自然 / 地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简）—— 只换画法，不重算地形">${TERRAIN_STYLES.map((s) => `<option value="${s.id}" title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}</option>`).join('')}</select>
+          <select id="map-view" class="lk-tbx" title="看的方式：地形怎么画（九档：自然 / 地形图 / 等高线地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简）—— 只换画法，不重算地形">${TERRAIN_STYLES.map((s) => `<option value="${s.id}" title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}</option>`).join('')}</select>
           <select id="map-lift" class="lk-tbx" title="立体度：立体 = 山有厚度（能看到山坡侧面）；顶视 = 从正上方看（没有侧壁，只有色带与明暗）—— 只换看法，不重算地形"><option value="solid" title="山有厚度：能看见山坡侧面与投影（默认）">立体</option><option value="flat" title="正上方俯视：山只靠色带与明暗表达高度，没有侧壁">顶视</option></select>
           <button id="map-globe" class="lk-tbx" title="球体看：把星球图贴到一颗真球上（拖动旋转、滚轮缩放）—— 只在星球形态下出现" style="display:none;">球体看</button>
         </span>

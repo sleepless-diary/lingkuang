@@ -1,7 +1,8 @@
 /** 地图的「看的方式」——**唯一**的风格注册表（第一百零三轮）。
  *
  *  用户 2026-10-20：「我们的地图生成系统还是很假，而且不像真实地图，显示风格也很少而且不好看」
- *  ⇒ 三档（立体 / 等高线 / 平面）扩成八档，并且每档带**自己的高程色带**和一套真实感旋钮
+ *  ⇒ 三档（立体 / 等高线 / 平面）扩成八档；2026-10-25 再加第九档「等高线地形图」
+ *  （课本式鲜艳分层设色 + 褐色等高线），每档带**自己的高程色带**和一套真实感旋钮
  *  （山体细节噪声 / 海岸湿沙与泡沫 / 水面细纹 / 排线 / 纸纹 / 颗粒 / 暗角）。
  *
  *  两条硬规矩：
@@ -14,9 +15,9 @@
 
 import type { MapgenRenderParams } from './index';
 
-/** 八档的 id（数据里存的就是这个字符串；旧数据里的 relief/contour/flat 由别名表归一化） */
+/** 九档的 id（数据里存的就是这个字符串；旧数据里的 relief/contour/flat 由别名表归一化） */
 export type TerrainStyleId =
-  | 'natural' | 'topo' | 'paper' | 'ink'
+  | 'natural' | 'topo' | 'atlas' | 'paper' | 'ink'
   | 'blueprint' | 'dreamcore' | 'satellite' | 'minimal';
 
 export const DEFAULT_TERRAIN_STYLE: TerrainStyleId = 'natural';
@@ -40,7 +41,7 @@ export interface TerrainStyleDef {
   line: string;
   /** 河 */
   river: string;
-  /** 用不用这套色带（0 = 上游原色带；八档全是 1） */
+  /** 用不用这套色带（0 = 上游原色带；九档全是 1） */
   grade: number;
   /** 山体晕渲强度（0 = 完全平面） */
   shade: number;
@@ -68,7 +69,7 @@ export interface TerrainStyleDef {
   moist: number;
   /** 气候色权重（0 = 只看高度；越大低地越按「干湿 × 冷暖」上色 —— 生物群系） */
   biome: number;
-  /** 气候表的染色方式（八档各自的调子；见 `applyClimate()`） */
+  /** 气候表的染色方式（九档各自的调子；见 `applyClimate()`） */
   treat: ClimateTreat;
   /** 山脊描边强度 */
   outline: number;
@@ -79,7 +80,7 @@ export interface TerrainStyleDef {
   /** 光角（度） */
   light: number;
   /* ⭐ 第一百零六轮：地表材质分层 + 浅滩带（B3/B4）。
-     没写就按 `MATERIAL_DEFAULTS`（按 id 取）—— 八档的配色是逐条挑的，材质强度也逐档给，不用改一堆字面量。 */
+     没写就按 `MATERIAL_DEFAULTS`（按 id 取）—— 九档的配色是逐条挑的，材质强度也逐档给，不用改一堆字面量。 */
   /** 高处 / 陡坡露岩（0 = 不上岩色） */
   rock?: number;
   /** 岩层条带（0 = 无） */
@@ -90,7 +91,7 @@ export interface TerrainStyleDef {
   shelf?: number;
 }
 
-/** 八档。色带是**逐条挑的**（不是算法生成）：挑的标准是"缩到 120px 的缩略图还认得出是什么风格" */
+/** 九档。色带是**逐条挑的**（不是算法生成）：挑的标准是"缩到 120px 的缩略图还认得出是什么风格" */
 export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
   {
     id: 'natural',
@@ -115,6 +116,22 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
     grade: 1, shade: 0.32, bands: 14, contour: 1, contourScale: 20,
     detail: 0.18, coast: 0.3, waterNoise: 0.04, hatch: 0, paper: 0.12, grain: 0.02, vignette: 0,
     moist: 0.25, biome: 0.4, treat: 'pale', outline: 8, outlineWater: 13, outlineCoast: 0.8, light: 80,
+  },
+  {
+    id: 'atlas',
+    label: '等高线地形图',
+    hint: '课本里的鲜艳分层设色：低地鲜绿 → 丘陵黄绿 → 山地橙褐 → 雪白，配褐色等高线（每五条计曲线更深），海是鲜蓝',
+    /* 色带是**逐条挑的**：低地绿 → 黄 → 橙 → 褐 → 雪白，缩到 120px 还认得出是课本上的地形图。
+       ⚠️ 这一档刻意把 `biome` 压到 0.12：课本图读的是"多高"，不是"哪里干哪里湿"；
+       气候色只留一点点变化，否则低地会被染成草原/荒漠的黄绿斑块，分层设色就看不出来了。 */
+    land: ['#79c35d', '#a2d169', '#cfdf7c', '#f0e18e', '#eec27a', '#dda05f', '#c17f4f', '#a86a42'],
+    sea: ['#bfe8f7', '#9ad8ef', '#6cc2e4', '#43a7d3', '#2b86bb', '#1e689f'],
+    line: '#7a4a26',
+    river: '#2d7fbf',
+    grade: 1, shade: 0.45, bands: 10, contour: 1, contourScale: 20,
+    detail: 0.22, coast: 0.35, waterNoise: 0.05, hatch: 0, paper: 0.05, grain: 0.02, vignette: 0,
+    moist: 0.1, biome: 0.12, treat: 'natural', outline: 7, outlineWater: 13, outlineCoast: 1, light: 80,
+    rock: 0.4, strata: 0.35, snow: 0.75, shelf: 0.55,
   },
   {
     id: 'paper',
@@ -253,7 +270,7 @@ export function contourEveryOf(v: unknown): number {
   }
 }
 
-/** 面板上的八档（`label` 进 UI，`hint` 作悬停说明 —— 界面不用 emoji） */
+/** 面板上的九档（`label` 进 UI，`hint` 作悬停说明 —— 界面不用 emoji） */
 export const TERRAIN_STYLES: { id: TerrainStyleId; label: string; hint: string }[] =
   TERRAIN_STYLE_DEFS.map((d) => ({ id: d.id, label: d.label, hint: d.hint }));
 
@@ -299,7 +316,7 @@ export function sampleRampHex(hexes: string[], t: number): string {
    **高程色带只能表达"多高"，表达不了"多干 / 多冷"** ⇒ 再挂一张 **干湿 × 冷暖** 的气候表：
    4 个湿度档（干 → 湿，纹理 x）× 3 个温度带（冷 / 温 / 暖，纹理 y）。
    着色器按 `texture(u_biome, vec2(湿度, 温度))` 采样，线性过滤 ⇒ 群系之间是渐变不是色块。
-   八档风格各自把这张表染成自己的调子（`applyClimate`）—— 内容（哪里干哪里冷）来自地形，色调来自风格。 */
+   九档风格各自把这张表染成自己的调子（`applyClimate`）—— 内容（哪里干哪里冷）来自地形，色调来自风格。 */
 
 /** 基准气候表：行 = 温度带（冷 / 温 / 暖），列 = 湿度（干 → 湿）。 */
 const CLIMATE_BASE: string[][] = [
@@ -390,6 +407,7 @@ export function climateHex(treat: ClimateTreat, temp01: number, moist01: number)
 const MATERIAL_DEFAULTS: Record<TerrainStyleId, { rock: number; strata: number; snow: number; shelf: number }> = {
   natural:   { rock: 0.62, strata: 0.35, snow: 0.85, shelf: 0.75 },
   topo:      { rock: 0.50, strata: 0.65, snow: 0.55, shelf: 0.45 },
+  atlas:     { rock: 0.40, strata: 0.35, snow: 0.75, shelf: 0.55 },
   paper:     { rock: 0.42, strata: 0.22, snow: 0.30, shelf: 0.35 },
   ink:       { rock: 0.55, strata: 0.30, snow: 0.25, shelf: 0.30 },
   blueprint: { rock: 0.65, strata: 0.55, snow: 0.10, shelf: 0.50 },

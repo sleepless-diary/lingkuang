@@ -6,7 +6,7 @@
  *      另有一个球体视图（`./globe.ts`）。
  *
  *  ⚠️ 两条缓存分开：**场**（噪声/海平面/河流，~450ms）按 (种子, 档位, 数量, 分辨率) 缓存；
- *  **上色**（八档「看的方式」，~45ms）按 场 + 风格 缓存 ⇒ 换风格不重算地形（与局部形态同一条规矩）。
+ *  **上色**（九档「看的方式」，~45ms）按 场 + 风格 缓存 ⇒ 换风格不重算地形（与局部形态同一条规矩）。
  *  ⚠️ 图**不落盘**：`MapData.terrain` 里只有几百字节参数。 */
 
 import { PLANET_H, buildPlanetField, planetFieldGen, renderPlanet, renderPlanetGen, type PlanetField, type PlanetProgress } from '../mapgen/planet';
@@ -56,7 +56,7 @@ export function planetField(t: MapTerrainSpec, h: number = PLANET_VIEW_H): Plane
   return f;
 }
 
-/** 上色（「看的方式」八档）—— 便宜，但抽卡/切档会连点，也缓存 */
+/** 上色（「看的方式」九档）—— 便宜，但抽卡/切档会连点，也缓存 */
 export function planetRgba(t: MapTerrainSpec, h: number, view: string): Uint8ClampedArray {
   const key = colorKeyOf(t, h, view);
   const hit = colors.get(key);

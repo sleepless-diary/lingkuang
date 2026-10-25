@@ -257,7 +257,7 @@ export function openMapStudio(store: Store): () => void {
   const gridEl = q<HTMLElement>('#ms-grid');
   const styleSel = q<HTMLSelectElement>('#ms-style');
   const hintEl = q<HTMLElement>('#ms-style-hint');
-  /* ⭐ 「风格」（第九十七轮）：**看的方式**（八档：自然 / 地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简）—— 与上面的「档位」不是一回事：
+  /* ⭐ 「风格」（第九十七轮）：**看的方式**（九档：自然 / 地形图 / 等高线地形图 / 羊皮纸 / 水墨 / 蓝图 / 梦核 / 卫星 / 极简）—— 与上面的「档位」不是一回事：
      档位决定"生成什么地形"，风格决定"怎么画出来"。它不进引擎缓存键 ⇒ 换风格不重算地形。 */
   const viewSel = q<HTMLSelectElement>('#ms-view');
   const viewHintEl = q<HTMLElement>('#ms-view-hint');
