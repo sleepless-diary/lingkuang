@@ -103,10 +103,11 @@ async function main() {
     ridges: !!document.getElementById('ms-ridges'),
     rivers: !!document.getElementById('ms-rivers'),
     ratio: !!document.getElementById('ms-ratio'),
+    seabed: !!document.getElementById('ms-seabed'),
     old: ['ms-lands', 'ms-islands', 'ms-lakes'].filter((i) => !!document.getElementById(i)),
   })`);
-  check('★3 旋钮换成内核真能做到的三项（旧的陆/岛/湖已移除）',
-    knobs.ridges && knobs.rivers && knobs.ratio && knobs.old.length === 0, knobs);
+  check('★3 旋钮换成内核真能做到的四项（含海底起伏；旧的陆/岛/湖已移除）',
+    knobs.ridges && knobs.rivers && knobs.ratio && knobs.seabed && knobs.old.length === 0, knobs);
 
   check('★4 面板如实写出"做不到的事"', /陆块数|岛数/.test(p1.limits) && /湖/.test(p1.limits),
     { limits: p1.limits.slice(0, 60) });
@@ -120,6 +121,16 @@ async function main() {
   check('★5 改参数先防抖、随后出预览；预览阶段不落盘',
     immediate !== settled && /52%/.test(settled) && JSON.stringify(diskMap()?.terrain ?? null) === diskBefore,
     { changed: immediate !== settled, settled: settled.slice(0, 50), diskUnchanged: JSON.stringify(diskMap()?.terrain ?? null) === diskBefore });
+
+  /* ⭐ 第一百三十二轮：海底起伏旋钮 —— 改了以后预览重出（日期/统计行会变），
+     而且这个值要跟着后面 ★9 的「采用」一起落进 terrain.spec。 */
+  const noteBeforeSea = (await panel()).note;
+  await setKnob('#ms-seabed', 4);
+  await sleep(1600);
+  const noteAfterSea = (await panel()).note;
+  check('★5b 海底起伏旋钮在、改了会重出预览（统计行跟着变）',
+    noteAfterSea !== noteBeforeSea && /最深海沟/.test(noteAfterSea),
+    { before: noteBeforeSea.slice(0, 60), after: noteAfterSea.slice(0, 60) });
 
   /* ★6 页签切换 */
   await click('.lk-ms__tab[data-tab="ai"]');
@@ -168,8 +179,9 @@ async function main() {
   await sleep(1200);
   const t = diskMap()?.terrain;
   const applied = (await panel()).state;
-  check('★9 「采用到地图」真落盘（落的是选中那张卡的种子 + 表单档位，只有参数）',
+  check('★9 「采用到地图」真落盘（落的是选中那张卡的种子 + 表单档位，只有参数；海底起伏一并落盘）',
     !!t && pickedSeed !== '' && t.seed === pickedSeed && t.style === form.style && typeof t.spec === 'object'
+    && t.spec.seabed === 4
     && JSON.stringify(diskMap()).length < 4000 && /生成地形|已/.test(applied),
     { terrain: t, pickedSeed, state: applied.slice(0, 50) });
 

@@ -80,8 +80,11 @@ export function closeMapStudio(): void {
 /** 预览上的统计行（顺手把"最长的河"也标出来 —— 内核有这条数据） */
 function sumLine(s: MapGenSummary): string {
   const river = s.longestRiver > 0 ? `（最长一条 ${s.longestRiver} 格）` : '';
+  /* ⭐ 第一百三十二轮：海底是这一轮新生成的，多报一行"最深海沟" —— 不然创作者看不出
+     海面底下真的动过（尤其是一眼看过去"海还是蓝的"）。局部形态的旧地图没有这个数 ⇒ 省掉。 */
+  const deep = s.deepest ? ` · 最深海沟约 ${s.deepest} m` : '';
   return `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.zones} 个地形区 · ${s.rivers} 条河${river} · `
-    + `${s.lakes} 个湖 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}%`;
+    + `${s.lakes} 个湖 · 最高峰约 ${s.peak} m${deep} · 陆地占 ${Math.round(s.landRatio * 100)}%`;
 }
 
 /* ── AI 直出：一句话 → 参数 JSON（认不出就退回关键词解析）───────────────────── */
@@ -92,7 +95,7 @@ function aiPrompt(desc: string): string {
   return [
     '把下面这句话翻译成地图生成参数。',
     '档位 style（三选一）：continent = 大陆／archipelago = 群岛（海岸线碎、岛多）／pangaea = 盘古（一整块超级大陆）。',
-    '可选参数（没有的就不写，别硬凑）：ridges 山脊密度 1-8（越大山越多越密）、rivers 河流密度 0-4、landRatio 陆地占比 0.15-0.6。',
+    '可选参数（没有的就不写，别硬凑）：ridges 山脊密度 1-8（越大山越多越密）、rivers 河流密度 0-4、landRatio 陆地占比 0.15-0.6、seabed 海底起伏 0-4（0 = 平海，4 = 洋中脊 / 海沟 / 海山最明显）。',
     '注意：**陆块数与岛数不是参数**（由档位与随机决定），别输出 lands/islands/lakes。',
     `创作者的话：${desc}`,
     '只输出形如 {"style":"archipelago","rivers":3,"landRatio":0.28} 的一行 JSON。',
@@ -124,6 +127,7 @@ function parseAiParams(raw: string): { style?: MapStyle; spec: MapSpec } | null 
   };
   const ridges = int(src.ridges, 1, 8);        if (ridges !== undefined) spec.ridges = ridges;
   const rivers = int(src.rivers, 0, 4);        if (rivers !== undefined) spec.rivers = rivers;
+  const seabed = int(src.seabed, 0, 4);        if (seabed !== undefined) spec.seabed = seabed;
   const ratio = Number(src.landRatio);
   if (Number.isFinite(ratio) && ratio > 0) spec.landRatio = Math.max(0.15, Math.min(0.6, ratio > 1 ? ratio / 100 : ratio));
   /* 档位和参数一个都没给 ⇒ 当它没回出东西（哪怕 JSON 是合法的） */
@@ -135,6 +139,7 @@ function describeParams(style: MapStyle, spec: MapSpec): string {
   const bits: string[] = [MAP_STYLES.find((s) => s.id === style)?.label ?? style];
   if (spec.ridges !== undefined) bits.push(`山脊密度 ${spec.ridges}`);
   if (spec.rivers !== undefined) bits.push(`河流密度 ${spec.rivers}`);
+  if (spec.seabed !== undefined) bits.push(spec.seabed === 0 ? '平海底' : `海底起伏 ${spec.seabed}`);
   if (spec.landRatio !== undefined) bits.push(`陆地占 ${Math.round(spec.landRatio * 100)}%`);
   return bits.join(' · ');
 }
@@ -194,6 +199,13 @@ export function openMapStudio(store: Store): () => void {
           <label>山脊密度<input id="ms-ridges" type="number" min="1" max="8" placeholder="按档位"></label>
           <label>河流密度<input id="ms-rivers" type="number" min="0" max="4" placeholder="按档位"></label>
           <label>陆地占比（%）<input id="ms-ratio" type="number" min="15" max="60" placeholder="按档位"></label>
+        </div>
+        <!-- ⭐ 第一百三十二轮：海底生成（洋中脊 / 海沟 / 海山 / 深海丘陵）。
+             单独一行、带说明 —— 它和上面三个"陆地数量"不是一类：0 = 平海。 -->
+        <div class="lk-ms__row">
+          <label>海底起伏</label>
+          <input id="ms-seabed" type="number" min="0" max="4" placeholder="按档位（默认 2）">
+          <span class="lk-ms__dim">0 = 平海 · 4 = 洋中脊 / 海沟 / 海山最明显（重算海底，陆地不变）</span>
         </div>
         <div id="ms-limits" class="lk-ms__hint"></div>
         <div class="lk-ms__row">
@@ -298,6 +310,7 @@ export function openMapStudio(store: Store): () => void {
     const clampInt = (v: number | undefined, lo: number, hi: number) => (v === undefined ? undefined : Math.max(lo, Math.min(hi, Math.round(v))));
     const ridges = clampInt(numOf('ms-ridges'), 1, 8);  if (ridges !== undefined) spec.ridges = ridges;
     const rivers = clampInt(numOf('ms-rivers'), 0, 4);  if (rivers !== undefined) spec.rivers = rivers;
+    const seabed = clampInt(numOf('ms-seabed'), 0, 4);  if (seabed !== undefined) spec.seabed = seabed;
     const ratio = numOf('ms-ratio');                    if (ratio !== undefined) spec.landRatio = Math.max(0.15, Math.min(0.6, ratio / 100));
     return { style, spec, seed: seedEl.value.trim() };
   };
@@ -310,6 +323,7 @@ export function openMapStudio(store: Store): () => void {
     const put = (id: string, v: number | undefined) => { inputOf(id).value = v === undefined ? '' : String(v); };
     put('ms-ridges', spec.ridges);
     put('ms-rivers', spec.rivers);
+    put('ms-seabed', spec.seabed);
     put('ms-ratio', spec.landRatio === undefined ? undefined : Math.round(spec.landRatio * 100));
     syncHint();
   };
@@ -409,7 +423,7 @@ export function openMapStudio(store: Store): () => void {
   const randomParams = (): { style: MapStyle; spec: MapSpec } => {
     const styles: MapStyle[] = ['continent', 'archipelago', 'pangaea'];
     const spec: MapSpec = {
-      ridges: ri(2, 8), rivers: ri(0, 4),
+      ridges: ri(2, 8), rivers: ri(0, 4), seabed: ri(1, 4),
       landRatio: Math.round((0.2 + Math.random() * 0.28) * 100) / 100,
     };
     return { style: styles[Math.floor(Math.random() * styles.length)], spec };
@@ -585,7 +599,7 @@ export function openMapStudio(store: Store): () => void {
     repaintCards();
     setState(`风格换成「${terrainStyleLabel(viewNow())}」—— 地形没重算，只是换了个画法。满意就「采用到地图」。`);
   });
-  ['ms-ridges', 'ms-rivers', 'ms-ratio'].forEach((id) =>
+  ['ms-ridges', 'ms-rivers', 'ms-ratio', 'ms-seabed'].forEach((id) =>
     inputOf(id).addEventListener('input', debounced)
   );
   seedEl.addEventListener('input', debounced);

@@ -29,7 +29,7 @@ import { createNoise3D } from 'simplex-noise';
  *  `require`），而 `./index.ts` 那条链拉进 vendored mapgen4，里面有 DOM 假设（`document` /
  *  `HTMLCanvasElement`）⇒ 值导入会在 node 里直接炸。`seedInt` 因此本地抄一份。 */
 import type { MapgenSpecInput, TerrainStats } from './index';
-import { climateHex, sampleRampHex, styleMaterial, terrainStyleDef } from './styles';
+import { climateHex, sampleRampHex, styleMaterial, styleSeabed, terrainStyleDef } from './styles';
 
 /* ── 小工具 ─────────────────────────────────────────────────────────────────── */
 
@@ -128,13 +128,20 @@ export function isPlanetStyle(v: unknown): v is PlanetStyle {
   return v === 'continent' || v === 'archipelago' || v === 'pangaea';
 }
 
-/** 档位 + 创作者旋钮 → 本形态真正用到的三件套（陆地占比 / 山脊密度 / 河密度） */
-export function planetSpec(style: string, spec?: MapgenSpecInput): { landRatio: number; ridges: number; rivers: number } {
+/** 档位 + 创作者旋钮 → 本形态真正用到的四件套（陆地占比 / 山脊密度 / 河密度 / 海底起伏）
+ *
+ *  ⭐ 第一百三十二轮加 `seabed`：用户「给地图生成加上海底生成的功能，顺便匹配各个风格」。
+ *  0 = 不生成水下起伏（只剩陆架 → 陆坡 → 深海盆的自然剖面，海面看起来仍是平的），
+ *  4 = 洋中脊 / 海沟 / 海山链 / 深海丘陵都拉满；**默认 2（中等）** —— 老图没有这个字段时
+ *  打开就有海底细节（用户拍板："默认中等起伏，想恢复平海把旋钮拉到 0"）。 */
+export function planetSpec(style: string, spec?: MapgenSpecInput): { landRatio: number; ridges: number; rivers: number; seabed: number } {
   const p = PRESETS[(isPlanetStyle(style) ? style : 'continent') as PlanetStyle];
+  const rawSeabed = Number(spec?.seabed ?? 2);
   return {
     landRatio: clamp(Number(spec?.landRatio ?? p.landRatio), 0.05, 0.8),
     ridges: clamp(Math.round(Number(spec?.ridges ?? 4)), 1, 8),
     rivers: clamp(Math.round(Number(spec?.rivers ?? 1)), 0, 4),
+    seabed: clamp(Math.round(Number.isFinite(rawSeabed) ? rawSeabed : 2), 0, 4),
   };
 }
 
@@ -181,7 +188,7 @@ export interface PlanetField {
   /** 汇流量（格数，画河与"最长河"用） */
   flow: Float32Array;
   style: string;
-  spec: { landRatio: number; ridges: number; rivers: number };
+  spec: { landRatio: number; ridges: number; rivers: number; seabed: number };
   stats: TerrainStats;
 }
 
@@ -423,6 +430,12 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
   const nM = createNoise3D(mulberry32(seedInt(String(seed) + '|山脉')));
   const nD = createNoise3D(mulberry32(seedInt(String(seed) + '|细节')));
   const nW = createNoise3D(mulberry32(seedInt(String(seed) + '|湿度')));
+  /* ⭐ 第一百三十二轮：海底两个独立噪声域（与陆地那五个互不相关，同种子仍确定）：
+     · nB  —— 低频「陆缘活动度」：高的那半边陆架窄、外缘有海沟（活动陆缘），
+              低的那半边陆架宽、没有海沟（被动陆缘）—— 真地图上这圈宽窄差别很大；
+     · nBR —— 脊状噪声：洋中脊的脊线、海山的孤立峰、深海丘陵的碎起伏都从它来。 */
+  const nB = createNoise3D(mulberry32(seedInt(String(seed) + '|海底')));
+  const nBR = createNoise3D(mulberry32(seedInt(String(seed) + '|海底脊')));
 
   /* 陆核 / 山体核（各自的随机流：与上面五个噪声域互不相关，同种子仍确定） */
   const cores = placeCores(mulberry32(seedInt(String(seed) + '|陆核')), style);
@@ -478,6 +491,9 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
   const raw = new Float32Array(n);       /* 大陆度：**只决定海陆**（不参与高度）*/
   const hraw = new Float32Array(n);      /* 陆地起伏场：底 + 分区基准 + 板缘山带 + 细节 */
   const deta = new Float32Array(n);      /* 细节颗粒（海底起伏也借它一点）*/
+  /* ⭐ 第一百三十二轮：板缘带（`band` = 主板缘噪声的零交叉带）。陆地拿它造山，
+     海底拿它放**洋中脊** —— 板块边界在海里就是隆起，两张图因此读得出同一套构造。 */
+  const plateBand = new Float32Array(n);
   let lo = Infinity, hi = -Infinity;
   for (let i = 0; i < h; i++) {
     const lat = 90 - (i + 0.5) * 180 / h;
@@ -562,6 +578,7 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
         + mtnAmp * rg * band * provRelief * 0.20
         + det * 0.075 + fine * 0.05;
       deta[kk] = det;
+      plateBand[kk] = band;
       if (c < lo) lo = c;
       if (c > hi) hi = c;
     }
@@ -606,8 +623,8 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
   }
 
   /* ── 距海（多源 BFS；经度环绕）——**必须在高度之前算**：
-     ① 陆地高度乘它做"沿海压低"（海岸是低地、越高越往里）；
-     ② 海深按它分陆架与深海盆（大陆架浅、大洋盆地深）——这两条是"像真地图"的关键。 */
+     陆地高度乘它做"沿海压低"（海岸是低地、越高越往里）。
+     ⚠️ 海底**不能**用它：这个场里海格恒为 0（它量的就是"离海多远"），见下面 `seaDist`。 */
   const dist = new Int32Array(n).fill(-1);
   const queue = new Int32Array(n);
   let head = 0, tail = 0;
@@ -623,6 +640,30 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
         if (!dx && !dy) continue;
         const j = yy * w + ((x + dx + w) % w);
         if (dist[j] < 0) { dist[j] = dist[i] + 1; queue[tail++] = j; }
+      }
+    }
+  }
+
+  /* ── 离陆地距离（只给海底用；经度环绕）——**必须另算一张**：
+     上面那个 `dist` 是"离海距离"（海格恒为 0，越往内陆越大），拿它铺海底会把**每一格海**
+     都算成 `t = 0` ⇒ 整片海同一个深度（第一百三十二轮第一版实测：海深全是 0.12 km、
+     标准差 0，海底等于没生成）。海底要的是"离岸边多远"，所以从**陆地**出发做 BFS。 */
+  const seaDist = new Int32Array(n).fill(-1);
+  {
+    let head2 = 0, tail2 = 0;
+    for (let k = 0; k < n; k++) if (land[k]) { seaDist[k] = 0; queue[tail2++] = k; }
+    while (head2 < tail2) {
+      const i = queue[head2++];
+      if ((head2 & 0x7fff) === 0) yield { phase: '算离陆距离', done: head2, total: n };
+      const y = (i / w) | 0, x = i - y * w;
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const j = yy * w + ((x + dx + w) % w);
+          if (seaDist[j] < 0) { seaDist[j] = seaDist[i] + 1; queue[tail2++] = j; }
+        }
       }
     }
   }
@@ -643,18 +684,90 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
   }
   const hInv = 1 / (maxH || 1);
   for (let k = 0; k < n; k++) {
-    if (land[k]) {
-      const t = clamp(hraw[k] * hInv, 0, 1);
-      elev[k] = Math.pow(t, 1.15) * peakKm;
-      e01[k] = t;
-    } else {
-      const shelf = clamp(dist[k] / 9, 0, 1);          /* 0 在岸边 → 1 深海盆（9 格 ≈ 620 km 陆架）*/
-      const basin = clamp(0.78 + deta[k] * 0.5, 0.4, 1.3); /* 海盆也起起伏伏（洋中脊/海沟的粗略替身）*/
-      elev[k] = -(0.12 + Math.pow(shelf, 0.75) * (maxDepthKm - 0.12) * basin);
-      if (elev[k] < -maxDepthKm) elev[k] = -maxDepthKm;
-    }
+    if (!land[k]) continue;
+    const t = clamp(hraw[k] * hInv, 0, 1);
+    elev[k] = Math.pow(t, 1.15) * peakKm;
+    e01[k] = t;
   }
   yield { phase: '铺海底与陆地高度', done: 1, total: 1 };
+
+  /* ── 海底（第一百三十二轮）──────────────────────────────────────────────────
+     用户 2026-10-25：「给地图生成加上海底生成的功能，顺便匹配各个风格」。
+     以前海里只有一条 `dist/9` 的深度坡 + 一点噪声起伏 ⇒ 渲染出来就是**一片平的蓝色渐变**
+     （最多深浅不同），既没有洋中脊也没有海沟，九个风格也只能换"海是什么颜色"。
+
+     现在按真实洋底的**四层结构**生成（全部在单位球上取 3D 噪声 ⇒ 经度无缝、极点收敛，
+     与大陆场同一套规矩）：
+       ① 陆架：宽度 3.8~10.4 格，**活动陆缘窄、被动陆缘宽**（`active` 低频场决定）；
+       ② 陆坡：陆架外缘陡降，`sstep` 两段过渡到深海盆；
+       ③ 深海盆：大尺度起伏 + 深海丘陵（`deta` 与脊状噪声的低幅碎起伏）；
+       ④ 构造地形：**洋中脊**长在板块边界（`plateBand`，与陆地造山是同一套板缘带）、
+          **海沟**出现在活动陆缘的陆坡外侧（窄带 + 脊状噪声打断）、**海山**是脊状噪声的孤立高锋。
+     所有起伏都乘 `sbAmp = seabed/4`：0 ⇒ 只剩 ①②③ 的自然剖面（真正的"平海"），
+     4 ⇒ 构造地形拉满。**海底一律不许冒出水面**（`Math.min(depth*k, lift)` 上限 + 软地板），
+     否则 `land[]` 与高度场会互相矛盾（渲染/汇流/统计全得跟着坏）。 */
+  const sbAmp = clamp(sp.seabed / 4, 0, 1);
+  const maxCap = maxDepthKm * 1.35;
+  for (let i = 0; i < h; i++) {
+    const lat = 90 - (i + 0.5) * 180 / h;
+    const cl = Math.cos(lat * D2R), sl = Math.sin(lat * D2R);
+    for (let j = 0; j < w; j++) {
+      const k = i * w + j;
+      if (land[k]) continue;
+      const lon = -180 + (j + 0.5) * 360 / w;
+      const x = cl * Math.cos(lon * D2R), y = cl * Math.sin(lon * D2R), z = sl;
+
+      /* ① 陆缘活动度 0..1（低频）：高的一侧陆架窄 + 有海沟，低的一侧陆架宽 + 无海沟 */
+      const active = clamp(fbm3(nB, x, y, z, 1.9, 2) * 0.5 + 0.5, 0, 1);
+      /* ② 脊状噪声 0..1（1 = 脊顶）：洋中脊的脊线 / 海山孤峰 / 深海丘陵都读它 */
+      const crest = ridged3(nBR, x, y, z, 6.2, 3);
+      const shelfLen = 10.4 - 6.6 * active;
+
+      /* `t` = 离岸格数 ÷ 这片海的陆架宽度（1 = 陆架外缘、3 之后算深海盆）*/
+      const t = seaDist[k] / shelfLen;
+      let depth = 0.10 + 0.16 * Math.min(1, t)
+        + 0.58 * maxDepthKm * sstep(1.0, 2.8, t)
+        + 0.22 * maxDepthKm * sstep(2.4, 6.0, t);
+      /* ③ 深海盆：大尺度分区起伏 + 深海丘陵（只在深水区，陆架上不要碎噪音） */
+      const basinT = sstep(1.6, 4.5, t);
+      depth += ((active - 0.5) * 0.9 + deta[k] * 0.26 + (crest - 0.5) * 0.24) * sbAmp * basinT;
+      /* 深海盆先封顶：海沟必须**比海盆更深**，否则最深的地方永远是大片平底 */
+      const basinCap = maxDepthKm * 0.90;
+      if (depth > basinCap) depth = basinCap;
+
+      /* ④a 洋中脊：板块边界（与陆地造山同一条 `plateBand`）在深水区隆起；
+         抬升量有上限（不吃掉超过 45% 的水深）⇒ 洋中脊永远在海面以下 */
+      if (sbAmp > 0) {
+        const ridgeMask = Math.pow(clamp(plateBand[k], 0, 1), 1.35) * sstep(1.2, 3.2, t);
+        if (ridgeMask > 0) {
+          const lift = ridgeMask * (0.55 + 0.55 * crest) * 2.4 * sbAmp;
+          depth -= Math.min(depth * 0.45, lift);
+        }
+      }
+      /* ④b 海沟：活动陆缘的陆坡外侧一条窄带（`t` ∈ 约 0.85~3.4），
+         往 `maxDepthKm * 1.16` 的目标深度**混合**（而不是直接加固定深度）——
+         这样浅的陆坡外缘会挖出深沟、深的盆地不会无限加深。
+         脊状噪声打断带状 ⇒ 读起来是"弧形的沟"，不是一条等深的槽。 */
+      if (sbAmp > 0) {
+        const trenchBelt = sstep(0.85, 1.25, t) * (1 - sstep(1.7, 3.4, t));
+        const trenchAmt = sstep(0.42, 0.72, active) * trenchBelt * (0.55 + 0.45 * crest);
+        if (trenchAmt > 0) {
+          const target = maxDepthKm * 1.16;
+          depth += (target - depth) * trenchAmt * sbAmp * 0.92;
+        }
+      }
+      /* ④c 海山：脊状噪声的孤立高锋（只在深水、稀疏）；抬升量同样有上限 ⇒ 平顶海山 */
+      if (sbAmp > 0) {
+        const seamount = sstep(0.80, 0.94, crest) * (0.65 + 0.35 * (1 - active)) * sstep(1.8, 3.6, t);
+        if (seamount > 0) depth -= Math.min(depth * 0.60, seamount * 2.6 * sbAmp);
+      }
+      /* 软地板：万一算到水面附近，压回 100 m 以下（海底不许变成陆地）*/
+      if (depth < 0.12) depth = 0.12 + (0.12 - depth) * 0.12;
+      if (depth > maxCap) depth = maxCap;
+      elev[k] = -depth;
+    }
+    if ((i & 15) === 15 || i === h - 1) yield { phase: '铺海底', done: i + 1, total: h };
+  }
 
   const moist = new Float32Array(n);
   const temp = new Float32Array(n);
@@ -829,10 +942,12 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
   const big = Math.max(60, Math.round(landTotal * 0.03));
   const minIsland = Math.max(8, Math.round(n * 0.00004));
   const riverComps = components(w, h, river).filter((s) => s >= 12);
-  let peak = 0, maxFlow = 0;
+  let peak = 0, maxFlow = 0, deepest = 0;
   for (let k = 0; k < n; k++) {
     if (land[k] && elev[k] > peak) peak = elev[k];
     if (land[k] && flow[k] > maxFlow) maxFlow = flow[k];
+    /* ⭐ 第一百三十二轮：最深海沟（米）—— 状态行/预览行用它证明"海底真的生成了" */
+    if (!land[k] && -elev[k] > deepest) deepest = -elev[k];
   }
   const zoneSeen = new Map<string, number>();
   for (let k = 0; k < n; k++) {
@@ -847,6 +962,7 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
     rivers: riverComps.length,
     lakes: lakeCount,
     peak: Math.round(peak * 1000),
+    deepest: Math.round(deepest * 1000),
     landRatio: landTotal / n,
     regions: 0,
     solidTriangles: n,
@@ -959,6 +1075,8 @@ export function* renderPlanetGen(f: PlanetField, view: unknown, contourEvery = 0
   const riverC = hex(def.river);
   /* ⭐ 第一百零六轮：材质分层（岩 / 岩层条带 / 雪 / 浅滩）—— 与 `frag_drape` 同一套规矩 */
   const mat = styleMaterial(view);
+  /* ⭐ 第一百三十二轮：海底画法（晕渲 / 等深线 / 深度分层设色）—— 九档风格各自的读海底方式 */
+  const sbd = styleSeabed(view);
   const bandN = def.bands > 1 ? def.bands : 0;
   let maxDepth = 0.5;
   for (let k = 0; k < w * h; k++) { const d = -elev[k]; if (d > maxDepth) maxDepth = d; }
@@ -992,18 +1110,66 @@ export function* renderPlanetGen(f: PlanetField, view: unknown, contourEvery = 0
         const ex = 15;
         gx = (hs[at(j + 1, i)] - hs[at(j - 1, i)]) / (2 * Math.max(0.5, dxKm)) * ex;
         gy = (hs[at(j, i + 1)] - hs[at(j, i - 1)]) / (2 * Math.max(0.5, dyKm)) * ex;
+      } else {
+        /* ⭐ 第一百三十二轮：海底也要坡度 —— 晕渲 / 等深线都读它。海底起伏比陆地小一个量级
+           （几 km 对 8 km 的峰），垂直夸张给 45 倍才看得见；仍用同一个 `hs`（平滑过的高程）
+           ⇒ 不会把逐格噪声当成"处处是陡坡"（山体那版踩过的坑）。 */
+        const ex = 45;
+        gx = (hs[at(j + 1, i)] - hs[at(j - 1, i)]) / (2 * Math.max(0.5, dxKm)) * ex;
+        gy = (hs[at(j, i + 1)] - hs[at(j, i - 1)]) / (2 * Math.max(0.5, dyKm)) * ex;
       }
       let col: RGB;
       if (!isLand) {
-        /* 海：深浅色带 + 细纹（上游口径：8.5 km 折算 1.0 水深）*/
-        /* 海深按**这片海最深的那一格**归一化：固定除以 8.5 时大多数地图只吃到色带最浅的一小段，
-           看上去"海是一片平色"（第一百零三轮第一版截图）。 */
-        const depth = Math.pow(clamp(-elev[k] / maxDepth, 0, 1), 0.7);
-        col = rampAt(seaLut, depth);
+        /* 海：深度色带 + （按档）深度分层设色 / 等深线 / 海底晕渲 / 水面细纹。
+           ⚠️ 海深按**这片海最深的那一格**归一化（第八十几轮定的）：固定除以 8.5 时大多数地图
+           只吃到色带最浅的一小段，看上去"海是一片平色"。现在海沟是最深的那一格，
+           色带满幅用在 0..最深 —— 陆架浅、海盆中、海沟最深，一眼读得出层次。 */
+        const depthN = clamp(-elev[k] / maxDepth, 0, 1);
+        let dt = Math.pow(depthN, 0.7);
+        /* 深度分层设色（第一百三十二轮）：与陆地的 `bands` 同一种画法（档内保留 30% 渐变，
+           不做成色卡）。地形图 / 等高线地形图 / 蓝图 / 极简靠它读"几档水深"。 */
+        if (sbd.bands > 1) {
+          const lv = dt * sbd.bands;
+          dt = (Math.floor(lv) + 0.30 * (lv - Math.floor(lv))) / sbd.bands;
+        }
+        col = rampAt(seaLut, dt);
         /* ⭐ 浅滩带（B4）：岸线水侧渐浅，不再与深海一个色 */
         if (mat.shelf > 0) {
-          const shallow = 1 - sstep(0, 0.10, depth);
+          const shallow = 1 - sstep(0, 0.10, depthN);
           col = mix(col, mix(col, [158, 199, 189], 0.55), shallow * mat.shelf);
+        }
+        /* 海底纹理：细节噪声（水面之下的一层"砂"）*/
+        if (def.detail > 0) {
+          const kk = 1 + det * 0.10 * def.detail;
+          col = [col[0] * kk, col[1] * kk, col[2] * kk];
+        }
+        /* 等深线（第一百三十二轮）：用**平滑过的绝对高度**按深度切档，与陆地的等高线同一个
+           画法（线距太密时淡出，不做成一片深色）；每 5 条一条计曲线（线色加深）。
+           `BN` 与分层设色档数对齐 ⇒ 每条线正好落在色阶交界上（分层图配线，读起来最顺）。 */
+        if (sbd.bathy > 0) {
+          const BN = sbd.bands > 1 ? sbd.bands : 10;
+          const btOf = (v: number) => clamp(-v / maxDepth, 0, 1);
+          const cb = Math.floor(btOf(hs[k]) * BN);
+          const bl = Math.floor(btOf(hs[at(j - 1, i)]) * BN);
+          const bu = Math.floor(btOf(hs[at(j, i - 1)]) * BN);
+          if (cb !== bl || cb !== bu) {
+            const spx = Math.abs(btOf(hs[at(j + 3, i)]) - btOf(hs[at(j - 3, i)])) / 6;
+            const spy = Math.abs(btOf(hs[at(j, i + 3)]) - btOf(hs[at(j, i - 3)])) / 6;
+            const spacingPx = 1 / Math.max(Math.max(spx, spy) * BN, 1e-6);
+            const alpha = clamp((spacingPx - 2) / 5, 0.18, 1);
+            const base = cb % 5 === 0 ? lineDark : lineC;
+            col = mix(col, base, alpha * Math.min(1, sbd.bathy) * 0.62);
+          }
+        }
+        /* 海底晕渲（第一百三十二轮）：光还是西北上方，只给约 ±1/3 的明暗 ——
+           读得出洋中脊的脊线、海沟的沟壁、海山的锥形，又不会把整片海压成"山地图"。 */
+        if (sbd.shade > 0) {
+          const nx = -gx, ny = -gy, nzz = 1;
+          const nl = Math.sqrt(nx * nx + ny * ny + 1);
+          const lx = -0.55, ly = -0.62, lz = 0.56;
+          const lam = clamp((nx / nl) * lx + (ny / nl) * ly + (nzz / nl) * lz, 0, 1);
+          const f2 = clamp(1 + 0.62 * sbd.shade * (lam * 1.9 - 0.95), 0.66, 1.28);
+          col = [col[0] * f2, col[1] * f2, col[2] * f2];
         }
         if (def.waterNoise > 0) {
           const wn = fbm2(j / w * 42, i / h * 21) - 0.5;

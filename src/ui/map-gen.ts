@@ -192,6 +192,10 @@ const SPEC_WORDS: [RegExp, (s: MapSpec) => void, string][] = [
   [/干旱|沙漠|荒漠|缺水|贫瘠|荒原/, (s) => { s.rivers = 0; s.landRatio = 0.3; }, '干旱'],
   [/广袤|大片陆地|富饶|沃野|绿意/, (s) => { s.landRatio = 0.5; }, '大片陆地'],
   [/汪洋|水世界|零星小岛|礁/, (s) => { s.landRatio = 0.18; }, '少陆多海'],
+  /* ⭐ 第一百三十二轮：海底（生成层真能做的那一项）—— 说了"海沟 / 洋中脊 / 海山"就拉满，
+     说"大陆架 / 海底平缓"就压到最低。 */
+  [/海沟|海山|洋中脊|海岭|海底山|海底起伏|海底地形|深海沟/, (s) => { s.seabed = 4; }, '海底起伏强'],
+  [/浅海|大陆架|海底平缓|平坦的海底|浅滩/, (s) => { s.seabed = 1; }, '海底平缓'],
 ];
 
 /** 一句话 → {档位, 数量, 认出来的词}。**纯离线**（AI 不可用时也照用，见 `map-studio.ts`）。 */
@@ -353,6 +357,7 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
       `${created ? '这个世界还没有地图，我顺手建了一张「默认地图」并' : `已在「${before?.name ?? '默认地图'}」上`}` +
       `生成${isPlanet ? '了一颗星球' : '地形'}：` +
       `${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m` +
+      `${s.deepest ? ` · 最深海沟约 ${s.deepest} m` : ''}` +
       `（陆地占 ${Math.round(s.landRatio * 100)}%）${what}` +
       (isPlanet
         ? `。形态「星球」= 等距圆柱 2:1：**经度无缝、有两极**，地图栏点「球体看」就能贴到球上转着看；手刷只对「局部」形态有效`

@@ -89,6 +89,15 @@ export interface TerrainStyleDef {
   snow?: number;
   /** 水侧浅滩带（0 = 与深海同色） */
   shelf?: number;
+  /* ⭐ 第一百三十二轮：海底（用户「给地图生成加上海底生成的功能，顺便匹配各个风格」）。
+     生成层（`planet.ts`）已经把洋中脊 / 海沟 / 海山 / 深海丘陵算出来了，这里决定**怎么画**：
+     没写就按 `SEABED_DEFAULTS`（按 id 取）—— 九档各一套，不用在每条风格里写三个字面量。 */
+  /** 海底晕渲（0 = 海底完全平色，只靠深度色带读深浅） */
+  seaShade?: number;
+  /** 等深线浓度（0 = 不画）—— 用 `line` 那一色，每第 5 条加深（计曲线） */
+  bathy?: number;
+  /** 海底深度分层设色档数（0/1 = 连续渐变） */
+  seaBands?: number;
 }
 
 /** 九档。色带是**逐条挑的**（不是算法生成）：挑的标准是"缩到 120px 的缩略图还认得出是什么风格" */
@@ -96,7 +105,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
   {
     id: 'natural',
     label: '自然',
-    hint: '真实地形配色：绿低地 → 黄褐丘陵 → 灰岩 → 雪线，海从浅青到深蓝，带山体细节与海岸浪花',
+    hint: '真实地形配色：绿低地 → 黄褐丘陵 → 灰岩 → 雪线，海从浅青到深蓝，带山体细节与海岸浪花；海底有洋中脊与海沟的明暗',
     land: ['#7b9557', '#8aa05e', '#9aa966', '#adaf74', '#b6a480', '#b39784', '#bbb6ae', '#f3f2ec'],
     sea: ['#7fb5b4', '#5f9aa4', '#46808f', '#33647b', '#26506a', '#1b3c52'],
     line: '#3d4a33',
@@ -108,7 +117,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
   {
     id: 'topo',
     label: '地形图',
-    hint: '分层设色 + 等高线：像纸本地形图，读高度读得准（每格 20 条线，计曲线更深）',
+    hint: '分层设色 + 等高线：像纸本地形图，读高度读得准（每格 20 条线，计曲线更深）；海里也有等深线',
     land: ['#d7e2b0', '#cddda2', '#c3d29a', '#cbc79a', '#d0b992', '#c7a582', '#bb9478', '#efe9dc'],
     sea: ['#d4e8ee', '#bcdbe4', '#9cc8d6', '#83b6c8', '#6fa4bd', '#5e94ae'],
     line: '#8a5a2e',
@@ -120,7 +129,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
   {
     id: 'atlas',
     label: '等高线地形图',
-    hint: '课本里的鲜艳分层设色：低地鲜绿 → 丘陵黄绿 → 山地橙褐 → 雪白，配褐色等高线（每五条计曲线更深），海是鲜蓝',
+    hint: '课本里的鲜艳分层设色：低地鲜绿 → 丘陵黄绿 → 山地橙褐 → 雪白，配褐色等高线（每五条计曲线更深），海是鲜蓝、同样分档设色 + 等深线',
     /* 色带是**逐条挑的**：低地绿 → 黄 → 橙 → 褐 → 雪白，缩到 120px 还认得出是课本上的地形图。
        ⚠️ 这一档刻意把 `biome` 压到 0.12：课本图读的是"多高"，不是"哪里干哪里湿"；
        气候色只留一点点变化，否则低地会被染成草原/荒漠的黄绿斑块，分层设色就看不出来了。 */
@@ -136,7 +145,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
   {
     id: 'paper',
     label: '羊皮纸',
-    hint: '做旧航海图：暖褐墨色、坡面排线、纸纹与暗角；海面留白，河是褐色墨线',
+    hint: '做旧航海图：暖褐墨色、坡面排线、纸纹与暗角；海面留白、海底只有淡淡的等深墨线，河是褐色墨线',
     land: ['#cdb98e', '#c6b087', '#bfa47c', '#b3956f', '#a4835f', '#97795a', '#8f7050', '#7a5d43'],
     sea: ['#d3c4a2', '#c8b894', '#bdab87', '#b19d7c', '#a69271', '#9a8464'],
     line: '#6a4a2c',
@@ -148,7 +157,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
   {
     id: 'ink',
     label: '水墨',
-    hint: '单色水墨：只靠墨色浓淡与坡面皴线读地形，海是留白',
+    hint: '单色水墨：只靠墨色浓淡与坡面皴线读地形，海是留白、海底只有极淡的等深线',
     land: ['#bdbab2', '#a9a69e', '#8b8880', '#6b6963', '#57554f', '#4a4842', '#403e39', '#333230'],
     sea: ['#f0eee8', '#e7e5de', '#dedcd4', '#d6d4cc', '#d0cec6', '#c9c7bf'],
     line: '#22211e',
@@ -160,7 +169,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
   {
     id: 'blueprint',
     label: '蓝图',
-    hint: '工程蓝图：深蓝底 + 青线，等高线像制图网格，海岸描一圈细线',
+    hint: '工程蓝图：深蓝底 + 青线，等高线像制图网格，海岸描一圈细线；海底也是青色等深线',
     land: ['#0d2a47', '#123a5c', '#17496e', '#1d5a84', '#24648f', '#2a6d99', '#3180a5', '#3b83ac'],
     sea: ['#0a2038', '#081a2e', '#071528', '#061222', '#050f1c', '#040c17'],
     line: '#8fd3ee',
@@ -172,7 +181,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
   {
     id: 'dreamcore',
     label: '梦核',
-    hint: '灵框自己的皮肤色：暖灰橄榄陆地 + 荧光绿水系，颗粒与暗角，像从旧录像里截的',
+    hint: '灵框自己的皮肤色：暖灰橄榄陆地 + 荧光绿水系，颗粒与暗角，像从旧录像里截的；海底有一层很浅的晕渲',
     land: ['#9aa585', '#93a07f', '#8a9875', '#7d8b69', '#748263', '#6f7c5d', '#697453', '#9aa38f'],
     sea: ['#aab7a9', '#9daf9f', '#93a89b', '#82978f', '#6f8884', '#5b7573'],
     line: '#3a4535',
@@ -184,7 +193,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
   {
     id: 'satellite',
     label: '卫星',
-    hint: '卫星影像：深绿雨林 → 黄褐荒漠 → 灰岩，海是深蓝，细节最强、明暗对比最大',
+    hint: '卫星影像：深绿雨林 → 黄褐荒漠 → 灰岩，海是深蓝，细节最强、明暗对比最大；海底起伏在深蓝里透出来',
     land: ['#3f5a2a', '#4a6431', '#566d36', '#67793e', '#7d844d', '#8f8a63', '#a09a86', '#eae8e2'],
     sea: ['#2f6f8e', '#235a7b', '#1a4566', '#12324e', '#0d2842', '#0a2136'],
     line: '#1c1c17',
@@ -196,7 +205,7 @@ export const TERRAIN_STYLE_DEFS: TerrainStyleDef[] = [
   {
     id: 'minimal',
     label: '极简',
-    hint: '纯色块：没有阴影、没有线、没有噪声，只看陆块形状与地形分区',
+    hint: '纯色块：没有阴影、没有线、没有噪声，只看陆块形状与地形分区；海底只分几档纯色',
     land: ['#c9cfba', '#c2c9b1', '#bfc7ac', '#b8c2a7', '#b2bb9f', '#acb69a', '#a7b194', '#9ea88c'],
     sea: ['#d6dedb', '#cbd5d3', '#c2cecd', '#b9c6c6', '#b3c1c1', '#adbcbc'],
     line: '#98a290',
@@ -421,6 +430,35 @@ export function styleMaterial(v: unknown): { rock: number; strata: number; snow:
   const d = terrainStyleDef(v);
   const m = MATERIAL_DEFAULTS[d.id];
   return { rock: d.rock ?? m.rock, strata: d.strata ?? m.strata, snow: d.snow ?? m.snow, shelf: d.shelf ?? m.shelf };
+}
+
+/* ── 海底画法（第一百三十二轮）────────────────────────────────────────────────
+   生成层已经把海底做成了"有构造的地形"（`planet.ts` 的 ④a~④c），但**怎么读**得按风格来：
+     · 自然 / 卫星：海底晕渲（光照下的山脊、沟谷）—— 像卫星影像里透出来的海底地形；
+     · 地形图 / 等高线地形图：**等深线** + 深度分层设色 —— 纸本地图读水深的方式；
+     · 羊皮纸 / 水墨 / 蓝图：线稿风格的等深线 + 淡晕渲（不能抢陆地那套线）；
+     · 梦核：只给一层软晕渲，别把品牌橄榄绿压脏；
+     · 极简：不晕渲、不画线，只把水深分成几档纯色（与"陆地只有色块"同一套语言）。
+   ⚠️ 与 `MATERIAL_DEFAULTS` 同一个模式：风格定义里写了就用写的，没写才用这张表。
+     色带仍然只有一条 `sea`（6 个采样点）—— 分层设色是在**同一条色带上按深度分档采样**，
+     不是给每档另配一套海色。 */
+const SEABED_DEFAULTS: Record<TerrainStyleId, { shade: number; bathy: number; bands: number }> = {
+  natural:   { shade: 0.72, bathy: 0.00, bands: 0 },
+  topo:      { shade: 0.32, bathy: 1.00, bands: 8 },
+  atlas:     { shade: 0.36, bathy: 0.95, bands: 7 },
+  paper:     { shade: 0.28, bathy: 0.50, bands: 0 },
+  ink:       { shade: 0.14, bathy: 0.30, bands: 0 },
+  blueprint: { shade: 0.38, bathy: 0.70, bands: 6 },
+  dreamcore: { shade: 0.42, bathy: 0.12, bands: 0 },
+  satellite: { shade: 0.92, bathy: 0.00, bands: 0 },
+  minimal:   { shade: 0.00, bathy: 0.00, bands: 5 },
+};
+
+/** 某档解析后的海底画法 —— 星球上色（`planet.ts` 的 `renderPlanetGen()`）唯一读口径 */
+export function styleSeabed(v: unknown): { shade: number; bathy: number; bands: number } {
+  const d = terrainStyleDef(v);
+  const s = SEABED_DEFAULTS[d.id];
+  return { shade: d.seaShade ?? s.shade, bathy: d.bathy ?? s.bathy, bands: d.seaBands ?? s.bands };
 }
 
 /** 风格 → 渲染参数（叠在 `params.render` 之上）。缺省档缺省值 = 上游原样。 */

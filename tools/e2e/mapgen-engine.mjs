@@ -499,6 +499,133 @@ function planetMetrics(f) {
     { noMask: +base.toFixed(3), allLand: +allLand.toFixed(3), allSea: +allSea.toFixed(3), east: +eastRatio.toFixed(3), eastWant: +eastWant.toFixed(3) });
 }
 
+/* ── 海底生成（第一百三十二轮）────────────────────────────────────────────────
+   用户原话：「给地图生成加上海底生成的功能，顺便匹配各个风格」。
+   以前的海洋高度只有一条 `dist/9` 的坡 + 一点噪声 ⇒ 海面是一片平的蓝色渐变。
+   这一轮在海里补了陆架 / 陆坡 / 深海盆 / 洋中脊 / 海沟 / 海山，判据全离线、不看图：
+    · 参数：缺省 2、夹 0..4、脏值落回 2（老图没有这个字段时也真的在跑）；
+    · 只换 seabed ⇒ 陆地掩膜**一格不变**（海底不参与海陆判定），海底高度标准差与最深海沟随档单调增；
+    · 海底永远不冒出水面（非陆格 elev 必须 < 0，否则渲染/汇流/统计会各说各话）；
+    · 极点收敛：海底也是**单位球上的 3D 噪声** ⇒ 极地整行的起伏远小于赤道行；
+    · 确定性：同参数两次逐字节一致；
+    · 九档风格各带一套海底画法（自然/卫星晕渲、地形图/等高线/蓝图等深线、极简只分档）；
+    · 晕渲真的画出来了：自然档海面的亮度标准差明显大于极简档（极简是平色的）。 */
+{
+  const spec = { landRatio: 0.34, ridges: 4, rivers: 1 };
+  const sbOf = (v) => P.planetSpec('continent', { ...spec, seabed: v }).seabed;
+  check('★24 海底起伏参数：缺省 2 / 夹在 0..4 / 脏值落回 2',
+    sbOf(undefined) === 2 && sbOf(0) === 0 && sbOf(4) === 4 && sbOf(99) === 4 && sbOf(-3) === 0
+    && sbOf(NaN) === 2 && sbOf('乱写') === 2,
+    { def: sbOf(undefined), max: sbOf(99), min: sbOf(-3) });
+}
+{
+  const spec = { landRatio: 0.34, ridges: 4, rivers: 1 };
+  const f = (v) => P.buildPlanetField('lk-seabed', 'continent', { ...spec, seabed: v }, 256);
+  const f0 = f(0), f2 = f(2), f4 = f(4);
+  const seaStat = (x) => {
+    let n = 0, deepest = 0, breach = 0, rough = 0, roughN = 0;
+    for (let k = 0; k < x.w * x.h; k++) {
+      if (x.land[k]) continue;
+      const d = -x.elev[k];
+      if (!(d > 0)) breach++;
+      n++;
+      if (d > deepest) deepest = d;
+      /* 局部起伏（"海底有没有细节"）：与 4 邻居均值之差 —— 陆架→深海盆那条大坡本身
+         也在起伏里，所以在 0 档也不为 0；换 seabed 只影响构造地形那部分。 */
+      const y = (k / x.w) | 0, xx = k - y * x.w;
+      if (y === 0 || y === x.h - 1) continue;
+      const l = y * x.w + ((xx + x.w - 1) % x.w), r = y * x.w + ((xx + 1) % x.w);
+      const u = (y - 1) * x.w + xx, dn = (y + 1) * x.w + xx;
+      if (x.land[l] || x.land[r] || x.land[u] || x.land[dn]) continue;
+      rough += Math.abs(x.elev[k] - (x.elev[l] + x.elev[r] + x.elev[u] + x.elev[dn]) / 4);
+      roughN++;
+    }
+    return { rough: rough / Math.max(1, roughN), deepest, breach, n };
+  };
+  const s0 = seaStat(f0), s2 = seaStat(f2), s4 = seaStat(f4);
+  let landSame = f0.land.length === f4.land.length;
+  for (let k = 0; landSame && k < f0.land.length; k++) if (f0.land[k] !== f4.land[k]) landSame = false;
+  check('★25 海底起伏旋钮：陆地一格不变，海底局部起伏与最深海沟随档单调增、海底不漏出水面',
+    landSame && s0.rough < s2.rough && s2.rough < s4.rough && s0.deepest < s2.deepest && s2.deepest < s4.deepest
+    && s0.breach === 0 && s2.breach === 0 && s4.breach === 0,
+    { landSame, roughM: [Math.round(s0.rough * 1000), Math.round(s2.rough * 1000), Math.round(s4.rough * 1000)],
+      deepestKm: [+s0.deepest.toFixed(2), +s2.deepest.toFixed(2), +s4.deepest.toFixed(2)], breach: s4.breach });
+}
+{
+  /* ★26 统计与极点：`stats.deepest` 与逐格最深处一致；极地那行的海底起伏必须收敛
+     （用"整行离均值最大偏差"，与 map-planet.cjs ★6 的判据同源）。 */
+  const spec = { landRatio: 0.34, ridges: 4, rivers: 1, seabed: 4 };
+  const f = P.buildPlanetField('lk-seabed', 'continent', spec, 256);
+  let deepest = 0;
+  for (let k = 0; k < f.w * f.h; k++) if (!f.land[k] && -f.elev[k] > deepest) deepest = -f.elev[k];
+  const rowSpread = (y) => {
+    let n = 0, sum = 0;
+    for (let x = 0; x < f.w; x++) { const k = y * f.w + x; if (f.land[k]) continue; sum += f.elev[k]; n++; }
+    if (!n) return null;
+    const mean = sum / n;
+    let hi = 0;
+    for (let x = 0; x < f.w; x++) { const k = y * f.w + x; if (f.land[k]) continue; const v = Math.abs(f.elev[k] - mean); if (v > hi) hi = v; }
+    return hi;
+  };
+  const pole = rowSpread(0), poleS = rowSpread(f.h - 1), eq = rowSpread(f.h >> 1);
+  check('★26 最深海沟进统计、极地的海底也收敛（3D 噪声：极地行起伏 ≪ 赤道行）',
+    Math.abs(f.stats.deepest - Math.round(deepest * 1000)) <= 1 && f.stats.deepest > 0
+    && pole !== null && poleS !== null && eq !== null
+    && pole < eq * 0.5 && poleS < eq * 0.5,
+    { statDeepest: f.stats.deepest, deepest: Math.round(deepest * 1000),
+      spread: { pole: +(pole || 0).toFixed(2), poleS: +(poleS || 0).toFixed(2), equator: +(eq || 0).toFixed(2) } });
+}
+{
+  /* ★27 确定性：同参数两次逐字节一致（海底也是纯函数，不吃时间/随机） */
+  const spec = { landRatio: 0.34, ridges: 4, rivers: 1, seabed: 3 };
+  const a = P.buildPlanetField('lk-seabed-det', 'continent', spec, 256);
+  const b = P.buildPlanetField('lk-seabed-det', 'continent', spec, 256);
+  let same = a.elev.length === b.elev.length && a.elev.length > 0;
+  for (let k = 0; same && k < a.elev.length; k++) if (a.elev[k] !== b.elev[k]) same = false;
+  check('★27 海底确定性：同种子/档位/海底档两次逐字节一致', same, { cells: a.elev.length });
+}
+{
+  /* ★28 九档都带海底画法（纯参数）：这是"顺便匹配各个风格"的契约 ——
+     自然/卫星靠晕渲、地形图/等高线/蓝图靠等深线 + 分层设色、极简只分档不晕渲。 */
+  const ids = E.TERRAIN_STYLES.map((s) => s.id);
+  const sb = {};
+  for (const id of ids) sb[id] = E.styleSeabed(id);
+  const ok = ids.length === 9
+    && ids.every((id) => sb[id] && sb[id].shade >= 0 && sb[id].bathy >= 0 && sb[id].bands >= 0)
+    && sb.natural.shade > 0.5 && sb.natural.bathy === 0
+    && sb.topo.bathy > 0.5 && sb.topo.bands > 1
+    && sb.atlas.bathy > 0.5 && sb.atlas.bands > 1
+    && sb.paper.bathy > 0 && sb.paper.bathy < sb.topo.bathy
+    && sb.ink.bathy > 0 && sb.ink.shade > 0
+    && sb.blueprint.bathy > 0.5
+    && sb.satellite.shade >= sb.natural.shade && sb.satellite.bathy === 0
+    && sb.minimal.shade === 0 && sb.minimal.bands > 1 && sb.minimal.bathy === 0
+    && E.styleSeabed('relief').shade === sb.natural.shade
+    && E.styleSeabed('乱写').shade === sb.natural.shade;
+  check('★28 九档风格各带海底画法（自然/卫星晕渲、地形图/等高线/蓝图等深线、极简只分档）', ok, sb);
+}
+{
+  /* ★29 晕渲真的进了像素：同一片海，自然档（连续色带 + 晕渲）的海面亮度标准差
+     必须明显大于极简档（只有几档纯色）。只看海格，陆地的山不参与比较。 */
+  const spec = { landRatio: 0.34, ridges: 4, rivers: 1, seabed: 4 };
+  const f = P.buildPlanetField('lk-seabed', 'continent', spec, 256);
+  const seaSd = (view) => {
+    const rgba = P.renderPlanet(f, view);
+    let n = 0, sum = 0, sum2 = 0;
+    for (let k = 0; k < f.w * f.h; k++) {
+      if (f.land[k]) continue;
+      const o = k * 4;
+      const l = rgba[o] * 0.299 + rgba[o + 1] * 0.587 + rgba[o + 2] * 0.114;
+      n++; sum += l; sum2 += l * l;
+    }
+    const mean = sum / n;
+    return Math.sqrt(Math.max(0, sum2 / n - mean * mean));
+  };
+  const sdNat = seaSd('natural'), sdMin = seaSd('minimal');
+  check('★29 海底晕渲真画了：自然档海面亮度标准差明显大于极简档', sdNat > sdMin * 1.5,
+    { natural: +sdNat.toFixed(2), minimal: +sdMin.toFixed(2), ratio: +(sdNat / Math.max(1e-6, sdMin)).toFixed(2) });
+}
+
 const pass = results.filter(Boolean).length;
 console.log(`\n${pass}/${results.length} PASS`);
 process.exit(pass === results.length ? 0 : 1);

@@ -188,7 +188,7 @@ export const APPLY_NOTES = [
 export {
   CONTOUR_MODES, DEFAULT_TERRAIN_STYLE, TERRAIN_STYLES, TERRAIN_STYLE_ALIASES, TERRAIN_STYLE_DEFS,
   colorFloats, contourEveryOf, contourModeLabel, contourModeOf, isContourMode, isTerrainStyle, rampFloats,
-  sampleRampHex, styleRenderParams, terrainStyleDef, terrainStyleLabel, terrainStyleOf,
+  sampleRampHex, styleRenderParams, styleSeabed, terrainStyleDef, terrainStyleLabel, terrainStyleOf,
   type ContourMode, type TerrainStyleDef, type TerrainStyleId,
 } from './styles';
 
@@ -754,6 +754,9 @@ export interface TerrainStats {
   solidTriangles: number;
   /** 量到的最长河（三角形数）—— 面板上能看出"水系壮不壮" */
   longestRiver: number;
+  /** ⭐ 第一百三十二轮：最深海沟（米，只对**星球**形态有值；局部形态是 mapgen4 的旧地图，
+   *  生成层没有海底这一层 ⇒ 缺省 undefined，UI 按"有就显示"处理）。*/
+  deepest?: number;
 }
 
 /** 连通分量（三角形图；跨半边相邻）。上游没有这层统计，这是灵框自己加的。 */

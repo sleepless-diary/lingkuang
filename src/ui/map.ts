@@ -256,7 +256,8 @@ export function renderMap(store: Store, host: HTMLElement): void {
     const form = mapFormOf(m.terrain?.form);
     const style = terrainStyleOf(m.terrain?.view);
     genNote.textContent = s && m.terrain
-      ? `${mapFormLabel(form)} · ${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m · 陆地占 ${Math.round(s.landRatio * 100)}% · 种子「${m.terrain.seed}」 · ${terrainStyleLabel(style)} · 等高线${contourModeLabel(m.terrain.contour)}${form === 'planet' && globeOn ? ' · 球体' : ''}`
+      ? `${mapFormLabel(form)} · ${s.lands} 块陆地 · ${s.islands} 座岛 · ${s.rivers} 条河 · 最高峰约 ${s.peak} m`
+        + `${s.deepest ? ` · 最深海沟约 ${s.deepest} m` : ''} · 陆地占 ${Math.round(s.landRatio * 100)}% · 种子「${m.terrain.seed}」 · ${terrainStyleLabel(style)} · 等高线${contourModeLabel(m.terrain.contour)}${form === 'planet' && globeOn ? ' · 球体' : ''}`
       : '还没有地形';
   }
 
