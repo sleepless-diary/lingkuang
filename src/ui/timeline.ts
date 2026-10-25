@@ -44,6 +44,23 @@ export function mountTimeline(
   const cursorEl = host.querySelector('.tl-cursor') as HTMLElement;
   const cursorTimeEl = cursorEl.querySelector('.tl-cursor-time') as HTMLElement;
   const view: View = { panX: 0, panY: 0, spacing: 2 };
+  /* ── 「画布自己动过」⇒ 悬停不可信（第一百三十轮）───────────────────────────
+     用户 2026-10-25：「世界沙盒中时间线的视窗移动会导致原本隐藏的节点名称显现」。
+     机制：折叠的名字（`.tl__n[data-tier="hide"]`）靠 `:hover` 显形。鼠标**一动不动**、
+     滚轮平移/缩放时，指针底下的圆点会换成另一个 —— 浏览器把 `:hover` 判给新来的那个，
+     那个被折叠的名字就当场亮起；只要指针不再移动，它就一直亮着（手不离滚轮时最明显）。
+     第一百二十四轮只挡住了**拖动**（`.tl-wrap.is-dragging`）：那条路是"指针在动"，
+     而滚轮 / 缓动 / fit 是"画布在动、指针没动"，闸门根本没合上。
+     所以不按"是谁让画布动的"逐个打补丁，而是**看几何**：render 时发现
+     (panX, spacing) / (nlPan, nlZoom) 变了就挂 `.is-view-moved`；撤掉的时机是
+     **指针真的动了一下**（pointermove 顶部）—— 折叠的名字亮不亮只认指针的移动，
+     不认画布的移动。样式见 style.css 同名一节。 */
+  let lastViewKey = '';
+  function noteViewMoved(key: string): void {
+    if (key === lastViewKey) return;
+    lastViewKey = key;
+    wrap.classList.add('is-view-moved');
+  }
   /* ── 分段映射（第 4.0 片 C 底座）的缓存 ──
      聚焦一条剧情线时，段与段之间的空隙要从时间轴上**压掉**（见 rebuildWarp 那段注释）。
      状态声明放在这里（而不是跟函数放在剧情线那一节）：`timeToX/xToTime` 会在这之前就被调用，
@@ -804,6 +821,7 @@ export function mountTimeline(
 
   function renderBase() {
     const tl = timeline();
+    noteViewMoved(`l|${view.panX.toFixed(2)}|${view.spacing.toFixed(5)}`);
     if (!tl) {
       track.innerHTML = emptyCanvasHtml('no-timeline');
       /* ⚠️ 哨兵值不能是空串（2026-10-25 首启评审 A2）：以前这里写 `nodeSig = ''`，而"有时间线但
@@ -1100,6 +1118,16 @@ export function mountTimeline(
     /* `center=true`：把内容放到画布**正中**（只有"第一件事"那一下用）。
        默认的左留白 40px 是为多节点 fit 设计的；只有一个节点时它会把内容顶到最左边。 */
     targetView.panX = (center || single ? wrap.clientWidth / 2 : 40) - lo * targetView.spacing;
+    /* fit 必须**丢掉缩放锚点**（第一百三十轮）：`zoomHold` 是 Alt+滚轮那一下挂上的，
+       只要它还挂着，缓动循环就会把 panX 按"锚点那一格钉在原地"反推（见 kickEase 的
+       `if (zoomHold)`），于是：
+         ① fit 算好的 panX 被覆盖 ⇒ 双击 fit 之后整条时间线贴在屏幕外（实测 min=-306、
+            内容全跑到左边，用户看到的就是"fit 没反应/跑偏"）；
+         ② `done` 判的是 `|targetView.panX - view.panX| < 0.05`，而这个反推值永远对不上
+            fit 的 targetView.panX ⇒ 缓动循环**永不结束**，每帧一次 render 一直烧下去
+            （实测 Alt 缩放后双击 fit：88 帧/600ms 且几何不再变化；修后 0 帧）。
+       所以 fit 这一路先清锚点，再 kickEase。 */
+    zoomHold = null;
     kickEase();
     render();
   }
@@ -1149,6 +1177,10 @@ export function mountTimeline(
     setTimeCursor(store, xToTime(e.clientX - rect.left));
   });
   window.addEventListener('pointermove', (e) => {
+    /* 指针真的动了 ⇒ 悬停恢复可信（第一百三十轮：画布自己动时挂上的那道闸门在这里撤掉）。
+       撤的时机比"等缓动结束"更重要 —— 缓动结束时指针还压在节点上，`:hover` 会立刻重新
+       匹配，名字照样会亮；而"指针动过"才是"用户正在看这个点"的证据。 */
+    wrap.classList.remove('is-view-moved');
     /* 指针键已经松了却没收到 pointerup（指针取消 / 在窗口外松手 / 切窗）：
        先结算拖动。旧实现只在 pointerup 里清状态，一次丢失的 pointerup 就让节点
        永远跟着鼠标走，而且每帧都把 n.year 写回盘（saveNodeDoc）。 */
@@ -2074,6 +2106,7 @@ export function mountTimeline(
   function renderNonlinear() {
     const tl = timeline();
     if (!tl || !nonlinearMode) return;
+    noteViewMoved(`n|${nlPan.toFixed(2)}|${nlZoom.toFixed(4)}`);
     /* 聚焦时只排**线内**节点 —— 与线性视图同一套语义（聚焦＝只看这条线上的事）：
        非线性只是把"距离"换成等距，不该把线外的东西又放回来。
        （用户 2026-09-19：「非线性和聚焦做一下适配，现在两个同时开有bug」。） */

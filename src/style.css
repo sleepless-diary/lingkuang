@@ -2137,11 +2137,19 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
 /* 拖动中不响应节点悬停（第一百二十四轮）：
    折叠的名字是靠 `:hover` 显形的，而拖时间指针 / 平移画布时指针会**扫过**一串节点 ——
    每个被扫过的折叠名字都会"显形 → 缩回"，看起来就是"部分节点名在闪"（用户报的正是这个）。
-   拖动时本来也读不了名字，索性把悬停效果整个停掉（圆点放大也一起停）。 */
-.tl-wrap.is-dragging .tl__n[data-tier="hide"]:hover .tl__name { opacity: 0; }
+   拖动时本来也读不了名字，索性把悬停效果整个停掉（圆点放大也一起停）。
+   第一百三十轮补：**画布自己动**（滚轮平移/缩放、缓动、fit）时同样要停 —— 那一路指针
+   压根没动，是节点滑到了指针底下，浏览器把 `:hover` 判给新来的那个，名字就"凭空"冒出来
+   而且一直亮着（用户：「时间线的视窗移动会导致原本隐藏的节点名称显现」）。
+   闸门 `.is-view-moved` 由 `timeline.ts` 的 `noteViewMoved()` 按几何变化挂上、在真正的
+   pointermove 里撤掉。 */
+.tl-wrap.is-dragging .tl__n[data-tier="hide"]:hover .tl__name,
+.tl-wrap.is-view-moved .tl__n[data-tier="hide"]:hover .tl__name { opacity: 0; }
 /* 拖动中连过渡也关掉：否则上一刻还亮着的那个名字会"余晖"式地再淡出一次（实测残留 0.17） */
-.tl-wrap.is-dragging .tl__n[data-tier="hide"] .tl__name { transition: none; }
-.tl-wrap.is-dragging .tl__n:hover .cap { transform: none; }
+.tl-wrap.is-dragging .tl__n[data-tier="hide"] .tl__name,
+.tl-wrap.is-view-moved .tl__n[data-tier="hide"] .tl__name { transition: none; }
+.tl-wrap.is-dragging .tl__n:hover .cap,
+.tl-wrap.is-view-moved .tl__n:hover .cap { transform: none; }
 /* 名字旁边的年份（第一百二十八轮）：弱一档 —— 小一号、--fg-2、稍透明。
    但**默认不显示**：带年份的名字宽近一倍，密处会多藏一半名字（实测 25 个多折叠 11 个）。
    由 `layoutNodeLabels()` 按"节点平均间距 ≥ 140px"给 track 挂 `.is-year` 才放出来；

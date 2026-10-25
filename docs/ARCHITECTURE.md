@@ -906,12 +906,12 @@
 
 ### 一句话机制
 **风格仍然只是渲染参数**（第九十七轮定的规矩没变）：换档 = 下一帧重画，**不重建网格、不重算地形**。
-八档的唯一注册表是 `src/mapgen/styles.ts`（`TERRAIN_STYLE_DEFS`），两条渲染路径都从它取色带与旋钮：
+九档的唯一注册表是 `src/mapgen/styles.ts`（`TERRAIN_STYLE_DEFS`），两条渲染路径都从它取色带与旋钮：
 局部形态走 WebGL（`src/mapgen/vendor/render.ts` 的 `frag_drape`），星球形态走逐像素 JS
 （`src/mapgen/planet.ts` 的 `renderPlanet()`）。
 
-### 八档（id → 文案）
-`natural` 自然 · `topo` 地形图 · `paper` 羊皮纸 · `ink` 水墨 · `blueprint` 蓝图 ·
+### 八档（id → 文案；2026-10-25 加第九档 `atlas`）
+`natural` 自然 · `topo` 地形图 · `atlas` 等高线地形图 · `paper` 羊皮纸 · `ink` 水墨 · `blueprint` 蓝图 ·
 `dreamcore` 梦核 · `satellite` 卫星 · `minimal` 极简。
 **旧 id 走别名**：`relief → natural`、`contour → topo`、`flat → minimal`
 （`TERRAIN_STYLE_ALIASES`，`terrainStyleOf()` 归一化 ⇒ 老数据不会炸）。默认档 = `natural`。
@@ -2246,3 +2246,94 @@ ai-designer 的沙盘方案（`lingkuang-sandbox-v2`，7 章 + 评审）第一�
 ⚠️ 改这块前请记住两条：
 1. **任何"改名"都必须同时挪 vault 目录**（`<世界>/<时间线>/…` 是文件系统里的真实路径，vault 是源）。
 2. **空态不许指向禁用按钮**（本轮 A7 就是这种文案）；禁用按钮必须在 title 里写清原因。
+
+## 2026-10-25 · 第九档「等高线地形图」+ 分层设色真正生效（第一百三十轮）
+
+用户原话：「地图风格里面加一个等高线地形图的风格」→ 追问后补了关键一句：
+「现在的颜色几乎看不出分层设色，可以做成课本里面那样鲜艳颜色的形式吗」。
+
+### 一、新增 `atlas`（等高线地形图）
+
+- **唯一注册表**：`src/mapgen/styles.ts` 的 `TERRAIN_STYLE_DEFS` 里加一条（`TerrainStyleId` 联合类型、
+  `MATERIAL_DEFAULTS` 各补一行）。**没有第二份列表**：地图栏 `#map-view` 与工作室 `#ms-view` 都是
+  `TERRAIN_STYLES.map(...)` 现渲染 ⇒ 新档自动出现在两个入口。
+- **配色**：课本式高饱和高程色带（绿 → 黄绿 → 黄 → 橙 → 褐 → 雪白）+ 鲜蓝海 + 褐色等高线；
+  `bands: 10`（十档分层设色）、`contour: 1` / `contourScale: 20`（与 `topo` 同密度）、
+  `biome: 0.12`（**刻意压低**：课本图读"多高"，气候色的黄绿斑块会把分层设色糊掉）。
+- 与 `topo` 的分工：`topo` 是**浅淡纸本地形图**（低饱和、读图不刺眼）；`atlas` 是**鲜艳课本地形图**
+  （高饱和、一眼看出高度层）。两档都有等高线，所以像素哈希必须不同 —— 守卫 ★4 把 `atlas` 也纳进去了。
+
+### 二、`u_bands` 以前在 WebGL 路是"死参数"（真 bug）
+
+`frag_drape` 里分层设色原本只量化了**上游 colormap 用的 `zc`**；但九档全部 `u_grade = 1`，
+色带那一段用**连续的 `landT`** 查 `u_land_ramp` 并整个覆盖掉 colormap ⇒ 带 `bands` 的「地形图」
+其实一直是一条连续渐变（这正是用户说的"看不出分层设色"）。
+现在多一个 `rampT`：`u_bands > 1` 时按档数量化**查色带的**高度，档内保留 0.35 渐变（不会平得像色卡）；
+`landT` 本身仍连续，气候色 / 岩 / 雪 / 陡坡判断不受影响（雪线不会变成台阶）。星球那条
+（`src/mapgen/planet.ts`）本来就量化了 `tt`，两条渲染路径现在口径一致。
+⚠️ 着色器是模板字符串：**注释里别写反引号**（会把模板提前截断，`tsc` 报一堆 `',' expected`）。
+
+### 三、守卫与证据
+
+- `tools/e2e/mapgen-engine.mjs` ★14：九档 id 顺序（`natural,topo,atlas,paper,ink,blueprint,dreamcore,satellite,minimal`）、
+  `atlas` 必须 `bands > 1 && contour === 1 && shade ∈ (0,1)`、色度均值 ≥ `topo` 的 1.15 倍、
+  旧 id 仍归一化。__无头 26/26 PASS__。
+- `tools/e2e/map-style.cjs`：★1/★2 九档文案、★4 从三档扩到**四档**（`atlas` 必须自己一张图）、
+  ★6 四档统计逐字相同。__隔离实例 14/14 PASS__。
+- 视觉：`.review/shots-atlas/01-atlas-studio.png`（工作室星球预览）、`03-atlas-local-map.png`
+  （局部 WebGL，能看到橙色山体外的黄/褐色带）、`02-atlas-panel.png`（下拉与说明文字）。
+  ⚠️ 自动化起实例若窗口 `visibilityState = hidden`，`requestAnimationFrame` 不跑 ⇒ 预览图永远是空的；
+  验证时先 CDP `Emulation.setFocusEmulationEnabled` + `Page.setWebLifecycleState:'active'`（见本轮实测）。
+- 文档：`docs/USER_GUIDE.md` §12 的档位表加一行「等高线地形图」，并说明分层色带真的分档了。
+
+## 2026-10-25 · 视窗自己动 ≠ 悬停（第一百三十一轮）
+
+用户：「世界沙盒中时间线的视窗移动会导致原本隐藏的节点名称显现」。
+
+### 一、折叠的名字只该被"瞄准"点亮，不该被"路过"点亮
+
+放不下的名字是折叠态（`.tl__n[data-tier="hide"]`，`opacity: 0`），**只靠 `:hover` 显形**
+（第一百二十三/二十四轮）。这里有个容易忽略的事实：`:hover` 是浏览器按**指针位置**算的，
+指针没动 ≠ 悬停对象没变 —— **画布自己移动**时，指针底下的圆点会换成另一个，浏览器就把
+`:hover` 判给新来的那个。于是滚轮平移 / Alt 缩放 / 缓动 / fit 期间，会有折叠的名字"凭空"
+亮起，而且只要指针不再移动它就**一直亮着**（手不离滚轮时最明显）。
+
+第一百二十四轮只处理了"指针在动"（拖时间指针、拖画布）那条路：`.tl-wrap.is-dragging` 下
+停掉折叠名字的悬停显形。滚轮那条路是"画布在动、指针没动"，那道闸门没合上。
+
+### 二、闸门按几何挂，不按"谁让它动的"挂
+
+`timeline.ts` 里 `noteViewMoved(key)`：`renderBase()` 用 `(view.panX, view.spacing)`、
+`renderNonlinear()` 用 `(nlPan, nlZoom)` 拼 key，**变了就给 `.tl-wrap` 挂 `.is-view-moved`**
+—— 不管是谁让画布动的（滚轮平移、Alt 缩放、缓动、fit、ResizeObserver 的补 fit）都能盖住。
+
+撤的时机是 `window pointermove` 的**第一行**，也就是"指针真的动了一下"。这一点跟直觉相反但
+必须如此：**不能等缓动结束再撤** —— 缓动结束时指针还压在节点上，`:hover` 会立刻重新匹配，
+名字照样亮；而"指针动过"才是"用户正在看这个点"的证据。CSS 与 `.is-dragging` 完全同一套：
+
+```css
+.tl-wrap.is-dragging .tl__n[data-tier="hide"]:hover .tl__name,
+.tl-wrap.is-view-moved .tl__n[data-tier="hide"]:hover .tl__name { opacity: 0; }
+```
+
+（过渡也一起关、圆点放大也一起停，理由同第一百二十四轮。）
+
+⚠️ 以后再加"让视图自己动"的入口（键盘平移、动画回归、视图命令），**不要再单独挂类** ——
+只要它最终改了 `panX/spacing/nlPan/nlZoom` 并走 `render()`，这条几何闸门就自动生效。
+
+### 三、顺带修掉：fit 不清缩放锚点 ⇒ 视图跑偏 + 缓动循环不结束
+
+`fitAll()` 原来直接 `kickEase()`，但 `zoomHold`（Alt+滚轮挂的锚点）还在。`kickEase` 的每帧里
+`if (zoomHold)` 会**反推** `panX`（把锚点那一格钉在屏幕同一位置），于是：
+① fit 算好的 `targetView.panX` 被覆盖 ⇒ 双击 fit 之后内容被推到屏幕外（实测 `min=-306 / max=134`，
+正常应是 80..520）；② `done` 判据是 `|target.panX - view.panX| < 0.05`，反推值永远对不上 ⇒
+**缓动循环永不结束**，每帧一次 `render()`（实测 88 帧/600ms 且几何早已不动；修后 0 帧）。
+修法：`fitAll()` 里 `zoomHold = null` 再 `kickEase()`。
+
+### 四、守卫
+
+`.review/probe-viewhover-r130.cjs`（真实鼠标事件）+ `.review/launch-r130.ps1`（隔离实例，
+64 个剧情节点挤在 12 年 ⇒ 31~35 个折叠名字）：滚轮把折叠节点送到不动的指针底下 ⇒
+`under.tier="hide"` 且 `:hover` 成立、但全表没有折叠名字 > 0.2；来回滚两次、Alt 缩放后同样；
+指针**真的**移上去 ⇒ 亮到 1.00（功能没被关死）；拖动经过仍不亮（第一百二十四轮不回归）。
+__A/B：旧构建 3 红（1.00）→ 新构建 8/8 PASS__。
