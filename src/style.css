@@ -2134,11 +2134,6 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
    这里只留兜底值与折叠态：排到没地方才折叠成点、悬停出名字。 */
 .tl__n[data-tier="hide"] .tl__name { opacity: 0; transition: opacity 120ms var(--ease-standard); }
 .tl__n[data-tier="hide"]:hover .tl__name { opacity: 1; }
-/* 圆点整个在视口外（用户 2026-10-25：「节点在屏幕外时名字会留在画面内」）：
-   标签会往一侧让 10~40px，让完可能正好落回画面里 —— 于是"没有圆点、却有一行字飘着"。
-   layoutNodeLabels() 给这种节点打 data-off="1"；用 visibility 而不是 opacity：
-   不参与过渡、也不吃 hover，滚回来立刻恢复。 */
-.tl__n[data-off="1"] .tl__name { visibility: hidden; }
 /* 拖动中不响应节点悬停（第一百二十四轮）：
    折叠的名字是靠 `:hover` 显形的，而拖时间指针 / 平移画布时指针会**扫过**一串节点 ——
    每个被扫过的折叠名字都会"显形 → 缩回"，看起来就是"部分节点名在闪"（用户报的正是这个）。

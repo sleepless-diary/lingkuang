@@ -123,8 +123,8 @@ async function main() {
     for (const p of paths) {
       const b = boxes.get(p.id);
       if (!b) { badStart++; continue; }
-      /* 起点：不越过自己的圆点（往下的线不能从圆点上方起、往上的同理） */
-      const okSide = b.story ? p.y0 <= b.ny + 1 : p.y0 >= b.ny + b.nh - 1;
+      /* 起点：不越过自己的圆点（cap 是 14px、居中在 26px 外框里：上沿 ny+6、下沿 ny+20） */
+      const okSide = b.story ? p.y0 <= b.ny + 7 : p.y0 >= b.ny + 19;
       if (!okSide) { badStart++; continue; }
       /* 主干必须是竖的（x 不变），横钩必须落在字行的心上 */
       if (!(p.xs === p.xs)) badElbow++;

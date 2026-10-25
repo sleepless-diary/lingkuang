@@ -1,10 +1,15 @@
-/* 节点在画面外时，名字不许留在画面内（第一百二十五轮定案）。
- * 用法：先起隔离实例，再 node tools/e2e/timeline-label-offscreen.cjs [端口]
+/* 名字跟节点一起"正常出场"（第一百二十五轮定案 · 用户改口：不要钳制）
+ *
+ * 用户 2026-10-25：「能不能不要钳制，就和节点一样正常出场就行」。
+ * 之前两版都错在这：① 把标签的 dx 夹在轨道内 ⇒ 快滚出去的名字被硬推回画面里（节点走了、字还在）；
+ * ② 再加一道"圆点出画就 visibility:hidden" ⇒ 名字在边缘"啪"地消失，不如自然裁掉。
+ * 现在：名字跟着节点走，越界交给 `.tl-wrap` 的 overflow:hidden 裁 —— 和圆点同一套出场方式。
  *
  * 判据：
- *  ① 圆点整个在时间线可视区外的节点：名字 `visibility: hidden`，且**可见像素**不落在视口里。
- *  ② 反证：把视图拉回来之后，同一个节点的名字必须重新出现（不是永久藏掉）。
- *  ③ 视口内的节点：名字照常可见（别把整片都藏了）。
+ *  ① 没有 `data-off` 这类闸门（不许再"藏"）；
+ *  ② 滚得很远的节点（离视口 ≥ 120px）：名字也必须已经不在画面里（跟着走了，不是被钉在边上）；
+ *  ③ 贴边缘的节点：名字可以被裁（允许超出视口，说明没被夹回来）；
+ *  ④ 双击回全览后名字都在。
  */
 const PORT = process.argv[2] || process.env.LK_CDP_PORT || '9334';
 const OUT = 'F:/Projects/lingkuang-v3/.review/shots-r125';
@@ -43,7 +48,7 @@ async function main() {
     return bn;
   })()`);
   await sleep(800);
-  /* 放大 + 往右平移，把一部分节点推出画面（用滚轮，和真人一样） */
+  /* 放大 + 平移，把一部分节点推出画面 */
   await ev(`(() => {
     const wrap = document.querySelector('.tl-wrap');
     const r = wrap.getBoundingClientRect();
@@ -61,37 +66,42 @@ async function main() {
       const nr = n.getBoundingClientRect();
       const nm = n.querySelector('.tl__name');
       const lr = nm.getBoundingClientRect();
-      const cs = getComputedStyle(nm);
-      const dotOut = nr.right < wrap.left - 1 || nr.left > wrap.right + 1;
-      /* 名字的可见像素是否落在视口里（视口裁剪后还有面积） */
+      const distOut = nr.right < wrap.left ? wrap.left - nr.right : (nr.left > wrap.right ? nr.left - wrap.right : 0);
       const inView = Math.min(lr.right, wrap.right) - Math.max(lr.left, wrap.left) > 1
         && Math.min(lr.bottom, wrap.bottom) - Math.max(lr.top, wrap.top) > 1;
-      return { id: n.dataset.id, text: nm.textContent, dotOut, vis: cs.visibility, inView, off: n.dataset.off || '', tier: n.dataset.tier || '' };
+      return { text: nm.textContent, distOut: Math.round(distOut), inView, vis: getComputedStyle(nm).visibility,
+        labelRight: Math.round(lr.right), labelLeft: Math.round(lr.left), wrapRight: Math.round(wrap.right), wrapLeft: Math.round(wrap.left) };
     });
     return {
       total: rows.length,
-      offscreen: rows.filter((r) => r.dotOut).length,
-      leaked: rows.filter((r) => r.dotOut && r.vis !== 'hidden' && r.inView).map((r) => r.text),
-      insideVisible: rows.filter((r) => !r.dotOut && r.tier !== 'hide' && r.vis !== 'hidden').length,
-      hiddenByTier: rows.filter((r) => r.tier === 'hide').length,
+      gates: document.querySelectorAll('.tl__n[data-off]').length,
+      farOut: rows.filter((r) => r.distOut >= 120).length,
+      farOutLeaked: rows.filter((r) => r.distOut >= 120 && r.inView).map((r) => r.text),
+      nearEdgeOverflow: rows.filter((r) => r.distOut > 0 && r.distOut < 120 && (r.labelRight > r.wrapRight || r.labelLeft < r.wrapLeft)).length,
+      visibleInside: rows.filter((r) => r.distOut === 0 && r.vis !== 'hidden').length,
     };
   })()`);
   console.log('check =', JSON.stringify(check));
-  ok('画面外的节点名字不留在画面里', check.leaked.length === 0, check);
-  ok('画面内的节点仍照常显示名字', check.insideVisible > 0, check);
+  ok('没有"出画就藏"的闸门（data-off 为 0）', check.gates === 0, check);
+  ok('滚远的节点：名字跟着一起出画（不许留在画面里）', check.farOutLeaked.length === 0 && check.farOut > 0, check);
+  ok('贴边缘的节点：名字允许被裁（说明没被夹回画面）', check.nearEdgeOverflow >= 0, check);
+  ok('画面内的节点照常显示名字', check.visibleInside > 0, check);
 
-  /* 反证：双击画布 = fit（回到能看到全部节点）—— 那些名字要回来 */
+  /* 双击回全览：名字都在 */
   await ev(`(() => { const wrap = document.querySelector('.tl-wrap'); const r = wrap.getBoundingClientRect();
     wrap.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: r.left + 200, clientY: r.top + 100 }));
     return true; })()`);
   await sleep(1200);
   const back = await ev(`(() => {
     const wrap = document.querySelector('.tl-wrap').getBoundingClientRect();
-    const rows = [...document.querySelectorAll('.tl__n')].map((n) => ({ off: n.dataset.off || '', vis: getComputedStyle(n.querySelector('.tl__name')).visibility, out: n.getBoundingClientRect().right < wrap.left || n.getBoundingClientRect().left > wrap.right }));
-    return { offN: rows.filter((r) => r.off === '1').length, outN: rows.filter((r) => r.out).length, visibleLabels: rows.filter((r) => r.vis !== 'hidden').length };
+    const rows = [...document.querySelectorAll('.tl__n')].map((n) => ({
+      vis: getComputedStyle(n.querySelector('.tl__name')).visibility,
+      out: n.getBoundingClientRect().right < wrap.left || n.getBoundingClientRect().left > wrap.right,
+    }));
+    return { visible: rows.filter((r) => r.vis !== 'hidden').length, total: rows.length };
   })()`);
   console.log('back =', JSON.stringify(back));
-  ok('双击回全览后名字重新出现（不是永久藏掉）', back.offN === back.outN && back.visibleLabels > 0, back);
+  ok('双击回全览后名字都在', back.visible === back.total, back);
   await shot('02-fitted');
 
   w.close();

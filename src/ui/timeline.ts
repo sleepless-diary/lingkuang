@@ -670,7 +670,6 @@ export function mountTimeline(
     }
     if (nodes.length < 2) { drawLeaderLines(); return; }
     /* 量宽度 + 节点中心（都用屏幕坐标，与像素一致）。 */
-    const wrapRect = wrap.getBoundingClientRect();
     const items = nodes.map((n) => {
       const name = n.querySelector<HTMLElement>('.tl__name');
       const lr = name?.getBoundingClientRect();
@@ -680,11 +679,6 @@ export function mountTimeline(
         story: n.classList.contains('is-story'),
         cx: nr.left + nr.width / 2,
         w: lr?.width ?? 0,
-        /* 圆点整个在视口外（用户 2026-10-25：「节点在屏幕外时名字会留在画面内」）：
-           被挪开的标签会往一侧让 10~40px，让完可能正好落回画面里 —— 看着就是
-           "没有圆点、却有一行字飘在那儿"。这种节点直接不排版（不占层、不出引线、
-           标签整行藏掉），滚回来再照常出现。 */
-        off: nr.right < wrapRect.left - 1 || nr.left > wrapRect.right + 1,
       };
     }).sort((a, b) => a.cx - b.cx);
     /* 每带能叠几层：轨道中线到边缘的可用高度 / 层高。留 26px 给圆点与边距。 */
@@ -694,25 +688,20 @@ export function mountTimeline(
     const nDown = tiersOf();
     const lastUp = new Array(nUp).fill(-1e9);
     const lastDown = new Array(nDown).fill(-1e9);
-    const trackW = track.clientWidth || 0;
     for (const it of items) {
-      /* 圆点在视口外的：不排版、不占层、不出引线（标签由 CSS 的 [data-off="1"] 整行藏掉） */
-      if (it.off) { it.n.dataset.off = '1'; delete it.n.dataset.tier; continue; }
-      delete it.n.dataset.off;
       const last = it.story ? lastUp : lastDown;
       /* 层 0 居中（贴着圆点）；层 ≥1 一律**贴到圆点一侧**（世界在右、剧情在左），
-         这样同一簇的层叠成一根整齐的竖列，引线用"主干 + 短横钩"就永远不会穿过文字。 */
+         这样同一簇的层叠成一根整齐的竖列，引线用"主干 + 短横钩"就永远不会穿过文字。
+         ⚠️ 这里**不许**再把 dx 夹到轨道范围内（第一百二十五轮）：那样一来，
+         快滚出画面的名字会被硬推回画面里 —— 节点走了、字还贴在边上不动。
+         用户 2026-10-25：「不要钳制，就和节点一样正常出场」⇒ 让名字跟着节点一起
+         被画布的 overflow:hidden 裁掉，跟圆点是同一套出场方式。 */
       const dxOf = (k: number): number => (k === 0 ? 0 : (it.story ? -1 : 1) * (it.w / 2 + TIER_DX));
       let tier = 0;
       let left = 0;
       let right = 0;
       for (; tier < last.length; tier++) {
-        let dx = dxOf(tier);
-        /* 不许把名字让出轨道（边界各留 4px），让不下就压回来 */
-        if (trackW > 40) {
-          dx = Math.max(dx, 4 - (it.cx - it.w / 2));
-          dx = Math.min(dx, trackW - 4 - (it.cx + it.w / 2));
-        }
+        const dx = dxOf(tier);
         left = it.cx - it.w / 2 + dx;
         right = it.cx + it.w / 2 + dx;
         if (left >= last[tier] + TIER_GAP) break;
@@ -721,11 +710,7 @@ export function mountTimeline(
         it.n.dataset.tier = 'hide';
         continue;
       }
-      let dx = dxOf(tier);
-      if (trackW > 40) {
-        dx = Math.max(dx, 4 - (it.cx - it.w / 2));
-        dx = Math.min(dx, trackW - 4 - (it.cx + it.w / 2));
-      }
+      const dx = dxOf(tier);
       last[tier] = Math.max(last[tier], right);
       it.n.dataset.tier = String(tier);
       /* 层 0 用默认值（CSS 兜底）；其余写死到 --lk-top / --lk-dx */
@@ -775,9 +760,10 @@ export function mountTimeline(
     });
     for (const g of geo) {
       if (!g.tier || g.tier === '0' || g.tier === 'hide' || !g.label) continue;
-      if (g.n.dataset.off === '1') continue;   /* 点已经在画面外：连引线一起不画 */
       const x0 = g.cx;
-      let y0 = g.story ? g.ny - 2 : g.ny + g.nh + 2;
+      /* 起点贴着**圆点（cap，14px）**的边缘，不是 26px 的外框：外框底边比圆点低 6px，
+         正好落进"贴着圆点下方"那行字里（实测 3 条引线的起点横段都压在那行字上）。 */
+      let y0 = g.story ? g.ny + 6 - 1 : g.ny + 20 + 1;
       /* 同一列、同一侧、tier 0 的那行字会挡住主干 —— 主干从它外侧起步。
          判"挡住"用**标签盒是否盖住主干这条竖线**（不能用节点 x 距离：同一簇的节点
          也会差 4~5px，实测 3px 阈值漏判了 5 条线，主干正好从"铸钟"上穿过去）。 */
@@ -804,6 +790,19 @@ export function mountTimeline(
           if (s.label.bottom < ylo - 1 || s.label.top > yhi + 1) continue;
           if (g.story) { if (xs > s.label.left - 4 && xs < s.label.right + 4) xs = s.label.right + 4; }
           else { if (xs < s.label.right + 4 && xs > s.label.left - 4) xs = s.label.left - 4; }
+        }
+      }
+      /* 起点那段横线（圆点 → 主干）会从别的字上横穿过去（实测 3 条：起点正贴着
+         "圆点下方那行字"的顶边，差 1px 也算压）。把 y0 整段让到那行字的外侧再走：
+         世界事件往下让到字底 +3，剧情事件往上让到字顶 -3。 */
+      for (let pass = 0; pass < 2; pass++) {
+        const xlo = Math.min(x0, xs), xhi = Math.max(x0, xs);
+        for (const s of geo) {
+          if (!s.label || s.n.dataset.id === myId) continue;
+          if (s.label.right < xlo + 1 || s.label.left > xhi - 1) continue;
+          if (y0 > s.label.top - 3 && y0 < s.label.bottom + 3) {
+            y0 = g.story ? s.label.top - 3 : s.label.bottom + 3;
+          }
         }
       }
       const xEnd = g.story ? g.label.right + 2 : g.label.left - 2;
