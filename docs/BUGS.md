@@ -26,8 +26,8 @@
 
 - [x] **地图底图落盘缓存**：把渲染好的那一帧（连状态行统计）按参数签名存进
   `userData/mapcache/`（WebP + `index.json`，LRU 8 条）；签名没变就**直接贴图** ——
-  不建网格、不算场、不挂遮罩、不依赖 WebGL。实测（本机 1180×780）重载 **约 0.2s**
-  vs 现算 **约 5s**。
+  不建网格、不算场、不挂遮罩、不依赖 WebGL。实测（本机 1180×780，**冷启动到画布出现**）：
+  没缓存那次 **3.0s**，命中缓存 **0.19s**。
   - 键 = 形态 / 种子 / 档位 / view / lift / contour / spec / 笔迹 / 剪影 / 尺寸 /
     位图边长 / `MAP_CACHE_VERSION` / `styleFingerprint()`（`src/ui/map-cache.ts`）。
   - ⚠️ **改 `src/mapgen/` 的生成算法要抬 `MAP_CACHE_VERSION`**，否则用户永远看到旧地形；
