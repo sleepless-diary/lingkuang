@@ -1880,6 +1880,25 @@ button.lk-chip:hover { color: var(--fg); border-color: var(--border-strong); }
   text-align: center; color: var(--fg-inverse); opacity: .5;
   font-size: var(--text-2xs); pointer-events: none;
 }
+/* 查看器工具栏上的额外动作（如地图的「编辑…」）——与 × 同一套形状、宽度自适应 */
+.lk-lb__act {
+  flex-shrink: 0; height: 26px; padding: 0 10px;
+  background: none; border: 1px solid rgba(232, 231, 223, .22); border-radius: var(--radius-sm);
+  color: var(--fg-inverse); font-size: var(--text-2xs); cursor: pointer;
+}
+.lk-lb__act:hover { background: rgba(232, 231, 223, .12); border-color: rgba(232, 231, 223, .38); }
+
+/* ── 地图栏：展示态 / 全屏编辑态（第一百三十四轮）────────────────────────────
+   用户：「底下的地图只是一个展示器，点一下才能进入地图编辑模式，包括划区域什么的」。
+   展示态 = 标题 + 统计 + 一张图（点一下看大图），工具条整条不出现、手绘层不接指针；
+   编辑态 = **同一个 `.lk-pane-body` 就地升成全屏**（fixed），工具条才出现。
+   之所以不另挂一块画布：那会多一整块 WebGL 上下文（4 张 1536² FBO）+ 一套 store 订阅。 */
+.lk-pane-body.lk-map-edit {
+  position: fixed; inset: 0; z-index: 1500;
+  background: var(--bg);
+  overflow: hidden;
+}
+body.lk-map-editing { overflow: hidden; }
 
 
 /* ── 手绘海陆画板（第一百零八轮）─────────────────────────────────────────────

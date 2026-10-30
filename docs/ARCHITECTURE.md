@@ -2490,3 +2490,38 @@ __A/B：旧构建 3 红（1.00）→ 新构建 8/8 PASS__。
    （随后量到的是空文档、`note` 为空）。改成等 `Page.loadEventFired` 再轮询。
 3. `ELECTRON_RUN_AS_NODE=1` 会让 `require('electron')` 返回路径字符串 ⇒ `app` 是 undefined、
    主进程在 `app.commandLine` 那行就崩。起测试实例前要先 `Remove-Item Env:ELECTRON_RUN_AS_NODE`。
+
+## 2026-10-31 · 地图栏只当展示器，点开才进全屏编辑（第一百三十四轮）
+
+用户原话：「能不能底下的地图只是一个展示器，点一下才能进入地图编辑模式，包括划区域什么的」。
+追问确认的目的：**先看大图，真要动手再进编辑器**（不是"就地编辑"）。
+
+### 一、展示态 = 只读
+
+- 地图格只剩「标题 + 状态行 + 一张图」：工具条 `#map-toolbar` 默认 `display:none`，
+  手绘层 `#map-svg` 是 `pointer-events:none`，指针落在**整格**上；
+- 点一下（按下-松手位移 ≤ 4px）= 看大图（`openBigView()`，仍是高清 2304×1152 / 3072²，走 LRU）。
+  ⚠️ 收尾挂在 **window 的 `pointerup`** 上：按下在格子里、松手可能在窗口任何地方
+  （e2e 里就是"按下发在 svg、松手发在 window"）；
+- 展示态**拖一笔不会留下区域**（守卫 ★4）—— 这正是用户说的"容易误触"那件事。
+
+### 二、编辑态 = 同一个 DOM 就地升成全屏
+
+- 入口两颗：格子右上「编辑…」（`#map-edit`）与大图查看器里的「编辑」（`LightboxItem.actions`）；
+- 做法：给 `.lk-pane-body` 加 `lk-map-edit`（CSS `position: fixed; inset: 0; z-index: 1500`），
+  **不是**另挂一套画布 —— 那会多一整块 WebGL 上下文（4 张 1536² FBO）+ 一套 store 订阅；
+- 工具条这时才出现（生成地形 / 手绘海陆 / 等高线 / 风格 / 立体 / 球体看 / 移动|区域|标记 / 清空标记 / 完成）；
+- 退出：`完成`（`#map-done`）或 `Esc`；`fitView()` 在进/出各补一帧（全屏 ↔ 格子两种尺寸，
+  `ResizeObserver` 也会自己补）。
+- ⚠️ 大图查看器多了 `actions` 参数（`src/ui/lightbox.ts`）：按钮点了**先关掉查看器**再执行，
+  否则 `z-index: 9000` 的大图会把 `z-index: 1500` 的编辑器压住。
+- ⚠️ 控件只是 `display:none`，**仍在 DOM 里**：老的 e2e（`#map-view` / `#map-globe` / `#map-editor` 等）
+  程序化 `.click()` / `.value=` 照旧能用；真人走界面则必须先点「编辑…」。
+
+### 三、守卫与视觉
+
+- `tools/e2e/map-view-edit.cjs` **11 项**：展示态无工具条 / 点编辑升全屏 / 编辑态能生成 /
+  完成回展示 / **展示态拖一笔不留区域** / 编辑态划区域落盘 / 完成后区域还在 /
+  点一下出高清大图 + 「编辑」/ 大图里点编辑直接进 / Esc 退出 / 无未捕获异常。
+- `map-gen.cjs` ★9 跟着改成"先点「编辑…」再划区域"；其它套件不改。
+- 视觉：`.review/shots-mapview/01-view-mode.png`（展示态）、`02-edit-mode.png`（全屏编辑）。

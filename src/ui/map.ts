@@ -10,7 +10,11 @@
  *  内核世界是方的、内部位图 1536² ⇒ 取**中间横带**铺满地图格子（`bandLayout()`），不拉伸。
  *  ⭐ 2026-10-14（用户：「生成做成一个独立的面板吧，两种，创作者自己一个个调参数或者 AI 直出，
  *  可以抽卡」）：生成控件**从这里搬走**，进了 `src/ui/map-studio.ts` 那层悬浮面板；
- *  地图栏只留「生成地形…」一个入口 + 一行现状（`#map-gen-note`）。 */
+ *  地图栏只留「生成地形…」一个入口 + 一行现状（`#map-gen-note`）。
+ *  ⭐ 2026-10-31（第一百三十四轮，用户：「能不能底下的地图只是一个展示器，点一下才能进入
+ *  地图编辑模式，包括划区域什么的」）：这一格**默认是展示器**（工具条不出现、手绘层不接指针、
+ *  点一下 = 看大图）；点「编辑…」或大图里的「编辑」⇒ **同一个 DOM 就地升成全屏画板**
+ *  （`.lk-map-edit`，`position:fixed`），工具条才出现；「完成」/Esc 退回展示。 */
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { uid } from '../store/ids';
@@ -83,10 +87,13 @@ export function renderMap(store: Store, host: HTMLElement): void {
      高度统一 24px（`.lk-tbx` / `.lk-seg`），与时间线面板头同一套原语。 */
   host.innerHTML = `
     <div style="display:flex;flex-direction:column;height:100%;">
-      <div style="display:flex;flex-wrap:wrap;gap:6px;row-gap:4px;padding:6px 10px;border-bottom:1px solid var(--border-soft);background:var(--surface-2);align-items:center;">
+      <div id="map-head" style="display:flex;flex-wrap:wrap;gap:8px;row-gap:4px;padding:6px 10px;border-bottom:1px solid var(--border-soft);background:var(--surface-2);align-items:center;">
         <span style="font-size:var(--text-xs);font-weight:600;color:var(--fg);">地图 · ${escapeHtml(curMap()?.name ?? '默认地图')}</span>
         <span id="map-gen-note" style="font-size:var(--text-xs);color:var(--fg-2);"></span>
         <span style="flex:1;"></span>
+        <button id="map-edit" class="lk-tbx" title="进入编辑模式（全屏）：划区域 / 放标记 / 换画法 / 生成地形">编辑…</button>
+      </div>
+      <div id="map-toolbar" style="display:none;flex-wrap:wrap;gap:6px;row-gap:4px;padding:6px 10px;border-bottom:1px solid var(--border-soft);background:var(--surface-2);align-items:center;">
         <span class="lk-tbg">
           <button id="map-gen" class="lk-tbx lk-tbx--accent" title="打开地图生成面板：自己一个个调参数 / AI 直出 / 抽卡">生成地形…</button>
           <button id="map-editor" class="lk-tbx" title="手绘大陆与海洋：全屏画板（可滚动缩放、拖动），画完按剪影生成整颗星球">地形 · 手绘…</button>
@@ -100,12 +107,13 @@ export function renderMap(store: Store, host: HTMLElement): void {
         </span>
         <span class="lk-tbsep"></span>
         <span class="lk-seg" id="map-modes">
-          <button data-mode="move" class="map-mode" title="平移：拖拽平移；点一下看大图（双击放大 / 滚轮缩放）">移动</button>
+          <button data-mode="move" class="map-mode" title="移动：拖拽平移地图">移动</button>
           <button data-mode="region" class="map-mode" title="区域：拖拽画区域（松开闭合）">区域</button>
           <button data-mode="marker" class="map-mode" title="标记：点击放置标记">标记</button>
         </span>
         <span class="lk-tbsep"></span>
         <button id="map-clear" class="lk-tbx lk-tbx--danger" title="清空这张地图上的全部标记">清空标记</button>
+        <button id="map-done" class="lk-tbx lk-tbx--accent" title="退出编辑模式，回到展示（Esc）">完成</button>
         <span id="map-hint" style="font-size:var(--text-2xs);color:var(--fg-2);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">拖拽平移</span>
       </div>
       <div style="flex:1;position:relative;overflow:hidden;">
@@ -113,10 +121,13 @@ export function renderMap(store: Store, host: HTMLElement): void {
           <div id="map-terrain" style="position:absolute;left:0;top:0;background:var(--surface-2);overflow:hidden;"></div>
           <svg id="map-svg" width="${curMap()?.width ?? 900}" height="${curMap()?.height ?? 500}" style="position:absolute;left:0;top:0;background:transparent;touch-action:none;"></svg>
         </div>
+        <div id="map-view-hint" style="position:absolute;left:12px;bottom:10px;font-size:var(--text-2xs);color:var(--fg-2);opacity:.85;pointer-events:none;">点一下看大图 · 右上「编辑…」动手改</div>
       </div>
     </div>`;
 
   const svg = host.querySelector('#map-svg') as unknown as SVGSVGElement;
+  /* 展示态：手绘层不接指针 —— 点一下要落到整格上，用来开大图（`setEditing(true)` 时恢复） */
+  svg.style.pointerEvents = 'none';
   /* 缩放/平移只动 #map-stage（画布与 SVG 的公共父层）⇒ 两层永远对齐 */
   const stage = host.querySelector('#map-stage') as HTMLElement;
   const terrainBox = host.querySelector('#map-terrain') as HTMLElement;
@@ -133,6 +144,67 @@ export function renderMap(store: Store, host: HTMLElement): void {
   const hint = host.querySelector('#map-hint') as HTMLElement;
   let labelSeq = 1;
 
+  /* ── 展示态 / 编辑态（第一百三十四轮）──────────────────────────────────────
+     用户 2026-10-31：「能不能底下的地图只是一个展示器，点一下才能进入地图编辑模式，
+     包括划区域什么的」。目的（追问确认）：先看大图，真要动手再进编辑器。
+     ⇒ 地图格默认**只读**：没有工具条、不接指针、点一下 = 看大图；
+        进编辑 = 点「编辑…」（或大图里那颗「编辑」）⇒ 这一格升成**全屏画板**，工具条才出现，
+        划区域 / 放标记 / 拖平移 / 换画法 / 生成地形都在那里；「完成」或 Esc 退回展示。
+     ⚠️ 做法是**同一个 DOM 就地升成全屏**（`host` 加 `lk-map-edit` 变 fixed），
+        不是另挂一套画布 —— 那会多一整块 WebGL 上下文（4 张 1536² FBO）和一套订阅。
+        `fitView()` 量的是 `stage.parentElement`，全屏后尺寸变了，`ResizeObserver` 会自己补一帧。 */
+  let editing = false;
+  const toolbar = host.querySelector('#map-toolbar') as HTMLElement;
+  const editBtn = host.querySelector('#map-edit') as HTMLButtonElement;
+  const doneBtn = host.querySelector('#map-done') as HTMLButtonElement;
+  const viewHint = host.querySelector('#map-view-hint') as HTMLElement;
+  /* 展示态点一下 = 看大图：**整格**都算（不只是 SVG 那 900×500 —— 格子比图大时四周有一圈留白），
+     而且拖过（>4px）就不算点击。按下在格子上、松手可能在窗口任何地方 ⇒ 收尾挂在 window 那个
+     `onUp` 上（`tools/e2e` 里也有"按下发在 svg、松手发在 window"的合成手势）。 */
+  const viewBox = stage.parentElement as HTMLElement;
+  let tapDown = false, tapMoved = false, tapX = 0, tapY = 0;
+
+  function onEditKey(e: KeyboardEvent): void {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    setEditing(false);
+  }
+
+  function setEditing(on: boolean): void {
+    if (editing === on) return;
+    editing = on;
+    host.classList.toggle('lk-map-edit', on);
+    document.body.classList.toggle('lk-map-editing', on);
+    toolbar.style.display = on ? 'flex' : 'none';
+    editBtn.style.display = on ? 'none' : '';
+    viewHint.hidden = on;
+    /* 展示态：手绘层不接指针（点一下要落到整格上，用来开大图） */
+    svg.style.pointerEvents = on ? '' : 'none';
+    tapDown = false;
+    if (on) {
+      drawing = [];
+      setMode('move');
+      hint.textContent = '拖拽平移 · 区域/标记在左边切换';
+      window.addEventListener('keydown', onEditKey);
+    } else {
+      endDrag(false);
+      panning = false;
+      window.removeEventListener('keydown', onEditKey);
+    }
+    /* 进/出都重算一次"适应窗口"：全屏 ↔ 格子两种尺寸（ResizeObserver 也会补，但这一帧更跟手） */
+    window.requestAnimationFrame(() => fitView());
+  }
+
+  editBtn.addEventListener('click', () => setEditing(true));
+  doneBtn.addEventListener('click', () => setEditing(false));
+  viewBox.addEventListener('pointerdown', (e) => {
+    if (editing || e.button !== 0) return;
+    tapDown = true;
+    tapMoved = false;
+    tapX = e.clientX;
+    tapY = e.clientY;
+  });
+
   function setMode(m: Mode) {
     mode = m;
     drawing = [];
@@ -140,10 +212,11 @@ export function renderMap(store: Store, host: HTMLElement): void {
        原来这里直接写 `style.background`，于是"选中态"和别的面板的按钮长得不是一套。 */
     host.querySelectorAll('.map-mode').forEach((b) => (b as HTMLElement).classList.toggle('is-on', (b as HTMLElement).dataset.mode === m));
     /* 提示行两段：短名 + 悬停说明（照旧是中栏那行的写法，不加图标） */
+    const move: [string, string] = ['拖拽平移', '拖拽平移地图'];   /* 编辑态才有"点一下"以外的手势 */
     const tips: Record<Mode, [string, string]> = {
       region: ['拖拽画区域（松开闭合）', '拖拽画区域（松开闭合）'],
       marker: ['点击放置标记', '点击放置标记'],
-      move: ['拖拽平移 · 点一下看大图', '拖拽平移；点一下看大图（双击放大 / 滚轮缩放）'],
+      move,
     };
     hint.textContent = tips[m][0];
     hint.title = tips[m][1];
@@ -489,8 +562,6 @@ export function renderMap(store: Store, host: HTMLElement): void {
   }
 
   let panning = false, panX = 0, panY = 0, panSX = 0, panSY = 0;
-  /* ⭐ 第一百零六轮：手动拖过就没有"点一下看大图"这回事（区别拖动与点击）*/
-  let panMoved = false;
 
   /** 点一下地形 → 全窗口看大图（第一百零六轮）。局部形态给**整张** 1536² 位图
    *  （地图格子里只是中间那条横带），星球给整张 1536×768 等距圆柱图。 */
@@ -503,7 +574,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
        命中缓存就**直接开**（不挂遮罩、不重算）；没命中才算 —— 算完的图留在 LRU 里，
        同一张地形再点开是瞬时的。查看器右上角还有「保存」把 PNG 存到本地。*/
     const cached = hdCached(m.terrain, m.width, m.height);
-    if (cached) { openLightbox({ ...cached, download: m.name + '-高清.png' }); return; }
+    if (cached) { openLightbox({ ...cached, download: m.name + '-高清.png', actions: [{ label: '编辑', title: '关掉大图，进全屏画板动手改', onClick: () => setEditing(true) }] }); return; }
     const b = showBusy((stage.parentElement ?? host) as HTMLElement, '正在出高清大图…', {
       sub: form === 'planet' ? '星球 2304×1152 · 第一次几秒（之后用缓存）' : '地形 3072² · 一次性视图',
     });
@@ -511,7 +582,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
     try {
       const shot = await hdImageFor(m.terrain, m.width, m.height, (p) => b.set('正在出高清大图…', p.pct, p.phase));
       b.done();
-      if (shot.src) openLightbox({ src: shot.src, title: m.name + ' · ' + shot.title, download: m.name + '-高清.png' });
+      if (shot.src) openLightbox({ src: shot.src, title: m.name + ' · ' + shot.title, download: m.name + '-高清.png', actions: [{ label: '编辑', title: '关掉大图，进全屏画板动手改', onClick: () => setEditing(true) }] });
     } catch (e) {
       b.done();
       console.warn('[map] 出大图失败：', e);
@@ -571,6 +642,8 @@ export function renderMap(store: Store, host: HTMLElement): void {
 
   svg.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return; // 右键/中键不画区域、不拖画布
+    /* 展示态不接指针（`pointerEvents='none'` 时这条也不会来，双保险） */
+    if (!editing) return;
     const [x, y] = local(e);
     if (mode === 'region') {
       drawing = [[x, y]];
@@ -579,7 +652,6 @@ export function renderMap(store: Store, host: HTMLElement): void {
       save((m) => { m.markers.push({ id: uid('mk'), x, y, label: `M${labelSeq++}` }); });
     } else {
       panning = true;
-      panMoved = false;
       panSX = e.clientX; panSY = e.clientY;
       /* 平移基准取当前 inline style 的 left/top——与下面赋值的 style.left/top 同一坐标系。
          旧代码用 getBoundingClientRect()（视口坐标）当基准，第一帧会把 SVG 平移一个
@@ -589,6 +661,10 @@ export function renderMap(store: Store, host: HTMLElement): void {
     }
   });
   const onMove = (e: PointerEvent) => {
+    if (!editing) {
+      if (tapDown && Math.abs(e.clientX - tapX) + Math.abs(e.clientY - tapY) > 4) tapMoved = true;
+      return;
+    }
     /* 丢失 pointerup 的兜底：没按键却收到 move，说明收尾信号丢了
        （在窗口外松开 / pointercancel 没派发），就地收尾——否则会一直画下去或一直平移。 */
     if (e.buttons === 0) {
@@ -599,17 +675,21 @@ export function renderMap(store: Store, host: HTMLElement): void {
       drawing.push(local(e));
       renderSvg();
     } else if (panning) {
-      if (Math.abs(e.clientX - panSX) + Math.abs(e.clientY - panSY) > 4) panMoved = true;
       stage.style.left = panX + (e.clientX - panSX) + 'px';
       stage.style.top = panY + (e.clientY - panSY) + 'px';
     }
   };
-  const onUp = () => {
-    const openView = panning && !panMoved && mode === 'move';
+  const onUp = (e: PointerEvent) => {
+    /* 展示态：按下-松手之间没拖 ⇒ 点一下看大图（编辑态那条路不在这里） */
+    if (!editing) {
+      if (!tapDown) return;
+      tapDown = false;
+      if (!tapMoved && e.button === 0) void openBigView();
+      return;
+    }
     endDrag(true);
-    if (openView) void openBigView();
   };
-  const onCancel = () => { endDrag(false); };
+  const onCancel = () => { tapDown = false; endDrag(false); };
   /* 第一百二十二轮：地图**可以收起了**（上下分割条 / 标题栏按钮）。收起时这一格高度 ≈ 0，
      `fitView()` 会把缩放算成 0 或负数，展开后要么一片空白、要么比例全错 ——
      所以高度不够就**不要量**，等展开后的那次 ResizeObserver 再算。 */

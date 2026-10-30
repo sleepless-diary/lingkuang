@@ -20,6 +20,9 @@ export interface LightboxItem {
   hint?: string;
   /** 给了就在工具栏里多一颗「保存」：文件按这个名字落地（PNG）*/
   download?: string;
+  /** ⭐ 第一百三十四轮：额外的工具按钮（如地图的「编辑…」）。
+   *  点了**先关掉查看器**再执行 —— 否则全屏编辑器会被大图那一层压着（`z-index: 9000`）。 */
+  actions?: { label: string; title?: string; onClick: () => void }[];
 }
 
 interface View {
@@ -79,6 +82,21 @@ export function openLightbox(item: LightboxItem): void {
 
   /* ⭐ 保存：直接给一个 <a download> —— Electron 里会走系统"另存为"。 */
   const saveBtn = el.querySelector('.lk-lb__save') as HTMLButtonElement | null;
+  const barEl = el.querySelector('.lk-lb__bar') as HTMLElement | null;
+  for (const act of item.actions ?? []) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'lk-lb__act';
+    btn.textContent = act.label;
+    if (act.title) btn.title = act.title;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (closeTimer !== null) { window.clearTimeout(closeTimer); closeTimer = null; }
+      closeLightbox();
+      try { act.onClick(); } catch { /* 调用方自己兜 */ }
+    });
+    barEl?.insertBefore(btn, saveBtn);
+  }
   if (item.download && saveBtn) {
     saveBtn.hidden = false;
     saveBtn.addEventListener('click', (e) => {

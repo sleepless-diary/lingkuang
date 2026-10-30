@@ -149,8 +149,11 @@ async function main() {
   const pangaea = num(gPan.note, /(\d+) 座岛/);
   check('★8 群岛的岛比盘古多（档位真起作用）', archipelago > pangaea, { archipelago, pangaea });
 
-  /* ★9 生成完照样能手绘（「生成作底稿、手绘精修」） */
+  /* ★9 生成完照样能手绘（「生成作底稿、手绘精修」）
+     ⭐ 第一百三十四轮：地图栏默认是**展示器**（点一下 = 看大图），划区域得先进「编辑…」。 */
   const before = (diskMap()?.regions ?? []).length;
+  await ev(`(function () { const b = document.getElementById('map-edit'); if (b) b.click(); return true; })()`);
+  await sleep(400);
   const drew = await ev(`(function () {
     const svg = document.getElementById('map-svg');
     const b = svg.getBoundingClientRect();
@@ -169,6 +172,9 @@ async function main() {
   const p2 = await pane();
   check('★9 生成之后照样能画区域（且地形画布还在）', drew && afterRegions === before + 1 && p2.hasCanvas,
     { before, after: afterRegions, canvas: p2.hasCanvas });
+  /* 退回展示态再往下走（后面几项都在"看"这条路上） */
+  await ev(`(function () { const b = document.getElementById('map-done'); if (b) b.click(); return true; })()`);
+  await sleep(300);
 
   /* ★10 层序：地形画布在 SVG 之下（DOM 顺序）—— 区域/标记必须盖在地形上 */
   const order = await ev(`(function () {
