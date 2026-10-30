@@ -78,6 +78,11 @@ contextBridge.exposeInMainWorld('lingkuangAPI', {
     readMany: (payload) => ipcRenderer.invoke('fs:read-many', payload),
     importStatus: (payload) => ipcRenderer.invoke('fs:import-status', payload)
   },
+  /* 地图底图缓存（⭐ 第一百三十三轮）：参数没变就直接贴上次渲染好的那一帧，见 main.js 那条注释。
+     `index` 只要 key + 统计（几百字节）；`get` 才把图（dataURL）拿回来 —— 启动时不必把 8 张图全搬进内存。 */
+  mapCacheIndex: () => ipcRenderer.invoke('map:cache-index'),
+  mapCacheGet: (key) => ipcRenderer.invoke('map:cache-get', key),
+  mapCachePut: (key, url, stats) => ipcRenderer.invoke('map:cache-put', { key, url, stats }),
   /* 灵框助手的「联网手」：搜索 + 抓网页（片 2，2026-09-29）。
      ⭐ 只有主进程能出手（渲染进程直连第三方会被 CORS 拦），且由主进程把关"只认 http/https、不碰本机内网"。 */
   web: {

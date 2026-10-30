@@ -8,8 +8,9 @@
  *    · **缩略图**：生成面板的预览与抽卡要的是 dataURL（`terrainThumbUrl`），
  *      走内核自带的 screenshot 通道（WebGL 缓冲区不保留，只能在同一帧里 `readPixels`）。
  *
- *  ⚠️ 图**不落盘**：`MapData.terrain` 里只存参数（种子/档位/数量，几百字节），
- *  渲染时现算（确定性：同一份参数永远同一片地）。 */
+ *  ⚠️ 图**不进数据文件**：`MapData.terrain` 里只存参数（种子/档位/数量，几百字节），
+ *  渲染时现算（确定性：同一份参数永远同一片地）。⭐ 第一百三十三轮起，渲染好的那一帧会
+ *  另存进 `userData/mapcache/`（`src/ui/map-cache.ts`）—— 那是**派生缓存**，不是数据。 */
 
 import {
   BAND, TerrainView, contourModeOf, contourEveryOf, createEngineFor, resetPaint, runGeneration, statsOf, styleRenderParams,
@@ -135,6 +136,10 @@ export interface TerrainHandle {
   /** ⭐ 第一百零五轮：**实时的**统计（手刷直接改内核的场，缓存里那份 stats 会旧）。
    *  手刷落盘后状态行要立刻报新数字，不能等空闲那趟全量重建。 */
   liveStats: () => TerrainStats;
+  /** ⭐ 第一百三十三轮：把**当前这一帧**抓成 dataURL（落盘底图缓存用，见 `src/ui/map-cache.ts`）。
+   *  走内核自带的 screenshot 通道（WebGL 缓冲区不保留，只能在同一帧里 `readPixels`）；
+   *  抓完**不销毁**视图 —— 地图栏还在用它。 */
+  snapshotUrl: (format?: 'png' | 'webp') => Promise<string>;
 }
 
 /** 把一块画布变成"这个世界的地形"。 */
@@ -154,6 +159,14 @@ export function mountTerrain(canvas: HTMLCanvasElement, t: MapTerrainSpec, w: nu
     liveStats: () => statsOf(engine),
     dispose: () => view.dispose(),
     setStyle: (v) => view.setStyle(terrainRenderParams({ ...t, view: v })),
+    snapshotUrl: async (format) => {
+      /* ⚠️ `snapshot()` 会自己 `update()` 排一帧（要等渲染循环那一帧才读得到像素）；
+         它**不改**任何数据，调用方可以放心在渲染完之后调（落盘底图缓存就是这么用的）。 */
+      const shot = await view.snapshot();
+      return format === 'webp'
+        ? shot.toDataURL('image/webp', 0.9)
+        : shot.toDataURL('image/png');
+    },
     regenerate: (opts) => {
       /* ⚠️ 实时刷的时候场里**已经**有这一笔（`paintStep` 直接写进内核的约束场）⇒
          `replayPaint` 会因为"场里有笔迹"而跳过重放，不会双重叠加。 */

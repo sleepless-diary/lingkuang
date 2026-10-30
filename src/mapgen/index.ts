@@ -188,7 +188,7 @@ export const APPLY_NOTES = [
 export {
   CONTOUR_MODES, DEFAULT_TERRAIN_STYLE, TERRAIN_STYLES, TERRAIN_STYLE_ALIASES, TERRAIN_STYLE_DEFS,
   colorFloats, contourEveryOf, contourModeLabel, contourModeOf, isContourMode, isTerrainStyle, rampFloats,
-  sampleRampHex, styleRenderParams, styleSeabed, terrainStyleDef, terrainStyleLabel, terrainStyleOf,
+  sampleRampHex, styleFingerprint, styleRenderParams, styleSeabed, terrainStyleDef, terrainStyleLabel, terrainStyleOf,
   type ContourMode, type TerrainStyleDef, type TerrainStyleId,
 } from './styles';
 

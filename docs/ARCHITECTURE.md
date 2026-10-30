@@ -56,6 +56,7 @@
 | `src/ui/map-gen.ts` | **地图生成的参数层**（2026-10-15 起；地形内核是 vendored 的 mapgen4，见 `src/mapgen/`）：`MAP_STYLES`（大陆/群岛/盘古 → 内核参数组合）、`MapSpec`（**四项**：`landRatio` 陆地占比 / `ridges` 山脊密度 / `rivers` 河流密度 / ⭐ `seabed` 海底起伏 0-4（第一百三十二轮））、`parseMapPrompt()`（一句话 → 档位与这几项，**纯离线**）、`planGeneration()`（**描述本身当种子** ⇒ 同一句话永远同一片地）、`generateIntoMap(store, input)`（**唯一落盘入口**，只写 `m.terrain = { seed, style, spec }`，**不碰画布** ⇒ 助手在没有地图栏时也能用）、`smoothClosedPath()`/`polylinePath()`（手绘区域与轨迹）。`MAP_LIMITS` 列出换内核后**做不到**的事（陆块数/岛数不是参数、湖不再"挖"）—— 面板如实显示。原来那套自写的栅格引擎（`buildTerrain`/`TERRAINS`/等高线 + 半边配对岸线）已整段删除。⭐ **2026-10-18（第九十八轮）**：多一个 `form`（形态）贯通全层 —— `MapGenInput.form` / `MapPlan.form`（`local` / `planet`），`parseMapPrompt()` 认形态词（「星球 / 整颗 / 全球 / 行星」→ 星球，「局部 / 一片地区」→ 局部）；`generateIntoMap()` 的优先级 = **显式 `form` > 描述里的词 > 这张地图原来那个 > 默认「局部」**（与 `view` 同一个道理：助手换一片地不该悄悄把形态换掉）；星球那条**直接问 `src/mapgen/planet.ts` 要统计**（不白建一次 mapgen4 网格），笔迹照旧留在数据里但星球不画它 |
 | `src/ui/map-studio.ts` | **地图生成工作室**（悬浮面板，2026-10-14 起）：`openMapStudio(store)` / `closeMapStudio()` / `isMapStudioOpen()` / `openMapStudioFromToolbar()`（地图栏那个入口**必须**绕注册表 `openTool('mapgen', …)` —— 面板型工具只有一格 `disposePanel`），注册成 `Tool.panel = true`。三页签共用一份表单与一块预览（`#ms-img` + `#ms-note`；2026-10-15 起**没有矢量层**了，内核画布自己画岸线与河）：**自己调**（档位 + **四个**旋钮：山脊密度 1-8 / 河流密度 0-4 / 陆地占比 15-60% / ⭐ 海底起伏 0-4（第一百三十二轮） + 种子；300ms 防抖）、**AI 直出**（`aiChat()` 把一句话翻成参数 JSON；认不出 / 没配 / 断网都退回 `parseMapPrompt()`）、**抽卡**（6 颗种子一张张串行出图、点一张看大图、单张「换」重抽、留 12 张）。⚠️ 预览与抽卡都是**异步**的（`terrainThumbUrl()`：内核渲染一帧 → 读像素 → 裁带缩放 → dataURL），预览用**序号作废**旧请求；`#ms-limits` 如实写出做不到的事。⚠️ 预览一律不落盘；关面板 `releaseThumbs()` 归还显存（一个缩略图视图 ≈ 4 张 2048² FBO）。⭐ **2026-10-17（第九十七轮）**：「自己调」页多一个 `#ms-view`「风格」（立体 / 等高线 / 平面，`viewNow()` 读它，说明文字 `#ms-view-hint` 随档换）；`previewOf()` 与抽卡、`apply()`（`generateIntoMap(..., { view })`）都带上当前档；换档 = 立刻重画大图 + `repaintCards()` 把已有卡片**一张张重出缩略图**（地形不重算，只是重画）。⭐ **2026-10-18（第九十八轮）**：「自己调」页再多一个 `#ms-form`「**形态**」（局部 / 星球 + `#ms-form-hint`）；`formNow()` 是唯一读口径，`fromForm()` **必须把 `form` 一起交给 `planGeneration()`**（不带的话它会落到默认「局部」，而 `previewOf()` 又把计划里的形态写回下拉框 ⇒ 创作者刚切到「星球」立刻被拽回「局部」—— 守卫 ★2/★4 首跑就是这么红的）；预览与抽卡按形态分派（`thumbOf()`：星球走 `planetThumbUrl()` 的低分辨率场 384×192 ≈ 65ms，局部走 `terrainThumbUrl()`）；**AI 直出那条只在描述真说了形态时才改选择**（没说就保持创作者当前那档）；星球形态下「在地图上刷」会明说"先切回局部" ⭐ **2026-10-13（第一百轮）**：`.lk-ms__stage` 补 `flex: 0 0 auto` + `img { object-fit: contain }`、`.lk-ms__body` 补 `scrollbar-gutter: stable` —— 用户「**抽卡会把顶部的主视图给顶矮**」（卡片撑高 + 滚动条吃掉 5 px 宽度，实测 294→289；退回旧 CSS 掉到 238）。 |
 | `src/ui/map-terrain.ts` | 地形层：把 `src/mapgen` 接到界面 —— `terrainEngine()/terrainStats()`（按参数键缓存引擎，最多 8 个：建网格 30~70ms + 生成 30~60ms ⇒ 必须缓存）、`mountTerrain(canvas, …)`（挂一块 WebGL 画布，返回 `TerrainHandle = { dispose, regenerate(opts?: {shape?}) }` —— `regenerate()` 是手刷地形"每刷一个点就重算一次"那条路）、`mapPointToWorld(mx, my, w, h)`（地图格子坐标 → 世界 0..1：横带铺满格子高、方形画布比格子宽一点 ⇒ 先换算到方形画布的比例）、`terrainThumbUrl()`（离屏视图 `snapshot()` → 裁带 → 缩放 → dataURL，给面板预览与抽卡）、`resetTerrainPaint()`（清空笔迹时**连内核那个 128×128 约束场一起重置** —— `setElevationParam()` 只在种子/岛屿度变了时才重新生成，不重置就留着旧笔迹）、`bandLayout()/bandSource()`（**取中间横带**：内核世界是方的 1000² 网格 / 2048² 位图，灵框地图 900×500）。⚠️ 引擎缓存键**含 `terrain.paint`**（笔迹不同＝另一片地）。⚠️ **一个视图配一块自己的画布**：`TerrainView.dispose()` 会 `loseContext()` 永久毁掉那块画布（共用一块画布会让第二张缩略图起全空）。⭐ **2026-10-17（第九十七轮）**：`TerrainHandle` 多一个 `setStyle(v)`（= `TerrainView.setStyle(styleRenderParams(v))`，只重画不重建）；`terrainThumbUrl()` 出图前按 `t.view` 重设风格；⚠️ **缩略图缓存键必须含风格** —— 只改渲染参数而复用同一个视图时，`snapshot()` 会抓到上一档那一帧（＝每次换档滞后一格，第九十七轮实测） |
+| `src/ui/map-cache.ts` | **地图底图的落盘缓存**（第一百三十三轮，用户 2026-10-31：「为什么每次进入灵框时都要重新渲染一次地图」）：`MAP_CACHE_VERSION` / `mapCacheKey(t, w, h)` / `ensureMapCache()` / `cachedStats()` / `readCachedTerrainImage()` / `putCachedTerrain()`。地形是参数的纯函数（数据里只有种子/档位/数量），以前**每次进灵框都重算**（星球 ~1.9s、局部 ~130ms + 遮罩）；现在把**渲染好的那一帧**连同状态行统计存进 `userData/mapcache/`（主进程 `main.js` 的 `map:cache-index/get/put`，sha1 文件名 + `index.json` + LRU 8 条），签名没变就直接贴图 —— 不建网格、不算场、不挂遮罩、不依赖 WebGL（实测重载 **172ms** vs 现算 **4777ms**）。⚠️ 键里必须含**决定画面的全部参数**（形态/种子/档位/view/lift/contour/spec/笔迹/剪影/尺寸/位图边长/版本/配色指纹）；⚠️ **改了 `src/mapgen/` 的生成算法就要抬 `MAP_CACHE_VERSION`**，否则用户永远看到旧地形（只改配色由 `styles.ts` 的 `styleFingerprint()` 自动兜）；⚠️ 缓存是派生数据 —— 删 `mapcache/` 只会让下次重算，不进 worldbuilding.json / 备份 / git。守卫 `tools/e2e/map-cache.cjs` |
 | `src/mapgen/planet.ts` | **星球形态的球面生成内核**（2026-10-18，第九十八轮；纯 TS、零渲染依赖）：`buildPlanetField(seed, style, spec, h = PLANET_H = 512)` → `PlanetField { w=2h, h, elev(km), e01, land, river, lake, moist, temp, flow, style, spec, stats }`；`renderPlanet(field, view)` → `Uint8ClampedArray`（RGBA，可直接进 canvas / WebGL 贴图）；形态枚举 `MAP_FORMS` / `isMapForm()` / `mapFormOf()` / `mapFormLabel()`（`local` 局部 / `planet` 星球，与 `TERRAIN_STYLES` 同构）。⭐ **为什么它天生能贴球（别改坏这三条）**：① 每格先换算成**单位球上的三维点**（lat/lon → xyz）再用 **3D 噪声**采样 ⇒ 经度 ±180° 两侧在球上是同一位置，**接缝天然不存在**（不是靠对齐两边补出来的）；② 极点：最上一行是纬度 ±89.8° 那一圈，球上收到一个点 ⇒ 整行几乎同色（实测整行海拔只差 **0.07 km**，中纬度同一行差 2.9 km）；③ 网格恒定 **`w = 2h`** ⇒ 直接就是球体贴图。管线：三维噪声（大陆度 fBm + `tanh` 锐化 + **单位球上的域扭曲** + 板缘带 × 脊状噪声造山 + 分区基准/起伏 + 双频细节）→ **海平面取陆地占比的分位数**（直方图 2048 桶 ⇒ 占比精确命中，实测 0.3408 vs 目标 0.34）→ 碎块清理（`pruneSmall`，面积闸门随分辨率缩放）→ 距海多源 BFS（经度环绕）→ 高度（陆地 = 起伏场 × **沿海压低**，海洋 = 陆架/深海盆按 `dist` 分档）、温度（`32 − 0.45×|纬度| − 6.0×海拔km`）、湿度（风带 × 距海）→ 汇流（按高度降序的桶排序 + 最陡下降）→ 河（流量分位数阈值自校准）/ 湖（`down < 0` 的洼地 + 集水区 ≥ `n×0.0012`）→ 连通分量统计（字段名沿用 `TerrainStats`，UI 不用改）。上色三档与局部形态同名：`relief` 九档高程带 + 山体阴影、`contour` 十档分层设色 + 250 m 等高线（每 4 档≈1 km 计曲线加深）、`flat` = **小森邻 OCity 那套平面色块**（海单一浅蓝 `#b0e0f0`、陆 5 档 `#edf4da`→`#eae8de`、细深色海岸线 `#444a4a`、无阴影无等高线 —— 颜色照抄 `F:\knowledge-base\worldbuilding.md:116`）。实测：h=512（1024×512 = 52.4 万格）生成 **≈450ms**、上色 45ms；h=192（预览/抽卡）**≈65ms**。⚠️ 两条真 bug 记在这儿：**极点行索引必须夹在 0..h-1**（不夹的话 `elev[负数]` 是 `undefined` ⇒ 光照算 NaN ⇒ 极地整行发黑、`land[负数]` 让极地陆地全被当海岸线）；**河要对角补拐角格**（最陡下降常走对角 ⇒ 1px 路径"只在角上相接"，画出来是一串断点，实测 28% 的河格只有对角邻居）。⚠️ 没做：真板块运动 / 侵蚀 / 雨影 / 柯本分类（那是 `F:\knowledge-base\projects\world-map` 那条重管线的活，用户口径「真实模拟是额外附件」）。⭐ **2026-10-13（第九十九轮）：陆块不再由 fBm 等值线切，改成「先放核」** —— 用户「**大陆没有大陆的感觉**」（对照反向出来的 OCity 制图示例：1 块大而连续的陆块 + 4~5 座岛、内部 1~2 个主山体）。新增 `randDir()`（球面随机、纬度收 ±66°）/ `basisOf(c, az)`（切平面正交基）/ **`kernelQ(x,y,z,k)`**（**真球面角距** `θ ÷ 该方位的椭圆半径`；⚠️ 不能拿切平面投影当距离 —— 对跖点投影塌成 0 ⇒ 每块陆地的背面又长一块，实测陆地占比 **0.98**）/ **`polarTaper(lat)`**（`POLAR_LAT = 72`、`POLAR_FADE = 14`；⚠️ 别拿余纬去减，写成 `(90−|lat|−72)` 会把 |lat| ≥ 18° 全部收口）/ `CORE_PLAN`（三档的核个数 / 椭圆半径 / 最小角距 / 岛核）/ `placeCores()`（核间保持最小角距 ⇒ **重叠就融合成大陆**）/ `placeMassifs()`（每核 1~2 个主山体）；陆块场 = `max(amp·(1−q²)) + 低频 2.15·0.13 + 中频 6.5·0.032 − 极区收口 1.1`，高度场 = `0.14 + 分区 0.34 + mf·(0.82+0.42·provRelief) + mf·rg·mtnAmp·0.42 + 板缘带 0.20 + 细节`。同种子/5 种子实测：大陆档 lands 5→1~3、最大陆块 28.5%→41~94%、海岸碎度 0.086→0.05~0.07、极区陆地 0.909→0.000。守卫 `tools/e2e/mapgen-engine.mjs` ★15~★19（旧构建 15/20 → 新 20/20） ⭐ **2026-10-13（第一百轮）**：`PLANET_H` 512 → **768**（1536×768；生成 ≈1.45 s / 上色 56 ms，场缓存同时 4 → 3 张）。等高线**色带仍 10 档、线按 24 档切**（≈260 m）且抽自 `boxFilter(e01, w, h)`（3×3 盒滤，x 环绕）—— 不平滑时低地会碎成一团团毛；河阈值 `riverFraction` 收到 `0.001 + 0.0012*rivers` 并加 `RIVER_MIN_CELLS = 10` 短沟清理（旧 2.4% 陆地格 ⇒ 铺满全大陆的蓝须）；河渲染本格实色 + 四邻 25% 晕。 ⭐ **2026-10-25（第一百三十二轮）**：海底生成（见文末节）。海里不再只有一条 `dist/9` 坡（海格 `dist` 恒为 0 ⇒ 旧版整片海同一个深度），新增 `seabed` 旋钮（`planetSpec().seabed` 0..4，缺省 2）+ 第二趟 BFS `seaDist`（从**陆地**出发、经度环绕；⚠️ 不能复用上面那趟"距海"）→ 海底剖面 = 陆架（`shelfLen` 3.8~10.4 格，跟随低频 `active`：高的半边窄 + 有海沟）→ 陆坡 → 深海盆（封顶 `maxDepthKm*0.90`），再叠 **洋中脊**（`plateBand`，与陆地造山同一条板缘带）/**海沟**（活动陆缘外侧窄带，往 `maxDepthKm*1.16` 混合）/**海山**（脊状噪声孤立高锋，抬升上限 60%）/深海丘陵，全部 × `seabed/4`，抬升一律 `Math.min(depth*k, lift)` + 软地板 ⇒ **海底永远不冒出水面**；`stats.deepest` 报最深海沟（米）。上色在 `renderPlanetGen()` 里读 `styleSeabed()` 三件套：海底晕渲（`hs` 平滑高程 + 垂直夸张 45）/ 等深线（按深度切档、每 5 条计曲线、线距太密淡出）/ 深度分层设色。实测 h=768 多 ≈220 ms（`seaDist` BFS 48 + 铺海底 176）。 |
 | `src/mapgen/styles.ts` | **「看的方式」的唯一注册表**（第一百零三轮起）：`TERRAIN_STYLE_DEFS` 九档（id / label / hint / 陆 8 采样色带 / 海 6 采样色带 / 线·河色 + 真实感旋钮）、`TERRAIN_STYLE_ALIASES`（`relief→natural` / `contour→topo` / `flat→minimal`）、`MATERIAL_DEFAULTS` + `styleMaterial()`（岩 / 岩层 / 雪 / 浅滩）、`CONTOUR_MODES` + `contourEveryOf()`（自动 / 全部 / 减半 / 每五条），以及 ⭐ 第一百三十二轮的 **`SEABED_DEFAULTS` + `styleSeabed()`**（`{ shade 晕渲, bathy 等深线, bands 深度分层 }`：自然/卫星晕渲；地形图/等高线地形图/蓝图等深线 + 分层；羊皮纸/水墨/梦核淡线；极简只分档、不晕渲）。`styleRenderParams()` 只喂局部形态的 WebGL，**海底三件套不进 `MapgenRenderParams`**（局部形态是 mapgen4 旧地图、不再生成，只有星球那条读 `styleSeabed()`）。⚠️ 九档的挑色标准是"缩到 120px 还认得出"；别在别处加第二份表。 |
 | `src/ui/planet-view.ts` | 星球形态接到界面上（2026-10-18，第九十八轮）：**场缓存**（键 = 种子/档位/数量/分辨率，留 4 个，≈450ms 那一步）+ **上色缓存**（键 = 场 + 风格，留 6 个，≈45ms ⇒ 换「看的方式」不重算地形，与局部形态同一条规矩）；`mountPlanet(canvas, t, w, boxH, view)`（画布本体 = 原图 1024×512、CSS 铺成 `w × w/2`（2:1 不拉伸）、比格子矮就上下留边居中、`pointerEvents:none` 让手绘层收指针）；`mountGlobeView(canvas, t, w, boxH, view)`（方画布 + `./globe.ts` 的真球，没 WebGL 返回 `null` ⇒ 调用方退回平面图）；`planetStats()`（状态行/回执）；`planetThumbUrl(t, w, outW, outH, view)`（低分辨率场 → 2:1 居中画进卡面 → dataURL）；`clearPlanetCache()`。两个句柄都与 `TerrainHandle` **同形**（`dispose` / `setStyle` / `regenerate`）⇒ 地图栏不关心底下是哪套内核；`regenerate()` 是空的（星球 v1 不支持手刷） ⭐ **2026-10-13（第一百轮）**：`PLANET_PREVIEW_H` 192 → **256**（预览/抽卡 ≈150 ms）、`MAX_FIELDS` 4 → **3**（768 高一张场 27 MB）。 |
@@ -2426,3 +2427,65 @@ __A/B：旧构建 3 红（1.00）→ 新构建 8/8 PASS__。
   中纬度 759 色）。`npx tsc --noEmit` 0、`npx vite build` 0。
 - 离线出图：`.review/planet-seabed-png.mjs`（九档 + 海底 0/2/4 对比）；真机截图在
   `.review/shots-seabed-ui2/`（`map-natural.png`、`studio-tune-seabed.png` 等）。
+
+## 2026-10-31 · 地图底图缓存：进灵框不再重算地形（第一百三十三轮）
+
+用户原话：「为什么每次进入灵框时都要重新渲染一次地图」。
+
+### 一、根因：图从来没被存下来
+
+`MapData.terrain` 里只有 `seed / style / spec / view / lift / contour / mask`（几百字节），
+地形图是参数的纯函数、**每次进灵框都从参数重算**：星球 ~1.9s（场 1.4 + 上色 0.5）、
+局部 ~130ms（建网格 30~70 + 生成 30~60），中间还盖一层遮罩。三处缓存
+（`map-terrain.ts` 的 `engines`、`planet-view.ts` 的 `fields`/`colors`、`map-hd.ts` 的 LRU）
+全是**模块级内存表**，随渲染进程一起消失 ⇒ 只有"同一个会话里"才快。
+更糟的是 `shell.ts` 的 `renderShell()` **无条件** `renderMap(...)`：就算上次停在设定库/助手、
+或者地图是收起状态，启动时也照样算一遍（只是看不见）。
+
+### 二、做法：渲染好的那一帧落盘，签名对上就贴图
+
+- 渲染层 `src/ui/map-cache.ts`：`MAP_CACHE_VERSION` + `mapCacheKey(t, w, h)`（`\u0001` 拼接，
+  含形态/种子/档位/view/lift/contour/spec/笔迹/剪影/尺寸/位图边长/版本/`styleFingerprint()`）。
+  `ensureMapCache()` 启动只拉索引（key + stats，几百字节）；`readCachedTerrainImage()` 命中才取图 ——
+  8 张 1536² 的图全搬进内存要多花十几 MB，而一次只显示一张。
+- 主进程 `main.js` 的 `map:cache-index / get / put`：`userData/mapcache/<sha1(key)>.webp` +
+  `index.json`（先写 `.tmp` 再 rename），**LRU 8 条**（一张 1536² WebP 约 180KB~1MB），单张上限 8MB。
+- `src/ui/map.ts`：`rebuildTerrain()` **先** `paintCachedTerrain()`（2D 画布 +
+  `placeTerrainCanvas()` —— 与现算那条路共用同一套 CSS 几何，两处各写一套必漂移）→
+  命中就 `setTerrainNote(m, cachedStats(key))` 直接返回，不建网格、不算场、不挂遮罩、
+  连 WebGL 都不需要；没命中才走原来的分帧生成。
+- 写缓存都在**遮罩收掉之后**（`setTimeout(..., 260)`）：星球直接用刚上色的 `rgba` 编 WebP，
+  局部用 `TerrainHandle.snapshotUrl()` 抓内核那一帧（`readPixels`，要等渲染循环那一帧）。
+- ⚠️ **`view` 进了 `syncTerrain` 的变更键**：以前局部形态换风格走 `setStyle()` 就地重画，
+  而从缓存贴出来的是一张死图、没有视图可以 `setStyle` ⇒ 换风格会毫无反应。现在一律
+  "换键 ⇒ 重建"，换到的档位要么命中它自己的缓存、要么现算（引擎/场缓存还在内存里）。
+
+### 三、失效规则（改之前必读）
+
+- **改了 `src/mapgen/` 的生成算法**（噪声、海平面、河流、湖、海底、上色管线的数学）⇒
+  **抬 `MAP_CACHE_VERSION`**。忘了抬 = 用户永远看到旧地形，且没有任何提示。
+- 只改配色/材质/等高线默认值**不用**手动抬：`styles.ts` 的 `styleFingerprint()` 把
+  `TERRAIN_STYLE_DEFS / MATERIAL_DEFAULTS / SEABED_DEFAULTS / CONTOUR_MODES` 打了哈希进键。
+- 球体看（globe）**不缓存**：那一帧是 WebGL 球面投影，与等距圆柱图不是同一张像；
+  `paintCachedTerrain()` 在 `globeOn` 时直接返回 false。
+- 缓存是派生数据：删 `userData/mapcache/` 只会让下次启动重算；不进 worldbuilding.json / 备份 / git。
+- 索引里没有统计（`stats` 为空）时**不命中** —— 状态行会空着，那比多算一次更难看。
+
+### 四、守卫与实测
+
+`tools/e2e/map-cache.cjs` **9/9**（干净临时目录 + 独立实例）：★0 干净起点 / ★1 生成出图 /
+★2 落盘一张 WebP + 索引一条 / ★3 重载后**无遮罩**、尺寸形态不变、状态行逐字一致 /
+★4 贴图比现算快 / ★5 换「看的方式」另存一张（键里有 view）/ ★6 第二档也瞬开 /
+★7 LRU 压到 8 条以内 / ★8 无未捕获异常。
+实测（本机，1180×780）：重载 **约 0.2s** vs 现算 **约 5s**；同一会话内切换仍走原来的内存缓存。
+其它地图套件全绿：`map-gen.cjs` 15/15、`map-style.cjs` 14/14、`map-planet.cjs` 12/12、
+`map-studio.cjs` 17/17、`map-draw.cjs` 11/11；`npx tsc --noEmit` 0、`npx vite build` 0。
+
+### 五、踩到的坑
+
+1. **`cachedStats()` 在 `ensureMapCache()` 之前调** ⇒ 永远拿到 null ⇒ 缓存"写进去了但从不命中"。
+   守卫 ★3 的「重载仍要 3s」就是它；顺序改成先 await 索引再查。
+2. 守卫第一版在 `Page.reload` 之后立刻轮询 `#map-terrain-canvas` ⇒ 打在**旧文档**上、马上返回
+   （随后量到的是空文档、`note` 为空）。改成等 `Page.loadEventFired` 再轮询。
+3. `ELECTRON_RUN_AS_NODE=1` 会让 `require('electron')` 返回路径字符串 ⇒ `app` 是 undefined、
+   主进程在 `app.commandLine` 那行就崩。起测试实例前要先 `Remove-Item Env:ELECTRON_RUN_AS_NODE`。

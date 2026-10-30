@@ -18,8 +18,9 @@ import type { MapData } from '../store/types';
 import { escapeHtml } from './html';
 import { DEFAULT_MAP, polylinePath, regionIsSliver, regionPaths, regionPoints, smoothClosedPath } from './map-gen';
 import {
-  mountTerrain, resetTerrainPaint, terrainStats, liftOf, type TerrainHandle, type TerrainStats,
+  bandLayout, mountTerrain, resetTerrainPaint, terrainStats, liftOf, type TerrainHandle, type TerrainStats,
 } from './map-terrain';
+import { cachedStats, ensureMapCache, mapCacheKey, putCachedTerrain, readCachedTerrainImage } from './map-cache';
 import {
   PLANET_VIEW_H, mountGlobePrepared, mountPlanetPrepared, planetFieldAsync, planetRgbaAsync,
 } from './planet-view';
@@ -296,26 +297,103 @@ export function renderMap(store: Store, host: HTMLElement): void {
     }
     /* ⚠️ 状态行里那份统计**不能**在这里同步算：星球要 1.4s、局部要 130ms，
        一算就把"遮罩都还没画出来"的那一帧一起冻住（用户原话：「别人以为会卡了」）。
-       先写一句"正在算"，数字等 rebuildTerrain 算完再补。 */
+       统计等 rebuildTerrain 算完再补；命中底图缓存时那份统计也一起从缓存里拿。 */
+    /* ⭐ 第一百三十三轮：`view` 进键了。以前局部形态靠 `setStyle()` 就地换风格（不重建），
+       但**从底图缓存贴出来的是一张死图**，没有视图可以 setStyle ⇒ 换风格会毫无反应。
+       现在一律走"换键 ⇒ 重建"，重建时要么命中那一档的缓存、要么现算（引擎缓存还在内存里）。 */
     const key = m.terrain
-      ? `${form}|${m.terrain.seed}|${m.terrain.style}|${lift}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}|${JSON.stringify(m.terrain.paint ?? [])}`
-        + (form === 'planet' ? `|${globeOn ? 'globe' : 'equirect'}|${style}` : '')
+      ? `${form}|${m.terrain.seed}|${m.terrain.style}|${m.terrain.view ?? ''}|${lift}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}|${JSON.stringify(m.terrain.paint ?? [])}`
+        + (form === 'planet' ? `|${globeOn ? 'globe' : 'equirect'}` : '')
         + `|${contour}|${JSON.stringify(m.terrain.mask ?? null)}`
       : '';
     if (key === terrainKey) {
-      /* 地形没变，但「看的方式」可能变了（面板采用 / 助手改了数据）⇒ **只换渲染参数、不重建画布** */
+      /* 地形与「看的方式」都没变 ⇒ 什么都不用做。风格已经进键（换风格就是换键），
+         这里的 `setStyle` 只作兜底：万一哪条路只改了渲染参数没进键，至少当场重画。 */
       if (terrainStyleKey !== style) { terrainStyleKey = style; terrainHandle?.setStyle(style); }
       return;
     }
     terrainKey = key;
     terrainStyleKey = style;
-    genNote.textContent = form === 'planet'
-      ? (globeOn ? '正在生成星球（球体）…' : '正在算星球…')
-      : '正在生成地形…';
     void rebuildTerrain(m, key, style, form);
   }
 
-  /* 真正的重建（第一百零六轮：改成**异步 + 遮罩 + 进度**）。
+  /* ── 落盘底图缓存（第一百三十三轮）──────────────────────────────────────────
+     用户 2026-10-31：「为什么每次进入灵框时都要重新渲染一次地图」。
+     地形是参数的纯函数，图以前每次启动都现算（星球 ~1.9s、局部 ~130ms + 遮罩）。
+     现在把渲染好的那一帧按参数签名存在 `userData/mapcache/`（见 `src/ui/map-cache.ts`）：
+     签名没变就直接贴图，不建网格、不算场、不挂遮罩。图仍然不进 worldbuilding.json。 */
+
+  /** 地形画布的几何（**缓存贴图与现算两条路共用** —— 两处各写一套 CSS 必漂移：
+   *  局部 = 正方形位图裁中间横带（`bandLayout`）；星球 = 等距圆柱图按 2:1 铺、上下居中）。 */
+  function placeTerrainCanvas(canvas: HTMLCanvasElement, form: string, w: number, h: number): void {
+    canvas.style.position = 'absolute';
+    canvas.style.pointerEvents = 'none';
+    if (form === 'planet') {
+      const drawH = Math.round(w / 2);
+      canvas.style.left = '0px';
+      canvas.style.top = Math.max(0, Math.round((h - drawH) / 2)) + 'px';
+      canvas.style.width = w + 'px';
+      canvas.style.height = drawH + 'px';
+      canvas.style.cursor = 'zoom-in';
+      return;
+    }
+    const L = bandLayout(w, h);
+    canvas.style.left = L.left + 'px';
+    canvas.style.top = L.top + 'px';
+    canvas.style.width = L.size + 'px';
+    canvas.style.height = L.size + 'px';
+  }
+
+  /** 命中缓存就贴图（不建网格、不算场、不挂遮罩）。返回 true = 画布已经就位。 */
+  async function paintCachedTerrain(m: MapData, form: string): Promise<boolean> {
+    if (!m.terrain || globeOn) return false;   /* 球体那一帧是 WebGL 球面投影，缓存里没有 */
+    const key = mapCacheKey(m.terrain, m.width, m.height);
+    /* ⚠️ 必须先等索引读回来再看命中：`cachedStats()` 只读内存里的索引，
+       顺序反了就会永远拿到 null ⇒ 每次启动照旧现算（本套件第一版就是这么假红的）。 */
+    await ensureMapCache();
+    const stats = cachedStats(key);
+    if (!stats) return false;                  /* 没有统计 ⇒ 状态行会空着，宁可重算 */
+    const url = await readCachedTerrainImage(key);
+    if (!url) return false;
+    const img = new Image();
+    const ok = await new Promise<boolean>((resolve) => {
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
+      img.src = url;
+    });
+    if (!ok) return false;
+    const canvas = document.createElement('canvas');
+    canvas.id = 'map-terrain-canvas';
+    canvas.setAttribute('data-terrain', '1');
+    if (form === 'planet') canvas.setAttribute('data-planet', 'equirect');
+    canvas.width = img.naturalWidth || canvas.width;
+    canvas.height = img.naturalHeight || canvas.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return false;
+    ctx.drawImage(img, 0, 0);
+    placeTerrainCanvas(canvas, form, m.width, m.height);
+    terrainCanvas?.remove();
+    terrainCanvas = canvas;
+    terrainBox.appendChild(canvas);
+    setTerrainNote(m, stats);
+    return true;
+  }
+
+  /** 星球：手上有刚上完色的 `rgba`（整张等距圆柱图）⇒ 直接编一张 WebP，不用再开视图。 */
+  function cachePlanetFrame(key: string, f: { w: number; h: number; stats: TerrainStats }, rgba: Uint8ClampedArray): void {
+    try {
+      const c = document.createElement('canvas');
+      c.width = f.w;
+      c.height = f.h;
+      const ctx = c.getContext('2d');
+      if (!ctx) return;
+      ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), f.w, f.h), 0, 0);
+      const url = c.toDataURL('image/webp', 0.9);
+      if (url.startsWith('data:image/')) putCachedTerrain(key, url, f.stats);
+    } catch { /* 编码失败就不缓存（下次照样能算） */ }
+  }
+
+  /** 真正的重建（第一百零六轮：改成**异步 + 遮罩 + 进度**）。
      两条路都先铺遮罩、让出两帧，再动内核：
        · 局部：建网格 + 生成约 130ms（走 `terrainStats`/`mountTerrain` 的引擎缓存）；
        · 星球：场 1.4s + 上色 0.5s —— 生成器分帧（`planetFieldAsync` / `planetRgbaAsync`），
@@ -332,6 +410,13 @@ export function renderMap(store: Store, host: HTMLElement): void {
     terrainCanvas?.remove();
     terrainCanvas = null;
     if (!m.terrain) return;
+    /* ⭐ 落盘底图（第一百三十三轮）：参数没变就**直接贴上次那一帧** —— 启动瞬开、不算场、不挂遮罩，
+       连 WebGL 都不需要。没命中才往下走现算那条路。 */
+    if (await paintCachedTerrain(m, form)) return;
+    if (stale()) return;
+    genNote.textContent = form === 'planet'
+      ? (globeOn ? '正在生成星球（球体）…' : '正在算星球…')
+      : '正在生成地形…';
     const canvas = document.createElement('canvas');
     canvas.id = 'map-terrain-canvas';
     canvas.setAttribute('data-terrain', '1');
@@ -357,11 +442,30 @@ export function renderMap(store: Store, host: HTMLElement): void {
           terrainHandle = mountPlanetPrepared(canvas, m.terrain, m.width, m.height, style, f, rgba);
         }
         setTerrainNote(m, f.stats);
+        /* ⭐ 落盘底图：等遮罩收掉再编码（`toDataURL` 是同步的，几十 ms 不该挡"已算好"那一下）。
+           键在**此刻**算好 —— 260ms 后数据可能已被撤销/换档，键必须对应屏幕上这一帧。 */
+        const planetKey = mapCacheKey(m.terrain, m.width, m.height);
+        const field = f, pixels = rgba;
+        window.setTimeout(() => { if (!globeOn) cachePlanetFrame(planetKey, field, pixels); }, 260);
       } else {
         const s = terrainStats(m.terrain, m.width, m.height);
         if (stale()) return;
         terrainHandle = mountTerrain(canvas, m.terrain, m.width, m.height);
         setTerrainNote(m, s);
+        /* ⭐ 落盘底图：`snapshotUrl()` 要等内核那一帧（readPixels），所以晚 260ms 再抓 ——
+           不挡遮罩收，也不影响用户马上开始画区域。 */
+        if (s) {
+          const cacheKey = mapCacheKey(m.terrain, m.width, m.height);
+          const handle0 = terrainHandle as TerrainHandle;
+          window.setTimeout(() => {
+            void (async () => {
+              try {
+                const url = await handle0.snapshotUrl('webp');
+                if (url) putCachedTerrain(cacheKey, url, s);
+              } catch { /* 视图已被换掉 / 抓帧超时：这次不缓存，下次渲染再说 */ }
+            })();
+          }, 260);
+        }
       }
     } catch (e) {
       console.warn('[map] 地形生成失败：', e);

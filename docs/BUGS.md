@@ -15,6 +15,45 @@
 > 2026-09-12 第六轮：修掉一条**启动即静默丢整个世界**的数据损失（`worldbuilding.json`
 > 解析失败 → 被空数据覆盖），见「第六轮已修复」。
 
+## 第一百三十三轮（2026-10-31）· 进灵框每次都要重算地图（底图落盘缓存）
+
+> 用户原话：「为什么每次进入灵框时都要重新渲染一次地图」。
+> 追问确认的目的：**启动慢 / 闪遮罩，想进来就有图**（不是"视角被重置"那一类）。
+> 机制与失效规则见 `docs/ARCHITECTURE.md` 的「2026-10-31 · 地图底图缓存」，
+> 用户手册见 `docs/USER_GUIDE.md` 第 19 节。
+
+### 产品变更（不是 bug，但记一笔）
+
+- [x] **地图底图落盘缓存**：把渲染好的那一帧（连状态行统计）按参数签名存进
+  `userData/mapcache/`（WebP + `index.json`，LRU 8 条）；签名没变就**直接贴图** ——
+  不建网格、不算场、不挂遮罩、不依赖 WebGL。实测（本机 1180×780）重载 **约 0.2s**
+  vs 现算 **约 5s**。
+  - 键 = 形态 / 种子 / 档位 / view / lift / contour / spec / 笔迹 / 剪影 / 尺寸 /
+    位图边长 / `MAP_CACHE_VERSION` / `styleFingerprint()`（`src/ui/map-cache.ts`）。
+  - ⚠️ **改 `src/mapgen/` 的生成算法要抬 `MAP_CACHE_VERSION`**，否则用户永远看到旧地形；
+    只改配色由 `styles.ts` 的 `styleFingerprint()` 自动兜。
+  - `view` 也进了 `syncTerrain` 的变更键：缓存贴出来的是**死图**，没有视图可以 `setStyle`，
+    不换键的话换「看的方式」会毫无反应。
+  - 缓存不进 `worldbuilding.json` / 备份 / git；删 `mapcache/` 只会让下次重算。
+
+### 修掉的 bug（这一轮自己踩的）
+
+- [x] **缓存写进去了却从不命中**：`paintCachedTerrain()` 里 `cachedStats()` 在
+  `ensureMapCache()` **之前**调 ⇒ 索引还是 null，永远不命中。守卫 ★3 的表现是
+  "重载仍要 3s、遮罩照旧出现"；改成先 `await ensureMapCache()` 再查。
+- [x] **守卫在 `Page.reload` 之后立刻轮询画布 ⇒ 打在旧文档上**（马上返回，随后量到的是空文档、
+  `note` 为空）。改成等 `Page.loadEventFired` 再轮询。
+- [x] **`ELECTRON_RUN_AS_NODE=1` 让主进程在 `app.commandLine` 崩掉**（`app` 是 undefined）。
+  本机环境里它是 1，起测试实例前先 `Remove-Item Env:ELECTRON_RUN_AS_NODE` ——
+  不是应用 bug，但会白查一轮。
+
+### 守卫与实测
+
+- 新增 `tools/e2e/map-cache.cjs` **9/9**（干净临时目录 + 独立实例）。
+- 其它地图套件全绿：`map-gen.cjs` **15/15**、`map-style.cjs` **14/14**、
+  `map-planet.cjs` **12/12**、`map-studio.cjs` **17/17**、`map-draw.cjs` **11/11**。
+- `npx tsc --noEmit` 0、`npx vite build` 0。
+
 ## 第一百三十一轮（2026-10-25）· 视窗移动让折叠的节点名冒出来 + fit 之后缓动停不下来
 
 > 用户：「世界沙盒中时间线的视窗移动会导致原本隐藏的节点名称显现」。

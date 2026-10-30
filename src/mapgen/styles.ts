@@ -495,3 +495,25 @@ export function styleRenderParams(v: unknown): Partial<MapgenRenderParams> {
     river_color: colorFloats(d.river),
   };
 }
+
+/** ⭐ 第一百三十三轮：**这套"看的方式"的指纹**（地图底图缓存用，见 `src/ui/map-cache.ts`）。
+ *
+ *  为什么要有它：底图缓存把渲染好的那一帧存在盘上，**改了配色却没抬缓存版本号**就会出现
+ *  "代码是新的、画面永远是旧的"。配色、材质、海底、等高线这套表全在**本文件**里
+ *  （`TERRAIN_STYLE_DEFS` / `MATERIAL_DEFAULTS` / `SEABED_DEFAULTS` / `CONTOUR_MODES`），
+ *  这里把它们打成一段 JSON 再哈希 ⇒ 任何一格颜色/旋钮的改动都会让旧缓存自动作废。
+ *
+ *  ⚠️ 它**只覆盖"看"这一层**：生成算法（`planet.ts` / `index.ts` 的噪声、海平面、河流）
+ *     改了它不会变 —— 那种改动必须抬 `MAP_CACHE_VERSION`（那条规则写在 map-cache.ts 顶部）。
+ *  ⚠️ 哈希只是给缓存做键，不做安全用途：djb2，够散且不引入依赖。 */
+/** 指纹缓存（同一次运行里这些表不会变；省得每次算缓存键都把几 KB 的表 JSON 一遍） */
+let fingerprint: string | null = null;
+
+export function styleFingerprint(): string {
+  if (fingerprint) return fingerprint;
+  const s = JSON.stringify([TERRAIN_STYLE_DEFS, MATERIAL_DEFAULTS, SEABED_DEFAULTS, CONTOUR_MODES]);
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  fingerprint = h.toString(36);
+  return fingerprint;
+}

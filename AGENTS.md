@@ -68,6 +68,10 @@
 3. **坐标轴统一公历 epoch 秒**（`timeToX/xToTime` 出入 epoch 秒）；`buildYearTable` 降到 O(1)，换算记得传 `getYearTable()`，否则 O(年数) 卡顿。
 4. **store 单一数据源**：视图不直接改 `data`，走 `store.update` / `actions`。
 5. **编辑器是 tiptap**；Obsidian 式 `#字段：值` 行 + frontmatter，方法见 `docs/EDITOR-SANDBOX-BRIDGE.md`。
+6. **地图底图缓存在 `userData/mapcache/`**（第一百三十三轮）：参数签名对上就**不重算地形、不挂遮罩**。
+   改了 `src/mapgen/` 的**生成算法**（噪声/海平面/河流/湖/海底/上色管线）就必须抬
+   `src/ui/map-cache.ts` 的 `MAP_CACHE_VERSION`，否则老用户永远看到旧地形（只改配色由
+   `styles.ts` 的 `styleFingerprint()` 自动兜）。缓存是派生数据，删掉只会让下次重算。
 
 ## 文档
 

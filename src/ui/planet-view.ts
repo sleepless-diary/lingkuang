@@ -7,7 +7,8 @@
  *
  *  ⚠️ 两条缓存分开：**场**（噪声/海平面/河流，~450ms）按 (种子, 档位, 数量, 分辨率) 缓存；
  *  **上色**（九档「看的方式」，~45ms）按 场 + 风格 缓存 ⇒ 换风格不重算地形（与局部形态同一条规矩）。
- *  ⚠️ 图**不落盘**：`MapData.terrain` 里只有几百字节参数。 */
+ *  ⚠️ 图**不进数据文件**：`MapData.terrain` 里只有几百字节参数；渲染好的那一帧
+ *  由 `src/ui/map-cache.ts` 另存进 `userData/mapcache/`（派生缓存，删了只会重算）。 */
 
 import { PLANET_H, buildPlanetField, planetFieldGen, renderPlanet, renderPlanetGen, type PlanetField, type PlanetProgress } from '../mapgen/planet';
 import { contourEveryOf } from '../mapgen/styles';

@@ -6,6 +6,7 @@
 const { app, BrowserWindow, ipcMain, Menu, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 /* proper app identity → userData goes to %APPDATA%\lingkuang, not Electron。
    setName 在 Electron 偶发时序 bug（Cannot read properties of undefined (reading 'setName')），
@@ -1185,6 +1186,98 @@ ipcMain.handle('app:open-data-dir', () => {
 });
 
 ipcMain.handle('app:info', () => ({ version: app.getVersion(), dataDir: app.getPath('userData'), vault: VAULT_DIR() }));
+
+/* ── 地图底图缓存（⭐ 第一百三十三轮）─────────────────────────────────────────
+   用户 2026-10-31：「为什么每次进入灵框时都要重新渲染一次地图」。
+   地形是**参数的纯函数**（`MapData.terrain` 里只有种子/档位/数量，图每次现算 —— 这是有意的：
+   图不进 worldbuilding.json，数据文件才不会被几张位图撑大）。代价是每次启动都要重算一遍：
+   星球 ~1.9s（场 1.4 + 上色 0.5）、局部 ~130ms，还要盖一层遮罩。
+   这里把**渲染好的那一帧**（连同状态行那份统计）留在 `userData/mapcache/`：参数（含版本号）
+   没变就直接贴图 —— 不建网格、不算场、不挂遮罩，也不依赖 WebGL。
+   ⚠️ 键由渲染层算（`src/ui/map-cache.ts`）；主进程只按 key 的 sha1 存一个文件 + 一份 index.json。
+   ⚠️ 改了**生成算法**却没抬 `MAP_CACHE_VERSION` ⇒ 用户会一直看到旧地形；配色表有
+      `styleFingerprint()` 自动兜（`src/mapgen/styles.ts`）。这条写在渲染层那个文件的头注释里。
+   ⚠️ 条数上限 8（一张 1536² 的 WebP 约 0.3~1MB）：换档位/换世界来回用不会把盘撑爆。
+   ⚠️ 它**不是备份资产**：删掉 `mapcache/` 只会让下次启动重算一遍，不影响任何数据。 */
+const MAP_CACHE_DIR = () => path.join(app.getPath('userData'), 'mapcache');
+const MAP_CACHE_MAX = 8;
+const MAP_CACHE_INDEX = () => path.join(MAP_CACHE_DIR(), 'index.json');
+
+function readMapCacheIndex() {
+  try {
+    const a = JSON.parse(fs.readFileSync(MAP_CACHE_INDEX(), 'utf8'));
+    /* 文件名一律是我们自己生成的 `sha1(key).webp/png`：手改坏的索引不该被当成路径去读
+       （`entry.file` 会进 `path.join`，允许 `..` 等于给渲染层开了一个读任意文件的口子） */
+    return Array.isArray(a)
+      ? a.filter((e) => e && typeof e.key === 'string' && typeof e.file === 'string'
+        && /^[a-f0-9]{20}\.(webp|png)$/.test(e.file))
+      : [];
+  } catch { return []; }
+}
+
+function writeMapCacheIndex(list) {
+  try {
+    const dir = MAP_CACHE_DIR();
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    /* 先写临时文件再 rename：写到一半崩掉也不会留下半截 index（读不出来的索引 = 缓存全丢） */
+    const tmp = MAP_CACHE_INDEX() + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(list));
+    fs.renameSync(tmp, MAP_CACHE_INDEX());
+  } catch (e) { /* 缓存写不下不算错：下次照样重算 */ }
+}
+
+ipcMain.handle('map:cache-index', () => {
+  try {
+    const all = readMapCacheIndex();
+    const dir = MAP_CACHE_DIR();
+    /* 文件被删/被搬走后索引里会留空条目 —— 读的时候顺手清掉（不报错，只是不再命中） */
+    const alive = all.filter((e) => { try { return fs.existsSync(path.join(dir, e.file)); } catch { return false; } });
+    if (alive.length !== all.length) writeMapCacheIndex(alive);
+    return { ok: true, entries: alive.map((e) => ({ key: e.key, stats: e.stats ?? null, ts: e.ts ?? 0 })) };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+
+ipcMain.handle('map:cache-get', (e, key) => {
+  try {
+    const k = String(key || '');
+    if (!k) return { ok: false };
+    const entry = readMapCacheIndex().find((x) => x.key === k);
+    if (!entry) return { ok: false };
+    const buf = fs.readFileSync(path.join(MAP_CACHE_DIR(), entry.file));
+    const mime = entry.file.endsWith('.png') ? 'image/png' : 'image/webp';
+    return { ok: true, url: `data:${mime};base64,${buf.toString('base64')}`, stats: entry.stats ?? null };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+
+ipcMain.handle('map:cache-put', (e, payload) => {
+  try {
+    const p = payload || {};
+    const k = String(p.key || '');
+    const m = /^data:image\/(webp|png);base64,([A-Za-z0-9+/=]+)$/.exec(String(p.url || ''));
+    if (!k || !m) return { ok: false, error: '坏参数' };
+    const buf = Buffer.from(m[2], 'base64');
+    /* 上限 8MB：真出问题（比如误传了整张 3072² 的 PNG）宁可这次不缓存，也别把盘写满 */
+    if (buf.length > 8 * 1024 * 1024) return { ok: false, error: 'too-large' };
+    const dir = MAP_CACHE_DIR();
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const file = crypto.createHash('sha1').update(k).digest('hex').slice(0, 20) + (m[1] === 'png' ? '.png' : '.webp');
+    fs.writeFileSync(path.join(dir, file), buf);
+    const all = readMapCacheIndex();
+    const prev = all.find((x) => x.key === k);
+    const list = all.filter((x) => x.key !== k);
+    list.unshift({ key: k, file, ts: Date.now(), stats: p.stats || null });
+    /* 同一条键换了扩展名（webp ⇄ png）时，旧文件要一起删，否则会留成孤儿文件 */
+    if (prev && prev.file !== file) {
+      try { fs.unlinkSync(path.join(dir, prev.file)); } catch { /* 已经不在就算了 */ }
+    }
+    while (list.length > MAP_CACHE_MAX) {
+      const old = list.pop();
+      try { if (old && old.file !== file) fs.unlinkSync(path.join(dir, old.file)); } catch { /* 已经不在就算了 */ }
+    }
+    writeMapCacheIndex(list);
+    return { ok: true, file };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
 
 /* ── IPC: 回收站列表 = 索引登记项 + 孤儿项 ── */
 ipcMain.handle('vault:trash-list', () => {
