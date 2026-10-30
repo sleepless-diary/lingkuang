@@ -222,8 +222,29 @@ export interface MapTerrainSpec {
   contour?: string;
   /* ⭐ 手绘海陆剪影（第一百零八轮）：用户「做一个简易的编辑器，能让用户自行绘制大陆和地形」。
      存的是 2 bit/格的掩膜（0 = 没画、1 = 陆地、2 = 海洋），星球生成时按它钉死海陆。
-     `w`×`h` 是掩膜自己的分辨率（与地图 900×500 无关，等距圆柱同域采样）。 */
+     `w`×`h` 是掩膜自己的分辨率（与地图 900×500 无关，等距圆柱同域采样）。
+     ⚠️ 第一百三十五轮起**只用于读旧数据**：新画的原型走 `proto`（多图层、1024×512、RLE）。 */
   mask?: MapMask;
+  /* ⭐ 手绘原型（第一百三十五轮）：五层（海陆 / 地形分区 / 气候底子 / 区域噪声 / 海岸复杂化）。
+     用户原话：「我想要更高精度的手绘原型，以及能对原型进行区域噪声叠加（手动添加），
+     以及在绘制原型时就能预设定高山等地形的位置」。
+     每层是 RLE+base64 的紧凑串（1024×512 画满几块大陆通常 2~8KB）⇒ 不撑大数据文件。 */
+  proto?: MapProto;
+}
+
+/** 手绘原型（见 `MapTerrainSpec.proto`）。结构与 `src/mapgen/proto.ts` 的 `ProtoStored`
+ *  **完全同形**（数据层不反向 import 渲染层，靠结构类型兼容）。
+ *  层语义：land 0/1/2；zone 0 无 / 1 高山 / 2 丘陵 / 3 高原 / 4 盆地 / 5 湖泊内海；
+ *  climate 0 无 / 1 沙地 / 2 湿地；noise 有符号 −8..8；edge 0..8。空层省略。 */
+export interface MapProto {
+  w: number;
+  h: number;
+  v?: number;
+  land: string;
+  zone?: string;
+  climate?: string;
+  noise?: string;
+  edge?: string;
 }
 
 /** 手绘海陆剪影（见 `MapTerrainSpec.mask`）。

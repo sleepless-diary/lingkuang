@@ -1,17 +1,22 @@
-/* 第一百零九轮：手绘海陆面板 + 高清大图缓存 + 大图查看器关闭。
+/* 第一百零九轮：手绘面板 + 高清大图缓存 + 大图查看器关闭。
+ * 第一百三十五轮：面板重写成**五层 1024×512 原型**（海陆 / 地形 / 气候 / 噪声 / 边缘）。
  *
- *  用户原话：「高清大图下右上角的关闭按钮没有用，区域精细化的功能删了吧，地形工具加入手绘面板吧，
- *  这个手绘面板精细度不够，而且不能放大或者拖动，笔刷大小用滑块调整吧，还有高清大图怎么每次都要
- *  重新算，不能保存吗，手绘地形里面的橡皮定位不清晰，海洋不就是橡皮的功能吗」
+ *  用户原话（第一百零九轮）：「高清大图下右上角的关闭按钮没有用，区域精细化的功能删了吧，
+ *  地形工具加入手绘面板吧，这个手绘面板精细度不够，而且不能放大或者拖动，笔刷大小用滑块调整吧，
+ *  还有高清大图怎么每次都要重新算，不能保存吗，手绘地形里面的橡皮定位不清晰，海洋不就是橡皮的功能吗」
+ *  用户原话（第一百三十五轮）：「我想要更高精度的手绘原型，以及能对原型进行区域噪声叠加（手动添加），
+ *  以及在绘制原型时就能预设定高山等地形的位置」。
  *
  *  这套件钉的是**能被量出来的那几件事**：
  *    ★0 前置：地图栏「地形 · 手绘…」在、区域精细化按钮已删、等高线四档、旧画笔条已删；
- *    ★1 面板骨架：陆地/海洋两档（无橡皮）、笔刷滑块 1~20、缩放三键、双画布（画布 + 光标环）；
- *    ★2 画一笔：陆地% 上升（掩膜 320×160 ⇒ 画的是"真有格子"的东西）；
+ *    ★1 面板骨架：五层、海陆层陆地/海洋两档（无橡皮）、笔刷滑块 1~40、缩放三键、双画布（画布 + 光标环）；
+ *    ★2 画一笔：陆地% 上升（原型 1024×512 ⇒ 画的是"真有格子"的东西）；
  *    ★3 滚轮缩放：以指针为锚，`#ed-zoom` 从 100% 变大，画面签名跟着变；
  *    ★4 中键平移：画面签名变（能拖动看别处）；
  *    ★5 滑块改笔刷：`#ed-brush-n` 变、光标环半径跟着变（用户报的"定位不清晰"）；
- *    ★6 按剪影生成：disk 上 mask = 320×160、form = planet、画布挂上；
+ *    ★5b 换层：地形/噪声各有自己的笔刷，强度滑块只在噪声/边缘出现；
+ *    ★5c 地形层画高山、噪声层画加噪：两层各自的状态行都报出来；
+ *    ★6 按原型生成：disk 上 `proto` = 1024×512 且海陆/地形/噪声层都在、form = planet、画布挂上；
  *    ★7 高清大图：点地图 → 全窗口大图出来（第一次要算）；
  *    ★8 大图里拖过之后点右上角 × 能关（第一百零九轮的关闭 bug 回归）；
  *    ★9 同一张地形再点开 → **命中缓存**：极快、且中途没有出「正在出高清大图」遮罩。
@@ -107,7 +112,8 @@ async function main() {
       open: true,
       tools: [...el.querySelectorAll('[data-tool]')].map((b) => b.dataset.tool).join(','),
       erase: !!el.querySelector('[data-tool="erase"]'),
-      slider: !!s && s.type === 'range' && s.min === '1' && s.max === '20' && s.value === '4',
+      layers: [...el.querySelectorAll('[data-layer]')].map((b) => b.dataset.layer).join(','),
+      slider: !!s && s.type === 'range' && s.min === '1' && s.max === '40' && s.value === '8',
       zoomBtns: !!document.getElementById('ed-zoom-in') && !!document.getElementById('ed-zoom-out') && !!document.getElementById('ed-zoom-fit'),
       canvases: !!c && !!document.getElementById('ed-cursor'),
       cursorPE: getComputedStyle(document.getElementById('ed-cursor')).pointerEvents,
@@ -117,8 +123,9 @@ async function main() {
     };
   })()`);
   await shot();
-  check('★1 面板：陆地/海洋两档（无橡皮）、笔刷滑块 1~20、缩放三键、双画布铺满、光标层不挡指针',
+  check('★1 面板：五层、海陆层陆地/海洋两档（无橡皮）、笔刷滑块 1~40、缩放三键、双画布铺满、光标层不挡指针',
     panel.open === true && panel.tools === 'land,sea' && panel.erase === false && panel.slider === true
+    && panel.layers === 'land,zone,climate,noise,edge'
     && panel.zoomBtns === true && panel.canvases === true && panel.zoom === '100%'
     && panel.cursorPE === 'none' && panel.fills === true
     && panel.size.w > 600 && panel.size.h > 300, panel);
@@ -206,16 +213,72 @@ async function main() {
   check('★5 滑块改笔刷：数值变、光标环跟着变大（定位不再靠猜）',
     ring.value === '18' && ring.label === '18' && ring.big > ring.small * 2 && ring.small > 0, ring);
 
-  /* ★6 按这幅剪影生成星球 */
+  /* ★5b 五层：换层只换第二行的笔刷 + 强度滑块只在噪声/边缘出现 */
+  const layerUi = await ev(`(function () {
+    const el = document.querySelector('.lk-ed');
+    const strBox = document.getElementById('ed-strength-box');
+    const tools = () => [...el.querySelectorAll('[data-tool]')].map((b) => b.dataset.tool).join(',');
+    const before = { tools: tools(), strength: getComputedStyle(strBox).display };
+    el.querySelector('[data-layer="zone"]').click();
+    const zone = { tools: tools(), strength: getComputedStyle(strBox).display };
+    el.querySelector('[data-layer="noise"]').click();
+    const noise = { tools: tools(), strength: getComputedStyle(strBox).display };
+    el.querySelector('[data-layer="edge"]').click();
+    const edge = { tools: tools() };
+    return { before, zone, noise, edge };
+  })()`);
+  check('★5b 换层：地形/噪声各有自己的笔刷，强度滑块只在噪声与边缘出现',
+    layerUi.before.tools === 'land,sea' && layerUi.before.strength === 'none'
+    && layerUi.zone.tools === 'mountain,hill,plateau,basin,lake,erase' && layerUi.zone.strength === 'none'
+    && layerUi.noise.tools === 'noise-up,noise-down,erase' && layerUi.noise.strength !== 'none'
+    && layerUi.edge.tools === 'edge-add,erase', layerUi);
+
+  /* ★5c 地形层画一块高山、噪声层画一笔加噪（生成时两层都要进 proto） */
+  await ev(`(function () {
+    const el = document.querySelector('.lk-ed');
+    el.querySelector('[data-layer="zone"]').click();
+    el.querySelector('[data-tool="mountain"]').click();
+    return true;
+  })()`);
+  await ev(DRAW(0.30, 0.42, 0.52, 0.42));
+  /* 状态行只报**当前层**的明细 ⇒ 在切走之前把地形那句读下来 */
+  const zoneStat = await ev(`(document.getElementById('ed-stat') || {}).textContent || ''`);
+  await ev(`(function () {
+    const el = document.querySelector('.lk-ed');
+    el.querySelector('[data-layer="noise"]').click();
+    el.querySelector('[data-tool="noise-up"]').click();
+    const s = document.getElementById('ed-strength');
+    s.value = '8'; s.dispatchEvent(new Event('input', { bubbles: true }));
+    return { strength: (document.getElementById('ed-strength-n') || {}).textContent };
+  })()`);
+  await ev(DRAW(0.30, 0.60, 0.58, 0.60));
+  const noiseStat = await ev(`(document.getElementById('ed-stat') || {}).textContent || ''`);
+  const paintedLayers = {
+    zoneStat,
+    noiseStat,
+    mountain: /高山 \d+%/.test(zoneStat),
+    noise: /加噪 [1-9]\d*%/.test(noiseStat),
+  };
+  check('★5c 地形层画高山、噪声层画加噪：两层各自的状态行都报出来',
+    paintedLayers.mountain === true && paintedLayers.noise === true, paintedLayers);
+
+  /* ★6 按这幅原型生成星球 */
   await ev(`(function () { const b = document.getElementById('ed-go'); if (b) b.click(); return true; })()`);
   const genT = await waitFor(`!document.querySelector('.lk-ed')`, 90000, 400);
   const map6 = diskMap();
+  const proto6 = map6?.terrain?.proto ?? null;
   const mask6 = map6?.terrain?.mask ?? null;
   const canvas6 = await waitFor(`!!document.getElementById('map-terrain-canvas')`, 60000, 400);
   const tm6 = map6?.terrain ?? {};
-  check('★6 按剪影生成：mask 320×160 落盘、form=planet、星球画布挂上',
-    !!mask6 && mask6.w === 320 && mask6.h === 160 && String(mask6.bits || '').length > 1000
-    && tm6.form === 'planet' && canvas6 >= 0, { genT, mask: mask6 && { w: mask6.w, h: mask6.h, bits: (mask6.bits || '').length }, form: tm6.form, canvas6 });
+  const protoBytes = proto6 ? JSON.stringify(proto6).length : 0;
+  check('★6 按原型生成：proto 1024×512（海陆 + 地形 + 噪声层都在）、form=planet、星球画布挂上',
+    !!proto6 && proto6.w === 1024 && proto6.h === 512
+    && typeof proto6.land === 'string' && proto6.land.length > 100
+    && typeof proto6.zone === 'string' && proto6.zone.length > 0
+    && typeof proto6.noise === 'string' && proto6.noise.length > 0
+    && mask6 === null && protoBytes < 60000
+    && tm6.form === 'planet' && canvas6 >= 0,
+    { genT, proto: proto6 && { w: proto6.w, h: proto6.h, layers: Object.keys(proto6).join(','), bytes: protoBytes }, mask: mask6, form: tm6.form, canvas6 });
 
   /* ★7 第一次点地图 → 全窗口大图（要算）*/
   await click('.map-mode[data-mode="move"]');

@@ -1952,6 +1952,22 @@ body.lk-map-editing { overflow: hidden; }
 .lk-ed__check { display: flex; align-items: center; gap: 5px; font-size: var(--text-2xs); color: rgba(232, 231, 223, .78); cursor: pointer; }
 .lk-ed__check input { accent-color: var(--accent); }
 
+/* ── 手绘原型的第二行：图层名 + 该层的笔刷（第一百三十五轮）────────────────────
+   五层共用同一张画布，换层只换这一行 —— 顶栏因此不会被 20 颗按钮挤爆。
+   颜色仍只用 token；当前层/当前笔刷用荧光绿描边（与全站一致）。 */
+.lk-ed__sub {
+  width: 100%; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; row-gap: 6px;
+  background: var(--chrome-2); color: var(--fg-inverse);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+  padding: 6px 12px; min-height: 38px;
+}
+.lk-ed__subtitle {
+  font-size: var(--text-2xs); font-weight: 600; color: var(--accent);
+  min-width: 28px; letter-spacing: .04em;
+}
+.lk-ed__subnote { font-size: var(--text-2xs); color: rgba(232, 231, 223, .56); }
+.lk-ed__sub .lk-ed__tool { padding: 3px 10px; }
+
 /* ═══════════════════════════════════════════════════════════════════════════
    2026-10-24 · 交互与层次（第一百一十二轮）
    用户原话：「页面风格单一，动效和交互感较少」。

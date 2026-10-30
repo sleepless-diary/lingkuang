@@ -17,7 +17,7 @@
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
 import { uid } from '../store/ids';
-import type { MapData, MapMask } from '../store/types';
+import type { MapData, MapMask, MapProto } from '../store/types';
 import {
   APPLY_NOTES, DEFAULT_TERRAIN_STYLE, MAPGEN_STYLES, createEngineFor, isContourMode, isTerrainStyle,
   runGeneration, statsOf, terrainStyleLabel,
@@ -241,8 +241,12 @@ export interface MapGenInput {
    *  不给 = 从描述里认（「星球」「一片地区」…），还认不出就沿用这张地图原来那个形态。
    *  ⚠️ 第一百零八轮起「局部」退场：不给就落回「星球」。 */
   form?: string;
-  /** ⭐ 手绘海陆剪影（第一百零八轮）：编辑器画出来的掩膜，生成时按它钉死海陆。 */
+  /** ⭐ 手绘海陆剪影（第一百零八轮）：编辑器画出来的掩膜，生成时按它钉死海陆。
+   *  ⚠️ 第一百三十五轮起**新数据走 `proto`**；这个参数只为兼容老调用（助手/旧脚本）。 */
   mask?: MapMask;
+  /** ⭐ 手绘原型（第一百三十五轮）：五层（海陆 / 地形分区 / 气候底子 / 区域噪声 / 海岸复杂化）。
+   *  给了它就不用 `mask`（`proto` 里已经有海陆层）。 */
+  proto?: MapProto;
   /** ⭐ 等高线方式（第一百零八轮）：auto / all / half / fifth —— 显示参数，一并落盘。 */
   contour?: string;
 }
@@ -299,6 +303,11 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
      ⚠️ 少了这一步，创作者刷了二十笔、去面板只调一个旋钮再「采用」，笔迹会被静默清掉。 */
   const old = before?.terrain;
   const keepPaint = old && old.seed === plan.seed && old.style === plan.style ? old.paint : undefined;
+  /* ⭐ 原型（第一百三十五轮）：显式给了就写；没给就沿用**同一片地**的那份（换种子/档位 = 另一片地，
+     旧原型自然作废）。理由与手刷笔迹完全一样：只调一个旋钮再「采用」不该把画了半天的原型清掉。 */
+  const sameBase = !!old && old.seed === plan.seed && old.style === plan.style;
+  const nextProto: MapProto | undefined = input.proto ?? (sameBase ? old!.proto : undefined);
+  const nextMask: MapMask | undefined = input.mask ?? (sameBase ? old!.mask : undefined);
   /* ⭐ 「看的方式」（第九十七轮）：显式给了就用（工作室每次都给）；没给就沿用这张地图原来那档
      （助手的 `generate_map` 不带 view ⇒ 换一片地不该把创作者选的"看的方式"重置）；
      都没有才落回默认「立体」。它只是**显示参数** ⇒ 与"生成什么地形"无关、不参与缓存键。 */
@@ -320,7 +329,7 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
      预览那张场刚刚算过、已缓存 ⇒ 这行字是白拿的；地图栏那份 768 的统计会自己重算。 */
   let s: TerrainStats;
   if (form === 'planet') {
-    s = planetField({ seed: plan.seed, style: plan.style, spec: plan.spec, mask: input.mask }, PLANET_PREVIEW_H).stats;
+    s = planetField({ seed: plan.seed, style: plan.style, spec: plan.spec, proto: nextProto, mask: nextMask }, PLANET_PREVIEW_H).stats;
   } else {
     const engine = createEngineFor(plan.seed, plan.style, plan.spec);
     runGeneration(engine, { strokes: keepPaint });   /* 统计要跟画布看到的一致 ⇒ 笔迹一起算 */
@@ -340,10 +349,12 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
     if (lift) m.terrain.lift = lift;
     if (contour) m.terrain.contour = contour;
     if (keepPaint?.length) m.terrain.paint = keepPaint;
-    /* ⭐ 第一百零八轮：剪影只在与这颗种子/档位同一片地时才有意义（换种子就是另一颗星球），
-       所以照旧"显式给了就写、没给就沿用旧的"。 */
-    const mask = input.mask ?? (old && old.seed === plan.seed && old.style === plan.style ? old.mask : undefined);
-    if (form === 'planet' && mask) m.terrain.mask = mask;
+    /* ⭐ 第一百零八轮/第一百三十五轮：原型只在与这颗种子/档位同一片地时才有意义（换种子就是另一颗星球），
+       所以照旧"显式给了就写、没给就沿用旧的"。`proto` 优先于老剪影（它是超集）。 */
+    if (form === 'planet') {
+      if (nextProto) m.terrain.proto = nextProto;
+      else if (nextMask) m.terrain.mask = nextMask;
+    }
   });
 
   const what = plan.matched.length ? `（按你说的：${plan.matched.join('、')}）` : '';
@@ -362,7 +373,7 @@ export function generateIntoMap(store: Store, input: MapGenInput): MapApplyResul
       (isPlanet
         ? `。形态「星球」= 等距圆柱 2:1：**经度无缝、有两极**，地图栏点「球体看」就能贴到球上转着看；手刷只对「局部」形态有效`
         : (kept ? `（手刷的 ${kept} 笔保住了 —— 种子与档位没变）` : '')) +
-      `（种子「${plan.seed}」，形态「${mapFormLabel(form)}」${input.mask ? '· 按你画的海陆剪影' : ''}，看的方式「${terrainStyleLabel(view)}」，` +
+      `（种子「${plan.seed}」，形态「${mapFormLabel(form)}」${nextProto ? '· 按你画的原型（海陆/地形/气候/噪声/海岸）' : (nextMask ? '· 按你画的海陆剪影' : '')}，看的方式「${terrainStyleLabel(view)}」，` +
       `Ctrl+Z 可撤销，生成后照样能手绘精修。图是 ${w}×${h} 的现算图，不写进数据文件）`,
   };
 }

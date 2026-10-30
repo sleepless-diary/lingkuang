@@ -30,8 +30,10 @@ import { PLANET_VIEW_H } from './planet-view';
 import type { MapTerrainSpec } from '../store/types';
 
 /* ⚠️ 抬这个数字 = 本机所有旧底图作废（下次进灵框重算一遍）。规则见文件头第 ② 条。
-   第一百三十三轮（2026-10-31）初版：1。 */
-export const MAP_CACHE_VERSION = 1;
+   第一百三十三轮（2026-10-31）初版：1；
+   第一百三十五轮（2026-10-31）**原型五层**（高原/高山/盆地进高度场、噪声/气候进场、海岸复杂化）
+   ⇒ 生成算法变了，抬到 2。 */
+export const MAP_CACHE_VERSION = 2;
 
 /** 与 `main.js` 的 `MAP_CACHE_MAX` 对齐（那里才是真正的闸门；这里只用来裁内存索引） */
 const MAX_ENTRIES = 8;
@@ -54,6 +56,7 @@ export function mapCacheKey(t: MapTerrainSpec, w: number, h: number): string {
     t.view ?? '', t.lift ?? '', t.contour ?? '',
     JSON.stringify(t.spec ?? {}),
     JSON.stringify(t.paint ?? []),
+    JSON.stringify(t.proto ?? null),
     JSON.stringify(t.mask ?? null),
     w, h, TERRAIN_BITMAP, PLANET_VIEW_H,
   ].join('\u0001');

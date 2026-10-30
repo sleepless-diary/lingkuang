@@ -96,7 +96,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
       <div id="map-toolbar" style="display:none;flex-wrap:wrap;gap:6px;row-gap:4px;padding:6px 10px;border-bottom:1px solid var(--border-soft);background:var(--surface-2);align-items:center;">
         <span class="lk-tbg">
           <button id="map-gen" class="lk-tbx lk-tbx--accent" title="打开地图生成面板：自己一个个调参数 / AI 直出 / 抽卡">生成地形…</button>
-          <button id="map-editor" class="lk-tbx" title="手绘大陆与海洋：全屏画板（可滚动缩放、拖动），画完按剪影生成整颗星球">地形 · 手绘…</button>
+          <button id="map-editor" class="lk-tbx" title="手绘原型：全屏画板（1024×512、五层 —— 海陆 / 地形 / 气候 / 噪声 / 边缘；可缩放拖动），画完按原型生成整颗星球">地形 · 原型…</button>
         </span>
         <span class="lk-tbsep"></span>
         <span class="lk-tbg">
@@ -377,7 +377,7 @@ export function renderMap(store: Store, host: HTMLElement): void {
     const key = m.terrain
       ? `${form}|${m.terrain.seed}|${m.terrain.style}|${m.terrain.view ?? ''}|${lift}|${JSON.stringify(m.terrain.spec ?? {})}|${m.width}x${m.height}|${JSON.stringify(m.terrain.paint ?? [])}`
         + (form === 'planet' ? `|${globeOn ? 'globe' : 'equirect'}` : '')
-        + `|${contour}|${JSON.stringify(m.terrain.mask ?? null)}`
+        + `|${contour}|${JSON.stringify(m.terrain.proto ?? null)}|${JSON.stringify(m.terrain.mask ?? null)}`
       : '';
     if (key === terrainKey) {
       /* 地形与「看的方式」都没变 ⇒ 什么都不用做。风格已经进键（换风格就是换键），

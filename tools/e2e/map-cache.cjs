@@ -148,7 +148,8 @@ async function main() {
   const idx1 = cacheIndex();
   check('★2 底图落盘：mapcache 里一张 WebP + 索引一条（键含参数）',
     files.length === 1 && /\.webp$/.test(files[0]) && idx1.length === 1
-    && typeof idx1[0].key === 'string' && /v1/.test(idx1[0].key) && biggestCacheFile() > 20000,
+    /* 键以 `v<版本>` 开头（第一百三十五轮把 MAP_CACHE_VERSION 抬到 2 ⇒ 别在这里钉死数字） */
+    && typeof idx1[0].key === 'string' && /^v\d+\u0001/.test(idx1[0].key) && biggestCacheFile() > 20000,
     { files, indexLen: idx1.length, key: String(idx1[0] && idx1[0].key).slice(0, 40), bytes: biggestCacheFile() });
 
   /* 重载 + 量"多久出图 / 遮罩出现过几次"。`__t0` 的注释见上面那段注入的脚本。 */

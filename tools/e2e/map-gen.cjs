@@ -196,7 +196,7 @@ async function main() {
     return {
       open: true,
       tools: [...el.querySelectorAll('[data-tool]')].map((b) => b.dataset.tool),
-      slider: !!slider && slider.type === 'range' && slider.min === '1' && slider.max === '20',
+      slider: !!slider && slider.type === 'range' && slider.min === '1' && slider.max === '40',
       canvases: !!document.getElementById('ed-canvas') && !!document.getElementById('ed-cursor'),
       hasErase: !!el.querySelector('[data-tool="erase"]'),
       zoomBtns: !!document.getElementById('ed-zoom-in') && !!document.getElementById('ed-zoom-out') && !!document.getElementById('ed-zoom-fit'),
@@ -207,7 +207,7 @@ async function main() {
   await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
   await sleep(300);
   const edClosed = (await ev(`!document.querySelector('.lk-ed')`)) === true;
-  check('★12 「地形」打开手绘面板：陆地/海洋两档、笔刷滑块 1~20、缩放三键、双画布、无橡皮；旧画笔条已删',
+  check('★12 「地形」打开手绘原型面板：海陆层陆地/海洋两档、笔刷滑块 1~40、缩放三键、双画布、无橡皮；旧画笔条已删',
     ed.open === true && ed.tools.join(',') === 'land,sea' && ed.slider === true && ed.zoomBtns === true
     && ed.canvases === true && ed.hasErase === false && ed.bar === false && ed.brushes === 0,
     ed);

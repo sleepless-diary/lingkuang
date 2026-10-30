@@ -1,53 +1,121 @@
-/** 手绘海陆剪影编辑器（第一百零八轮；第一百零九轮大改）。
+/** 手绘原型画板（第一百零八轮起；**第一百三十五轮重写**）。
  *
  *  用户原话（第一百零八轮）：「再做一个简易的编辑器，能让用户自行绘制大陆和地形，并在此之上生成对应地形」。
- *  第一百零九轮反馈（原话）：「地形工具加入手绘面板吧，这个手绘面板精细度不够，而且不能放大或者拖动，
- *  笔刷大小用滑块调整吧……手绘地形里面的橡皮定位不清晰，海洋不就是橡皮的功能吗」。
+ *  第一百零九轮：「这个手绘面板精细度不够，而且不能放大或者拖动，笔刷大小用滑块调整吧……
+ *  手绘地形里面的橡皮定位不清晰，海洋不就是橡皮的功能吗」。
+ *  ⭐ 第一百三十五轮（2026-10-31）：「能不能把当前的地图编辑系统重构一下，我想要更高精度的手绘原型，
+ *  以及能对原型进行区域噪声叠加（手动添加），以及在绘制原型时就能预设定高山等地形的位置」。
  *
- *  因此这一版：
- *    · **更细的剪影**：掩膜 160×80 → **320×160**（2 bit/格，base64 约 17KB）。手画的是"大陆在哪"，
- *      海岸细节仍交给生成器的海岸噪声；但 320 宽已经能画出海湾、半岛与湖。
- *    · **能放大/拖动**：滚轮以指针为锚缩放 1×~8×；中键拖动 / 按住空格 + 左键拖动平移；
- *      「适应」一键回到整幅。屏幕上画的是插值前的方块（`imageSmoothingEnabled = false`），
- *      放大后能一格一格地补。
- *    · **笔刷用滑块**：`input[type=range]` 1~20 格，旁边实时显示格数。
- *    · **只有陆地和海洋**：橡皮撤了 —— 「海洋」本来就是"擦掉陆地"（用户原话「海洋不就是橡皮的功能吗」）。
- *      `留白 = 海洋` 勾上时整幅剪影就是世界；不勾则留白交给生成器随机。
- *    · **笔刷定位**：跟随指针的圆环（半径 = 笔刷格数 × 当前格宽），画的时候不会"点歪"。
+ *  这一版把"一张 320×160 的海陆剪影"换成**五层 1024×512 的原型**（数据与编解码在 `src/mapgen/proto.ts`）：
+ *    · **海陆**   —— 陆地 / 海洋（原来的那层；留白仍可勾"= 海洋"）
+ *    · **地形**   —— 高山 / 丘陵 / 高原 / 盆地低地 / 湖泊内海：画在哪，生成时海拔就按哪一档塑形
+ *    · **气候**   —— 沙地 / 湿地：只改湿度（⇒ 植被上色、河网密度），不动海拔
+ *    · **噪声**   —— 加噪 / 抹平（强度 1~8）：**有符号**地乘在起伏上
+ *    · **边缘**   —— 海岸复杂化（强度 1~8）：放大海岸线的抖动幅度
+ *  五个层各自 RLE 压缩 ⇒ 1024×512 画满几块大陆通常只有几 KB（老的 2 bit 定长是 131KB/层）。
  *
- *  生成仍走**同一条落盘路** `generateIntoMap()`（`src/ui/map-gen.ts`）⇒ 一步 Ctrl+Z 能撤。
- *  星球生成里剪影**优先于**噪声（见 `src/mapgen/planet.ts` 的 `forced[]`）。
+ *  交互仍是第一百零九轮定的那套（用户当时逐条点名要的）：滚轮以指针为锚缩放、中键 / 空格+左键拖动、
+ *  笔刷滑块、跟随指针的圆环、放大到一格 ≥ 6px 时画淡网格。**没有橡皮当主工具** —— 每层自带「擦除」。
  *
- *  ⚠️ 界面不用 emoji、不用黄色系文字（AGENTS.md），颜色只用 tokens.css 的变量。 */
+ *  生成仍走**同一条落盘路** `generateIntoMap()`（`src/ui/map-gen.ts`）⇒ 一步 Ctrl+Z 能撤；
+ *  原型优先于噪声（`src/mapgen/planet.ts` 的 `forced[]` / 效果场）。
+ *
+ *  ⚠️ 界面不用 emoji、不用黄色系文字（AGENTS.md），颜色只用 tokens.css 的变量；
+ *  画布里的配色是**地图语义色**（陆地绿 / 海洋蓝 / 山地棕…），不参与文字对比度那条规矩。 */
 
 import type { Store } from '../store/store';
 import { currentWorld } from '../store/store';
-import type { MapMask } from '../store/types';
+import type { MapMask, MapProto } from '../store/types';
+import {
+  CLIMATE_DRY, CLIMATE_WET, EDGE_MAX, NOISE_MAX, PROTO_H, PROTO_W,
+  ZONE_BASIN, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PLATEAU,
+  decodeProtoInput, emptyLayers, encodeProto, protoSummary, type ProtoLayers,
+} from '../mapgen/proto';
 import { nextFrame, showBusy } from './busy';
 import { closeLightbox, isLightboxOpen } from './lightbox';
 import { generateIntoMap } from './map-gen';
 
-/** 掩膜分辨率（与 `MapTerrainSpec.mask` 一致）*/
-export const MASK_W = 320;
-export const MASK_H = 160;
-/** 1:1 时每格占多少屏幕像素 ⇒ 整幅 960×480 */
-const CELL = 3;
+/** 原型分辨率（与 `src/mapgen/proto.ts` 一致）。老名字保留：外部只关心"这块画板有多大"。 */
+export const MASK_W = PROTO_W;
+export const MASK_H = PROTO_H;
 const MAX_UNDO = 40;
 const ZOOM_MIN = 1;
-const ZOOM_MAX = 8;
+const ZOOM_MAX = 24;
 
-type Tool = 'land' | 'sea';
+type LayerId = 'land' | 'zone' | 'climate' | 'noise' | 'edge';
+type RGB = [number, number, number];
+
+interface Brush {
+  id: string;
+  label: string;
+  hint: string;
+  value: number;
+}
+
+const LAYER_ORDER: LayerId[] = ['land', 'zone', 'climate', 'noise', 'edge'];
+const LAYER_LABEL: Record<LayerId, string> = {
+  land: '海陆', zone: '地形', climate: '气候', noise: '噪声', edge: '边缘',
+};
+const PALETTES: Record<LayerId, Brush[]> = {
+  land: [
+    { id: 'land', label: '陆地', hint: '涂成陆地（还没画的地方交给生成器）', value: 1 },
+    { id: 'sea', label: '海洋', hint: '涂成海洋 —— 也就是把这一块从陆地擦掉', value: 2 },
+  ],
+  zone: [
+    { id: 'mountain', label: '高山', hint: '山脉 / 高峰：山脊放大 + 基面抬高 ⇒ 画过的地方是最高的一带', value: ZONE_MOUNTAIN },
+    { id: 'hill', label: '丘陵', hint: '中等起伏：山脊略放大、基面微微抬高', value: ZONE_HILL },
+    { id: 'plateau', label: '高原', hint: '抬高的平顶：基面抬高 + 起伏压平', value: ZONE_PLATEAU },
+    { id: 'basin', label: '盆地', hint: '低地：基面压低、起伏再压一半', value: ZONE_BASIN },
+    { id: 'lake', label: '湖泊/内海', hint: '直接钉成水面（离岸越近越浅，不会变成深海）', value: ZONE_LAKE },
+    { id: 'erase', label: '擦除', hint: '把这一层擦回"没画"（别的层不动）', value: 0 },
+  ],
+  climate: [
+    { id: 'dry', label: '沙地', hint: '干燥底子：湿度压低 ⇒ 荒漠/草原色，河更少', value: CLIMATE_DRY },
+    { id: 'wet', label: '湿地', hint: '湿润底子：湿度抬高 ⇒ 森林色，河更多', value: CLIMATE_WET },
+    { id: 'erase', label: '擦除', hint: '把这一层擦回"没画"', value: 0 },
+  ],
+  noise: [
+    { id: 'noise-up', label: '加噪', hint: '这一片更崎岖：山脊/细节一起放大（强度用右边的滑块）', value: 1 },
+    { id: 'noise-down', label: '抹平', hint: '这一片更平：起伏与细节一起压下去', value: -1 },
+    { id: 'erase', label: '擦除', hint: '把噪声擦掉', value: 0 },
+  ],
+  edge: [
+    { id: 'edge-add', label: '边缘复杂化', hint: '海岸线更碎：把这一带的海岸抖动放大（强度用滑块）', value: 1 },
+    { id: 'erase', label: '擦除', hint: '把这一带的海岸恢复平滑', value: 0 },
+  ],
+};
+
+/* 画布里的颜色（地图语义色，不是文字色）*/
+const C_UNSET: RGB = [201, 198, 189];
+const C_LAND: RGB = [123, 149, 87];
+const C_SEA: RGB = [47, 111, 142];
+const C_ZONE: Record<number, RGB> = {
+  [ZONE_MOUNTAIN]: [107, 82, 54],
+  [ZONE_HILL]: [143, 122, 78],
+  [ZONE_PLATEAU]: [169, 143, 92],
+  [ZONE_BASIN]: [122, 138, 102],
+  [ZONE_LAKE]: [63, 127, 166],
+};
+const C_CLIMATE: Record<number, RGB> = {
+  [CLIMATE_DRY]: [201, 163, 94],
+  [CLIMATE_WET]: [79, 125, 99],
+};
+const C_NOISE_UP: RGB = [194, 90, 74];
+const C_NOISE_DOWN: RGB = [91, 127, 181];
+const C_EDGE: RGB = [88, 168, 184];
 
 let openEl: HTMLElement | null = null;
 let keyHandler: ((e: KeyboardEvent) => void) | null = null;
 let keyUpHandler: ((e: KeyboardEvent) => void) | null = null;
 let hostStore: Store | null = null;
 
-/* 画板状态（模块级：关掉再开，画到一半的剪影还在 —— 与抽卡同一个体验） */
-let mask: Uint8Array = new Uint8Array(MASK_W * MASK_H);
-let undoStack: Uint8Array[] = [];
-let tool: Tool = 'land';
-let brushCells = 4;
+/* 画板状态（模块级：关掉再开，画到一半的原型还在 —— 与抽卡同一个体验） */
+let layers: ProtoLayers = emptyLayers();
+let undoStack: { layer: LayerId; data: Uint8Array | Int8Array }[] = [];
+let layer: LayerId = 'land';
+let toolId = 'land';
+let brushCells = 8;
+let strength = 5;
 let zoom = 1;
 let panX = 0;
 let panY = 0;
@@ -56,56 +124,53 @@ export function isMapEditorOpen(): boolean {
   return !!openEl && document.body.contains(openEl);
 }
 
-/* ── 掩膜编解码（2 bit/格，低位在前）────────────────────────────────────────── */
-
-function encodeMask(m: Uint8Array): MapMask {
-  const bytes = new Uint8Array(Math.ceil(MASK_W * MASK_H * 2 / 8));
-  for (let i = 0; i < MASK_W * MASK_H; i++) {
-    const bit = i * 2;
-    bytes[bit >> 3] |= (m[i] & 3) << (bit & 7);
-  }
-  let bin = '';
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return { w: MASK_W, h: MASK_H, bits: btoa(bin) };
+export function clearEditorMask(): void {
+  layers = emptyLayers();
+  undoStack = [];
 }
 
-/** 读剪影。⚠️ 老数据是 160×80（第一百零八轮）⇒ 按**源分辨率**读，再最近邻放大到 320×160。 */
-function decodeMask(src: MapMask | undefined): Uint8Array {
-  const out = new Uint8Array(MASK_W * MASK_H);
-  if (!src || !src.bits || !src.w || !src.h) return out;
-  let bin = '';
-  try { bin = atob(src.bits); } catch { return out; }
-  const sw = src.w;
-  const sh = src.h;
-  for (let y = 0; y < MASK_H; y++) {
-    const sy = Math.min(sh - 1, Math.floor((y * sh) / MASK_H));
-    for (let x = 0; x < MASK_W; x++) {
-      const sx = Math.min(sw - 1, Math.floor((x * sw) / MASK_W));
-      const i = sy * sw + sx;
-      const bit = i * 2;
-      const byte = bin.charCodeAt(bit >> 3) & 0xff;
-      out[y * MASK_W + x] = (byte >> (bit & 7)) & 3;
-    }
+/** 把任意尺寸的解码结果对齐到 1024×512（旧原型/异常数据）—— 最近邻，够用且不引入模糊。 */
+function fitLayers(src: ProtoLayers): ProtoLayers {
+  if (src.w === PROTO_W && src.h === PROTO_H) return src;
+  const out = emptyLayers();
+  const n = PROTO_W * PROTO_H;
+  for (let i = 0; i < n; i++) {
+    const y = (i / PROTO_W) | 0;
+    const x = i - y * PROTO_W;
+    const sy = Math.min(src.h - 1, Math.floor((y * src.h) / PROTO_H));
+    const sx = Math.min(src.w - 1, Math.floor((x * src.w) / PROTO_W));
+    const s = sy * src.w + sx;
+    out.land[i] = src.land[s];
+    out.zone[i] = src.zone[s];
+    out.climate[i] = src.climate[s];
+    out.noise[i] = src.noise[s];
+    out.edge[i] = src.edge[s];
   }
   return out;
 }
 
-export function clearEditorMask(): void {
-  mask = new Uint8Array(MASK_W * MASK_H);
-  undoStack = [];
+function brushOf(id: string): Brush {
+  return PALETTES[layer].find((b) => b.id === id) ?? PALETTES[layer][0];
 }
 
 /* ── 打开画板 ─────────────────────────────────────────────────────────────── */
 
-/** `mask` 不给就沿用这张地图现在的那幅剪影（"在现有剪影上接着改"）。 */
-export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
+/** 不给原型就沿用这张地图现在那份（"在现有原型上接着改"；老剪影会自动放大成五层）。 */
+export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: MapMask }): void {
   if (isLightboxOpen()) closeLightbox();
   closeMapEditor();
   hostStore = store;
   const m = currentWorld(store).maps?.[0];
-  const startMask = opts?.mask ?? m?.terrain?.mask;
-  mask = decodeMask(startMask);
+  const src = opts?.proto ?? opts?.mask ?? m?.terrain?.proto ?? m?.terrain?.mask;
+  const decoded = src ? decodeProtoInput(src) : null;
+  layers = decoded ? fitLayers(decoded) : emptyLayers();
   undoStack = [];
+  layer = 'land';
+  toolId = 'land';
+  /* 打开时把"视图/笔刷"恢复默认（画到一半的**数据**留着，操作参数不跨次沿用 —— 
+     否则上次把笔刷拉到 30，这次一进来又大又难画） */
+  brushCells = 8;
+  strength = 5;
   zoom = 1;
   panX = 0;
   panY = 0;
@@ -114,20 +179,28 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
   el.className = 'lk-ed';
   el.setAttribute('role', 'dialog');
   el.setAttribute('aria-modal', 'true');
-  el.setAttribute('aria-label', '手绘海陆');
+  el.setAttribute('aria-label', '手绘原型');
   el.innerHTML = `
     <div class="lk-ed__bar">
-      <span class="lk-ed__title">手绘海陆</span>
-      <span class="lk-ed__hint" id="ed-hint">滚轮缩放 · 中键 / 空格+左键拖动 · 左键绘制</span>
+      <span class="lk-ed__title">手绘原型</span>
+      <span class="lk-ed__hint" id="ed-hint">1024×512 · 五层 · 滚轮缩放 · 中键 / 空格+左键拖动</span>
       <span class="lk-ed__spacer"></span>
       <span class="lk-ed__group">
-        <button class="lk-ed__tool is-on" data-tool="land" title="涂成陆地">陆地</button>
-        <button class="lk-ed__tool" data-tool="sea" title="涂成海洋（也就是把陆地擦掉）">海洋</button>
+        <button class="lk-ed__tool" data-layer="land" title="海陆：决定大陆、海岸与海在哪">海陆</button>
+        <button class="lk-ed__tool" data-layer="zone" title="地形分区：高山 / 丘陵 / 高原 / 盆地 / 湖泊">地形</button>
+        <button class="lk-ed__tool" data-layer="climate" title="气候底子：沙地 / 湿地（只改湿度）">气候</button>
+        <button class="lk-ed__tool" data-layer="noise" title="区域噪声：加噪 / 抹平（有符号）">噪声</button>
+        <button class="lk-ed__tool" data-layer="edge" title="海岸复杂化：这一带的海岸更碎">边缘</button>
       </span>
-      <label class="lk-ed__slider" title="笔刷大小（单位：剪影格）">
+      <label class="lk-ed__slider" title="笔刷大小（单位：原型格）">
         <span>笔刷</span>
-        <input type="range" id="ed-brush" min="1" max="20" step="1" value="4">
-        <span class="lk-ed__val" id="ed-brush-n">4</span>
+        <input type="range" id="ed-brush" min="1" max="40" step="1" value="8">
+        <span class="lk-ed__val" id="ed-brush-n">8</span>
+      </label>
+      <label class="lk-ed__slider" id="ed-strength-box" title="强度（噪声 / 边缘层用）">
+        <span>强度</span>
+        <input type="range" id="ed-strength" min="1" max="8" step="1" value="5">
+        <span class="lk-ed__val" id="ed-strength-n">5</span>
       </label>
       <span class="lk-ed__group">
         <button class="lk-ed__btn" id="ed-zoom-out" title="缩小">−</button>
@@ -137,15 +210,20 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
       </span>
       <span class="lk-ed__group">
         <button class="lk-ed__btn" id="ed-undo" title="撤销上一笔（Ctrl+Z）">撤销</button>
-        <button class="lk-ed__btn" id="ed-clear" title="清空整幅剪影">清空</button>
-        <button class="lk-ed__btn" id="ed-import" title="从 PNG 导入（绿 = 陆地、蓝 = 海洋）">导入</button>
-        <button class="lk-ed__btn" id="ed-export" title="导出这幅剪影为 PNG">导出</button>
+        <button class="lk-ed__btn" id="ed-clear" title="清空当前这一层">清空本层</button>
+        <button class="lk-ed__btn" id="ed-import" title="从 PNG 导入到海陆层（绿 = 陆地、蓝 = 海洋）">导入</button>
+        <button class="lk-ed__btn" id="ed-export" title="把当前这一层导出为 PNG">导出</button>
       </span>
-      <label class="lk-ed__check" title="勾上：没画的地方一律算海洋（剪影就是整个世界）；不勾：没画的地方交给生成器随机">
+      <label class="lk-ed__check" title="勾上：没画的地方一律算海洋（原型就是整个世界）；不勾：没画的地方交给生成器随机">
         <input type="checkbox" id="ed-blank-sea" checked> 留白 = 海洋
       </label>
-      <button class="lk-ed__btn is-primary" id="ed-go" title="按这幅剪影生成星球（当前地图的种子与档位）">按这幅生成</button>
+      <button class="lk-ed__btn is-primary" id="ed-go" title="按这幅原型生成星球（当前地图的种子与档位）">按这幅生成</button>
       <button class="lk-ed__close" id="ed-close" title="关掉（Esc）">×</button>
+    </div>
+    <div class="lk-ed__sub">
+      <span class="lk-ed__subtitle" id="ed-layer-name">海陆</span>
+      <span class="lk-ed__group" id="ed-brushes"></span>
+      <span class="lk-ed__subnote" id="ed-layer-hint"></span>
     </div>
     <div class="lk-ed__stage" id="ed-stage">
       <canvas id="ed-canvas"></canvas>
@@ -171,33 +249,99 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
   const zoomEl = q<HTMLElement>('#ed-zoom');
   const brushEl = q<HTMLInputElement>('#ed-brush');
   const brushNEl = q<HTMLElement>('#ed-brush-n');
+  const strEl = q<HTMLInputElement>('#ed-strength');
+  const strNEl = q<HTMLElement>('#ed-strength-n');
+  const strBox = q<HTMLElement>('#ed-strength-box');
+  const brushesEl = q<HTMLElement>('#ed-brushes');
+  const layerNameEl = q<HTMLElement>('#ed-layer-name');
+  const layerHintEl = q<HTMLElement>('#ed-layer-hint');
 
-  /** 掩膜 → 一张 320×160 的小画布（贴图源）。每格格子颜色：陆地绿 / 海洋蓝 / 留白灰。 */
+  /* ── 画布：原型 → 一张小画布（贴图源）；每格按"底 + 当前层"上色 ─────────────── */
   const buf = document.createElement('canvas');
-  buf.width = MASK_W;
-  buf.height = MASK_H;
+  buf.width = PROTO_W;
+  buf.height = PROTO_H;
   const bctx = buf.getContext('2d');
-  const paintBuf = () => {
-    if (!bctx) return;
-    const img = bctx.createImageData(MASK_W, MASK_H);
-    for (let i = 0; i < mask.length; i++) {
-      const v = mask[i];
-      const o = i * 4;
-      if (v === 1) { img.data[o] = 123; img.data[o + 1] = 149; img.data[o + 2] = 87; img.data[o + 3] = 255; }
-      else if (v === 2) { img.data[o] = 47; img.data[o + 1] = 111; img.data[o + 2] = 142; img.data[o + 3] = 255; }
-      else { img.data[o] = 201; img.data[o + 1] = 198; img.data[o + 2] = 189; img.data[o + 3] = 255; }
+  const img = bctx ? bctx.createImageData(PROTO_W, PROTO_H) : null;
+
+  let statText = '';
+
+  const layerValues = (): ArrayLike<number> => layers[layer];
+
+  function paintBuf() {
+    if (!bctx || !img) return;
+    const d = img.data;
+    const n = PROTO_W * PROTO_H;
+    const active = layerValues();
+    const dim = layer === 'land' ? 1 : 0.42;
+    for (let i = 0; i < n; i++) {
+      const lv = layers.land[i];
+      let r = C_UNSET[0], g = C_UNSET[1], b = C_UNSET[2];
+      if (lv === 1) { r = C_LAND[0]; g = C_LAND[1]; b = C_LAND[2]; }
+      else if (lv === 2) { r = C_SEA[0]; g = C_SEA[1]; b = C_SEA[2]; }
+      if (dim !== 1) {
+        /* 换到别的层时把海陆压暗 —— 还看得见地理，但不会和当前层的颜色打架 */
+        r = r * dim + 20; g = g * dim + 20; b = b * dim + 22;
+      }
+      const av = active[i];
+      if (layer === 'land') {
+        /* 海陆层本身就是底色，不用再叠 */
+      } else if (av) {
+        let c: RGB | null = null;
+        let t = 0;
+        if (layer === 'zone') { c = C_ZONE[av] ?? null; t = 0.92; }
+        else if (layer === 'climate') { c = C_CLIMATE[av] ?? null; t = 0.80; }
+        else if (layer === 'noise') {
+          c = av > 0 ? C_NOISE_UP : C_NOISE_DOWN;
+          t = Math.min(1, Math.abs(av) / NOISE_MAX) * 0.72;
+        } else if (layer === 'edge') {
+          c = C_EDGE;
+          t = Math.min(1, av / EDGE_MAX) * 0.8;
+        }
+        if (c && t > 0) {
+          r = r * (1 - t) + c[0] * t;
+          g = g * (1 - t) + c[1] * t;
+          b = b * (1 - t) + c[2] * t;
+        }
+      }
+      const o = i << 2;
+      d[o] = r | 0; d[o + 1] = g | 0; d[o + 2] = b | 0; d[o + 3] = 255;
     }
     bctx.putImageData(img, 0, 0);
-  };
+
+    /* 状态行：海陆是"地基"（永远显示），后面接当前层的明细 */
+    const sum = protoSummary(layers);
+    const pct = (v: number) => `${Math.round((v / n) * 100)}%`;
+    let extra = '';
+    if (layer === 'land') {
+      extra = ' · 画陆地/海洋：没画的地方由生成器决定（勾了「留白 = 海洋」则算海）';
+    } else if (layer === 'zone') {
+      const parts: string[] = [];
+      for (const [k, name] of [[ZONE_MOUNTAIN, '高山'], [ZONE_HILL, '丘陵'], [ZONE_PLATEAU, '高原'], [ZONE_BASIN, '盆地'], [ZONE_LAKE, '湖泊']] as [number, string][]) {
+        const v = sum.zone[k] ?? 0;
+        if (v) parts.push(`${name} ${pct(v)}`);
+      }
+      extra = parts.length ? ' · 地形：' + parts.join(' · ') : ' · 地形：还没画（画了才会改海拔形状）';
+    } else if (layer === 'climate') {
+      const parts: string[] = [];
+      if (sum.climate[CLIMATE_DRY]) parts.push(`沙地 ${pct(sum.climate[CLIMATE_DRY])}`);
+      if (sum.climate[CLIMATE_WET]) parts.push(`湿地 ${pct(sum.climate[CLIMATE_WET])}`);
+      extra = parts.length ? ' · 气候：' + parts.join(' · ') : ' · 气候：还没画（只改湿度，不改海拔）';
+    } else if (layer === 'noise') {
+      extra = ` · 噪声：加噪 ${sum.noiseUp}% · 抹平 ${sum.noiseDown}%`;
+    } else {
+      extra = ` · 边缘：复杂化 ${sum.edge}%`;
+    }
+    statText = `陆地 ${sum.landPct}% · 海洋 ${sum.seaPct}% · 留白 ${sum.blankPct}%${extra}`;
+  }
 
   /** 视口尺寸（CSS px）；画布按它开，缩放/平移都在这里换算 */
   let vw = 960;
   let vh = 480;
 
-  const baseScale = () => Math.min(vw / (MASK_W * CELL), vh / (MASK_H * CELL)) || 1;
-  const cellPx = () => CELL * baseScale() * zoom;
-  const contentW = () => MASK_W * cellPx();
-  const contentH = () => MASK_H * cellPx();
+  const baseScale = () => Math.min(vw / PROTO_W, vh / PROTO_H) || 1;
+  const cellPx = () => baseScale() * zoom;
+  const contentW = () => PROTO_W * cellPx();
+  const contentH = () => PROTO_H * cellPx();
 
   /** 内容比视口小时居中；比视口大时不许拖出边界（拖到边上刚好贴边）*/
   function clampPan() {
@@ -209,33 +353,45 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
 
   function paint() {
     if (!ctx) return;
-    paintBuf();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, vw, vh);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(buf, 0, 0, MASK_W, MASK_H, panX, panY, contentW(), contentH());
-    /* 放大到一格 ≥ 7px 时画淡淡的网格 —— 方便一格一格地补细节 */
+    ctx.drawImage(buf, 0, 0, PROTO_W, PROTO_H, panX, panY, contentW(), contentH());
+    /* 网格：一格 ≥ 6px 时画细网格（一格一格补细节）；再画一条每 64 格的粗线当地标 */
     const cp = cellPx();
-    if (cp >= 7) {
-      ctx.strokeStyle = 'rgba(0,0,0,.14)';
+    if (cp >= 6) {
+      ctx.strokeStyle = 'rgba(0,0,0,.13)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      for (let x = 0; x <= MASK_W; x++) {
+      for (let x = 0; x <= PROTO_W; x++) {
         const px = Math.round(panX + x * cp) + 0.5;
         ctx.moveTo(px, panY);
         ctx.lineTo(px, panY + contentH());
       }
-      for (let y = 0; y <= MASK_H; y++) {
+      for (let y = 0; y <= PROTO_H; y++) {
         const py = Math.round(panY + y * cp) + 0.5;
         ctx.moveTo(panX, py);
         ctx.lineTo(panX + contentW(), py);
       }
       ctx.stroke();
     }
-    let land = 0, sea = 0;
-    for (let i = 0; i < mask.length; i++) { if (mask[i] === 1) land++; else if (mask[i] === 2) sea++; }
-    const pct = (v: number) => Math.round((v / mask.length) * 100);
-    statEl.textContent = `陆地 ${pct(land)}% · 海洋 ${pct(sea)}% · 留白 ${100 - pct(land) - pct(sea)}%`;
+    if (cp * 64 >= 40) {
+      ctx.strokeStyle = 'rgba(0,0,0,.26)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = 0; x <= PROTO_W; x += 64) {
+        const px = Math.round(panX + x * cp) + 0.5;
+        ctx.moveTo(px, panY);
+        ctx.lineTo(px, panY + contentH());
+      }
+      for (let y = 0; y <= PROTO_H; y += 64) {
+        const py = Math.round(panY + y * cp) + 0.5;
+        ctx.moveTo(panX, py);
+        ctx.lineTo(panX + contentW(), py);
+      }
+      ctx.stroke();
+    }
+    statEl.textContent = statText;
     zoomEl.textContent = Math.round(zoom * 100) + '%';
   }
 
@@ -277,28 +433,37 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
     drawRing();
   }
 
-  /* ── 指针 → 掩膜格 ─────────────────────────────────────────────────────── */
+  /* ── 指针 → 原型格 ─────────────────────────────────────────────────────── */
   const cellAt = (clientX: number, clientY: number): { x: number; y: number } => {
     const r = canvas.getBoundingClientRect();
     /* backing store 可能比 CSS 尺寸大/小（窗口刚开、resize 还没跑完）⇒ 先按比例换到画布坐标 */
     const k = r.width ? vw / r.width : 1;
-    const cp = contentW() / MASK_W;
+    const cp = contentW() / PROTO_W;
     return {
       x: Math.floor(((clientX - r.left) * k - panX) / cp),
       y: Math.floor(((clientY - r.top) * k - panY) / cp),
     };
   };
 
+  /** 当前笔刷要写进去的值（噪声有**符号**、边缘是 1..8 的强度） */
+  const currentValue = (): number => {
+    const b = brushOf(toolId);
+    if (layer === 'noise') return b.value === 0 ? 0 : (b.value > 0 ? strength : -strength);
+    if (layer === 'edge') return b.value === 0 ? 0 : strength;
+    return b.value;
+  };
+
   const stamp = (cx: number, cy: number) => {
-    const val = tool === 'land' ? 1 : 2;
+    const val = currentValue();
+    const arr = layers[layer];
     const r = Math.max(0, brushCells - 1);
     for (let y = cy - r; y <= cy + r; y++) {
-      if (y < 0 || y >= MASK_H) continue;
+      if (y < 0 || y >= PROTO_H) continue;
       for (let x = cx - r; x <= cx + r; x++) {
-        if (x < 0 || x >= MASK_W) continue;
+        if (x < 0 || x >= PROTO_W) continue;
         const dx = x - cx, dy = y - cy;
         if (r > 0 && dx * dx + dy * dy > r * r + r * 0.6) continue;
-        mask[y * MASK_W + x] = val;
+        arr[y * PROTO_W + x] = val;
       }
     }
   };
@@ -308,6 +473,20 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
       const t = steps ? i / steps : 0;
       stamp(Math.round(a.x + (b.x - a.x) * t), Math.round(a.y + (b.y - a.y) * t));
     }
+  };
+
+  /** 复制一层（Int8 / Uint8 各按自己的类型 copy —— 别用类型断言骗过去） */
+  const snapshotOf = (id: LayerId): Uint8Array | Int8Array => {
+    const a = layers[id];
+    return a instanceof Int8Array ? new Int8Array(a) : new Uint8Array(a);
+  };
+  const restoreInto = (id: LayerId, data: Uint8Array | Int8Array) => {
+    const t = layers[id] as unknown as Uint8Array;
+    t.set(data as unknown as Uint8Array);
+  };
+  const pushUndo = () => {
+    undoStack.push({ layer, data: snapshotOf(layer) });
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
   };
 
   let drawing = false;
@@ -329,11 +508,11 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
       return;
     }
     if (e.button !== 0) return;
-    undoStack.push(mask.slice());
-    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    pushUndo();
     drawing = true;
     last = cellAt(e.clientX, e.clientY);
     stamp(last.x, last.y);
+    paintBuf();
     paint();
     try { canvas.setPointerCapture?.(e.pointerId); } catch { /* 合成事件没有活动指针 */ }
     e.preventDefault();
@@ -356,6 +535,7 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
       const p = cellAt(e.clientX, e.clientY);
       line(last, p);
       last = p;
+      paintBuf();
       paint();
     }
     drawRing();
@@ -379,7 +559,7 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
     const r = canvas.getBoundingClientRect();
     const sx = e.clientX - r.left;
     const sy = e.clientY - r.top;
-    const s0 = CELL * baseScale();
+    const s0 = baseScale();
     const mx = (sx - panX) / (s0 * zoom);
     const my = (sy - panY) / (s0 * zoom);
     const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom * Math.exp(-e.deltaY * 0.0016)));
@@ -397,40 +577,86 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
     paint();
   };
 
-  const syncTools = () => {
-    el.querySelectorAll('[data-tool]').forEach((b) => (b as HTMLElement).classList.toggle('is-on', (b as HTMLElement).dataset.tool === tool));
+  /* ── 顶栏 / 子栏的同步 ─────────────────────────────────────────────────── */
+  function syncUi() {
+    el.querySelectorAll('[data-layer]').forEach((b) => {
+      (b as HTMLElement).classList.toggle('is-on', (b as HTMLElement).dataset.layer === layer);
+    });
+    const brushes = PALETTES[layer];
+    brushesEl.innerHTML = brushes
+      .map((b) => `<button class="lk-ed__tool${b.id === toolId ? ' is-on' : ''}" data-tool="${b.id}" title="${b.hint}">${b.label}</button>`)
+      .join('');
+    layerNameEl.textContent = LAYER_LABEL[layer];
+    layerHintEl.textContent = brushOf(toolId).hint;
+    const strOn = layer === 'noise' || layer === 'edge';
+    strBox.style.display = strOn ? 'flex' : 'none';
     brushEl.value = String(brushCells);
     brushNEl.textContent = String(brushCells);
-  };
+    strEl.value = String(strength);
+    strNEl.textContent = String(strength);
+  }
 
   el.addEventListener('click', (e) => {
     const t = e.target as HTMLElement;
+    const layerBtn = t.closest('[data-layer]') as HTMLElement | null;
+    if (layerBtn?.dataset.layer) {
+      const next = layerBtn.dataset.layer as LayerId;
+      if (LAYER_ORDER.includes(next) && next !== layer) {
+        layer = next;
+        toolId = PALETTES[layer][0].id;
+        syncUi();
+        paintBuf();
+        paint();
+      }
+      return;
+    }
     const toolBtn = t.closest('[data-tool]') as HTMLElement | null;
-    if (toolBtn?.dataset.tool) { tool = toolBtn.dataset.tool as Tool; syncTools(); return; }
+    if (toolBtn?.dataset.tool) {
+      toolId = toolBtn.dataset.tool;
+      syncUi();
+      return;
+    }
     if (t.closest('#ed-close')) { closeMapEditor(); return; }
     if (t.closest('#ed-zoom-in')) { setZoom(zoom * 1.5); return; }
     if (t.closest('#ed-zoom-out')) { setZoom(zoom / 1.5); return; }
     if (t.closest('#ed-zoom-fit')) { zoom = 1; clampPan(); paint(); return; }
     if (t.closest('#ed-undo')) {
       const prev = undoStack.pop();
-      if (prev) { mask = prev; paint(); }
+      if (prev) {
+        /* 撤销恢复的是"那一笔所在的那一层"：先切回去，否则看起来没反应 */
+        layer = prev.layer;
+        restoreInto(layer, prev.data);
+        toolId = PALETTES[layer][0].id;
+        syncUi();
+        paintBuf();
+        paint();
+      }
       return;
     }
     if (t.closest('#ed-clear')) {
-      undoStack.push(mask.slice());
-      mask = new Uint8Array(MASK_W * MASK_H);
+      pushUndo();
+      (layers[layer] as unknown as Uint8Array).fill(0);
+      paintBuf();
       paint();
       return;
     }
-    if (t.closest('#ed-import')) { fileEl.click(); return; }
+    if (t.closest('#ed-import')) {
+      if (layer !== 'land') { noteEl.textContent = '导入只支持「海陆」层（先切到海陆再导）'; return; }
+      fileEl.click();
+      return;
+    }
     if (t.closest('#ed-export')) { exportPng(); return; }
     if (t.closest('#ed-go')) { void applyPatch(); return; }
   });
 
   brushEl.addEventListener('input', () => {
-    brushCells = Math.max(1, Math.min(20, Number(brushEl.value) || 1));
+    brushCells = Math.max(1, Math.min(40, Number(brushEl.value) || 1));
     brushNEl.textContent = String(brushCells);
     drawRing();
+  });
+  strEl.addEventListener('input', () => {
+    strength = Math.max(1, Math.min(8, Number(strEl.value) || 1));
+    strNEl.textContent = String(strength);
   });
 
   fileEl.addEventListener('change', () => {
@@ -440,20 +666,21 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
     const im = new Image();
     im.onload = () => {
       const tmp = document.createElement('canvas');
-      tmp.width = MASK_W;
-      tmp.height = MASK_H;
+      tmp.width = PROTO_W;
+      tmp.height = PROTO_H;
       const tctx = tmp.getContext('2d');
       if (!tctx) { URL.revokeObjectURL(url); return; }
-      tctx.drawImage(im, 0, 0, MASK_W, MASK_H);
-      const data = tctx.getImageData(0, 0, MASK_W, MASK_H).data;
-      undoStack.push(mask.slice());
-      for (let i = 0; i < mask.length; i++) {
+      tctx.drawImage(im, 0, 0, PROTO_W, PROTO_H);
+      const data = tctx.getImageData(0, 0, PROTO_W, PROTO_H).data;
+      pushUndo();
+      for (let i = 0; i < PROTO_W * PROTO_H; i++) {
         const o = i * 4;
         const a = data[o + 3], g = data[o + 1], b = data[o + 2];
-        mask[i] = a < 32 ? 0 : (g > b + 10 ? 1 : (b > g + 10 ? 2 : 0));
+        layers.land[i] = a < 32 ? 0 : (g > b + 10 ? 1 : (b > g + 10 ? 2 : 0));
       }
+      paintBuf();
       paint();
-      noteEl.textContent = `已导入「${f.name}」（绿 = 陆地、蓝 = 海洋、其它 = 留白）`;
+      noteEl.textContent = `已导入「${f.name}」到海陆层（绿 = 陆地、蓝 = 海洋、其它 = 留白）`;
       URL.revokeObjectURL(url);
     };
     im.onerror = () => { noteEl.textContent = '这张图读不出来，换一张 PNG 试试'; URL.revokeObjectURL(url); };
@@ -461,48 +688,65 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
     fileEl.value = '';
   });
 
+  /** 把当前层按调色板画成一张 PNG（导出后拿出去也看得出是哪一层）*/
   const exportPng = () => {
-    paintBuf();
-    /* 导出放大 4 倍（1280×640）：拿出去在别的画图软件里看得清；导回来会按颜色还原 */
     const out = document.createElement('canvas');
-    out.width = MASK_W * 4;
-    out.height = MASK_H * 4;
+    out.width = PROTO_W;
+    out.height = PROTO_H;
     const octx = out.getContext('2d');
     if (octx) {
-      octx.imageSmoothingEnabled = false;
-      octx.drawImage(buf, 0, 0, out.width, out.height);
+      const data = octx.createImageData(PROTO_W, PROTO_H);
+      const d = data.data;
+      const active = layers[layer];
+      for (let i = 0; i < PROTO_W * PROTO_H; i++) {
+        let r = 201, g = 198, b = 189;
+        if (layer === 'land') {
+          const lv = layers.land[i];
+          if (lv === 1) { r = C_LAND[0]; g = C_LAND[1]; b = C_LAND[2]; }
+          else if (lv === 2) { r = C_SEA[0]; g = C_SEA[1]; b = C_SEA[2]; }
+        } else {
+          const v = active[i];
+          if (v) {
+            const c = layer === 'zone' ? C_ZONE[v]
+              : layer === 'climate' ? C_CLIMATE[v]
+                : layer === 'noise' ? (v > 0 ? C_NOISE_UP : C_NOISE_DOWN) : C_EDGE;
+            if (c) { r = c[0]; g = c[1]; b = c[2]; }
+          }
+        }
+        const o = i << 2;
+        d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;
+      }
+      octx.putImageData(data, 0, 0);
     }
     const a = document.createElement('a');
-    a.download = '海陆剪影.png';
+    a.download = `原型-${LAYER_LABEL[layer]}.png`;
     a.href = out.toDataURL('image/png');
     a.click();
-    noteEl.textContent = '已导出 PNG（再导入回来会按颜色还原）';
+    noteEl.textContent = `已导出「${LAYER_LABEL[layer]}」层（1024×512，颜色即层语义）`;
   };
 
   const applyPatch = async () => {
     const st = hostStore;
     if (!st) return;
-    const mm = currentWorld(st).maps?.[0];
-    const t = mm?.terrain;
-    const b = showBusy(el, '正在按剪影生成…', { sub: '星球 · 剪影优先于噪声' });
+    const t = currentWorld(st).maps?.[0]?.terrain;
+    const b = showBusy(el, '正在按原型生成…', { sub: '海陆 · 地形分区 · 气候 · 噪声 · 海岸 一起进生成器' });
     await nextFrame();
     try {
-      /* ⭐ 「留白 = 海洋」（缺省勾上）：剪影是"整个世界"的海陆 —— 没画的地方算海。
+      /* ⭐ 「留白 = 海洋」（缺省勾上）：原型是"整个世界"的海陆 —— 没画的地方算海。
          不勾的话留白交给生成器随机（适合"我只想钉死东半球那块大陆"）。 */
       const blankSea = (el.querySelector('#ed-blank-sea') as HTMLInputElement | null)?.checked ?? true;
-      const out = blankSea ? mask.slice() : mask;
-      if (blankSea) for (let i = 0; i < out.length; i++) if (out[i] === 0) out[i] = 2;
+      const proto = encodeProto(layers, { blankSea });
       const r = generateIntoMap(st, {
         seed: t?.seed ? String(t.seed) : '灵框',
         style: t?.style ? String(t.style) : 'continent',
         spec: (t?.spec ?? {}) as { [k: string]: number | undefined },
         view: t?.view,
         form: 'planet',
-        mask: encodeMask(out),
+        proto,
       });
       b.done();
       noteEl.textContent = r.note;
-      window.setTimeout(() => closeMapEditor(), 1200);
+      window.setTimeout(() => closeMapEditor(), 1400);
     } catch (e) {
       b.done();
       noteEl.textContent = '生成失败：' + (e instanceof Error ? e.message : String(e));
@@ -511,15 +755,34 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
 
   keyHandler = (e: KeyboardEvent) => {
     if (e.key === 'Escape') { closeMapEditor(); return; }
+    const tag = (e.target as HTMLElement | null)?.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     if (e.code === 'Space' || e.key === ' ') { spaceDown = true; setCursorGrab(true); e.preventDefault(); return; }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
       e.preventDefault();
       const prev = undoStack.pop();
-      if (prev) { mask = prev; paint(); }
+      if (prev) {
+        layer = prev.layer;
+        restoreInto(layer, prev.data);
+        toolId = PALETTES[layer][0].id;
+        syncUi();
+        paintBuf();
+        paint();
+      }
+      return;
+    }
+    /* 1~5 切层（画地图时手不用离开画布） */
+    const idx = Number(e.key) - 1;
+    if (idx >= 0 && idx < LAYER_ORDER.length) {
+      layer = LAYER_ORDER[idx];
+      toolId = PALETTES[layer][0].id;
+      syncUi();
+      paintBuf();
+      paint();
       return;
     }
     if (e.key === '[') { brushEl.value = String(Math.max(1, brushCells - 1)); brushEl.dispatchEvent(new Event('input')); }
-    if (e.key === ']') { brushEl.value = String(Math.min(20, brushCells + 1)); brushEl.dispatchEvent(new Event('input')); }
+    if (e.key === ']') { brushEl.value = String(Math.min(40, brushCells + 1)); brushEl.dispatchEvent(new Event('input')); }
   };
   keyUpHandler = (e: KeyboardEvent) => { if (e.code === 'Space' || e.key === ' ') { spaceDown = false; setCursorGrab(false); } };
   window.addEventListener('keydown', keyHandler);
@@ -529,11 +792,12 @@ export function openMapEditor(store: Store, opts?: { mask?: MapMask }): void {
   ro?.observe(stage);
   (el as HTMLElement & { _ro?: ResizeObserver | null })._ro = ro;
 
-  syncTools();
+  syncUi();
+  paintBuf();
   resize();
   window.requestAnimationFrame(() => resize());
   window.setTimeout(() => resize(), 120);
-  noteEl.textContent = '生成的星球会按这幅剪影钉死海陆；画完按「按这幅生成」。滚轮缩放、中键或空格拖动 —— 放大后能一格一格补细节。';
+  noteEl.textContent = '五层都画在同一张原型上：海陆定形状，地形定海拔，气候定干湿，噪声/边缘定粗细。画完按「按这幅生成」。';
 }
 
 export function closeMapEditor(): void {

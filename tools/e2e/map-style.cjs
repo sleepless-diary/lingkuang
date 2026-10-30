@@ -246,9 +246,9 @@ async function main() {
 
   /* ★9 这条偏好随地图持久化：只调这一档 ⇒ 地形参数一个都没变
      （terrain 里除了生成参数还有**显示参数**：form 形态 / lift 立体度 / contour 等高线方式
-      / mask 手绘海陆剪影 —— 都是"只存参数不存图"，所以只允许这几个键，且不许出现 data:）*/
+      / mask 手绘海陆剪影 / proto 手绘原型五层 —— 都是"只存参数不存图"，所以只允许这几个键，且不许出现 data:）*/
   const t9 = diskMap()?.terrain ?? {};
-  const allowed9 = ['contour', 'form', 'lift', 'mask', 'seed', 'spec', 'style', 'view'];
+  const allowed9 = ['contour', 'form', 'lift', 'mask', 'proto', 'seed', 'spec', 'style', 'view'];
   check('★9 只改了「看的方式」：种子/档位/数量一个都没动',
     !!t9.seed && !!t9.style
     && Object.keys(t9).every((k) => allowed9.includes(k))

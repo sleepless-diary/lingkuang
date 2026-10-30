@@ -30,6 +30,12 @@ import { createNoise3D } from 'simplex-noise';
  *  `HTMLCanvasElement`）⇒ 值导入会在 node 里直接炸。`seedInt` 因此本地抄一份。 */
 import type { MapgenSpecInput, TerrainStats } from './index';
 import { climateHex, sampleRampHex, styleMaterial, styleSeabed, terrainStyleDef } from './styles';
+/* ⭐ 第一百三十五轮：手绘原型（多图层）—— 纯数据模块，不拉 DOM，能跟本文件一起离线打包。 */
+import {
+  CLIMATE_DRY, CLIMATE_WET, EDGE_MAX, LAND_SET, NOISE_MAX, SEA_SET,
+  ZONE_BASIN, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PLATEAU,
+  decodeProtoInput, type LegacyMaskStored, type ProtoInput,
+} from './proto';
 
 /* ── 小工具 ─────────────────────────────────────────────────────────────────── */
 
@@ -147,30 +153,13 @@ export function planetSpec(style: string, spec?: MapgenSpecInput): { landRatio: 
 
 /* ── 场 ─────────────────────────────────────────────────────────────────────── */
 
-/** ⭐ 手绘海陆剪影（第一百零八轮）：2 bit/格的掩膜，`bits` = base64。
+/** ⭐ 手绘剪影的老结构（第一百零八轮）：2 bit/格的掩膜，`bits` = base64。
  *  0 = 没画（交给生成器）、1 = 陆地、2 = 海洋。
+ *  **第一百三十五轮起只用于读旧数据** —— 新数据走 `./proto.ts` 的五层原型；
+ *  `planetFieldGen()` 两种都收（`decodeProtoInput()` 会把老剪影最近邻放大到 1024×512）。
  *  ⚠️ 与 `src/store/types.ts` 的 `MapMask` **结构相同**（那边不反向 import 这里，
  *  这里也不 import 数据层）⇒ 两边靠结构类型兼容。 */
-export interface SilhouetteMask {
-  w: number;
-  h: number;
-  bits: string;
-}
-
-/** base64 → 每格 2 bit（低位在前）。坏数据返回 null（⇒ 当作没画，照常生成）。 */
-function decodeMask(m: SilhouetteMask): Uint8Array | null {
-  const n = Math.max(0, (m.w | 0) * (m.h | 0));
-  if (!n) return null;
-  let bin = '';
-  try { bin = atob(String(m.bits ?? '')); } catch { return null; }
-  if (bin.length < Math.ceil(n * 2 / 8)) return null;
-  const out = new Uint8Array(n);
-  for (let i = 0; i < n; i++) {
-    const bit = i * 2;
-    out[i] = (bin.charCodeAt(bit >> 3) & 0xff) >> (bit & 7) & 3;
-  }
-  return out;
-}
+export type SilhouetteMask = LegacyMaskStored;
 
 export interface PlanetField {
   w: number; h: number;
@@ -414,13 +403,46 @@ export interface PlanetProgress {
   total: number;
 }
 
+/** 双线性取样（四个角 + 预乘权重）。原型的六个效果场共用同一组下标/权重 ⇒ 只算一次。 */
+function bilin(arr: Float32Array, a0: number, a1: number, x0: number, x1: number,
+  w00: number, w10: number, w01: number, w11: number): number {
+  return arr[a0 + x0] * w00 + arr[a0 + x1] * w10 + arr[a1 + x0] * w01 + arr[a1 + x1] * w11;
+}
+
+/** 可分离盒式模糊（x 环绕、y 夹边）—— 让画出来的分区边界是**坡**而不是"一格台阶"。
+ *  ⚠️ 只模糊"效果场"（抬升/山脊/压平/气候/噪声/边缘），**不模糊海陆**：
+ *  海陆靠双线性已经够平滑，多模糊一次会把没画的地方也染上 0.5 ⇒ 阈值附近乱翻。 */
+function boxBlur(src: Float32Array, w: number, h: number, r: number): void {
+  if (r <= 0 || w <= 0 || h <= 0) return;
+  const tmp = new Float32Array(src.length);
+  const span = r * 2 + 1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let d = -r; d <= r; d++) s += src[row + ((x + d + w) % w)];
+      tmp[row + x] = s / span;
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let d = -r; d <= r; d++) {
+        const yy = y + d < 0 ? 0 : (y + d >= h ? h - 1 : y + d);
+        s += tmp[yy * w + x];
+      }
+      src[y * w + x] = s / span;
+    }
+  }
+}
+
 /** **生成一颗星球**（生成器版：同参数逐字节同结果，只是把工作切成一小片一小片）。
  *
  *  ⚠️ 这是**唯一实现**：`buildPlanetField()` 只是把它一口气跑完的同步外壳
  *  （守卫 / 离线脚本 / 预览用）；界面走 `drivePlanetField()`（`src/ui/planet-view.ts`），
  *  每片之间让出一帧，遮罩与进度条才画得出来。
  *  切点只放在**阶段边界**与**行循环**上：所有跨阶段的中间量都是局部变量，天然连续。 */
-export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecInput, h: number = PLANET_H, mask?: SilhouetteMask | null): Generator<PlanetProgress, PlanetField, void> {
+export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecInput, h: number = PLANET_H, protoIn?: ProtoInput | null): Generator<PlanetProgress, PlanetField, void> {
   const sp = planetSpec(style, spec);
   const w = h * 2;
   const n = w * h;
@@ -442,31 +464,65 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
   const mounts = placeMassifs(mulberry32(seedInt(String(seed) + '|山体')), cores, sp.ridges);
   yield { phase: '撒陆核与山体', done: 0, total: 1 };
 
-  /* ⭐ 第一百零八轮（手绘海陆剪影）：解成每格 2 bit + 预先把"画幅 → 网格"的下标表算好。
-     剪影**优先于**噪声：画过的地方直接钉死海陆（见下面 `forced[]` 的用法），
-     没画的地方照旧由大陆场决定 —— 所以"只在东半球画一块大陆"这种用法也成立。 */
-  const maskVals = mask && mask.w > 0 && mask.h > 0 ? decodeMask(mask) : null;
+  /* ⭐ 第一百零八轮（手绘海陆剪影）→ 第一百三十五轮（多图层原型）：
+     原型**优先于**噪声 —— 画过的地方直接钉死海陆（见下面 `forced[]` 的用法），
+     没画的地方照旧由大陆场决定 ⇒「只在东半球画一块大陆」这种用法照样成立。
+
+     原型有 **五层**（`src/mapgen/proto.ts`）：
+       land   —— 海陆（0 未画 / 1 陆 / 2 海，靠双线性 + shore 噪声定边界，不是硬阈值方块）
+       zone   —— 地形分区（高山 / 丘陵 / 高原 / 盆地 / 湖泊内海）⇒ 改**海拔形状**
+       climate—— 气候底子（沙地 / 湿地）⇒ 只改湿度（上色/植被）
+       noise  —— 区域噪声（有符号 −8..8）⇒ 乘在起伏上：正 = 更碎、负 = 更平
+       edge   —— 海岸复杂化（0..8）⇒ 放大海岸线的抖动幅度
+     六张"效果场"先在同一分辨率上铺好、模糊一圈（盒式），再双线性取样到输出网格
+     —— 否则手画的边界在成图上是一格一格的台阶。 */
+  const proto = decodeProtoInput(protoIn);
+  const mw0 = proto ? proto.w : 0;
+  const mh0 = proto ? proto.h : 0;
+  const maskLand = proto ? new Float32Array(mw0 * mh0) : null;
+  const maskSea = proto ? new Float32Array(mw0 * mh0) : null;
+  const zRaise = proto ? new Float32Array(mw0 * mh0) : null;   /* 基面抬升 */
+  const zRidge = proto ? new Float32Array(mw0 * mh0) : null;   /* 山脊放大 */
+  const zFlat = proto ? new Float32Array(mw0 * mh0) : null;    /* 起伏压平 */
+  const climF = proto ? new Float32Array(mw0 * mh0) : null;    /* −1 干 / +1 湿 */
+  const noiseF = proto ? new Float32Array(mw0 * mh0) : null;   /* −1..1 有符号噪声 */
+  const edgeF = proto ? new Float32Array(mw0 * mh0) : null;    /* 0..1 海岸复杂化 */
+  if (proto && maskLand && maskSea && zRaise && zRidge && zFlat && climF && noiseF && edgeF) {
+    for (let i = 0; i < proto.land.length; i++) {
+      const zn = proto.zone[i];
+      const lv = proto.land[i];
+      /* 湖泊/内海笔刷 = 直接钉成水（比海陆层更具体 ⇒ 它说了算）。
+         它不会变成"海"：深度按离岸距离算（离陆地越近越浅）⇒ 内陆那片是浅水湖。 */
+      if (zn === ZONE_LAKE) maskSea[i] = 1;
+      else if (lv === LAND_SET) maskLand[i] = 1;
+      else if (lv === SEA_SET) maskSea[i] = 1;
+      if (zn === ZONE_MOUNTAIN) { zRidge[i] = 1; zRaise[i] = 0.34; }
+      else if (zn === ZONE_HILL) { zRidge[i] = 0.38; zRaise[i] = 0.07; }
+      else if (zn === ZONE_PLATEAU) { zRaise[i] = 0.26; zFlat[i] = 1; }
+      else if (zn === ZONE_BASIN) { zRaise[i] = -0.32; zFlat[i] = 0.5; }
+      const cl = proto.climate[i];
+      if (cl === CLIMATE_DRY) climF[i] = -1;
+      else if (cl === CLIMATE_WET) climF[i] = 1;
+      noiseF[i] = proto.noise[i] / NOISE_MAX;
+      edgeF[i] = proto.edge[i] / EDGE_MAX;
+    }
+    /* 模糊半径按原型宽度缩放（1024 → 3 格，底图上约 4.5px）：够把直边化成坡，
+       又不会把"一条山脉"糊成一片。 */
+    const r = Math.max(1, Math.round(mw0 / 340));
+    for (const f of [zRaise, zRidge, zFlat, climF, noiseF, edgeF]) boxBlur(f, mw0, mh0, r);
+  }
   /* 剪影边缘要自然，不能一格一格地楼梯（第一版最近邻就是这样，和海岸细节的成果打架）：
      · 掩膜 → 两张 0/1 场（陆地 / 海洋），双线性采样 ⇒ 边界是斜的、不平；
      · 再叠一层已有的 shore 多尺度噪声做抖动 ⇒ 边缘像自然海岸而不是手绘色块；
      · 阈值 0.5 定海陆：一边过半就是它，两边都不过半 = 没画（交给生成器）。
-     预先把列/行 → 掩膜格 + 权重算好（两万多次除法不该放在逐像素路径上）。 */
-  const mw0 = mask ? (mask.w | 0) : 0, mh0 = mask ? (mask.h | 0) : 0;
-  const maskLand = maskVals ? new Float32Array(mw0 * mh0) : null;
-  const maskSea = maskVals ? new Float32Array(mw0 * mh0) : null;
-  if (maskVals && maskLand && maskSea) {
-    for (let i = 0; i < maskVals.length; i++) {
-      if (maskVals[i] === 1) maskLand[i] = 1;
-      else if (maskVals[i] === 2) maskSea[i] = 1;
-    }
-  }
-  const maskX0 = maskVals ? new Int32Array(w) : null;
-  const maskX1 = maskVals ? new Int32Array(w) : null;
-  const maskXF = maskVals ? new Float32Array(w) : null;
-  const maskY0 = maskVals ? new Int32Array(h) : null;
-  const maskY1 = maskVals ? new Int32Array(h) : null;
-  const maskYF = maskVals ? new Float32Array(h) : null;
-  if (maskVals && maskX0 && maskX1 && maskXF && maskY0 && maskY1 && maskYF) {
+     预先把列/行 → 原型格 + 权重算好（两万多次除法不该放在逐像素路径上）。 */
+  const maskX0 = proto ? new Int32Array(w) : null;
+  const maskX1 = proto ? new Int32Array(w) : null;
+  const maskXF = proto ? new Float32Array(w) : null;
+  const maskY0 = proto ? new Int32Array(h) : null;
+  const maskY1 = proto ? new Int32Array(h) : null;
+  const maskYF = proto ? new Float32Array(h) : null;
+  if (proto && maskX0 && maskX1 && maskXF && maskY0 && maskY1 && maskYF) {
     const axis = (count: number, cells: number, i0: Int32Array, i1: Int32Array, fr: Float32Array) => {
       for (let k = 0; k < count; k++) {
         const f = (k + 0.5) * cells / count - 0.5;
@@ -479,8 +535,19 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
     axis(w, mw0, maskX0, maskX1, maskXF);
     axis(h, mh0, maskY0, maskY1, maskYF);
   }
+  /** 双线性取样一张原型效果场（箱外 = 0）。闭包只建一次；热循环里调 1~6 次。 */
+  const sampleField = (arr: Float32Array, j: number, i: number): number => {
+    if (!maskX0 || !maskX1 || !maskXF || !maskY0 || !maskY1 || !maskYF) return 0;
+    const fx = maskXF[j], fy = maskYF[i];
+    const a0 = maskY0[i] * mw0, a1 = maskY1[i] * mw0;
+    const x0 = maskX0[j], x1 = maskX1[j];
+    return (arr[a0 + x0] * (1 - fx) + arr[a0 + x1] * fx) * (1 - fy)
+      + (arr[a1 + x0] * (1 - fx) + arr[a1 + x1] * fx) * fy;
+  };
   /** 0 = 没画（自由）、1 = 钉成陆地、2 = 钉成海洋 */
-  const forced = maskVals ? new Uint8Array(n) : null;
+  const forced = proto ? new Uint8Array(n) : null;
+  /** 每格的气候权重（−1 干 / +1 湿）—— 湿度那一趟要用，顺手在同一趟里存下来 */
+  const climateAt = proto ? new Float32Array(n) : null;
 
   const mtnAmp = 0.5 + sp.ridges * 0.16;          /* ridges 1..8 → 0.66 .. 1.78 */
   const ridgeFreq = 2.0 + sp.ridges * 0.18;
@@ -557,26 +624,49 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
 
       const kk = i * w + j;
       raw[kk] = c;
-      if (forced && maskLand && maskSea && maskX0 && maskX1 && maskXF && maskY0 && maskY1 && maskYF) {
+      /* ⭐ 原型取样（第一百三十五轮）：六个效果场共用一组双线性权重。
+         没画原型时这六个量都是 0，下面那几行就退化成原来的公式。 */
+      let zr = 0, zg = 0, zf = 0, clw = 0, nz = 0, eg = 0;
+      if (forced && maskLand && maskSea && zRaise && zRidge && zFlat && climF && noiseF && edgeF
+        && maskX0 && maskX1 && maskXF && maskY0 && maskY1 && maskYF) {
         const x0 = maskX0[j], x1 = maskX1[j], y0 = maskY0[i], y1 = maskY1[i];
         const fx = maskXF[j], fy = maskYF[i];
         const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
         const a0 = y0 * mw0, a1 = y1 * mw0;
-        const lf = maskLand[a0 + x0] * w00 + maskLand[a0 + x1] * w10 + maskLand[a1 + x0] * w01 + maskLand[a1 + x1] * w11;
-        const sf = maskSea[a0 + x0] * w00 + maskSea[a0 + x1] * w10 + maskSea[a1 + x0] * w01 + maskSea[a1 + x1] * w11;
-        /* 抖动：直接用这一格的 shore 噪声（±0.2 量级），乘 0.6 就够把画出来的直边打毛 */
-        const wig = shore * 0.6;
+        eg = bilin(edgeF, a0, a1, x0, x1, w00, w10, w01, w11);
+        /* 海岸抖动：原来固定 0.6（"把直边打毛"就够了）；「边缘复杂化」笔刷把它放大到 ~2.8 倍。
+           仍是同一层 `shore` 噪声（含 12/24/48 三档高频尾巴）⇒ 不额外算噪声。 */
+        const wig = shore * (0.6 + 1.8 * eg);
+        const lf = bilin(maskLand, a0, a1, x0, x1, w00, w10, w01, w11);
+        const sf = bilin(maskSea, a0, a1, x0, x1, w00, w10, w01, w11);
         forced[kk] = (lf + wig > 0.5) ? 1 : ((sf - wig > 0.5) ? 2 : 0);
+        zr = bilin(zRaise, a0, a1, x0, x1, w00, w10, w01, w11);
+        zg = bilin(zRidge, a0, a1, x0, x1, w00, w10, w01, w11);
+        zf = bilin(zFlat, a0, a1, x0, x1, w00, w10, w01, w11);
+        clw = bilin(climF, a0, a1, x0, x1, w00, w10, w01, w11);
+        nz = bilin(noiseF, a0, a1, x0, x1, w00, w10, w01, w11);
+        if (climateAt) climateAt[kk] = clw;
       }
       /* ⭐ 高度**另起一套场**：陆块场只决定海陆（它的等值线就是海岸线），高度是
          "底 + 分区基准 + **主山体** + 山脊 + 板缘山带 + 细节"。主山体 `mf` 是绝对主角，
          板缘带 `band` 降到配角 —— 旧版只有板缘带，山是撒满全图的疙瘩、没有主峰。
-         海岸那圈仍由下面的**沿海压低**处理（dist 越近越矮 ⇒ 海岸平原 + 内陆抬升）。 */
-      hraw[kk] = 0.14 + (prov - 0.5) * 0.34
-        + mf * (0.82 + 0.42 * provRelief)
-        + mf * rg * mtnAmp * 0.42
-        + mtnAmp * rg * band * provRelief * 0.20
-        + det * 0.075 + fine * 0.05;
+         海岸那圈仍由下面的**沿海压低**处理（dist 越近越矮 ⇒ 海岸平原 + 内陆抬升）。
+
+         ⭐ 第一百三十五轮：手绘的"地形预设"作为**乘法**作用在起伏项上（加一个常数只会
+         得到一块台地，不是山）：高山 = 山脊 ×1.62 + 基面 0.26；高原 = 基面 0.34、起伏压到
+         0.45/0.12（顶面平）；盆地 = 基面 −0.32、起伏再压一半；噪声正负 = 起伏 ×(1+nz·0.45)、
+         细节 ×(1+nz·0.9)（加噪更碎、抹平更干净）。 */
+      const baseH = 0.14 + (prov - 0.5) * 0.34 + zr;
+      const massifH = mf * (0.82 + 0.42 * provRelief);
+      const ridgeH = mf * rg * mtnAmp * 0.42 + mtnAmp * rg * band * provRelief * 0.20;
+      const detailH = det * 0.075 + fine * 0.05;
+      /* 乘法因子一律夹正：抹平笔刷把系数压到 0 附近就够"平"了，压成负数会把山脊翻成沟 */
+      const ridgeScale = Math.max(0.06, 1 + zg * 0.75 - zf * 0.55 + nz * 1.1);
+      const detailScale = Math.max(0.04, 1 - zf * 0.88 + nz * 1.4);
+      hraw[kk] = baseH + massifH
+        + ridgeH * ridgeScale
+        + detailH * detailScale
+        + nz * (det * 0.16 + (rg - 0.5) * 0.22);
       deta[kk] = det;
       plateBand[kk] = band;
       if (c < lo) lo = c;
@@ -680,6 +770,8 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
     /* 沿海压低：最靠海的 3 圈压到 22%~100%（⇒ 海岸平原 → 内陆抬升，而不是"遍地一样高"）*/
     const taper = 0.22 + 0.78 * clamp(Math.min(dist[k], 3) / 3, 0, 1);
     hraw[k] *= taper;
+    /* 盆地/抹平笔刷可能把 hraw 压到负数 ⇒ 夹一个地板（陆地格必须在海平面以上） */
+    if (hraw[k] < 0.02) hraw[k] = 0.02;
     if (hraw[k] > maxH) maxH = hraw[k];
   }
   const hInv = 1 / (maxH || 1);
@@ -761,6 +853,12 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
         const seamount = sstep(0.80, 0.94, crest) * (0.65 + 0.35 * (1 - active)) * sstep(1.8, 3.6, t);
         if (seamount > 0) depth -= Math.min(depth * 0.60, seamount * 2.6 * sbAmp);
       }
+      /* ⭐ 区域噪声笔刷也作用到海底：加噪 ⇒ 起伏更碎（海山/沟谷变多），抹平 ⇒ 更平的深海盆。
+         只在深海盆里生效（陆架/陆坡保持原来的自然剖面，否则浅滩会被噪声顶出水面）。 */
+      if (noiseF) {
+        const nzS = sampleField(noiseF, j, i);
+        if (nzS) depth -= nzS * (crest - 0.5) * 1.2 * sstep(1.4, 3.0, t);
+      }
       /* 软地板：万一算到水面附近，压回 100 m 以下（海底不许变成陆地）*/
       if (depth < 0.12) depth = 0.12 + (0.12 - depth) * 0.12;
       if (depth > maxCap) depth = maxCap;
@@ -789,6 +887,12 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
          西风带湿 / 极地干），离海远近只做 0.62→1.0 的微调，内陆也会按纬度分出雨林 / 草原 / 荒漠。 */
       const belt = 0.38 + 0.62 * wind;
       moist[k] = clamp((belt * (0.62 + 0.38 * far) + nnn * 0.16) * alt, 0, 1);
+      /* ⭐ 气候底子笔刷（第一百三十五轮）：沙地 −1 / 湿地 +1，**只改湿度**
+         ⇒ 改变植被上色与河网密度，不动海拔（用户要的是"底子"，不是又一层地形）。 */
+      if (climateAt) {
+        const cw = climateAt[k];
+        if (cw) moist[k] = clamp(moist[k] + cw * 0.26, 0, 1);
+      }
       /* 温度：纬度 + 海拔两条都算。⚠️ 系数调过：照 vision 那条口径的形（30 − 0.55×|纬度|、
          海拔 −6.5℃/km）会把 45° 上 800 m 的高地就冻成雪原 —— 真机出图"内陆成片惨白"
          就是这个来的。改成 32 − 0.45×|纬度|、−6.0℃/km ⇒ 45° 雪线约 2.5 km、赤道约 5.8 km，
@@ -976,8 +1080,8 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
 
 /** 同步外壳：一口气跑到完（守卫 / 离线脚本 / 预览图用）。
  *  界面**不要**用它 —— 1.4s 的同步调用会把"正在算"的遮罩一起冻住。 */
-export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecInput, h: number = PLANET_H, mask?: SilhouetteMask | null): PlanetField {
-  const it = planetFieldGen(seed, style, spec, h, mask);
+export function buildPlanetField(seed: string, style: string, spec?: MapgenSpecInput, h: number = PLANET_H, proto?: ProtoInput | null): PlanetField {
+  const it = planetFieldGen(seed, style, spec, h, proto);
   let step = it.next();
   while (!step.done) step = it.next();
   return step.value;
@@ -1322,7 +1426,7 @@ export function renderPlanet(f: PlanetField, view: unknown, contourEvery = 0): U
 }
 
 /** 便捷：场 + 上色一次拿全（离线脚本 / 守卫用；界面里两者分开缓存）*/
-export function buildPlanet(seed: string, style: string, spec?: MapgenSpecInput, view?: unknown, h: number = PLANET_H, mask?: SilhouetteMask | null, contourEvery = 0) {
-  const field = buildPlanetField(seed, style, spec, h, mask);
+export function buildPlanet(seed: string, style: string, spec?: MapgenSpecInput, view?: unknown, h: number = PLANET_H, proto?: ProtoInput | null, contourEvery = 0) {
+  const field = buildPlanetField(seed, style, spec, h, proto);
   return { field, rgba: renderPlanet(field, view, contourEvery) };
 }

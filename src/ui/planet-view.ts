@@ -33,9 +33,11 @@ const colors = new Map<string, Uint8ClampedArray>();
 const MAX_FIELDS = 3;
 const MAX_COLORS = 6;
 
-/* ⚠️ 键里**必须含剪影**（第一百零八轮）：同一颗种子画了剪影就是另一片地。 */
+/* ⚠️ 键里**必须含原型**（第一百零八轮起，第一百三十五轮扩成五层）：
+   同一颗种子画了原型就是另一片地。旧剪影（`mask`）也进键 —— 老数据仍要能命中它自己那张。 */
+export const protoInputOf = (t: MapTerrainSpec) => t.proto ?? t.mask ?? null;
 const fieldKeyOf = (t: MapTerrainSpec, h: number) =>
-  `${t.seed}|${t.style}|${JSON.stringify(t.spec ?? {})}|${h}|${t.mask ? JSON.stringify(t.mask) : ''}`;
+  `${t.seed}|${t.style}|${JSON.stringify(t.spec ?? {})}|${h}|${t.proto ? JSON.stringify(t.proto) : ''}|${t.mask ? JSON.stringify(t.mask) : ''}`;
 const colorKeyOf = (t: MapTerrainSpec, h: number, view: string) => `${fieldKeyOf(t, h)}|${view}|${contourEveryOf(t.contour)}`;
 
 function trim<K, V>(m: Map<K, V>, max: number) {
@@ -51,7 +53,7 @@ export function planetField(t: MapTerrainSpec, h: number = PLANET_VIEW_H): Plane
   const key = fieldKeyOf(t, h);
   const hit = fields.get(key);
   if (hit) return hit;
-  const f = buildPlanetField(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput, h, t.mask ?? null);
+  const f = buildPlanetField(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput, h, protoInputOf(t));
   fields.set(key, f);
   trim(fields, MAX_FIELDS);
   return f;
@@ -137,7 +139,7 @@ export function planetFieldAsync(t: MapTerrainSpec, h: number = PLANET_VIEW_H, o
   if (hit) { onProgress?.({ phase: '缓存', done: 1, total: 1, pct: 1 }); return Promise.resolve(hit); }
   const busy = inflightFields.get(key);
   if (busy) return busy;
-  const job = drive(planetFieldGen(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput, h, t.mask ?? null), onProgress, 0, 0.9)
+  const job = drive(planetFieldGen(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput, h, protoInputOf(t)), onProgress, 0, 0.9)
     .then((f) => {
       fields.set(key, f);
       trim(fields, MAX_FIELDS);
@@ -314,7 +316,7 @@ export async function planetImageUrlHD(
   t: MapTerrainSpec, view: string, h: number = PLANET_HD_H, onProgress?: PlanetProgressCb,
 ): Promise<string> {
   const f = await drive(
-    planetFieldGen(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput, h, t.mask ?? null),
+    planetFieldGen(t.seed, t.style, (t.spec ?? {}) as MapgenSpecInput, h, protoInputOf(t)),
     onProgress, 0, 0.85,
   );
   const rgba = await drive(renderPlanetGen(f, view, contourEveryOf(t.contour)), onProgress, 0.85, 1);

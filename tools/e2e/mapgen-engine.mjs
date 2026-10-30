@@ -52,6 +52,21 @@ await build({
 });
 const P = require(path.join(outDir, 'planet.cjs'));
 
+/* 第一百三十五轮：手绘原型的编解码（`src/mapgen/proto.ts`）也要能离线量 ——
+   五层 RLE 往返、体积、以及"分区/噪声真的进了高度场"都在这里钉。 */
+await build({
+  configFile: false,
+  logLevel: 'error',
+  build: {
+    lib: { entry: path.join(PROJ, 'src/mapgen/proto.ts'), formats: ['cjs'], fileName: () => 'proto.cjs' },
+    outDir,
+    emptyOutDir: false,
+    minify: false,
+    target: 'node18',
+  },
+});
+const Pr = require(path.join(outDir, 'proto.cjs'));
+
 function run(seed, style, spec, opts) {
   const t0 = Date.now();
   const eng = E.createEngineFor(seed, style, spec);
@@ -624,6 +639,128 @@ function planetMetrics(f) {
   const sdNat = seaSd('natural'), sdMin = seaSd('minimal');
   check('★29 海底晕渲真画了：自然档海面亮度标准差明显大于极简档', sdNat > sdMin * 1.5,
     { natural: +sdNat.toFixed(2), minimal: +sdMin.toFixed(2), ratio: +(sdNat / Math.max(1e-6, sdMin)).toFixed(2) });
+}
+
+/* ── 手绘原型五层（第一百三十五轮）──────────────────────────────────────────
+   用户原话：「我想要更高精度的手绘原型，以及能对原型进行区域噪声叠加（手动添加），
+   以及在绘制原型时就能预设定高山等地形的位置」。
+   判据（全离线、不看图）：
+     ★30 五层 RLE 往返逐格一致、空层省略、体积远小于老 2bit 定长（1024×512 一层省 131KB）；
+     ★31 **地形分区真的进了高度场**：同一块大陆上画「高山」→ 该区平均海拔明显高于不画；
+         画「盆地」明显更低；「高原」的起伏标准差小于「高山」（顶面是平的）；
+     ★32 **区域噪声有符号**（加噪 ⇒ 起伏变大、抹平 ⇒ 变小）、**湖泊/内海**真的成水、
+         **海岸复杂化**把岸线格数放大 3 倍以上。 */
+const PROTO_W = Pr.PROTO_W, PROTO_H = Pr.PROTO_H, PROTO_N = PROTO_W * PROTO_H;
+const mkLayers = () => ({
+  w: PROTO_W, h: PROTO_H,
+  land: new Uint8Array(PROTO_N).fill(2),      /* 整幅海，再在上面画大陆 */
+  zone: new Uint8Array(PROTO_N),
+  climate: new Uint8Array(PROTO_N),
+  noise: new Int8Array(PROTO_N),
+  edge: new Uint8Array(PROTO_N),
+});
+const BASE = mkLayers();
+for (let y = 150; y < 360; y++) for (let x = 260; x < 780; x++) BASE.land[y * PROTO_W + x] = 1;
+const withBase = () => { const l = mkLayers(); l.land.set(BASE.land); return l; };
+const RECT = [300, 450, 180, 330];              /* 原型坐标 x0,x1,y0,y1（量效应用的那块） */
+const rectStats = (f, [x0, x1, y0, y1]) => {
+  const ax = Math.round(x0 / PROTO_W * f.w), bx = Math.round(x1 / PROTO_W * f.w);
+  const ay = Math.round(y0 / PROTO_H * f.h), by = Math.round(y1 / PROTO_H * f.h);
+  let sum = 0, sum2 = 0, cnt = 0;
+  for (let y = ay; y < by; y++) for (let x = ax; x < bx; x++) {
+    const k = y * f.w + x;
+    if (!f.land[k]) continue;
+    sum += f.e01[k]; sum2 += f.e01[k] * f.e01[k]; cnt++;
+  }
+  const mean = cnt ? sum / cnt : 0;
+  return { cnt, mean, sd: Math.sqrt(Math.max(0, (cnt ? sum2 / cnt : 0) - mean * mean)) };
+};
+const coastCells = (f) => {
+  let coast = 0;
+  for (let y = 1; y < f.h - 1; y++) for (let x = 0; x < f.w; x++) {
+    const k = y * f.w + x;
+    if (!f.land[k]) continue;
+    if (!f.land[k - f.w] || !f.land[k + f.w] || !f.land[y * f.w + ((x + f.w - 1) % f.w)] || !f.land[y * f.w + ((x + 1) % f.w)]) coast++;
+  }
+  return coast;
+};
+const coastOf = (l, edgeV) => {
+  if (edgeV) for (let y = 150; y < 360; y++) for (let x = 260; x < 780; x++) l.edge[y * PROTO_W + x] = edgeV;
+  return coastCells(P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(l, { blankSea: true })));
+};
+{
+  /* ① 逐格往返（**故意用最不利的数据**：每格都在变 ⇒ RLE 几乎没得压，体积不用管）；
+     ② 体积用**真实画法**量（整幅海 + 一块大陆 + 几块分区/噪声/边缘）。 */
+  const l = mkLayers();
+  for (let i = 0; i < PROTO_N; i++) {
+    l.land[i] = i % 3 === 0 ? 0 : (i % 3 === 1 ? 1 : 2);
+    l.zone[i] = i % 7;                         /* 0..6 里 6 是脏值 ⇒ 解码应落回 0 */
+    l.climate[i] = i % 3;
+    l.noise[i] = (i % 17) - 8;                 /* −8..8 */
+    l.edge[i] = i % 9;
+  }
+  const stored = Pr.encodeProto(l, {});
+  const back = Pr.decodeProto(stored, null);
+  let same = !!back;
+  for (let i = 0; same && i < PROTO_N; i++) {
+    same = back.land[i] === l.land[i] && back.climate[i] === l.climate[i]
+      && back.noise[i] === l.noise[i] && back.edge[i] === l.edge[i]
+      && back.zone[i] === (i % 7 === 6 ? 0 : l.zone[i]);
+  }
+  const empty = Pr.encodeProto(Pr.emptyLayers(), {});
+  const blank = Pr.decodeProtoInput(null);
+  /* 真实画法：海 + 一块大陆 + 一块高山/高原 + 一条噪声带 + 一小块海岸复杂化 */
+  const real = withBase();
+  for (let y = RECT[2]; y < RECT[3]; y++) for (let x = RECT[0]; x < RECT[1]; x++) real.zone[y * PROTO_W + x] = Pr.ZONE_MOUNTAIN;
+  for (let y = 200; y < 260; y++) for (let x = 500; x < 640; x++) real.zone[y * PROTO_W + x] = Pr.ZONE_PLATEAU;
+  for (let y = 250; y < 300; y++) for (let x = 300; x < 620; x++) real.noise[y * PROTO_W + x] = 6;
+  for (let y = 150; y < 360; y++) { real.edge[y * PROTO_W + 260] = 8; real.edge[y * PROTO_W + 779] = 8; }
+  const realJson = JSON.stringify(Pr.encodeProto(real, { blankSea: true }));
+  check('★30 原型五层 RLE 往返逐格一致、空层省略、真实画法体积 < 20KB',
+    same && !empty.zone && !empty.climate && !empty.noise && !empty.edge && blank === null
+    && realJson.length < 20000,
+    { worstBytes: JSON.stringify(stored).length, realBytes: realJson.length,
+      worstKeys: Object.keys(stored).join(','), emptyKeys: Object.keys(empty).join(',') });
+}
+{
+  const f0 = P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(BASE, { blankSea: true }));
+  const zoneOf = (code) => {
+    const l = withBase();
+    for (let y = RECT[2]; y < RECT[3]; y++) for (let x = RECT[0]; x < RECT[1]; x++) l.zone[y * PROTO_W + x] = code;
+    return P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(l, { blankSea: true }));
+  };
+  const b = rectStats(f0, RECT);
+  const mount = rectStats(zoneOf(Pr.ZONE_MOUNTAIN), RECT);
+  const plateau = rectStats(zoneOf(Pr.ZONE_PLATEAU), RECT);
+  const basin = rectStats(zoneOf(Pr.ZONE_BASIN), RECT);
+  check('★31 地形分区进高度场：高山 > 未画 > 盆地；高原顶面比高山平',
+    mount.mean > b.mean + 0.06 && b.mean > basin.mean + 0.05 && plateau.sd < mount.sd,
+    { base: +b.mean.toFixed(3), mountain: +mount.mean.toFixed(3), plateau: +plateau.mean.toFixed(3),
+      basin: +basin.mean.toFixed(3), sd: [+mount.sd.toFixed(3), +plateau.sd.toFixed(3)] });
+}
+{
+  const f0 = P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(BASE, { blankSea: true }));
+  const noiseOf = (v) => {
+    const l = withBase();
+    for (let y = RECT[2]; y < RECT[3]; y++) for (let x = RECT[0]; x < RECT[1]; x++) l.noise[y * PROTO_W + x] = v;
+    return rectStats(P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(l, { blankSea: true })), RECT);
+  };
+  const b = rectStats(f0, RECT);
+  const up = noiseOf(8), down = noiseOf(-8);
+  /* 湖泊：在陆地中间画一块 100×70 的湖 */
+  const lake = withBase();
+  for (let y = 220; y < 290; y++) for (let x = 460; x < 560; x++) lake.zone[y * PROTO_W + x] = Pr.ZONE_LAKE;
+  const fl = P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(lake, { blankSea: true }));
+  let water = 0, cells = 0;
+  const ax = Math.round(460 / PROTO_W * fl.w), bx = Math.round(560 / PROTO_W * fl.w);
+  const ay = Math.round(220 / PROTO_H * fl.h), by = Math.round(290 / PROTO_H * fl.h);
+  for (let y = ay; y < by; y++) for (let x = ax; x < bx; x++) { cells++; if (!fl.land[y * fl.w + x]) water++; }
+  const lakeFrac = water / Math.max(1, cells);
+  const coast0 = coastOf(withBase(), 0), coast8 = coastOf(withBase(), 8);
+  check('★32 噪声有符号 + 湖泊/内海成水 + 海岸复杂化放大岸线',
+    up.sd > b.sd * 1.03 && down.sd < b.sd * 0.97 && lakeFrac > 0.95 && coast8 > coast0 * 3,
+    { sd: [+b.sd.toFixed(3), +up.sd.toFixed(3), +down.sd.toFixed(3)], lakeFrac: +lakeFrac.toFixed(3),
+      coast: [coast0, coast8] });
 }
 
 const pass = results.filter(Boolean).length;

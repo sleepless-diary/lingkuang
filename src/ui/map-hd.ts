@@ -39,7 +39,7 @@ const cache = new Map<string, HdImage>();
 function keyOf(t: MapTerrainSpec, w: number, h: number): string {
   return JSON.stringify([
     mapFormOf(t.form), t.seed ?? '', t.style ?? '', t.view ?? '', t.lift ?? '', t.contour ?? '',
-    t.spec ?? null, t.mask ?? null, w, h,
+    t.spec ?? null, t.proto ?? null, t.mask ?? null, w, h,
   ]);
 }
 
