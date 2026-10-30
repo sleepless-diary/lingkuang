@@ -16,6 +16,8 @@
  *    ★5 滑块改笔刷：`#ed-brush-n` 变、光标环半径跟着变（用户报的"定位不清晰"）；
  *    ★5b 换层：地形/噪声各有自己的笔刷，强度滑块只在噪声/边缘出现；
  *    ★5c 地形层画高山、噪声层画加噪：两层各自的状态行都报出来；
+ *    ★5d 地形/气候**常显**：切回海陆层，地形层画的高山仍然看得见（像素 r ≥ g）；
+ *    ★5e 边缘**画下即时生效**：画一块陆地 → 沿北岸刷边缘 → 切回海陆层，包围盒立刻被推开；
  *    ★6 按原型生成：disk 上 `proto` = 1024×512 且海陆/地形/噪声层都在、form = planet、画布挂上；
  *    ★7 高清大图：点地图 → 全窗口大图出来（第一次要算）；
  *    ★8 大图里拖过之后点右上角 × 能关（第一百零九轮的关闭 bug 回归）；
@@ -143,6 +145,10 @@ async function main() {
     const stat = (document.getElementById('ed-stat') || {}).textContent || '';
     return { stat, land: Number((stat.match(/陆地 (\\d+)%/) || [])[1] || 0) };
   })()`;
+  /* 图层 / 笔刷 / 笔宽（★5b 之后新加的几项用） */
+  const pickLayer = (n) => ev(`(function () { const b = document.querySelector('[data-layer="${n}"]'); if (b) b.click(); return !!b; })()`);
+  const pickTool = (n) => ev(`(function () { const b = document.querySelector('[data-tool="${n}"]'); if (b) b.click(); return !!b; })()`);
+  const setBrush = (v) => ev(`(function () { const s = document.getElementById('ed-brush'); s.value = '${v}'; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
   const sig = `(function () {
     const c = document.getElementById('ed-canvas');
     const g = c.getContext('2d');
@@ -261,6 +267,50 @@ async function main() {
   };
   check('★5c 地形层画高山、噪声层画加噪：两层各自的状态行都报出来',
     paintedLayers.mountain === true && paintedLayers.noise === true, paintedLayers);
+
+  /* ★5d 常显：切回「海陆」层，地形层画过的高山仍然看得见
+     （陆地基色是绿：g > r；叠了高山棕之后 r ≥ g） */
+  const alwaysOn = await ev(`(function () {
+    const el = document.querySelector('.lk-ed');
+    el.querySelector('[data-layer="land"]').click();
+    const c = document.getElementById('ed-canvas');
+    const r = c.getBoundingClientRect();
+    const g = c.getContext('2d');
+    const px = g.getImageData(Math.round(r.width * 0.40), Math.round(r.height * 0.42), 1, 1).data;
+    const tab = document.querySelector('[data-layer="land"]').classList.contains('is-on');
+    return { r: px[0], g: px[1], b: px[2], landTab: tab };
+  })()`);
+  check('★5d 地形常显：在海陆层上看得到地形层画的高山（r ≥ g，不再只是绿色底）',
+    alwaysOn.landTab === true && alwaysOn.r >= alwaysOn.g - 2 && alwaysOn.r > 60, alwaysOn);
+
+  /* ★5e 边缘写下去**当场**生效（不用按生成）：画一块陆地 → 记下陆地的包围盒 →
+     在海岸上刷边缘 → 切回海陆层，包围盒必须被推开/啃掉 */
+  await setBrush(30);
+  await ev(DRAW(0.30, 0.62, 0.62, 0.62));
+  await ev(DRAW(0.30, 0.68, 0.62, 0.68));
+  await ev(DRAW(0.30, 0.74, 0.62, 0.74));
+  const BBOX = `(function () {
+    const c = document.getElementById('ed-canvas');
+    const g = c.getContext('2d');
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    let minX = 1e9, minY = 1e9, maxX = -1, maxY = -1, n = 0;
+    for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+      const o = (y * c.width + x) * 4;
+      const r = d[o], gg = d[o + 1], b = d[o + 2];
+      if (gg > r + 8 && gg > b + 20 && gg > 90) { n++; if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+    }
+    return { minX, minY, maxX, maxY, n };
+  })()`;
+  const bb0 = await ev(BBOX);
+  await pickLayer('edge'); await pickTool('edge-add'); await setBrush(10);
+  await ev(`(function () { const s = document.getElementById('ed-strength'); s.value = '8'; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  await ev(DRAW(0.30, 0.50, 0.62, 0.50));   /* 沿着这块地的北岸刷一笔 */
+  await pickLayer('land');
+  await sleep(200);
+  const bb1 = await ev(BBOX);
+  check('★5e 边缘写下去当场生效：陆地包围盒被湍流置换推开/啃掉（不等生成）',
+    bb0.n > 100 && (bb1.minY < bb0.minY - 1 || bb1.maxY > bb0.maxY + 1 || Math.abs(bb1.n - bb0.n) > bb0.n * 0.01),
+    { before: bb0, after: bb1 });
 
   /* ★6 按这幅原型生成星球 */
   await ev(`(function () { const b = document.getElementById('ed-go'); if (b) b.click(); return true; })()`);

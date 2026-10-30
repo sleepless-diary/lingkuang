@@ -676,17 +676,20 @@ const rectStats = (f, [x0, x1, y0, y1]) => {
   return { cnt, mean, sd: Math.sqrt(Math.max(0, (cnt ? sum2 / cnt : 0) - mean * mean)) };
 };
 const coastCells = (f) => {
-  let coast = 0;
+  let coast = 0, specks = 0, land = 0;
   for (let y = 1; y < f.h - 1; y++) for (let x = 0; x < f.w; x++) {
     const k = y * f.w + x;
     if (!f.land[k]) continue;
+    land++;
     if (!f.land[k - f.w] || !f.land[k + f.w] || !f.land[y * f.w + ((x + f.w - 1) % f.w)] || !f.land[y * f.w + ((x + 1) % f.w)]) coast++;
+    let around = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      if (f.land[(y + dy) * f.w + ((x + dx + f.w) % f.w)]) around++;
+    }
+    if (around === 0) specks++;
   }
-  return coast;
-};
-const coastOf = (l, edgeV) => {
-  if (edgeV) for (let y = 150; y < 360; y++) for (let x = 260; x < 780; x++) l.edge[y * PROTO_W + x] = edgeV;
-  return coastCells(P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(l, { blankSea: true })));
+  return { coast, specks, land };
 };
 {
   /* ① 逐格往返（**故意用最不利的数据**：每格都在变 ⇒ RLE 几乎没得压，体积不用管）；
@@ -756,11 +759,25 @@ const coastOf = (l, edgeV) => {
   const ay = Math.round(220 / PROTO_H * fl.h), by = Math.round(290 / PROTO_H * fl.h);
   for (let y = ay; y < by; y++) for (let x = ax; x < bx; x++) { cells++; if (!fl.land[y * fl.w + x]) water++; }
   const lakeFrac = water / Math.max(1, cells);
-  const coast0 = coastOf(withBase(), 0), coast8 = coastOf(withBase(), 8);
-  check('★32 噪声有符号 + 湖泊/内海成水 + 海岸复杂化放大岸线',
-    up.sd > b.sd * 1.03 && down.sd < b.sd * 0.97 && lakeFrac > 0.95 && coast8 > coast0 * 3,
+  /* 海岸复杂化：同种子/同陆地，只把「边缘」涂满整个陆块边缘
+     · **形状真的变了**（逐格比对 edge0 ↔ edge8：变了多少格 / 陆地格）；
+     · 岸线长度大涨；
+     · 但**孤立碎点**（8 邻域没有陆的陆格）极少 —— 逐点随机抖动会把这两项一起拉高，
+       相干湍流置换只拉高前两项（这是「湍流」与「白毛」的判据）。 */
+  const baseField = P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(withBase(), { blankSea: true }));
+  const e8 = withBase();
+  for (let y = 150; y < 360; y++) for (let x = 260; x < 780; x++) e8.edge[y * PROTO_W + x] = 8;
+  const f8 = P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(e8, { blankSea: true }));
+  let diff = 0;
+  for (let k = 0; k < baseField.land.length; k++) if (baseField.land[k] !== f8.land[k]) diff++;
+  const c0 = coastCells(baseField), c8 = coastCells(f8);
+  const changedFrac = diff / Math.max(1, c0.land);
+  const speckRatio = c8.specks / Math.max(1, c8.land);
+  check('★32 噪声有符号 + 湖泊/内海成水 + 海岸复杂化（形状真变、岸线大涨、几乎无孤立碎点）',
+    up.sd > b.sd * 1.03 && down.sd < b.sd * 0.97 && lakeFrac > 0.95
+    && changedFrac > 0.03 && c8.coast > c0.coast * 1.2 && speckRatio < 0.01,
     { sd: [+b.sd.toFixed(3), +up.sd.toFixed(3), +down.sd.toFixed(3)], lakeFrac: +lakeFrac.toFixed(3),
-      coast: [coast0, coast8] });
+      changedFrac: +changedFrac.toFixed(3), coast: [c0.coast, c8.coast], specks: [c0.specks, c8.specks], speckRatio: +speckRatio.toFixed(4) });
 }
 
 const pass = results.filter(Boolean).length;

@@ -32,9 +32,9 @@ import type { MapgenSpecInput, TerrainStats } from './index';
 import { climateHex, sampleRampHex, styleMaterial, styleSeabed, terrainStyleDef } from './styles';
 /* ⭐ 第一百三十五轮：手绘原型（多图层）—— 纯数据模块，不拉 DOM，能跟本文件一起离线打包。 */
 import {
-  CLIMATE_DRY, CLIMATE_WET, EDGE_MAX, LAND_SET, NOISE_MAX, SEA_SET,
+  CLIMATE_DRY, CLIMATE_WET, EDGE_BLUR_CELLS, EDGE_MAX, EDGE_TURB_AMP, LAND_SET, NOISE_MAX, SEA_SET,
   ZONE_BASIN, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PLATEAU,
-  decodeProtoInput, type LegacyMaskStored, type ProtoInput,
+  buildEdgeTurbulence, decodeProtoInput, dilateField, type LegacyMaskStored, type ProtoInput,
 } from './proto';
 
 /* ── 小工具 ─────────────────────────────────────────────────────────────────── */
@@ -507,9 +507,34 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
       edgeF[i] = proto.edge[i] / EDGE_MAX;
     }
     /* 模糊半径按原型宽度缩放（1024 → 3 格，底图上约 4.5px）：够把直边化成坡，
-       又不会把"一条山脉"糊成一片。 */
+       又不会把"一条山脉"糊成一片。⚠️ 边缘层单独放宽到 8 格：边缘笔刷改的是**海岸**，
+       位移幅度要沿笔迹平滑起落，否则会在笔迹边界上留一道"断崖"（第一百三十六轮实测）。 */
     const r = Math.max(1, Math.round(mw0 / 340));
-    for (const f of [zRaise, zRidge, zFlat, climF, noiseF, edgeF]) boxBlur(f, mw0, mh0, r);
+    for (const f of [zRaise, zRidge, zFlat, climF, noiseF]) boxBlur(f, mw0, mh0, r);
+    /* 边缘强度：**先膨胀 ~10 格**（笔迹离海岸几格也能把扰动送到海岸，凿出的海湾才会连通），
+       再模糊 ~6 格（强度沿笔迹平滑起落，不留断崖）。 */
+    edgeF.set(dilateField(edgeF, mw0, mh0, Math.max(6, Math.round(mw0 / 100))));
+    boxBlur(edgeF, mw0, mh0, Math.max(2, Math.round(mw0 / 170)));
+  }
+  /* ⭐ 第一百三十六轮：边缘复杂化 = **湍流阈值置换**（不是逐点加噪，也不是直接域扭曲——
+     手画掩膜太锐利，域扭曲挪不动边界，详见 `proto.ts` 头注释）。
+     做法：把海陆场糊开 EDGE_BLUR_CELLS 格 ⇒ 梯度变缓；再用多尺度相干湍流扰动阈值。
+     没有边缘笔迹时这两张糊开的场**不做**（省掉两次盒式模糊）。 */
+  let edgeTurb: Float32Array | null = null;
+  let landBlur: Float32Array | null = null;
+  let seaBlur: Float32Array | null = null;
+  if (proto && maskLand && maskSea) {
+    let anyEdge = false;
+    for (let i = 0; i < proto.edge.length; i++) if (proto.edge[i]) { anyEdge = true; break; }
+    if (anyEdge) {
+      edgeTurb = buildEdgeTurbulence(mw0, mh0, seedInt(String(seed) + '|边缘'));
+      landBlur = new Float32Array(mw0 * mh0);
+      seaBlur = new Float32Array(mw0 * mh0);
+      landBlur.set(maskLand);
+      seaBlur.set(maskSea);
+      boxBlur(landBlur, mw0, mh0, EDGE_BLUR_CELLS);
+      boxBlur(seaBlur, mw0, mh0, EDGE_BLUR_CELLS);
+    }
   }
   /* 剪影边缘要自然，不能一格一格地楼梯（第一版最近邻就是这样，和海岸细节的成果打架）：
      · 掩膜 → 两张 0/1 场（陆地 / 海洋），双线性采样 ⇒ 边界是斜的、不平；
@@ -634,12 +659,24 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
         const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
         const a0 = y0 * mw0, a1 = y1 * mw0;
         eg = bilin(edgeF, a0, a1, x0, x1, w00, w10, w01, w11);
-        /* 海岸抖动：原来固定 0.6（"把直边打毛"就够了）；「边缘复杂化」笔刷把它放大到 ~2.8 倍。
-           仍是同一层 `shore` 噪声（含 12/24/48 三档高频尾巴）⇒ 不额外算噪声。 */
-        const wig = shore * (0.6 + 1.8 * eg);
-        const lf = bilin(maskLand, a0, a1, x0, x1, w00, w10, w01, w11);
-        const sf = bilin(maskSea, a0, a1, x0, x1, w00, w10, w01, w11);
-        forced[kk] = (lf + wig > 0.5) ? 1 : ((sf - wig > 0.5) ? 2 : 0);
+        /* ⭐ 第一百三十六轮：边缘复杂化 = **湍流阈值置换**。
+           旧做法把 `shore` 噪声逐格加到海陆判定上（每格独立摇硬币 ⇒ 白毛）；
+           现在改用"糊开的海陆场 + 多尺度相干湍流扰动阈值"——等值线沿着湍流场走，
+           边界被推移十几格 ⇒ 峡湾/半岛/泻湖。强度 0 时完全不碰（保持原来的自然海岸）。 */
+        const wig = shore * 0.6;
+        let lf = bilin(maskLand, a0, a1, x0, x1, w00, w10, w01, w11);
+        let sf = bilin(maskSea, a0, a1, x0, x1, w00, w10, w01, w11);
+        if (eg > 0.004 && edgeTurb && landBlur && seaBlur) {
+          lf = bilin(landBlur, a0, a1, x0, x1, w00, w10, w01, w11);
+          sf = bilin(seaBlur, a0, a1, x0, x1, w00, w10, w01, w11);
+          /* ⭐ 只作用在**海岸带**：`4·lf·sf` 在 lf=sf=0.5（海岸线）取 1、内陆/深海里取 0。
+             否则在内陆刷一笔会凭空造出湖，而不是改海岸的形状（第一百三十六轮实测）。 */
+          const coastal = 4 * lf * sf;
+          const tb = bilin(edgeTurb, a0, a1, x0, x1, w00, w10, w01, w11) * eg * EDGE_TURB_AMP * coastal;
+          forced[kk] = (lf + tb + wig > 0.5) ? 1 : ((sf - tb - wig > 0.5) ? 2 : 0);
+        } else {
+          forced[kk] = (lf + wig > 0.5) ? 1 : ((sf - wig > 0.5) ? 2 : 0);
+        }
         zr = bilin(zRaise, a0, a1, x0, x1, w00, w10, w01, w11);
         zg = bilin(zRidge, a0, a1, x0, x1, w00, w10, w01, w11);
         zf = bilin(zFlat, a0, a1, x0, x1, w00, w10, w01, w11);

@@ -44,8 +44,116 @@ export const CLIMATE_WET = 2;
 /** 区域噪声层（`noise`）：**有符号** −8..8（0 = 没画）。
  *  正 = 加噪（山更密更碎、海岸更毛），负 = 抹平（冲积平原/盆地那种干净的低地）。 */
 export const NOISE_MAX = 8;
-/** 海岸复杂化层（`edge`）：0..8。只放大海岸线的抖动，不改内陆高度。 */
+/** 海岸复杂化层（`edge`）：0..8。**湍流置换**的强度（不是逐点加噪）。 */
 export const EDGE_MAX = 8;
+/** 锐利的海陆掩膜先糊开多少**原型格**再判阈值。
+ *  这是"能把海岸挪动多少格"的分母：掩膜梯度 ≈ 1/(2·R)，阈值扰动 `amp` 挪动 `amp·2R` 格。
+ *  R=10、amp 0.62 ⇒ 满强度时海岸最多挪 ≈ 12 格（1024 宽 ≈ 底图 19px）。 */
+export const EDGE_BLUR_CELLS = 20;
+/** 满强度时阈值扰动的幅度（相对 0..1 的海陆场；>0.5 会把整片糊掉的区域翻面，别贪大）。 */
+export const EDGE_TURB_AMP = 0.6;
+
+/* ── 湍流场（边缘复杂化）────────────────────────────────────────────────────
+ *  用户 2026-10-31：「边缘复杂化怎么是纯随机啊，而不是湍流置换类的」。
+ *  旧做法是在海陆判定上**逐格加**一圈高频 shore 噪声（`lf + wig > 0.5`）——
+ *  每个像素各自摇一次硬币，结果就是"毛边 / 白噪音"，没有方向性。
+ *
+ *  为什么"直接把掩膜拿去域扭曲"不够（本轮实测）：手画掩膜是**锐利**的（0/1 跳变），
+ *  双线性取样下梯度约为 1 格⁻¹，任何位移场只会把边界挪 **不到 1 格**；把位移调大到
+ *  几十格，取样又会跳出笔迹范围 ⇒ 白洞/断崖。
+ *
+ *  正确做法（也是图像学里"用湍流置换一条等高线"的标准做法）：
+ *    ① 先把海陆场**糊开**（`EDGE_BLUR_CELLS`）⇒ 梯度变缓，阈值挪一点边界就走很多格；
+ *    ② 用一条**多尺度相干湍流**（本文件 `buildEdgeTurbulence`）去扰动阈值：
+ *       `lf + t·amp > 0.5`。等值线于是沿着湍流场的等值线走 —— 连续、成条成团；
+ *    ③ 湍流只取 16/32/64 格波长（**没有格点级高频**），所以不会出现"每格独立摇"的白毛。
+ *  海岸因此被推成一串**峡湾 / 半岛 / 泻湖**；满强度 ≈ 十几格，且面积基本守恒。 */
+
+function hash01(x: number, y: number, seed: number): number {
+  let h = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263) ^ Math.imul(seed | 0, 0x27d4eb2d);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+}
+
+const smoothstep01 = (t: number) => t * t * (3 - 2 * t);
+
+/** 周期性值噪声（x 方向周期 = `cells` 格；y 不环绕）。原型是等距圆柱，经度必须闭合。 */
+function periodicNoise(x: number, y: number, cells: number, seed: number): number {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = smoothstep01(xf), v = smoothstep01(yf);
+  const x0 = ((xi % cells) + cells) % cells;
+  const x1 = (x0 + 1) % cells;
+  const a = hash01(x0, yi, seed), b = hash01(x1, yi, seed);
+  const c = hash01(x0, yi + 1, seed), d = hash01(x1, yi + 1, seed);
+  return (a + (b - a) * u) * (1 - v) + (c + (d - c) * u) * v;
+}
+
+/** 可分离**膨胀**（平方窗取最大值，x 环绕）：把「边缘」笔迹的强度往外扩 r 格。
+ *  为什么需要：用户往往在离海岸几格的地方刷一笔；如果只按笔迹模糊，强度在到达海岸前
+ *  就衰减没了 —— 内陆被啃出一个个**封闭的小海**（第一百三十六轮实测），而不是改海岸形状。
+ *  先膨胀再模糊 ⇒ 海岸线上拿到接近满强度的扰动，凿出来的海湾与大海连通。 */
+export function dilateField(src: Float32Array, w: number, h: number, r: number): Float32Array {
+  if (r <= 0) return src;
+  const n = Math.max(0, w | 0) * Math.max(0, h | 0);
+  const tmp = new Float32Array(n);
+  const out = new Float32Array(n);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let m = 0;
+      for (let d = -r; d <= r; d++) {
+        const v = src[row + ((x + d + w) % w)];
+        if (v > m) m = v;
+      }
+      tmp[row + x] = m;
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let m = 0;
+      for (let d = -r; d <= r; d++) {
+        const yy = y + d < 0 ? 0 : (y + d >= h ? h - 1 : y + d);
+        const v = tmp[yy * w + x];
+        if (v > m) m = v;
+      }
+      out[y * w + x] = m;
+    }
+  }
+  return out;
+}
+
+/** 多尺度相干湍流场（零均值，RMS 归一）：16/32/64 格三档波长。画板预览与生成器共用。
+ *  ⚠️ 三档都**不含格点级高频** —— 这是"湍流"与"白毛"的分界（旧版 shore 噪声含 freq 48 那档）。 */
+export function buildEdgeTurbulence(w: number, h: number, seed = 1): Float32Array {
+  const n = Math.max(1, w | 0) * Math.max(1, h | 0);
+  const out = new Float32Array(n);
+  const OCTAVES: [number, number][] = [[16, 0.5], [32, 0.3], [64, 0.2]];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let o = 0; o < OCTAVES.length; o++) {
+        const cells = OCTAVES[o][0];
+        /* y 与 x 用同一格宽（原型 2:1）⇒ 湍流各向同性，不会被拉成横条 */
+        v += periodicNoise((x / w) * cells, (y / w) * cells, cells, seed + cells + o * 131) * OCTAVES[o][1];
+      }
+      out[y * w + x] = v;
+    }
+  }
+  /* 值噪声落在 0..1 ⇒ 先转成零均值，再按 RMS 归一（典型值 |t| ≈ 1，夹 ±1.6） */
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += out[i];
+  mean /= Math.max(1, n);
+  for (let i = 0; i < n; i++) out[i] = (out[i] - mean) * 2;
+  let sumSq = 0;
+  for (let i = 0; i < n; i++) sumSq += out[i] * out[i];
+  const rms = Math.sqrt(sumSq / Math.max(1, n)) || 1;
+  for (let i = 0; i < n; i++) {
+    const v = out[i] / rms;
+    out[i] = v > 1.6 ? 1.6 : (v < -1.6 ? -1.6 : v);
+  }
+  return out;
+}
 
 /** 解码后的五层（生成器与画板共用同一套结构，都是整格数组）。 */
 export interface ProtoLayers {
