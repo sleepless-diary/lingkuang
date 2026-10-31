@@ -72,7 +72,7 @@ const PALETTES: Record<ProtoLayerKind, Brush[]> = {
     { id: 'plateau', label: '高原', hint: '抬高的平顶：基面抬高 + 起伏压平（强度 = 抬多高）', value: ZONE_PLATEAU },
     { id: 'basin', label: '盆地', hint: '低地：基面压低、起伏再压一半（强度 = 压多低）', value: ZONE_BASIN },
     { id: 'plain', label: '平原', hint: '只压起伏、不改基面（接替老噪声层的「抹平」）', value: ZONE_PLAIN },
-    { id: 'peak', label: '山峰', hint: '全图最高：这一片会被钉成最高峰（强度 = 峰的高低；小笔刷 ⇒ 一座尖峰）', value: ZONE_PEAK },
+    { id: 'peak', label: '山峰', hint: '固定海拔：强度 × 0.8 = 峰顶海拔（8 → 6.4 km，超过世界最高就顶格）；小笔刷 ⇒ 一座尖峰', value: ZONE_PEAK },
     { id: 'lake', label: '湖泊/内海', hint: '直接钉成水面（离岸越近越浅，不会变成深海）', value: ZONE_LAKE },
     { id: 'erase', label: '擦除', hint: '把这一层擦回"没画"（别的层不动）', value: 0 },
   ],

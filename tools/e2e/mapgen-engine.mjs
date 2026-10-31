@@ -849,26 +849,33 @@ const diffFrac = (a, b) => {
       plain8: { mean: +plain8.mean.toFixed(3), sd: +plain8.sd.toFixed(3) } });
 }
 
-/* ★35 山峰笔刷：把这一片钉成全图最高（归一化后 t=1），与噪声无关 */
+﻿/* ★35 山峰笔刷：**固定海拔**（强度×0.8 km，不超过世界最高 peakKm），不再必然是全图最高 */
 {
   const PX0 = 380, PX1 = 430, PY0 = 230, PY1 = 260;
-  const withZone = (code) => {
+  const withZone = (code, s) => {
     const d = baseDoc();
-    paintRect(layerOf(d, 'zone').data, PX0, PX1, PY0, PY1, Pr.ZONE_PACK(code, 8));
+    paintRect(layerOf(d, 'zone').data, PX0, PX1, PY0, PY1, Pr.ZONE_PACK(code, s));
     return buildField(d);
   };
-  const topOf = (f) => {
-    let best = -1, bestK = -1;
-    for (let k = 0; k < f.w * f.h; k++) if (f.land[k] && f.e01[k] > best) { best = f.e01[k]; bestK = k; }
-    const px = ((bestK % f.w) / f.w) * PROTO_W, py = (((bestK / f.w) | 0) / f.h) * PROTO_H;
-    return { t: +best.toFixed(3), px: Math.round(px), py: Math.round(py),
-      inside: px >= PX0 - 12 && px <= PX1 + 12 && py >= PY0 - 12 && py <= PY1 + 12 };
+  const rectPeak = (f) => {
+    const ax = Math.round((PX0 / PROTO_W) * f.w), bx = Math.round((PX1 / PROTO_W) * f.w);
+    const ay = Math.round((PY0 / PROTO_H) * f.h), by = Math.round((PY1 / PROTO_H) * f.h);
+    let peak = 0;
+    for (let y = ay; y < by; y++) for (let x = ax; x < bx; x++) {
+      const k = y * f.w + x;
+      if (f.land[k] && f.elev[k] > peak) peak = f.elev[k];
+    }
+    let world = 0;
+    for (let k = 0; k < f.w * f.h; k++) if (f.land[k] && f.elev[k] > world) world = f.elev[k];
+    return { peak: +peak.toFixed(2), world: +world.toFixed(2) };
   };
-  const peak = topOf(withZone(Pr.ZONE_PEAK));
-  const hill8 = topOf(withZone(Pr.ZONE_MOUNTAIN));
-  check('★35 山峰笔刷：最高点钉在峰格上（t=1）；同位置画「高山 8」则不保证',
-    peak.t > 0.999 && peak.inside === true,
-    { peak, mountain8: hill8 });
+  const p4 = rectPeak(withZone(Pr.ZONE_PEAK, 4));   /* 4 × 0.8 = 3.2 km */
+  const p8 = rectPeak(withZone(Pr.ZONE_PEAK, 8));   /* 8 × 0.8 = 6.4 km，但被世界最高（continent ≈ 6.2）截住 */
+  const m8 = rectPeak(withZone(Pr.ZONE_MOUNTAIN, 8));
+  check('★35 山峰 = 固定海拔：强度 4 ⇒ ≈3.2 km（不是全图最高）；强度 8 ⇒ 顶到世界上限',
+    Math.abs(p4.peak - 3.2) < 0.35 && p4.world > p4.peak + 0.5
+    && p8.peak > p4.peak + 0.5 && Math.abs(p8.peak - p8.world) < 0.05,
+    { peak4: p4, peak8: p8, mountain8: m8 });
 }
 
 const pass = results.filter(Boolean).length;

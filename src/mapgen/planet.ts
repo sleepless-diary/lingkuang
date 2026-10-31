@@ -865,29 +865,29 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
     if (hraw[k] < 0.02) hraw[k] = 0.02;
     if (hraw[k] > maxH) maxH = hraw[k];
   }
-  /* ⭐ 第一百四十三轮：**山峰 = 全图最高**。把标记格抬到 maxH 之上再做归一化，
-     于是它稳稳拿到 t=1（其余格都在 1 以下）；强度决定"相对其他山峰"的高低。
-     ⚠️ `peakCells` 里存的是**原型格**下标（1024×512），`hraw` 是**输出网格**（w×h）——
-     必须按比例换算过去，否则抬的是无关格子（这一处一开始就写错过）。 */
+  /* ⭐ 第一百四十三轮：**山峰 = 固定海拔**（用户 19:33：「要固定到一个高度」）。
+     强度 8 档 → 目标海拔 0.8×强度 km（1→0.8 km … 8→6.4 km），但不超过世界最高峰 `peakKm`。
+     做法：先把**自然地形**的最大值 `maxH` 算出来，再把峰格抬到 `maxH × tWant`
+     （`tWant` 由目标海拔反推，含 `^1.15` 的逆变换）——
+     于是峰顶落在一个**确定的海拔**上，既不必然是全图最高，也不会把别的山压矮。 */
   if (peakCells.length) {
-    const top = maxH * 1.45 + 0.05;
     const put = (kx: number, ky: number, want: number) => {
       if (kx < 0 || kx >= w || ky < 0 || ky >= h) return;
       const kk = ky * w + kx;
-      if (hraw[kk] < want) hraw[kk] = want;
-      if (hraw[kk] > maxH) maxH = hraw[kk];
+      if (want > hraw[kk]) hraw[kk] = want;
     };
     for (const p of peakCells) {
+      const targetKm = Math.min(peakKm, 0.8 * p.s * ZONE_STRENGTH_MAX);
+      const tWant = Math.pow(Math.max(0.001, targetKm / peakKm), 1 / 1.15);
+      const want = maxH * Math.min(1, tWant);
       const px = (((p.k % mw0) + 0.5) / mw0) * w;
       const py = ((((p.k / mw0) | 0) + 0.5) / mh0) * h;
       const kx = Math.round(px), ky = Math.round(py);
-      const want = top * (0.7 + 0.3 * p.s);
-      /* 3×3 微扩散：别让峰顶是一根 1 像素的针 */
       put(kx, ky, want);
-      put(kx - 1, ky, want * 0.92);
-      put(kx + 1, ky, want * 0.92);
-      put(kx, ky - 1, want * 0.92);
-      put(kx, ky + 1, want * 0.92);
+      put(kx - 1, ky, want * 0.94);
+      put(kx + 1, ky, want * 0.94);
+      put(kx, ky - 1, want * 0.94);
+      put(kx, ky + 1, want * 0.94);
     }
   }
   const hInv = 1 / (maxH || 1);
