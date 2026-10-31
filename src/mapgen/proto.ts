@@ -24,7 +24,7 @@
 /** 原型分辨率：等距圆柱 2:1（与星球图同域）。1024 = 底图 1536 宽的 2/3。 */
 export const PROTO_W = 1024;
 export const PROTO_H = 512;
-export const PROTO_VERSION = 2;
+export const PROTO_VERSION = 3;
 
 /** 海陆层：0 = 没画（交给生成器）/ 1 = 陆地 / 2 = 海洋 */
 export const LAND_NONE = 0;
@@ -72,6 +72,12 @@ export const TURB_DEFAULTS = {
   seed: 0,               /* 种子偏移：同参数也能换形状 */
   blend: 'add' as TurbBlend,
   diffusion: 10,         /* 笔迹强度的膨胀半径（格） */
+  /* ⭐ 第一百四十一轮：沿岸带（band）模式。开启后 `data` 不再是"强度笔迹"，
+     而是**闸门**（1 = 这条海岸要受影响），强度由下面的带宽/衰减 + 当前海岸线实时算出来，
+     所以形状怎么变（变换 / 液化 / 重画），效果都自动贴着海岸走。 */
+  band: false,           /* 老层默认仍是"笔迹"模式（照旧读、照旧生成） */
+  bandWidth: 18,         /* 沿岸带宽度（格）：离海岸多远还有效 */
+  bandFalloff: 0.55,     /* 0..1：越接近 1，边缘越陡（贴岸硬边）；0 = 一路平缓衰减 */
 };
 export type TurbBlend = 'add' | 'grow' | 'erode';
 
@@ -95,6 +101,10 @@ export interface ProtoLayer {
   seed?: number;
   blend?: TurbBlend;
   diffusion?: number;
+  /** v3：沿岸带模式（只有 turb 层有意义） */
+  band?: boolean;
+  bandWidth?: number;
+  bandFalloff?: number;
 }
 
 /** 落盘形态（v2）。v1 的 `land/zone/climate/noise/edge` 只为读旧数据保留。 */
@@ -131,6 +141,10 @@ export interface DecodedLayer {
   seed: number;
   blend: TurbBlend;
   diffusion: number;
+  /** 湍流层：沿岸带模式（`data` 当"闸门"用，强度由海岸线实时算） */
+  band: boolean;
+  bandWidth: number;
+  bandFalloff: number;
 }
 
 /** 解码后的整份原型（图层顺序 = 显示顺序，第一个在最上）。 */
@@ -277,6 +291,9 @@ function decodeLayer(raw: ProtoLayer, w: number, h: number): DecodedLayer | null
     seed: Math.round(Number(raw.seed ?? TURB_DEFAULTS.seed)) || 0,
     blend: raw.blend === 'grow' || raw.blend === 'erode' ? raw.blend : 'add',
     diffusion: clamp(Math.round(Number(raw.diffusion ?? TURB_DEFAULTS.diffusion)), 0, 24),
+    band: raw.band === true,
+    bandWidth: clamp(Math.round(Number(raw.bandWidth ?? TURB_DEFAULTS.bandWidth)), 2, 80),
+    bandFalloff: clamp(Number(raw.bandFalloff ?? TURB_DEFAULTS.bandFalloff), 0, 1),
   };
 }
 
@@ -390,10 +407,67 @@ export function encodeProto(doc: ProtoDoc): ProtoStored {
       out.seed = Math.round(l.seed);
       out.blend = l.blend;
       out.diffusion = Math.round(l.diffusion);
+      if (l.band) {
+        out.band = true;
+        out.bandWidth = Math.round(l.bandWidth);
+        out.bandFalloff = r2(l.bandFalloff);
+      }
     }
     return out;
   });
   return { w, h, v: PROTO_VERSION, layers };
+}
+
+/* ── 沿岸带（第一百四十一轮）────────────────────────────────────────────────── */
+
+/**
+ * 到最近海岸的格距（BFS 四邻；**横向环绕**、纵向夹住，与地图的星球口径一致）。
+ * @param coast 长度 w*h：非 0 视为海岸
+ * @param maxD 超过这个距离一律按 maxD 记（省一点内存带宽）
+ */
+export function coastDistanceField(coast: Uint8Array, w: number, h: number, maxD = 96): Float32Array {
+  const n = w * h;
+  const dist = new Float32Array(n).fill(maxD);
+  const queue = new Int32Array(n);
+  let head = 0, tail = 0;
+  for (let i = 0; i < n; i++) {
+    if (coast[i]) { dist[i] = 0; queue[tail++] = i; }
+  }
+  if (tail === 0) return dist;
+  while (head < tail) {
+    const i = queue[head++];
+    const d = dist[i] + 1;
+    if (d >= maxD) continue;
+    const x = i % w, y = (i / w) | 0;
+    const left = y * w + ((x - 1 + w) % w);
+    const right = y * w + ((x + 1) % w);
+    const up = y > 0 ? i - w : -1;
+    const down = y < h - 1 ? i + w : -1;
+    if (dist[left] > d) { dist[left] = d; queue[tail++] = left; }
+    if (dist[right] > d) { dist[right] = d; queue[tail++] = right; }
+    if (up >= 0 && dist[up] > d) { dist[up] = d; queue[tail++] = up; }
+    if (down >= 0 && dist[down] > d) { dist[down] = d; queue[tail++] = down; }
+  }
+  return dist;
+}
+
+/** 沿岸带强度（0..1）：离岸越近越强，`width` 之外为 0；`falloff` 越大边缘越陡。 */
+export function bandStrengthAt(distance: number, width: number, falloff: number): number {
+  const w = Math.max(1, width);
+  const t = distance / w;
+  if (t >= 1) return 0;
+  return Math.pow(1 - t, 1 + Math.max(0, Math.min(1, falloff)) * 3);
+}
+
+/** 整张沿岸带强度场（`gate` 非 0 的格子才算 —— 闸门就是"哪几条海岸"）。 */
+export function bandField(dist: Float32Array, gate: ArrayLike<number> | null, width: number, falloff: number): Float32Array {
+  const n = dist.length;
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    if (gate && !gate[i]) continue;
+    out[i] = bandStrengthAt(dist[i], width, falloff);
+  }
+  return out;
 }
 
 /* ── 合成（生成器与画板共用同一套规则）────────────────────────────────────── */

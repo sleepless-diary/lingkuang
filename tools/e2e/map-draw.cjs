@@ -668,6 +668,78 @@ async function main() {
     !!tfNoFill && !tfNoFill.error && tfNoFill.moved === true && tfNoFill.topAfter === 0, tfNoFill);
   await click('#ed-undo');
   await sleep(250);
+  /* ★14 沿岸带：勾上「沿岸带」后，效果由"离海岸多远"实时算 ——
+     把海陆整体搬走 200 格再烘焙，湍流效果仍然贴着**新**海岸（闸门跟着几何一起搬）。 */
+  await setTurbOn(false);
+  const bandSetup = await ev(`(function () {
+    /* 选湍流层 → 勾「沿岸带」→ 沿一条大范围刷闸门（哪些海岸要） */
+    const rows = [...document.querySelectorAll('#ed-layers [data-kind="turb"]')];
+    if (!rows.length) return { error: 'no turb layer' };
+    rows[0].click();
+    const chk = document.querySelector('#ed-props [data-prop="band"]');
+    if (!chk) return { error: 'no band toggle' };
+    chk.checked = true;
+    chk.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('[data-mode="brush"]').click();
+    const bs = document.getElementById('ed-brush'); bs.value = '120'; bs.dispatchEvent(new Event('input', { bubbles: true }));
+    const c = document.getElementById('ed-canvas');
+    const r = c.getBoundingClientRect();
+    const mk = (ty, fx, fy) => new PointerEvent(ty, { clientX: r.left + r.width * fx, clientY: r.top + r.height * fy, bubbles: true, pointerId: 61, pointerType: 'mouse', button: 0, buttons: 1 });
+    c.dispatchEvent(mk('pointerdown', 0.3, 0.5));
+    c.dispatchEvent(mk('pointermove', 0.45, 0.5));
+    c.dispatchEvent(mk('pointermove', 0.6, 0.5));
+    c.dispatchEvent(mk('pointerup', 0.6, 0.5));
+    return {
+      hasWidth: !!document.querySelector('#ed-props [data-prop="bandWidth"]'),
+      hasFalloff: !!document.querySelector('#ed-props [data-prop="bandFalloff"]'),
+    };
+  })()`);
+  const COUNT_LAND = `(function () {
+    const c = document.getElementById('ed-canvas');
+    const g = c.getContext('2d');
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i + 1] > d[i] + 8 && d[i + 1] > d[i + 2] + 20 && d[i + 1] > 90) n++;
+    return n;
+  })()`;
+  await setTurbOn(true);
+  const bandOn1 = await ev(COUNT_LAND);
+  await setTurbOn(false);
+  const bandOff1 = await ev(COUNT_LAND);
+  await setTurbOn(true);
+  /* 搬海陆 +200 格并烘焙 */
+  const bandMoved = await ev(`(async function () {
+    document.querySelector('[data-kind="land"]').click();
+    document.querySelector('[data-mode="transform"]').click();
+    await new Promise((res) => requestAnimationFrame(res));
+    const c = document.getElementById('ed-canvas');
+    const r = c.getBoundingClientRect();
+    const box = window.__lkTfBox();
+    if (!box) return { error: 'no tfBox' };
+    const view = window.__lkView();
+    const sx = view.panX + ((box.x0 + box.x1) / 2) * view.cellPx;
+    const sy = view.panY + ((box.y0 + box.y1) / 2) * view.cellPx;
+    const mk = (t, x, y) => new PointerEvent(t, { clientX: r.left + x, clientY: r.top + y, bubbles: true, pointerId: 62, pointerType: 'mouse', button: 0, buttons: 1 });
+    c.dispatchEvent(mk('pointerdown', sx, sy));
+    c.dispatchEvent(mk('pointermove', sx + 200 * view.cellPx, sy));
+    c.dispatchEvent(mk('pointerup', sx + 200 * view.cellPx, sy));
+    const bake = document.getElementById('ed-tf-bake');
+    if (bake && !bake.disabled) bake.click();
+    await new Promise((res) => requestAnimationFrame(res));
+    return { baked: true };
+  })()`);
+  const bandOn2 = await ev(COUNT_LAND);
+  await setTurbOn(false);
+  const bandOff2 = await ev(COUNT_LAND);
+  await setTurbOn(true);
+  const d1 = Math.abs(bandOn1 - bandOff1);
+  const d2 = Math.abs(bandOn2 - bandOff2);
+  check('★14 沿岸带：勾上后效果随海岸走（搬走 200 格再烘焙，湍流仍然改变海岸像素数）',
+    !!bandSetup && !bandSetup.error && bandSetup.hasWidth && bandSetup.hasFalloff
+    && !!bandMoved && !bandMoved.error
+    && d1 > 300 && d2 > 300,
+    { bandSetup, bandMoved, bandOn1, bandOff1, bandOn2, bandOff2, d1, d2 });
+
   /* 把湍流层重新显示回来（★9 生成时要有两层的效果） */
   await setTurbOn(true);
 
@@ -682,6 +754,9 @@ async function main() {
     document.querySelector('[data-mode="brush"]').click();
     document.querySelector('[data-kind="land"]').click();
     const t = document.querySelector('[data-tool="land"]'); if (t) t.click();
+    /* 先把海陆层清空：前面几轮搬来转去，剩下的形状会让"从北岸撑开"量到别处去 */
+    const clear = document.querySelector('#ed-props [data-act="clear"]');
+    if (clear) clear.click();
     const bs = document.getElementById('ed-brush'); bs.value = '60'; bs.dispatchEvent(new Event('input', { bubbles: true }));
     const c = document.getElementById('ed-canvas');
     const r = c.getBoundingClientRect();

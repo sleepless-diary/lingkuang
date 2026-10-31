@@ -34,7 +34,7 @@ import { climateHex, sampleRampHex, styleMaterial, styleSeabed, terrainStyleDef 
 import {
   CLIMATE_DRY, CLIMATE_WET, EDGE_MAX, LAND_SET, NOISE_MAX, SEA_SET,
   ZONE_BASIN, ZONE_CODE, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PLAIN, ZONE_PLATEAU, ZONE_STRENGTH, ZONE_STRENGTH_MAX,
-  buildEdgeTurbulence, compositeNoise, compositeU8, decodeProtoInput, dilateField, turbLayers,
+  buildEdgeTurbulence, bandField, coastDistanceField, compositeNoise, compositeU8, decodeProtoInput, dilateField, turbLayers,
   type LegacyMaskStored, type ProtoInput, type TurbBlend,
 } from './proto';
 
@@ -529,7 +529,7 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
   const TURB_LAND_BLUR = 20;
   let landBlur: Float32Array | null = null;
   let seaBlur: Float32Array | null = null;
-  const turbPreps: { field: Float32Array; strength: Float32Array; amp: number; blend: TurbBlend }[] = [];
+  const turbPreps: { field: Float32Array; strength: Float32Array; amp: number; blend: TurbBlend; band: boolean }[] = [];
   if (doc && maskLand && maskSea) {
     let anyTurb = false;
     for (const l of turbList) {
@@ -537,6 +537,32 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
       for (let i = 0; i < d.length; i++) if (d[i]) { anyTurb = true; break; }
       if (anyTurb) break;
     }
+    /* 沿岸带模式要的是"到海岸的格距"：海岸 = 陆地格四邻里挨着海（或反过来），横向环绕 */
+    let coastDist: Float32Array | null = null;
+    const getCoastDist = () => {
+      if (coastDist) return coastDist;
+      const coast = new Uint8Array(protoN);
+      for (let y = 0; y < mh0; y++) {
+        for (let x = 0; x < mw0; x++) {
+          const i = y * mw0 + x;
+          const land = maskLand[i] > 0.5;
+          const sea = maskSea[i] > 0.5;
+          if (!land && !sea) continue;
+          const xl = y * mw0 + ((x - 1 + mw0) % mw0);
+          const xr = y * mw0 + ((x + 1) % mw0);
+          const up = y > 0 ? i - mw0 : -1;
+          const dn = y < mh0 - 1 ? i + mw0 : -1;
+          const nbs = [xl, xr, up, dn];
+          for (const j of nbs) {
+            if (j < 0) continue;
+            if (land && maskSea[j] > 0.5) { coast[i] = 1; break; }
+            if (sea && maskLand[j] > 0.5) { coast[i] = 1; break; }
+          }
+        }
+      }
+      coastDist = coastDistanceField(coast, mw0, mh0, 96);
+      return coastDist;
+    };
     if (anyTurb) {
       landBlur = new Float32Array(protoN);
       seaBlur = new Float32Array(protoN);
@@ -545,14 +571,20 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
       boxBlur(landBlur, mw0, mh0, TURB_LAND_BLUR);
       boxBlur(seaBlur, mw0, mh0, TURB_LAND_BLUR);
       for (const l of turbList) {
-        const strength = new Float32Array(protoN);
-        for (let i = 0; i < protoN; i++) strength[i] = (l.data[i] as number) / EDGE_MAX;
-        /* 强度：**先按本层扩散半径膨胀**（笔迹离海岸几格也能把扰动送到海岸，海湾才会连通），
-           再模糊 ~0.6×（沿笔迹平滑起落，不留断崖）。 */
-        const diff = Math.max(0, Math.round(l.diffusion));
-        if (diff > 0) {
-          strength.set(dilateField(strength, mw0, mh0, diff));
-          boxBlur(strength, mw0, mh0, Math.max(1, Math.round(diff * 0.6)));
+        let strength: Float32Array;
+        if (l.band) {
+          /* 沿岸带：强度 = f(离岸格距) × 闸门（闸门就是"哪几条海岸"），与笔迹网格彻底解耦 */
+          strength = bandField(getCoastDist(), l.data, l.bandWidth, l.bandFalloff);
+        } else {
+          strength = new Float32Array(protoN);
+          for (let i = 0; i < protoN; i++) strength[i] = (l.data[i] as number) / EDGE_MAX;
+          /* 强度：**先按本层扩散半径膨胀**（笔迹离海岸几格也能把扰动送到海岸，海湾才会连通），
+             再模糊 ~0.6×（沿笔迹平滑起落，不留断崖）。 */
+          const diff = Math.max(0, Math.round(l.diffusion));
+          if (diff > 0) {
+            strength.set(dilateField(strength, mw0, mh0, diff));
+            boxBlur(strength, mw0, mh0, Math.max(1, Math.round(diff * 0.6)));
+          }
         }
         turbPreps.push({
           field: buildEdgeTurbulence(mw0, mh0, seedInt(String(seed) + '|湍流' + (l.seed | 0)), {
@@ -562,6 +594,7 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
           strength,
           amp: l.amp,
           blend: l.blend,
+          band: l.band,
         });
       }
     }
@@ -704,7 +737,8 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
             const p = turbPreps[q];
             const s = bilin(p.strength, a0, a1, x0, x1, w00, w10, w01, w11);
             if (s <= 0.004) continue;
-            const t0 = bilin(p.field, a0, a1, x0, x1, w00, w10, w01, w11) * s * p.amp * coastal;
+            /* 沿岸带模式的强度里已经含了"离岸多远"，不再乘海岸糊场（否则等于双层衰减） */
+            const t0 = bilin(p.field, a0, a1, x0, x1, w00, w10, w01, w11) * s * p.amp * (p.band ? 1 : coastal);
             /* 混合方式：add = 双向；grow 只长陆；erode 只侵蚀 */
             if (p.blend === 'add') tb += t0;
             else if (p.blend === 'grow') tb += t0 > 0 ? t0 : 0;

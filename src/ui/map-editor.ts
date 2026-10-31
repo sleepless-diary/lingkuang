@@ -33,7 +33,7 @@ import {
   CLIMATE_DRY, CLIMATE_WET, EDGE_MAX, KIND_LABEL, NOISE_MAX, PROTO_H, PROTO_W, PROTO_KINDS,
   ZONE_BASIN, ZONE_CODE, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PACK, ZONE_PLAIN, ZONE_PLATEAU,
   ZONE_STRENGTH, ZONE_STRENGTH_MAX,
-  buildEdgeTurbulence, compositeNoise, compositeU8, decodeProtoInput, dilateField, emptyDoc,
+  buildEdgeTurbulence, bandField, bandStrengthAt, coastDistanceField, compositeNoise, compositeU8, decodeProtoInput, dilateField, emptyDoc,
   encodeProto, newLayer, turbLayers,
   type DecodedLayer, type ProtoDoc, type ProtoLayerKind, type TurbBlend,
 } from '../mapgen/proto';
@@ -349,12 +349,14 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   const activeKind = (): ProtoLayerKind => active()?.kind ?? 'land';
   const checkpoint = () => {
     landRev++;
+    coastDistCache = null;
     for (const k of PROTO_KINDS) compDirtyKinds.add(k);
     previewDirty = true;
   };
   /** 只改了某一层：只有海陆层会让"糊开的海陆场"失效，别的层不必重算它（卡顿的主要来源）。 */
   const touchLayer = (kind: ProtoLayerKind) => {
     if (kind === 'land') landRev++;
+    if (kind === 'land' || kind === 'zone') coastDistCache = null;
     compDirtyKinds.add(kind);
     previewDirty = true;
   };
@@ -399,6 +401,31 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     return false;
   };
 
+  /* ⭐ 第一百四十一轮：沿岸带要"到海岸的格距"。
+     海岸 = 陆地格的四邻里有不是陆地的（湖泊算水面），**横向环绕**。跟着海陆/地形变化失效。 */
+  let coastDistCache: Float32Array | null = null;
+  let coastDistRev = -1;
+  const getCoastDist = (): Float32Array => {
+    if (coastDistCache && coastDistRev === landRev) return coastDistCache;
+    const n = PROTO_W * PROTO_H;
+    const coast = new Uint8Array(n);
+    const isLand = (i: number) => landComp[i] === 1 || ZONE_CODE(zoneComp[i]) === ZONE_LAKE;
+    for (let y = 0; y < PROTO_H; y++) {
+      for (let x = 0; x < PROTO_W; x++) {
+        const i = y * PROTO_W + x;
+        if (!isLand(i)) continue;
+        const xl = y * PROTO_W + ((x - 1 + PROTO_W) % PROTO_W);
+        const xr = y * PROTO_W + ((x + 1) % PROTO_W);
+        if (!isLand(xl) || !isLand(xr)
+          || (y > 0 && !isLand(i - PROTO_W))
+          || (y < PROTO_H - 1 && !isLand(i + PROTO_W))) coast[i] = 1;
+      }
+    }
+    coastDistCache = coastDistanceField(coast, PROTO_W, PROTO_H, 96);
+    coastDistRev = landRev;
+    return coastDistCache;
+  };
+
   /** 重建预览海陆：合成海陆 + 每层湍流（糊开的海陆场 + 相干湍流扰动阈值），与生成器同一算法。 */
   const buildPreview = () => {
     previewDirty = false;
@@ -424,16 +451,23 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       seaBlur = blurField(sf, TURB_LAND_BLUR);
       landBlurRev = landRev;
     }
-    /* 每层：强度（膨胀+模糊）与湍流场（参数键缓存） */
-    const preps: { strength: Float32Array; field: Float32Array; amp: number; blend: TurbBlend }[] = [];
+    /* 每层：强度（笔迹：膨胀+模糊；沿岸带：距海岸的衰减场 × 闸门）与湍流场（参数键缓存） */
+    const preps: { strength: Float32Array; field: Float32Array; amp: number; blend: TurbBlend; band: boolean }[] = [];
     for (const l of turbs) {
-      const s = new Float32Array(n);
-      for (let i = 0; i < n; i++) s[i] = (l.data[i] as number) / EDGE_MAX;
-      const diff = Math.max(0, Math.round(l.diffusion));
-      if (diff > 0) {
-        s.set(dilateField(s, PROTO_W, PROTO_H, diff));
-        const b = blurField(s, Math.max(1, Math.round(diff * 0.6)));
-        s.set(b);
+      let s: Float32Array;
+      if (l.band) {
+        /* ⭐ 沿岸带：强度完全由**当前**海岸线算出来，和笔迹网格解耦 ——
+           所以形状怎么变（变换/液化/重画），效果都自动贴着海岸走。 */
+        s = bandField(getCoastDist(), l.data, l.bandWidth, l.bandFalloff);
+      } else {
+        s = new Float32Array(n);
+        for (let i = 0; i < n; i++) s[i] = (l.data[i] as number) / EDGE_MAX;
+        const diff = Math.max(0, Math.round(l.diffusion));
+        if (diff > 0) {
+          s.set(dilateField(s, PROTO_W, PROTO_H, diff));
+          const b = blurField(s, Math.max(1, Math.round(diff * 0.6)));
+          s.set(b);
+        }
       }
       const key = `${l.scale}|${l.octaves}|${l.seed}`;
       let field = turbFieldCache.get(key);
@@ -444,25 +478,24 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         if (turbFieldCache.size > 12) turbFieldCache.clear();
         turbFieldCache.set(key, field);
       }
-      preps.push({ strength: s, field, amp: l.amp, blend: l.blend });
+      preps.push({ strength: s, field, amp: l.amp, blend: l.blend, band: l.band });
     }
     const lb = landBlur, sb = seaBlur;
     for (let i = 0; i < n; i++) {
       if (ZONE_CODE(zoneComp[i]) === ZONE_LAKE) { previewLand[i] = 2; continue; }
       let lf = lb[i], sf = sb[i];
       const coastal = 4 * lf * sf;
-      if (coastal > 0.001) {
-        let tb = 0;
-        for (const p of preps) {
-          const st = p.strength[i];
-          if (st <= 0.004) continue;
-          const t0 = p.field[i] * st * p.amp * coastal;
-          if (p.blend === 'add') tb += t0;
-          else if (p.blend === 'grow') tb += t0 > 0 ? t0 : 0;
-          else tb += t0 < 0 ? t0 : 0;
-        }
-        lf += tb; sf -= tb;
+      let tb = 0;
+      for (const p of preps) {
+        const st = p.strength[i];
+        if (st <= 0.004) continue;
+        /* 沿岸带自己已经含"离岸多远"，不再乘海岸糊场（否则双层衰减） */
+        const t0 = p.field[i] * st * p.amp * (p.band ? 1 : coastal);
+        if (p.blend === 'add') tb += t0;
+        else if (p.blend === 'grow') tb += t0 > 0 ? t0 : 0;
+        else tb += t0 < 0 ? t0 : 0;
       }
+      if (tb !== 0) { lf += tb; sf -= tb; }
       previewLand[i] = lf > 0.5 ? 1 : (sf > 0.5 ? 2 : 0);
     }
   };
@@ -491,6 +524,9 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     const d = img.data;
     const n = PROTO_W * PROTO_H;
     const kind = activeKind();
+    /* 沿岸带着色要用距离场：只在"当前层是 band 模式的湍流"时算一次 */
+    const turbLayer = kind === 'turb' ? active() : undefined;
+    const turbCd = turbLayer?.band ? getCoastDist() : null;
     for (let i = 0; i < n; i++) {
       const lv = previewLand[i];
       let r = C_UNSET[0], g = C_UNSET[1], b = C_UNSET[2];
@@ -523,8 +559,11 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         r = r * (1 - t) + c[0] * t; g = g * (1 - t) + c[1] * t; b = b * (1 - t) + c[2] * t;
       } else if (kind === 'turb') {
         const l = active();
-        const ev = l ? (l.data[i] as number) : 0;
-        if (ev) {
+        /* 沿岸带模式：直接画出"到海岸的衰减带"（闸门 = 哪些海岸要），画什么就看到什么 */
+        let ev = 0;
+        if (l?.band) ev = bandStrengthAt(turbCd ? turbCd[i] : 99, l.bandWidth, l.bandFalloff) * EDGE_MAX;
+        else ev = l ? (l.data[i] as number) : 0;
+        if (ev > 0.04) {
           const t = Math.min(1, ev / EDGE_MAX) * 0.8;
           r = r * (1 - t) + C_TURB[0] * t; g = g * (1 - t) + C_TURB[1] * t; b = b * (1 - t) + C_TURB[2] * t;
         }
@@ -715,7 +754,11 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     /* 地形：类型码 + 顶栏强度滑块（0..8）打包进同一格 */
     if (kind === 'zone') return b.value === 0 ? 0 : ZONE_PACK(b.value, strength);
     if (kind === 'noise') return b.value === 0 ? 0 : (b.value > 0 ? strength : -strength);
-    if (kind === 'turb') return b.value === 0 ? 0 : strength;
+    if (kind === 'turb') {
+      if (b.value === 0) return 0;
+      /* 沿岸带模式：闸门只要 1/0（强度由"带宽 + 离岸距离 + amp"决定，不再逐格存） */
+      return active()?.band ? 1 : strength;
+    }
     return b.value;
   };
 
@@ -849,6 +892,8 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   let tfBaseBox: BBox | null = null;
   /** 属性栏「松手烘焙」：勾上 = 老行为（每次松手就写进数据） */
   let bakeOnRelease = false;
+  /** 与主层一起搬走的效果层（湍流）：基线快照 + 对应图层。主层是海陆/地形时才有。 */
+  let tfExtras: { layer: DecodedLayer; base: Uint8Array }[] = [];
   let tfDrag: { kind: 'move' | 'scale' | 'rot'; sx: number; sy: number; base: Tf; dist0: number; ang0: number; box0: BBox } | null = null;
   let tfBBox: BBox | null = null;
 
@@ -876,11 +921,9 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     else tfBBox = active() ? computeBBox(active()!) : null;
     tfBox = tfBBox ? boxFor(tfBBox, tf) : null;
   };
-  /** 把**基线快照**按 tf 重采样进图层（最近邻；绕冻结的 bbox 中心；双轴取模 ⇒ 面积守恒）。 */
-  const applyTransform = (src: Uint8Array, box: BBox, t: Tf) => {
-    const l = active();
-    if (!l) return;
-    const dst = l.data as unknown as Uint8Array;
+  /** 一层：把**基线快照**按 tf 重采样进去（最近邻；绕冻结的 bbox 中心；x 取模 / y 裁剪）。 */
+  const applyTransformTo = (layer: DecodedLayer, src: Uint8Array, box: BBox, t: Tf) => {
+    const dst = layer.data as unknown as Uint8Array;
     const { cx, cy } = box;
     const cos = Math.cos(-t.rot), sin = Math.sin(-t.rot);
     const inv = 1 / Math.max(0.05, t.scale);
@@ -894,7 +937,13 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         dst[row + x] = sampleSheet(src, sx, sy);
       }
     }
-    touchLayer(l.kind);
+    touchLayer(layer.kind);
+  };
+  /** ⭐ 第一百四十一轮：效果层跟着几何走 —— 主层是海陆/地形时，可见的湍流层一起搬。 */
+  const previewTransform = (box: BBox, t: Tf) => {
+    const l = active();
+    if (l && tfBase) applyTransformTo(l, tfBase as unknown as Uint8Array, box, t);
+    for (const ex of tfExtras) applyTransformTo(ex.layer, ex.base, box, t);
   };
   /** 有未烘焙的变换吗（属性栏据此亮/暗按钮）。 */
   const tfPending = () => tfBase !== null;
@@ -903,6 +952,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     const l = active();
     tfBase = null;
     tfBaseBox = null;
+    tfExtras = [];
     tf = { ...TF_IDENTITY };
     tfDrag = null;
     tfBBox = l ? computeBBox(l) : null;
@@ -917,6 +967,11 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       dst.set(tfBase as unknown as Uint8Array);
       touchLayer(l.kind);
     }
+    for (const ex of tfExtras) {
+      (ex.layer.data as unknown as Uint8Array).set(ex.base);
+      touchLayer(ex.layer.kind);
+    }
+    tfExtras = [];
     tfBase = null;
     tfBaseBox = null;
     tf = { ...TF_IDENTITY };
@@ -955,11 +1010,23 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   let liqPrev = { x: 0, y: 0 };     /* 上一帧处理过的笔心 */
   let liqRaf = 0;
   let liqActive = false;
+  /** 液化时跟着动的效果层（湍流）：同样一份基线快照，按同一套位移场推 */
+  let liqExtras: { layer: DecodedLayer; base: Uint8Array }[] = [];
 
   const liquifyBegin = (x: number, y: number) => {
-    liqSnapshot = active()
-      ? (active()!.data instanceof Int8Array ? new Int8Array(active()!.data) : new Uint8Array(active()!.data))
+    const cur = active();
+    liqSnapshot = cur
+      ? (cur.data instanceof Int8Array ? new Int8Array(cur.data) : new Uint8Array(cur.data))
       : null;
+    /* ⭐ 效果层跟着几何走：推海陆/地形时，可见的湍流层吃同一套位移 */
+    liqExtras = (cur && (cur.kind === 'land' || cur.kind === 'zone'))
+      ? doc.layers
+        .filter((x2) => x2.kind === 'turb' && x2.on && x2.id !== cur.id)
+        .map((x2) => ({
+          layer: x2,
+          base: (x2.data instanceof Int8Array ? new Int8Array(x2.data) : new Uint8Array(x2.data)) as Uint8Array,
+        }))
+      : [];
     const n = PROTO_W * PROTO_H;
     if (!liqDx || liqDx.length !== n) { liqDx = new Float32Array(n); liqDy = new Float32Array(n); }
     else { liqDx.fill(0); liqDy!.fill(0); }
@@ -976,6 +1043,8 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     liqSnapshot = null;
     liqDx = null;
     liqDy = null;
+    for (const ex of liqExtras) touchLayer(ex.layer.kind);
+    liqExtras = [];
   };
   const liquifyFrame = () => {
     liqRaf = 0;
@@ -1031,6 +1100,10 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         }
         /* 重采样：从快照取「当前格 - 位移」，横向取模 / 纵向折返 */
         dst[i] = sampleWrap(src, px - liqDx[i], py - liqDy[i]);
+        /* 效果层吃同一套位移（否则笔迹留在原地、和海岸错位） */
+        for (const ex of liqExtras) {
+          (ex.layer.data as unknown as Uint8Array)[i] = sampleWrap(ex.base, px - liqDx[i], py - liqDy[i]);
+        }
         touched = true;
       }
     }
@@ -1086,6 +1159,15 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         tfBase = l.data instanceof Int8Array ? new Int8Array(l.data) : new Uint8Array(l.data);
         tfBaseBox = tfBBox ? { ...tfBBox } : null;
         tf = { ...TF_IDENTITY };
+        /* ⭐ 效果层跟着几何走：搬海陆/地形时，可见的湍流层一起搬（否则效果留在原地、和海岸错位） */
+        if (l.kind === 'land' || l.kind === 'zone') {
+          tfExtras = doc.layers
+            .filter((x) => x.kind === 'turb' && x.on && x.id !== l.id)
+            .map((x) => ({
+              layer: x,
+              base: (x.data instanceof Int8Array ? new Int8Array(x.data) : new Uint8Array(x.data)) as Uint8Array,
+            }));
+        }
       }
       const r = canvas.getBoundingClientRect();
       const k = r.width ? vw / r.width : 1;
@@ -1169,7 +1251,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       /* ⭐ 只重画「冻结轴心 + 当前 tf」的框；**不再**从数据重算包围盒（否则框和轴心会自己跑） */
       tfBBox = tfDrag.box0;
       tfBox = boxFor(tfDrag.box0, tf);
-      if (tfBase) applyTransform(tfBase as unknown as Uint8Array, tfDrag.box0, tf);
+      if (tfBase) previewTransform(tfDrag.box0, tf);
       paintBuf();
       paint();
       return;
@@ -1196,7 +1278,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       /* 收尾：用冻结轴心把最后一帧写进去。**松手要不要烘焙**由属性栏的「松手烘焙」决定：
          不勾（默认）= 保留基线，下一次拖动继续从基线重采样（反复调不掉画质）；
          勾上 = 立刻丢掉基线，等于老行为（每次松手就定稿）。 */
-      if (tfBase) applyTransform(tfBase as unknown as Uint8Array, tfDrag.box0, tf);
+      if (tfBase) previewTransform(tfDrag.box0, tf);
       tfDrag = null;
       if (bakeOnRelease) {
         bakeTransform();
@@ -1331,6 +1413,13 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       <div class="lk-ed__prop"><label>可见</label>
         <input type="checkbox" data-prop="on" ${l.on ? 'checked' : ''}></div>
       ${turb ? `
+        <div class="lk-ed__prop" title="沿岸带：强度按「离海岸多远」实时算，形状怎么变都自动贴岸；刷子只决定作用在哪几条海岸">
+          <label>沿岸带</label>
+          <input type="checkbox" data-prop="band" ${l.band ? 'checked' : ''}></div>
+        ${l.band ? `
+          ${range('bandWidth', '带宽', 2, 60, 1, String(l.bandWidth), '离海岸多远还有效（格）')}
+          ${range('bandFalloff', '陡度', 0, 1, 0.05, String(l.bandFalloff), '越接近 1，边缘越陡（贴岸硬边）；0 = 一路平缓')}
+        ` : ''}
         ${range('scale', '尺度', 0.5, 3, 0.1, String(l.scale), '湍流波长倍数：小 = 细碎峡湾，大 = 大海湾/半岛')}
         ${range('amp', '幅度', 0.2, 1.2, 0.05, String(l.amp), '这一层最多能把海岸推多远（与笔迹强度相乘）')}
         ${range('octaves', '细节', 1, 4, 1, String(l.octaves), '倍频层数：1 圆润 … 4 带细碎毛边')}
@@ -1402,8 +1491,9 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     toolsNameEl.textContent = mode === 'brush' ? '画笔' : mode === 'liquify' ? '液化' : '变换';
     const liqMode = mode === 'liquify';
     const tfMode = mode === 'transform';
-    /* 强度：地形（逐格强度）、湍流、液化都用它 */
-    const strOn = kind === 'zone' || kind === 'turb' || liqMode;
+    /* 强度：地形（逐格强度）、湍流、液化都用它；沿岸带模式下湍流层不吃"强度"（吃带宽/陡度） */
+    const turbBandMode = kind === 'turb' && active()?.band === true;
+    const strOn = kind === 'zone' || (kind === 'turb' && !turbBandMode) || liqMode;
     strBox.style.display = strOn ? 'flex' : 'none';
     viscBox.style.display = liqMode ? 'flex' : 'none';
     liqKindsEl.style.display = liqMode ? 'inline-flex' : 'none';
@@ -1538,6 +1628,9 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     switch (key) {
       case 'name': l.name = (t as HTMLInputElement).value || KIND_LABEL[l.kind]; renderLayers(); syncUi(); break;
       case 'on': l.on = (t as HTMLInputElement).checked; renderLayers(); break;
+      case 'band': l.band = (t as HTMLInputElement).checked; renderProps(); break;
+      case 'bandWidth': l.bandWidth = Math.round(Number((t as HTMLInputElement).value)); if (valEl) valEl.textContent = String(l.bandWidth); break;
+      case 'bandFalloff': l.bandFalloff = Number((t as HTMLInputElement).value); if (valEl) valEl.textContent = String(l.bandFalloff); break;
       case 'scale': l.scale = Number((t as HTMLInputElement).value); if (valEl) valEl.textContent = String(l.scale); break;
       case 'amp': l.amp = Number((t as HTMLInputElement).value); if (valEl) valEl.textContent = String(l.amp); break;
       case 'octaves': l.octaves = Math.round(Number((t as HTMLInputElement).value)); if (valEl) valEl.textContent = String(l.octaves); break;
