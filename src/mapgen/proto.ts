@@ -42,6 +42,8 @@ export const ZONE_BASIN = 4;
 export const ZONE_LAKE = 5;
 /** 平原 / 低起伏：只压起伏、不改基面（接替"噪声层抹平"的用途） */
 export const ZONE_PLAIN = 6;
+/** 山峰（第一百四十三轮）：这一片会被**钉成全图最高**（归一化后 t=1），与噪声无关。 */
+export const ZONE_PEAK = 7;
 export const ZONE_STRENGTH_MAX = 8;
 
 /** 类型码（低 3 位） */

@@ -257,9 +257,9 @@ async function main() {
     el.querySelector('[data-kind="land"]').click();
     return { land, zone, turb };
   })()`);
-  check('★5b 图层行切换：地形层有 6 种地形笔刷 + 强度滑块；湍流层也有强度',
+  check('★5b 图层行切换：地形层有 7 种地形笔刷 + 强度滑块；湍流层也有强度',
     layerUi.land.tools === 'land,sea' && layerUi.land.strength === 'none'
-    && layerUi.zone.tools === 'mountain,hill,plateau,basin,plain,lake,erase'
+    && layerUi.zone.tools === 'mountain,hill,plateau,basin,plain,peak,lake,erase'
     && layerUi.zone.strength !== 'none'
     && layerUi.turb.tools === 'turb,erase' && layerUi.turb.strength !== 'none', layerUi);
 

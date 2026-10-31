@@ -33,7 +33,7 @@ import { climateHex, sampleRampHex, styleMaterial, styleSeabed, terrainStyleDef 
 /* ⭐ 第一百三十五轮：手绘原型（多图层）—— 纯数据模块，不拉 DOM，能跟本文件一起离线打包。 */
 import {
   CLIMATE_DRY, CLIMATE_WET, EDGE_MAX, LAND_SET, NOISE_MAX, SEA_SET,
-  ZONE_BASIN, ZONE_CODE, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PLAIN, ZONE_PLATEAU, ZONE_STRENGTH, ZONE_STRENGTH_MAX,
+  ZONE_BASIN, ZONE_CODE, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PEAK, ZONE_PLAIN, ZONE_PLATEAU, ZONE_STRENGTH, ZONE_STRENGTH_MAX,
   buildEdgeTurbulence, bandField, compositeNoise, compositeU8, decodeProtoInput, dilateField, turbLayers,
   type LegacyMaskStored, type ProtoInput, type TurbBlend,
 } from './proto';
@@ -492,8 +492,10 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
   const zFlat = doc ? new Float32Array(protoN) : null;    /* 起伏压平 */
   const climF = doc ? new Float32Array(protoN) : null;    /* −1 干 / +1 湿 */
   const noiseF = doc ? new Float32Array(protoN) : null;   /* −1..1 有符号噪声 */
+  const peakCells: { k: number; s: number }[] = [];
   if (doc && landGrid && zoneGrid && climateGrid && noiseGrid
     && maskLand && maskSea && zRaise && zRidge && zFlat && climF && noiseF) {
+    /* ⭐ 第一百四十三轮：山峰笔刷 —— 记下被标成"峰"的格子，归一化前把它们钉到全图最高 */
     for (let i = 0; i < protoN; i++) {
       /* ⭐ 第一百三十九轮：地形格 = 类型码 + **逐格强度**（0..8，§proto.ts 的打包格式）。
          强度乘在"这一档的塑形量"上：高山强度 2 ≈ 缓山、强度 8 ≈ 高峰；
@@ -515,6 +517,7 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
         else if (zn === ZONE_PLATEAU) { zRaise[i] = 0.26 * zs; zFlat[i] = zs; }
         else if (zn === ZONE_BASIN) { zRaise[i] = -0.32 * zs; zFlat[i] = 0.5 * zs; }
         else if (zn === ZONE_PLAIN) { zFlat[i] = zs; }
+        else if (zn === ZONE_PEAK) { zRaise[i] = 0.5 * zs; zRidge[i] = 0.6 * zs; peakCells.push({ k: i, s: zs }); }
       }
       const cl = climateGrid[i];
       if (cl === CLIMATE_DRY) climF[i] = -1;
@@ -861,6 +864,31 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
     /* 盆地/抹平笔刷可能把 hraw 压到负数 ⇒ 夹一个地板（陆地格必须在海平面以上） */
     if (hraw[k] < 0.02) hraw[k] = 0.02;
     if (hraw[k] > maxH) maxH = hraw[k];
+  }
+  /* ⭐ 第一百四十三轮：**山峰 = 全图最高**。把标记格抬到 maxH 之上再做归一化，
+     于是它稳稳拿到 t=1（其余格都在 1 以下）；强度决定"相对其他山峰"的高低。
+     ⚠️ `peakCells` 里存的是**原型格**下标（1024×512），`hraw` 是**输出网格**（w×h）——
+     必须按比例换算过去，否则抬的是无关格子（这一处一开始就写错过）。 */
+  if (peakCells.length) {
+    const top = maxH * 1.45 + 0.05;
+    const put = (kx: number, ky: number, want: number) => {
+      if (kx < 0 || kx >= w || ky < 0 || ky >= h) return;
+      const kk = ky * w + kx;
+      if (hraw[kk] < want) hraw[kk] = want;
+      if (hraw[kk] > maxH) maxH = hraw[kk];
+    };
+    for (const p of peakCells) {
+      const px = (((p.k % mw0) + 0.5) / mw0) * w;
+      const py = ((((p.k / mw0) | 0) + 0.5) / mh0) * h;
+      const kx = Math.round(px), ky = Math.round(py);
+      const want = top * (0.7 + 0.3 * p.s);
+      /* 3×3 微扩散：别让峰顶是一根 1 像素的针 */
+      put(kx, ky, want);
+      put(kx - 1, ky, want * 0.92);
+      put(kx + 1, ky, want * 0.92);
+      put(kx, ky - 1, want * 0.92);
+      put(kx, ky + 1, want * 0.92);
+    }
   }
   const hInv = 1 / (maxH || 1);
   for (let k = 0; k < n; k++) {
