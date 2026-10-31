@@ -623,6 +623,49 @@ async function main() {
   })()`);
   check('★7f 勾「松手烘焙」⇒ 一松手就定稿（无待烘焙内容）',
     !!bakeOnRelease && !bakeOnRelease.error && bakeOnRelease.bakeDisabledAfterRelease === true, bakeOnRelease);
+
+  /* ★7g 变换「纵向不补」：把内容往下推一大截，**顶上一段必须是空的**（不能由底部补上来）。
+     用户 2026-10-31 18:12：「上面缺失的部分不需要从底部补」。 */
+  const tfNoFill = await ev(`(async function () {
+    const bake = document.getElementById('ed-tf-bake');
+    if (bake && !bake.disabled) bake.click();
+    document.querySelector('[data-mode="transform"]').click();
+    await new Promise((res) => requestAnimationFrame(res));
+    const c = document.getElementById('ed-canvas');
+    const r = c.getBoundingClientRect();
+    const g = c.getContext('2d');
+    const box = window.__lkTfBox();
+    if (!box) return { error: 'no tfBox' };
+    const view = window.__lkView();
+    const landIn = (y0cell, y1cell) => {
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      const ya = Math.max(0, Math.round(view.panY + y0cell * view.cellPx));
+      const yb = Math.min(c.height - 1, Math.round(view.panY + y1cell * view.cellPx));
+      for (let y = ya; y <= yb; y++) for (let x = 0; x < c.width; x++) {
+        const o = (y * c.width + x) * 4;
+        if (d[o + 1] > d[o] + 8 && d[o + 1] > d[o + 2] + 20 && d[o + 1] > 90) n++;
+      }
+      return n;
+    };
+    const topBefore = landIn(0, 60);
+    const boxBefore = window.__lkTfBox();
+    const sx = view.panX + ((box.x0 + box.x1) / 2) * view.cellPx;
+    const sy = view.panY + ((box.y0 + box.y1) / 2) * view.cellPx;
+    const mk = (t, x, y) => new PointerEvent(t, { clientX: r.left + x, clientY: r.top + y, bubbles: true, pointerId: 57, pointerType: 'mouse', button: 0, buttons: 1 });
+    c.dispatchEvent(mk('pointerdown', sx, sy));
+    /* 往下推 300 格：内容会被推出下边界；老实现（双轴取模）会把越界那段**从顶上补回来** */
+    c.dispatchEvent(mk('pointermove', sx, sy + 150 * view.cellPx));
+    c.dispatchEvent(mk('pointermove', sx, sy + 300 * view.cellPx));
+    c.dispatchEvent(mk('pointerup', sx, sy + 300 * view.cellPx));
+    await new Promise((res) => requestAnimationFrame(res));
+    const topAfter = landIn(0, 60);
+    const boxAfter = window.__lkTfBox();
+    const moved = !!boxAfter && !!boxBefore && boxAfter.y0 - boxBefore.y0 > 150;
+    return { topBefore, topAfter, moved, boxBefore, boxAfter, cellPx: +view.cellPx.toFixed(3) };
+  })()`);
+  check('★7g 变换纵向「留空」：内容往下推 300 格后，顶上 60 格不再有陆地（没有从底部补上来）',
+    !!tfNoFill && !tfNoFill.error && tfNoFill.moved === true && tfNoFill.topAfter === 0, tfNoFill);
   await click('#ed-undo');
   await sleep(250);
   /* 把湍流层重新显示回来（★9 生成时要有两层的效果） */

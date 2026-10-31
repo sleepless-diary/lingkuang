@@ -796,14 +796,17 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     const p = sphereMap(x, y);
     return src[p.y * PROTO_W + p.x];
   };
-  /** 变换专用：**两个方向都取模**（环面），不镜像、不加相位。
-   *  为什么和球面映射分开：变换是一次"刚性搬动"，采样必须是**一一对应**的 ——
-   *  镜像（极点的 π 相位）会把同一格内容映射到两个落点，于是每变换一次就多复制一份，
-   *  几次之后就满地碎片、面积越变越大（用户 2026-10-31 报的"变换几次就全消失/散架"）。
-   *  取模是循环移位：面积严格不变，也不会复制。 */
-  const sampleMod = (src: Uint8Array, x: number, y: number): number => {
+  /** 变换专用：**横向取模、纵向裁剪**（不镜像、不复制、也不从底部补）。
+   *  为什么和球面映射分开：
+   *   · 变换是一次"把这一层当一张纸搬动"的操作，采样必须一一对应；
+   *   · 极点外侧没有"另一边"可用 —— 球面上越过极点会镜像到对面经线，但那会把同一块内容
+   *     再画一遍（用户 2026-10-31 报的"变换几次就散架"）；从底部补（双轴取模）同样不是球面行为
+   *     （用户 18:12 追问"上面缺失的部分不需要从底部补"）。
+   *  所以：左右接着（经度是周期），上下**留空**（纬度到头就是到头）。 */
+  const sampleSheet = (src: Uint8Array, x: number, y: number): number => {
     const xx = ((Math.round(x) % PROTO_W) + PROTO_W) % PROTO_W;
-    const yy = ((Math.round(y) % PROTO_H) + PROTO_H) % PROTO_H;
+    const yy = Math.round(y);
+    if (yy < 0 || yy >= PROTO_H) return 0;
     return src[yy * PROTO_W + xx];
   };
 
@@ -888,7 +891,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         const px = x + 0.5 - cx - t.dx;
         const sx = cx + (px * cos - py * sin) * inv - 0.5;
         const sy = cy + (px * sin + py * cos) * inv - 0.5;
-        dst[row + x] = sampleMod(src, sx, sy);
+        dst[row + x] = sampleSheet(src, sx, sy);
       }
     }
     touchLayer(l.kind);
