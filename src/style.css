@@ -1968,6 +1968,24 @@ body.lk-map-editing { overflow: hidden; }
 .lk-ed__subnote { font-size: var(--text-2xs); color: rgba(232, 231, 223, .56); }
 .lk-ed__sub .lk-ed__tool { padding: 3px 10px; }
 
+/* ── 手绘原型的工具属性栏（第一百四十轮：单开一行）──────────────────────────────
+   笔刷大小 / 强度 / 粘性 / 液化三键 / 变换重置 —— 只放「当前工具用得上的」，
+   换工具就换内容；这样顶栏不会被十来颗控件挤爆，参数也有地方摆。 */
+.lk-ed__tools {
+  width: 100%; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; row-gap: 6px;
+  background: var(--chrome-2); color: var(--fg-inverse);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+  padding: 6px 12px; min-height: 38px;
+}
+.lk-ed__toolsname {
+  font-size: var(--text-2xs); font-weight: 600; color: var(--accent);
+  min-width: 28px; letter-spacing: .04em;
+}
+.lk-ed__tools .lk-ed__slider { color: rgba(232, 231, 223, .78); }
+.lk-ed__tools .lk-ed__slider input[type="range"] { width: 150px; }
+.lk-ed__tools .lk-ed__tool { padding: 3px 10px; }
+.lk-ed__tools #ed-liq-kinds, .lk-ed__tools #ed-tf-actions { display: inline-flex; gap: 4px; }
+
 /* ── 手绘原型的图层列表（第一百三十七轮）────────────────────────────────────
    左侧：图层列表 + 新建 + 当前层属性；右侧：画布。窄屏时自动压到 200px。 */
 .lk-ed__main { flex: 1; min-height: 0; display: flex; gap: 8px; }

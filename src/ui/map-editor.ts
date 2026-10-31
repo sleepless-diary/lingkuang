@@ -13,6 +13,16 @@
  *    · 噪声：所有可见噪声层**求和**（夹 −8..8）；
  *    · 湍流：不进网格合成，生成时**逐层叠加扰动**（各自参数）。
  *
+ *  ⭐ 第一百四十轮（用户原话）：「液化里面的收缩和扩张只有在笔刷移动时才生效，还有笔刷的大小范围
+ *  太小了，笔刷的推动在缓慢移动的情况下无作用，再加一个粘性系数的属性，再给工具的属性栏单开一行，
+ *  变换工具在变换过程中也会更新变换窗口，导致变换时轴心也会变，就会导致很多奇怪的bug，
+ *  还有我希望这整张图是左右贯通的，但是上下不贯通，上下改成超出范围的映射到对应位置，
+ *  毕竟我们这是一个星球」
+ *   ⇒ ① 液化改成**逐帧连续**（浮点位移场 + rAF：按住不动也持续缩/胀，慢拖也攒得出位移）；
+ *     ② 笔刷 1..40 → **1..160** 格；③ 新增 **粘性 0..8**；④ 笔刷/强度/粘性搬到**单独一行**属性栏；
+ *     ⑤ 变换框与轴心**按下即冻结**（拖动中不重算包围盒，松手才重算）；
+ *     ⑥ 采样与落笔按星球规则：横向**取模环绕**（经度贯通）、纵向**折返映射**（纬度不贯通）。
+ *
  *  ⚠️ 界面不用 emoji、不用黄色系文字（AGENTS.md），颜色只用 tokens.css 的变量；
  *  画布里的配色是**地图语义色**，不参与文字对比度那条规矩。 */
 
@@ -38,6 +48,12 @@ const MAX_UNDO = 30;
 const ZOOM_MIN = 1;
 const ZOOM_MAX = 24;
 const TURB_LAND_BLUR = 20;   /* 海陆场糊开多少格（决定湍流能把海岸推多远），与生成器一致 */
+/** 第一百四十轮：笔刷上限从 40 抬到 160 格（1024 宽的 1/6，够盖住一整片大陆）。 */
+const BRUSH_MIN = 1;
+const BRUSH_MAX = 160;
+/** 液化粘性 0..8（0 = 像水，8 = 像稠浆：只有笔心带得动、整体更慢）。 */
+const VISC_MIN = 0;
+const VISC_MAX = 8;
 
 type Mode = 'brush' | 'transform' | 'liquify';
 type LiquifyKind = 'push' | 'pinch' | 'bulge';
@@ -115,6 +131,8 @@ let lastKind: ProtoLayerKind | null = null;
 let brushCells = 8;
 let strength = 5;
 let liquifyKind: LiquifyKind = 'push';
+/** 粘性系数（液化专用）：越高越"稠" —— 衰减更陡、整体位移更慢；越低越像水。 */
+let viscosity = 4;
 let zoom = 1;
 let panX = 0;
 let panY = 0;
@@ -178,6 +196,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   brushCells = 8;
   strength = 5;
   liquifyKind = 'push';
+  viscosity = 4;
   zoom = 1;
   panX = 0;
   panY = 0;
@@ -198,16 +217,6 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         <button class="lk-ed__tool" data-mode="transform" title="变换：拖动移动 / 拖角缩放 / 拖顶部圆点旋转">变换</button>
         <button class="lk-ed__tool" data-mode="liquify" title="液化：推挤 / 膨胀 / 收缩当前图层">液化</button>
       </span>
-      <label class="lk-ed__slider" title="笔刷大小（单位：原型格）">
-        <span>笔刷</span>
-        <input type="range" id="ed-brush" min="1" max="40" step="1" value="8">
-        <span class="lk-ed__val" id="ed-brush-n">8</span>
-      </label>
-      <label class="lk-ed__slider" id="ed-strength-box" title="强度（噪声 / 湍流 / 液化用）">
-        <span>强度</span>
-        <input type="range" id="ed-strength" min="1" max="8" step="1" value="5">
-        <span class="lk-ed__val" id="ed-strength-n">5</span>
-      </label>
       <span class="lk-ed__group">
         <button class="lk-ed__btn" id="ed-zoom-out" title="缩小">−</button>
         <button class="lk-ed__btn" id="ed-zoom-fit" title="适应窗口（1×）">适应</button>
@@ -223,6 +232,30 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       </label>
       <button class="lk-ed__btn is-primary" id="ed-go" title="按这幅原型生成星球（当前地图的种子与档位）">按这幅生成</button>
       <button class="lk-ed__close" id="ed-close" title="关掉（Esc）">×</button>
+    </div>
+    <div class="lk-ed__tools" id="ed-tools">
+      <span class="lk-ed__toolsname" id="ed-tools-name">画笔</span>
+      <label class="lk-ed__slider" id="ed-brush-box" title="笔刷大小（原型格）。快捷键 [ ] 微调">
+        <span>大小</span>
+        <input type="range" id="ed-brush" min="1" max="160" step="1" value="8">
+        <span class="lk-ed__val" id="ed-brush-n">8</span>
+      </label>
+      <label class="lk-ed__slider" id="ed-strength-box" title="强度 / 压力（地形强度、湍流强度、液化力度都用它）">
+        <span>强度</span>
+        <input type="range" id="ed-strength" min="1" max="8" step="1" value="5">
+        <span class="lk-ed__val" id="ed-strength-n">5</span>
+      </label>
+      <label class="lk-ed__slider" id="ed-visc-box" title="粘性（液化）：越高越稠 —— 只有笔心带得动、边缘几乎不动、整体也更慢；越低越像水，整片跟着走">
+        <span>粘性</span>
+        <input type="range" id="ed-visc" min="0" max="8" step="1" value="4">
+        <span class="lk-ed__val" id="ed-visc-n">4</span>
+      </label>
+      <span class="lk-ed__group" id="ed-liq-kinds"></span>
+      <span class="lk-ed__subnote" id="ed-tools-hint"></span>
+      <span class="lk-ed__spacer"></span>
+      <span class="lk-ed__group" id="ed-tf-actions">
+        <button class="lk-ed__btn" id="ed-tf-reset" title="把这一层的变换归零，包围盒重新贴合内容">重置变换</button>
+      </span>
     </div>
     <div class="lk-ed__sub">
       <span class="lk-ed__subtitle" id="ed-layer-name">海陆</span>
@@ -274,6 +307,13 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   const strEl = q<HTMLInputElement>('#ed-strength');
   const strNEl = q<HTMLElement>('#ed-strength-n');
   const strBox = q<HTMLElement>('#ed-strength-box');
+  const viscEl = q<HTMLInputElement>('#ed-visc');
+  const viscNEl = q<HTMLElement>('#ed-visc-n');
+  const viscBox = q<HTMLElement>('#ed-visc-box');
+  const liqKindsEl = q<HTMLElement>('#ed-liq-kinds');
+  const tfActionsEl = q<HTMLElement>('#ed-tf-actions');
+  const toolsNameEl = q<HTMLElement>('#ed-tools-name');
+  const toolsHintEl = q<HTMLElement>('#ed-tools-hint');
   const brushesEl = q<HTMLElement>('#ed-brushes');
   const layerNameEl = q<HTMLElement>('#ed-layer-name');
   const layerHintEl = q<HTMLElement>('#ed-layer-hint');
@@ -284,7 +324,8 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   const mapSeed = String(currentWorld(store).maps?.[0]?.terrain?.seed ?? '灵框');
 
   /* ── 合成缓存 ─────────────────────────────────────────────────────────── */
-  let compDirty = true;
+  /** 哪些类别需要重算合成（第一百四十轮：液化/变换逐帧跑，不能每帧把四张全重算）。 */
+  const compDirtyKinds = new Set<ProtoLayerKind>(PROTO_KINDS);
   let previewDirty = true;
   let landComp: Uint8Array = new Uint8Array(PROTO_W * PROTO_H);
   let zoneComp: Uint8Array = new Uint8Array(PROTO_W * PROTO_H);
@@ -299,20 +340,24 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
 
   const active = (): DecodedLayer | undefined => doc.layers.find((l) => l.id === activeId);
   const activeKind = (): ProtoLayerKind => active()?.kind ?? 'land';
-  const checkpoint = () => { landRev++; compDirty = true; previewDirty = true; };
+  const checkpoint = () => {
+    landRev++;
+    for (const k of PROTO_KINDS) compDirtyKinds.add(k);
+    previewDirty = true;
+  };
   /** 只改了某一层：只有海陆层会让"糊开的海陆场"失效，别的层不必重算它（卡顿的主要来源）。 */
   const touchLayer = (kind: ProtoLayerKind) => {
     if (kind === 'land') landRev++;
-    compDirty = true;
+    compDirtyKinds.add(kind);
     previewDirty = true;
   };
 
   const recomputeComps = () => {
-    landComp = compositeU8(doc, 'land');
-    zoneComp = compositeU8(doc, 'zone');
-    climateComp = compositeU8(doc, 'climate');
-    noiseComp = compositeNoise(doc);
-    compDirty = false;
+    if (compDirtyKinds.has('land')) landComp = compositeU8(doc, 'land');
+    if (compDirtyKinds.has('zone')) zoneComp = compositeU8(doc, 'zone');
+    if (compDirtyKinds.has('climate')) climateComp = compositeU8(doc, 'climate');
+    if (compDirtyKinds.has('noise')) noiseComp = compositeNoise(doc);
+    compDirtyKinds.clear();
   };
 
   const blurField = (src: Float32Array, r: number): Float32Array => {
@@ -425,7 +470,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
 
   function paintBuf() {
     if (!bctx || !img) return;
-    if (compDirty) recomputeComps();
+    if (compDirtyKinds.size) recomputeComps();
     /* ⭐ 第一百三十八轮：**刷完再算**。
        笔画/变换/液化进行中（`strokeBusy`）一律不重算湍流预览（多层膨胀+模糊+噪声是"卡"的根源）：
        · 正在改海陆层 → 直接显示裸海陆（笔下的形状跟手）；
@@ -647,9 +692,18 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       y: Math.floor(((clientY - r.top) * k - panY) / cp),
     };
   };
+  /** 同一套换算，但**不取整**：液化要靠亚格位移累积，慢拖才推得动。 */
+  const cellAtF = (clientX: number, clientY: number): { x: number; y: number } => {
+    const r = canvas.getBoundingClientRect();
+    const k = r.width ? vw / r.width : 1;
+    const cp = contentW() / PROTO_W;
+    return {
+      x: ((clientX - r.left) * k - panX) / cp,
+      y: ((clientY - r.top) * k - panY) / cp,
+    };
+  };
 
-  const currentValue = (): number => {
-    const kind = activeKind();
+  const currentValue = (): number => {    const kind = activeKind();
     const b = PALETTES[kind].find((x) => x.id === toolId) ?? PALETTES[kind][0];
     /* 地形：类型码 + 顶栏强度滑块（0..8）打包进同一格 */
     if (kind === 'zone') return b.value === 0 ? 0 : ZONE_PACK(b.value, strength);
@@ -691,6 +745,26 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     paint();
   };
 
+  /* ── 星球映射（第一百四十轮）────────────────────────────────────────────
+     经度贯通、纬度不贯通：
+       · 横向（x）**取模**：画到最右边会接着从最左边出来，采样也一样，接缝处没有"断头"；
+       · 纵向（y）**折返**：越过北极/南极的坐标映射到对侧同一列（镜像），不绕回来。
+     浮点优先：位移场里存的是小数，`Math.round` 只在最后取格时做（以前在半格处就被舍成 0，
+     所以"慢速推挤"看起来像没反应）。 */
+  const wrapXf = (x: number): number => {
+    const m = x % PROTO_W;
+    return m < 0 ? m + PROTO_W : m;
+  };
+  const foldYf = (y: number): number => {
+    const p = PROTO_H * 2;
+    let m = y % p;
+    if (m < 0) m += p;
+    return m < PROTO_H ? m : p - 1 - m;
+  };
+  /** 从 `src` 取一格（先取整再环绕/折返；反过来会在负坐标处越界到 W 或 H）。 */
+  const sampleWrap = (src: Uint8Array, x: number, y: number): number =>
+    src[foldYf(Math.round(y)) * PROTO_W + wrapXf(Math.round(x))];
+
   const stamp = (cx: number, cy: number) => {
     const l = active();
     if (!l) return;
@@ -700,10 +774,10 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     for (let y = cy - r; y <= cy + r; y++) {
       if (y < 0 || y >= PROTO_H) continue;
       for (let x = cx - r; x <= cx + r; x++) {
-        if (x < 0 || x >= PROTO_W) continue;
         const dx = x - cx, dy = y - cy;
         if (r > 0 && dx * dx + dy * dy > r * r + r * 0.6) continue;
-        arr[y * PROTO_W + x] = val;
+        /* 横向环绕：这一笔越过右边界的那半圈，落到左边的同一行 */
+        arr[y * PROTO_W + wrapXf(x)] = val;
       }
     }
   };
@@ -715,12 +789,16 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     }
   };
 
-  /* ── 变换：移动 / 缩放 / 旋转 ───────────────────────────────────────────── */
+  /* ── 变换：移动 / 缩放 / 旋转 ─────────────────────────────────────────────
+     ⭐ 第一百四十轮：**按下即冻结**。以前每次 pointermove 都 `syncTfBox()`（拿当前数据重算包围盒），
+     于是拖动过程中框和轴心自己也在动 —— 缩放/旋转会越拖越偏，还能把自己拽回来（用户报的"奇怪的 bug"）。
+     现在 `tfDrag.box0` 保存落笔那一刻的包围盒，整个拖动过程都用它当轴心，**松手才重算**。 */
   type Tf = { dx: number; dy: number; scale: number; rot: number };
+  type BBox = { cx: number; cy: number; x0: number; y0: number; x1: number; y1: number };
   let tf: Tf = { dx: 0, dy: 0, scale: 1, rot: 0 };
   let tfSnapshot: Uint8Array | Int8Array | null = null;
-  let tfDrag: { kind: 'move' | 'scale' | 'rot'; sx: number; sy: number; base: Tf; dist0: number; ang0: number } | null = null;
-  let tfBBox: { cx: number; cy: number; x0: number; y0: number; x1: number; y1: number } | null = null;
+  let tfDrag: { kind: 'move' | 'scale' | 'rot'; sx: number; sy: number; base: Tf; dist0: number; ang0: number; box0: BBox } | null = null;
+  let tfBBox: BBox | null = null;
 
   const computeBBox = (l: DecodedLayer) => {
     let x0 = PROTO_W, y0 = PROTO_H, x1 = -1, y1 = -1;
@@ -734,22 +812,26 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     if (x1 < 0) return null;
     return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, x0: x0 - 0.5, y0: y0 - 0.5, x1: x1 + 1.5, y1: y1 + 1.5 };
   };
-  const syncTfBox = () => {
-    const l = active();
-    tfBBox = l ? computeBBox(l) : null;
-    if (!tfBBox) { tfBox = null; return; }
-    const w = (tfBBox.x1 - tfBBox.x0) * tf.scale;
-    const h = (tfBBox.y1 - tfBBox.y0) * tf.scale;
-    const cx = tfBBox.cx + tf.dx, cy = tfBBox.cy + tf.dy;
-    tfBox = { x0: cx - w / 2, y0: cy - h / 2, x1: cx + w / 2, y1: cy + h / 2 };
+  /** 包围盒 + 当前 tf ⇒ 屏幕框（cell 坐标）。拖动中传冻结的 box0，只在换层/松手时传新算的。 */
+  const boxFor = (b: BBox, t: Tf) => {
+    const w = (b.x1 - b.x0) * t.scale;
+    const h = (b.y1 - b.y0) * t.scale;
+    const cx = b.cx + t.dx, cy = b.cy + t.dy;
+    return { x0: cx - w / 2, y0: cy - h / 2, x1: cx + w / 2, y1: cy + h / 2 };
   };
-  /** 把快照按 tf 重采样进图层（最近邻；绕 bbox 中心旋转/缩放）。 */
-  const applyTransform = () => {
+  const syncTfBox = (bbox?: BBox | null) => {
+    if (bbox !== undefined) tfBBox = bbox;
+    else tfBBox = active() ? computeBBox(active()!) : null;
+    tfBox = tfBBox ? boxFor(tfBBox, tf) : null;
+  };
+  /** 把快照按 tf 重采样进图层（最近邻；绕 **冻结的** bbox 中心旋转/缩放；横向环绕）。 */
+  const applyTransform = (bbox?: BBox | null) => {
     const l = active();
-    if (!l || !tfSnapshot || !tfBBox) return;
+    const box = bbox ?? tfBBox;
+    if (!l || !tfSnapshot || !box) return;
     const src = tfSnapshot as unknown as Uint8Array;
     const dst = l.data as unknown as Uint8Array;
-    const { cx, cy } = tfBBox;
+    const { cx, cy } = box;
     const cos = Math.cos(-tf.rot), sin = Math.sin(-tf.rot);
     const inv = 1 / Math.max(0.05, tf.scale);
     for (let y = 0; y < PROTO_H; y++) {
@@ -757,9 +839,11 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       const py = y + 0.5 - cy - tf.dy;
       for (let x = 0; x < PROTO_W; x++) {
         const px = x + 0.5 - cx - tf.dx;
-        const sx = Math.round(cx + (px * cos - py * sin) * inv - 0.5);
-        const sy = Math.round(cy + (px * sin + py * cos) * inv - 0.5);
-        dst[row + x] = sx >= 0 && sx < PROTO_W && sy >= 0 && sy < PROTO_H ? src[sy * PROTO_W + sx] : 0;
+        const sx = cx + (px * cos - py * sin) * inv - 0.5;
+        const sy = cy + (px * sin + py * cos) * inv - 0.5;
+        /* 经度环绕（横向取模）、纬度折返（上下镜像）：整张图左右接得上，上下到头就折回来。
+           纵向"折回来"会撞到自己：折返层里取模后的行，再取一次正数即可（只会落到同一列）。 */
+        dst[row + x] = sampleWrap(src, sx, sy);
       }
     }
     touchLayer(l.kind);
@@ -771,39 +855,104 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     syncTfBox();
   };
 
-  /* ── 液化：推挤 / 膨胀 / 收缩 ───────────────────────────────────────────── */
+  /* ── 液化：推挤 / 收缩 / 膨胀（第一百四十轮：逐帧连续）───────────────────────
+     老实现只在 pointermove 里跑一次，而且把「这一帧指针走了几格」直接当位移：
+       · 收缩 / 膨胀 不动就没有位移 ⇒ 按住不动毫无反应；
+       · 推挤 慢拖时位移 < 半格，`Math.round` 一舍就是 0 ⇒ 怎么拖都不动。
+     现在改成**浮点位移场**（每格一个 (dx,dy)，落笔清零）+ 每帧一步：
+       · 推挤：把这一帧的指针位移 × 衰减 × 强度**累加**进场里（多慢都能攒够一格）；
+       · 收缩 / 膨胀：每帧把「指向笔心 / 背离笔心」的一小步累加进场里（按住就一直缩/胀）；
+       · 采样永远从**落笔快照**取，按星球规则环绕/折返，所以不会越抹越花。
+     粘性（0..8）同时管两件事：衰减曲线更陡（只有笔心带得动）+ 整体位移更慢（像稠浆）。 */
   let liqSnapshot: Uint8Array | Int8Array | null = null;
-  let liqLast: { x: number; y: number } | null = null;
-  const liquifyAt = (x: number, y: number) => {
+  let liqDx: Float32Array | null = null;
+  let liqDy: Float32Array | null = null;
+  let liqCursor = { x: 0, y: 0 };   /* 当前笔心（格，可为小数） */
+  let liqPrev = { x: 0, y: 0 };     /* 上一帧处理过的笔心 */
+  let liqRaf = 0;
+  let liqActive = false;
+
+  const liquifyBegin = (x: number, y: number) => {
+    liqSnapshot = active()
+      ? (active()!.data instanceof Int8Array ? new Int8Array(active()!.data) : new Uint8Array(active()!.data))
+      : null;
+    const n = PROTO_W * PROTO_H;
+    if (!liqDx || liqDx.length !== n) { liqDx = new Float32Array(n); liqDy = new Float32Array(n); }
+    else { liqDx.fill(0); liqDy!.fill(0); }
+    liqCursor = { x, y };
+    liqPrev = { x, y };
+    liqActive = true;
+    /* 按下就先走一步：单击 / 飞快一笔也要有反应（rAF 要等下一帧才轮上，合成事件里甚至没有下一帧）。 */
+    if (liquifyStep(0, 0)) { paintBuf(); paint(); }
+    if (!liqRaf) liqRaf = window.requestAnimationFrame(liquifyFrame);
+  };
+  const liquifyEnd = () => {
+    if (liqRaf) { window.cancelAnimationFrame(liqRaf); liqRaf = 0; }
+    liqActive = false;
+    liqSnapshot = null;
+    liqDx = null;
+    liqDy = null;
+  };
+  const liquifyFrame = () => {
+    liqRaf = 0;
+    if (!liqActive) return;
+    if (liquifyStep(liqCursor.x - liqPrev.x, liqCursor.y - liqPrev.y)) {
+      paintBuf();
+      paint();
+    }
+    liqPrev = { ...liqCursor };
+    if (liqActive) liqRaf = window.requestAnimationFrame(liquifyFrame);
+  };
+  /** 一帧的液化：累加位移场 + 重采样受影响的那一块。返回是否真的改过东西。 */
+  const liquifyStep = (dxMove: number, dyMove: number): boolean => {
     const l = active();
-    if (!l || !liqSnapshot || !liqLast) return;
+    if (!l || !liqSnapshot || !liqDx || !liqDy) return false;
     const src = liqSnapshot as unknown as Uint8Array;
     const dst = l.data as unknown as Uint8Array;
     const r = Math.max(1, brushCells);
     const r2 = r * r;
-    const k = (strength / 8) * 0.55;
-    const dx = x - liqLast.x, dy = y - liqLast.y;
-    const cx = liqLast.x + 0.5, cy = liqLast.y + 0.5;
-    const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(PROTO_W - 1, Math.ceil(cx + r));
-    const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(PROTO_H - 1, Math.ceil(cy + r));
-    for (let py = y0; py <= y1; py++) {
-      for (let px = x0; px <= x1; px++) {
-        const ox = px + 0.5 - cx, oy = py + 0.5 - cy;
+    const k = 0.55 * (strength / 8);
+    /* 推挤的增益接近 1：笔心附近的**内容跟着手指走**（以前乘 k 只有 0.2~0.5，
+       再加上半格取整，慢拖就被吃成 0 —— 用户报的"缓慢移动无作用"）。 */
+    const pushGain = 0.45 + 0.55 * (strength / 8);
+    const visc = Math.max(0, Math.min(1, viscosity / VISC_MAX));
+    const edgePow = 1 + visc * 2.5;      /* 粘性高 ⇒ 只有笔心带得动 */
+    const damp = 1 - 0.5 * visc;         /* 粘性高 ⇒ 整体也更慢 */
+    const cx = liqCursor.x, cy = liqCursor.y;
+    const moving = Math.abs(dxMove) > 1e-4 || Math.abs(dyMove) > 1e-4;
+    /* 推挤没有位移就什么都不用做（收缩/膨胀反过来：不动才是它们的主场） */
+    if (liquifyKind === 'push' && !moving) return false;
+    const span = Math.ceil(r) + 1;
+    let touched = false;
+    for (let oy = -span; oy <= span; oy++) {
+      const py = Math.round(cy + oy);
+      if (py < 0 || py >= PROTO_H) continue;
+      for (let ox = -span; ox <= span; ox++) {
         const d2 = ox * ox + oy * oy;
         if (d2 > r2) continue;
-        const fall = 1 - Math.sqrt(d2) / r;
-        let sx = px, sy = py;
-        if (liquifyKind === 'push') { sx = px - dx * fall * k; sy = py - dy * fall * k; }
-        else if (liquifyKind === 'pinch') { const m = 1 + k * fall; sx = cx + ox * m; sy = cy + oy * m; }
-        else { const m = 1 - k * fall; sx = cx + ox * m; sy = cy + oy * m; }
-        const ix = Math.round(sx), iy = Math.round(sy);
-        dst[py * PROTO_W + px] = ix >= 0 && ix < PROTO_W && iy >= 0 && iy < PROTO_H ? src[iy * PROTO_W + ix] : 0;
+        const px = wrapXf(Math.round(cx + ox));
+        const i = py * PROTO_W + px;
+        const fall = Math.pow(1 - Math.sqrt(d2) / r, edgePow);
+        if (fall <= 0.0008) continue;
+        if (liquifyKind === 'push') {
+          if (!moving) continue;
+          liqDx[i] += dxMove * fall * pushGain * damp;
+          liqDy[i] += dyMove * fall * pushGain * damp;
+        } else {
+          /* 收缩 = 内容朝笔心走；膨胀 = 内容背离笔心走。每帧一小步，按住就持续。 */
+          const dir = liquifyKind === 'pinch' ? -1 : 1;
+          const step = k * 0.10 * damp;
+          liqDx[i] += ox * fall * step * dir;
+          liqDy[i] += oy * fall * step * dir;
+        }
+        /* 重采样：从快照取「当前格 - 位移」，横向取模 / 纵向折返 */
+        dst[i] = sampleWrap(src, px - liqDx[i], py - liqDy[i]);
+        touched = true;
       }
     }
-    liqLast = { x, y };
-    touchLayer(l.kind);
+    if (touched) touchLayer(l.kind);
+    return touched;
   };
-
   /* ── 交互状态 ─────────────────────────────────────────────────────────── */
   let drawing = false;
   /** 笔画 / 变换 / 液化进行中：这段里**不重算湍流预览**（松手再算，见 `paintBuf()`） */
@@ -852,9 +1001,9 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       const r = canvas.getBoundingClientRect();
       const k = r.width ? vw / r.width : 1;
       const sx = (e.clientX - r.left) * k, sy = (e.clientY - r.top) * k;
-      const bcx = screenX(tfBBox.cx + tf.dx), bcy = screenY(tfBBox.cy + tf.dy);
-      const corner = screenX(tfBox ? tfBox.x1 : tfBBox.cx);
-      void corner;
+      /* 轴心 = 按下这一刻的包围盒（整个拖动过程都用它，见上面的注释） */
+      const box0: BBox = { ...tfBBox };
+      const bcx = screenX(box0.cx + tf.dx), bcy = screenY(box0.cy + tf.dy);
       strokeBusy = true;
       tfDrag = {
         kind: hit,
@@ -862,6 +1011,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         base: { ...tf },
         dist0: Math.max(4, Math.hypot(sx - bcx, sy - bcy)),
         ang0: Math.atan2(sy - bcy, sx - bcx),
+        box0,
       };
       try { canvas.setPointerCapture?.(e.pointerId); } catch { /* 合成事件 */ }
       e.preventDefault();
@@ -877,8 +1027,10 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     }
     pushUndoData(l);
     if (mode === 'liquify') {
-      liqSnapshot = l.data instanceof Int8Array ? new Int8Array(l.data) : new Uint8Array(l.data);
-      liqLast = p;
+      /* 逐帧连续：这里只负责"落笔 + 起循环"，之后的每一步都在 liquifyFrame 里。
+         用**亚格坐标**（cellAtF）落笔，慢拖也能攒出位移。 */
+      const lp = cellAtF(e.clientX, e.clientY);
+      liquifyBegin(lp.x, lp.y);
       drawing = true;
       strokeBusy = true;
       try { canvas.setPointerCapture?.(e.pointerId); } catch { /* 合成事件 */ }
@@ -909,7 +1061,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       return;
     }
     if (mode === 'transform' && tfDrag) {
-      const { cx, cy } = tfBBox!;
+      const { cx, cy } = tfDrag.box0;   /* 轴心：按下时冻结的那份，绝不重算 */
       /* ⚠️ 用**画布坐标**（ringX/ringY，与 tfDrag.sx/sy 同一套）算位移：
          混用 clientX 会把画布在窗口里的偏移量也算进位移（第一百三十七轮踩过，56px 被当成 300+）。 */
       const dxCell = (ringX - tfDrag.sx) / cellPx();
@@ -925,17 +1077,18 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         const ang = Math.atan2(ringY - bcy, ringX - bcx) - tfDrag.ang0;
         tf = { ...tfDrag.base, rot: tfDrag.base.rot + ang };
       }
-      syncTfBox();
-      applyTransform();
+      /* ⭐ 只重画「冻结轴心 + 当前 tf」的框；**不再**从数据重算包围盒（否则框和轴心会自己跑） */
+      tfBBox = tfDrag.box0;
+      tfBox = boxFor(tfDrag.box0, tf);
+      applyTransform(tfDrag.box0);
       paintBuf();
       paint();
       return;
     }
     if (mode === 'liquify' && drawing) {
-      const p = cellAt(e.clientX, e.clientY);
-      liquifyAt(p.x, p.y);
-      paintBuf();
-      paint();
+      /* 只更新笔心（亚格）；位移由 liquifyFrame 每帧累加（所以按住不动、慢慢拖都有作用） */
+      liqCursor = cellAtF(e.clientX, e.clientY);
+      drawOverlay();
       return;
     }
     if (drawing && last) {
@@ -951,11 +1104,18 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
 
   const endStroke = (e: PointerEvent) => {
     if (mode === 'transform' && tfDrag) {
+      /* 收尾：用冻结轴心把最后一帧落实，**这时才**按新数据重算包围盒（下一次拖动用新的） */
+      const l = active();
+      applyTransform(tfDrag.box0);
+      const box0 = tfDrag.box0;
+      void box0;
       tf = { dx: 0, dy: 0, scale: 1, rot: 0 };
       tfDrag = null;
       tfSnapshot = null;
-      syncTfBox();
+      tfBBox = l ? computeBBox(l) : null;
+      tfBox = tfBBox ? boxFor(tfBBox, tf) : null;
     }
+    if (mode === 'liquify') liquifyEnd();
     if (strokeBusy) {
       /* 松手才补湍流预览（笔画期间跳过了，见 paintBuf） */
       strokeBusy = false;
@@ -966,8 +1126,6 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     drawing = false;
     panning = false;
     last = null;
-    liqSnapshot = null;
-    liqLast = null;
     setCursorGrab(false);
     try { canvas.releasePointerCapture?.(e.pointerId); } catch { /* 已释放 */ }
   };
@@ -1119,8 +1277,9 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     el.querySelectorAll('[data-mode]').forEach((b) => {
       (b as HTMLElement).classList.toggle('is-on', (b as HTMLElement).dataset.mode === mode);
     });
-    /* 画笔 / 液化调色板 */
+    /* 画笔 / 液化调色板（画笔那一半在子栏，液化那三个键在属性栏） */
     let toolButtons = '';
+    let liqButtons = '';
     if (mode === 'brush') {
       if (kind === 'noise') {
         /* 旧噪声层只读：不给画笔（数据仍参与生成） */
@@ -1131,26 +1290,41 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         toolButtons = pal.map((b) => `<button class="lk-ed__tool${b.id === toolId ? ' is-on' : ''}" data-tool="${b.id}" title="${b.hint}">${b.label}</button>`).join('');
       }
     } else if (mode === 'liquify') {
-      toolButtons = ([['push', '推挤'], ['pinch', '收缩'], ['bulge', '膨胀']] as [LiquifyKind, string][])
-        .map(([id, name]) => `<button class="lk-ed__tool${id === liquifyKind ? ' is-on' : ''}" data-liq="${id}" title="液化：${name}">${name}</button>`).join('');
+      liqButtons = ([['push', '推挤'], ['pinch', '收缩'], ['bulge', '膨胀']] as [LiquifyKind, string][])
+        .map(([id, name]) => `<button class="lk-ed__tool${id === liquifyKind ? ' is-on' : ''}" data-liq="${id}" title="液化：${name}（按住不动也持续生效）">${name}</button>`).join('');
     } else {
       toolButtons = '<span class="lk-ed__subnote">拖动框内移动 · 拖四角缩放 · 拖顶部圆点旋转</span>';
     }
     brushesEl.innerHTML = toolButtons;
+    liqKindsEl.innerHTML = liqButtons;
+
     const l = active();
     layerNameEl.textContent = l ? l.name : '—';
     layerHintEl.textContent = mode === 'transform' ? '变换只会改当前这一层的网格（最近邻重采样）'
       : mode === 'liquify' ? '液化只在当前层上推/缩，松手前不会破坏别的层'
         : (PALETTES[kind].find((b) => b.id === toolId)?.hint ?? '');
-    /* 强度滑块：地形（逐格强度）、湍流、液化都用它 */
-    const strOn = kind === 'zone' || kind === 'turb' || mode === 'liquify';
+    /* ── 属性栏（第一百四十轮单开一行）：按当前工具换内容 ───────────────── */
+    toolsNameEl.textContent = mode === 'brush' ? '画笔' : mode === 'liquify' ? '液化' : '变换';
+    const liqMode = mode === 'liquify';
+    const tfMode = mode === 'transform';
+    /* 强度：地形（逐格强度）、湍流、液化都用它 */
+    const strOn = kind === 'zone' || kind === 'turb' || liqMode;
     strBox.style.display = strOn ? 'flex' : 'none';
+    viscBox.style.display = liqMode ? 'flex' : 'none';
+    liqKindsEl.style.display = liqMode ? 'inline-flex' : 'none';
+    tfActionsEl.style.display = tfMode ? 'inline-flex' : 'none';
+    toolsHintEl.textContent = tfMode
+      ? '轴心在按下时就冻结了：拖动中框跟着手势变，不会自己跑。'
+      : liqMode
+        ? '按住不动也在缩/胀；粘性越高越稠（只有笔心带得动，整体也慢）。'
+        : '';
     brushEl.value = String(brushCells);
     brushNEl.textContent = String(brushCells);
     strEl.value = String(strength);
     strNEl.textContent = String(strength);
-    const tfMode = mode === 'transform';
-    q<HTMLElement>('#ed-brush').style.opacity = tfMode ? '0.35' : '1';
+    viscEl.value = String(viscosity);
+    viscNEl.textContent = String(viscosity);
+    q<HTMLElement>('#ed-brush-box').style.opacity = tfMode ? '0.35' : '1';
   }
 
   /* ── 事件：顶栏 ───────────────────────────────────────────────────────── */
@@ -1193,6 +1367,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     if (t.closest('#ed-zoom-out')) { setZoom(zoom / 1.5); return; }
     if (t.closest('#ed-zoom-fit')) { zoom = 1; clampPan(); paint(); return; }
     if (t.closest('#ed-undo')) { undo(); return; }
+    if (t.closest('#ed-tf-reset')) { resetTf(); paintBuf(); paint(); noteEl.textContent = '变换已归零（包围盒重新贴合内容）'; return; }
     if (t.closest('#ed-export')) { exportPng(); return; }
     if (t.closest('#ed-add')) { addLayer(); return; }
     if (t.closest('#ed-go')) { void applyPatch(); return; }
@@ -1263,14 +1438,19 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   propsEl.addEventListener('input', onProp);
   propsEl.addEventListener('change', onProp);
 
+  brushEl.max = String(BRUSH_MAX);
   brushEl.addEventListener('input', () => {
-    brushCells = Math.max(1, Math.min(40, Number(brushEl.value) || 1));
+    brushCells = Math.max(BRUSH_MIN, Math.min(BRUSH_MAX, Number(brushEl.value) || BRUSH_MIN));
     brushNEl.textContent = String(brushCells);
     drawOverlay();
   });
   strEl.addEventListener('input', () => {
     strength = Math.max(1, Math.min(8, Number(strEl.value) || 1));
     strNEl.textContent = String(strength);
+  });
+  viscEl.addEventListener('input', () => {
+    viscosity = Math.max(VISC_MIN, Math.min(VISC_MAX, Number(viscEl.value) || 0));
+    viscNEl.textContent = String(viscosity);
   });
   (el.querySelector('#ed-blank-sea') as HTMLInputElement | null)?.addEventListener('change', () => {
     previewDirty = true;
@@ -1397,8 +1577,8 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     if (e.key === 'b' || e.key === 'B') { mode = 'brush'; resetTf(); tfBox = null; syncUi(); paint(); return; }
     if (e.key === 't' || e.key === 'T') { mode = 'transform'; syncTfBox(); syncUi(); paint(); return; }
     if (e.key === 'l' || e.key === 'L') { mode = 'liquify'; tfBox = null; syncUi(); paint(); return; }
-    if (e.key === '[') { brushEl.value = String(Math.max(1, brushCells - 1)); brushEl.dispatchEvent(new Event('input')); }
-    if (e.key === ']') { brushEl.value = String(Math.min(40, brushCells + 1)); brushEl.dispatchEvent(new Event('input')); }
+    if (e.key === '[') { brushEl.value = String(Math.max(BRUSH_MIN, brushCells - 1)); brushEl.dispatchEvent(new Event('input')); }
+    if (e.key === ']') { brushEl.value = String(Math.min(BRUSH_MAX, brushCells + 1)); brushEl.dispatchEvent(new Event('input')); }
   };
   keyUpHandler = (e: KeyboardEvent) => { if (e.code === 'Space' || e.key === ' ') { spaceDown = false; setCursorGrab(false); } };
   window.addEventListener('keydown', keyHandler);
@@ -1407,6 +1587,10 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => resize()) : null;
   ro?.observe(stage);
   (el as HTMLElement & { _ro?: ResizeObserver | null })._ro = ro;
+
+  /* e2e 钩子（tools/e2e/map-draw.cjs 的 ★7c 用）：变换框在拖动过程中必须是**冻结**的。
+     只读、不改状态；没有它就断言不到「轴心有没有跑」。 */
+  (window as any).__lkTfBox = () => (tfBox ? { ...tfBox } : null);
 
   renderLayers();
   renderProps();

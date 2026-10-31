@@ -113,7 +113,12 @@ async function main() {
       groups: [...el.querySelectorAll('.lk-ed__grouphead')].map((g) => (g.textContent || '').replace(/\\d+/g, '').trim()).join(','),
       draggable: [...el.querySelectorAll('[data-kind]')].every((r) => r.getAttribute('draggable') === 'true'),
       tools: [...el.querySelectorAll('[data-tool]')].map((b) => b.dataset.tool).join(','),
-      slider: !!s && s.type === 'range' && s.min === '1' && s.max === '40' && s.value === '8',
+      slider: !!s && s.type === 'range' && s.min === '1' && s.max === '160' && s.value === '8',
+      /* 第一百四十轮：笔刷/强度/粘性搬到**单独一行**属性栏（.lk-ed__tools） */
+      toolsRow: !!el.querySelector('.lk-ed__tools #ed-brush')
+        && !!el.querySelector('.lk-ed__tools #ed-strength')
+        && !!el.querySelector('.lk-ed__tools #ed-visc'),
+      barHasSliders: !!el.querySelector('.lk-ed__bar input[type="range"]'),
       zoomBtns: !!document.getElementById('ed-zoom-in') && !!document.getElementById('ed-zoom-out') && !!document.getElementById('ed-zoom-fit'),
       canvases: !!c && !!document.getElementById('ed-cursor'),
       cursorPE: getComputedStyle(document.getElementById('ed-cursor')).pointerEvents,
@@ -123,11 +128,12 @@ async function main() {
     };
   })()`);
   await shot();
-  check('★1 面板：生成层/效果层两组、4 行图层（噪声已并进地形）、海陆层陆地/海洋、笔刷 1~40',
+  check('★1 面板：生成层/效果层两组、4 行图层（噪声已并进地形）、海陆层陆地/海洋、笔刷 1~160、属性栏单开一行',
     panel.open === true && panel.layers === 'land,zone,climate,turb'
     && panel.addKinds === 'land,zone,climate,turb'
     && panel.groups === '生成层,效果层' && panel.draggable === true
     && panel.tools === 'land,sea' && panel.slider === true && panel.zoomBtns === true
+    && panel.toolsRow === true && panel.barHasSliders === false
     && panel.canvases === true && panel.cursorPE === 'none' && panel.side === true
     && panel.zoom === '100%' && panel.fills === true, panel);
 
@@ -420,10 +426,55 @@ async function main() {
   const tfUndone = await ev(BBOX);
   check('★7b 撤销变换：陆地包围盒回到拖动之前（±3px）',
     Math.abs(tfUndone.minX - tf.before.minX) <= 3, { before: tf.before.minX, undone: tfUndone.minX });
+
+  /* ★7c 变换轴心冻结（第一百四十轮）：旋转 8 步，**变换框**（也就是轴心）不许动。
+     直接读窗口暴露的只读钩子 `__lkTfBox()` —— 老实现每步都按数据重算框，这里会漂几十像素。 */
+  const pivot = await ev(`(async function () {
+    const c = document.getElementById('ed-canvas');
+    const r = c.getBoundingClientRect();
+    const g = c.getContext('2d');
+    const scan = () => {
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      let minX = 1e9, minY = 1e9, maxX = -1, maxY = -1;
+      for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+        const o = (y * c.width + x) * 4;
+        if (d[o + 1] > d[o] + 8 && d[o + 1] > d[o + 2] + 20 && d[o + 1] > 90) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+      }
+      return { minX, minY, maxX, maxY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
+    };
+    document.querySelector('[data-kind="land"]').click();
+    document.querySelector('[data-mode="transform"]').click();
+    await new Promise((res) => requestAnimationFrame(res));
+    const box0 = window.__lkTfBox();
+    if (!box0) return { error: 'no tfBox' };
+    const b0 = scan();
+    const mx = (b0.minX + b0.maxX) / 2;
+    const R = Math.max(40, Math.abs(b0.minY - 30 - b0.cy));
+    const mk = (t, x, y) => new PointerEvent(t, { clientX: r.left + x, clientY: r.top + y, bubbles: true, pointerId: 51, pointerType: 'mouse', button: 0, buttons: 1 });
+    c.dispatchEvent(mk('pointerdown', mx, b0.minY - 30));
+    const boxes = [];
+    for (let i = 1; i <= 8; i++) {
+      const ang = -Math.PI / 2 + (i * 8) * Math.PI / 180;
+      c.dispatchEvent(mk('pointermove', b0.cx + Math.cos(ang) * R, b0.cy + Math.sin(ang) * R));
+      await new Promise((res) => requestAnimationFrame(res));
+      const b = window.__lkTfBox();
+      boxes.push({ cx: +((b.x0 + b.x1) / 2).toFixed(2), cy: +((b.y0 + b.y1) / 2).toFixed(2), w: +(b.x1 - b.x0).toFixed(2) });
+    }
+    c.dispatchEvent(mk('pointerup', b0.cx, b0.cy - R));
+    const c0 = { cx: (box0.x0 + box0.x1) / 2, cy: (box0.y0 + box0.y1) / 2 };
+    const drift = boxes.reduce((m, p) => Math.max(m, Math.hypot(p.cx - c0.cx, p.cy - c0.cy)), 0);
+    const after = scan();
+    const contentMoved = Math.abs(after.maxX - b0.maxX) + Math.abs(after.minY - b0.minY) > 2;
+    return { box0: { cx: +c0.cx.toFixed(2), cy: +c0.cy.toFixed(2) }, boxes, drift: +drift.toFixed(3), contentMoved };
+  })()`);
+  check('★7c 变换轴心冻结：旋转 8 步，变换框中心一动不动（轴心 = 按下那一刻）',
+    !!pivot && !pivot.error && pivot.drift <= 0.5 && pivot.contentMoved === true, pivot);
+  await click('#ed-undo');
+  await sleep(250);
   /* 把湍流层重新显示回来（★9 生成时要有两层的效果） */
   await setTurbOn(true);
 
-  /* ★8 液化：膨胀一笔 ⇒ 轮廓真的被撑开（先隐藏湍流，包围盒才是裸海陆层） */
+  /* ★8 液化：膨胀 / 推挤（第一百四十轮：**逐帧连续**，所以这里必须真的跨帧按住） */
   await setTurbOn(false);
   await ev(`(function () {
     document.querySelector('[data-kind="land"]').click();
@@ -433,38 +484,141 @@ async function main() {
   })()`);
   await ev(`(function () { const s = document.getElementById('ed-strength'); s.value = '8'; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
   await setBrush(26);
-  const liq = await ev(`(function () {
+  const LIQ_SCAN = `(function () {
+    const c = document.getElementById('ed-canvas');
+    const g = c.getContext('2d');
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    let minX = 1e9, minY = 1e9, maxX = -1, maxY = -1, n = 0;
+    for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+      const o = (y * c.width + x) * 4;
+      if (d[o + 1] > d[o] + 8 && d[o + 1] > d[o + 2] + 20 && d[o + 1] > 90) { n++; if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+    }
+    return { minX, minY, maxX, maxY, n };
+  })()`;
+  const liqBefore = await ev(LIQ_SCAN);
+  /* 从北岸边缘按下：轮廓会被撑出去（推动一笔只会让色块内部滑动，轮廓不变） */
+  await ev(`(function () {
+    const c = document.getElementById('ed-canvas');
+    const r = c.getBoundingClientRect();
+    const before = ${JSON.stringify(liqBefore)};
+    const x = r.left + (before.minX + before.maxX) / 2;
+    const y = r.top + before.minY + 4;
+    window.__lkLiqAt = { x, y };
+    c.dispatchEvent(new PointerEvent('pointerdown', { clientX: x, clientY: y, bubbles: true, pointerId: 31, pointerType: 'mouse', button: 0, buttons: 1 }));
+    return true;
+  })()`);
+  /* ⭐ 按住不动 400ms：老实现这一步什么都不发生，新实现要一直往外胀 */
+  await sleep(400);
+  const liqHeld = await ev(LIQ_SCAN);
+  /* 再慢慢横推 6 步（每步 3px，远小于一格）：老实现被 Math.round 舍成 0 */
+  for (let i = 1; i <= 6; i++) {
+    await ev(`(function () {
+      const p = window.__lkLiqAt;
+      const c = document.getElementById('ed-canvas');
+      c.dispatchEvent(new PointerEvent('pointermove', { clientX: p.x + ${i * 3}, clientY: p.y, bubbles: true, pointerId: 31, pointerType: 'mouse', button: 0, buttons: 1 }));
+      return true;
+    })()`);
+    await sleep(60);
+  }
+  await ev(`(function () {
+    const p = window.__lkLiqAt;
+    const c = document.getElementById('ed-canvas');
+    c.dispatchEvent(new PointerEvent('pointerup', { clientX: p.x + 18, clientY: p.y, bubbles: true, pointerId: 31, pointerType: 'mouse', button: 0, buttons: 1 }));
+    return true;
+  })()`);
+  await sleep(200);
+  const liqAfter = await ev(LIQ_SCAN);
+  check('★8 液化（按住不动）：膨胀一笔持续生效 ⇒ 轮廓被撑开',
+    liqHeld.minY < liqBefore.minY - 1 || liqHeld.n > liqBefore.n * 1.02,
+    { before: liqBefore, held: liqHeld });
+  check('★8b 液化（慢慢横拖）：亚格位移会累积 ⇒ 还在继续变',
+    liqAfter.n !== liqHeld.n || liqAfter.maxX !== liqHeld.maxX,
+    { held: liqHeld, after: liqAfter });
+
+  /* ★8c 推挤（慢拖 3px/步）：老实现「位移 × 强度」<半格，被 Math.round 舍成 0 ⇒ 拖了像没拖。
+     现在位移场是浮点、逐帧累加 ⇒ 画面签名一定会变。 */
+  await ev(`(function () { const b = document.querySelector('[data-liq="push"]'); if (b) b.click(); return !!b; })()`);
+  const pushSlow = await ev(`(async function () {
     const c = document.getElementById('ed-canvas');
     const r = c.getBoundingClientRect();
     const g = c.getContext('2d');
-    const scan = () => {
+    const sig = () => {
       const d = g.getImageData(0, 0, c.width, c.height).data;
-      let minX = 1e9, minY = 1e9, maxX = -1, maxY = -1, n = 0;
-      for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
-        const o = (y * c.width + x) * 4;
-        if (d[o + 1] > d[o] + 8 && d[o + 1] > d[o + 2] + 20 && d[o + 1] > 90) { n++; if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
-      }
-      return { minX, minY, maxX, maxY, n };
+      let s = 0;
+      for (let i = 0; i < d.length; i += 4) s = (s * 31 + d[i] + d[i + 1] * 3 + d[i + 2] * 7) % 1000000007;
+      return s;
     };
-    const before = scan();
-    const mk = (t, x, y) => new PointerEvent(t, { clientX: x, clientY: y, bubbles: true, pointerId: 31, pointerType: 'mouse', button: 0, buttons: 1 });
-    /* 从北岸边缘开始膨胀：轮廓会被撑出去（推动一笔只会让色块内部滑动，轮廓不变） */
-    const x = r.left + (before.minX + before.maxX) / 2;
-    const y = r.top + before.minY + 4;
-    c.dispatchEvent(mk('pointerdown', x, y));
-    for (let i = 1; i <= 6; i++) c.dispatchEvent(mk('pointermove', x + i * 3, y));
-    c.dispatchEvent(mk('pointerup', x + 18, y));
-    return { before, after: scan() };
+    const before = sig();
+    const at = window.__lkLiqAt || { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    const mk = (t, cx, cy) => new PointerEvent(t, { clientX: cx, clientY: cy, bubbles: true, pointerId: 33, pointerType: 'mouse', button: 0, buttons: 1 });
+    c.dispatchEvent(mk('pointerdown', at.x, at.y));
+    for (let i = 1; i <= 6; i++) {
+      c.dispatchEvent(mk('pointermove', at.x + i * 3, at.y));
+      await new Promise((res) => requestAnimationFrame(res));
+      await new Promise((res) => requestAnimationFrame(res));
+    }
+    c.dispatchEvent(mk('pointerup', at.x + 18, at.y));
+    await new Promise((res) => requestAnimationFrame(res));
+    return { before, after: sig() };
   })()`);
-  check('★8 液化：膨胀一笔 ⇒ 轮廓被撑开（minY 上移或陆地像素数变多）',
-    liq.after.minY < liq.before.minY - 1 || liq.after.n > liq.before.n * 1.02,
-    liq);
+  check('★8c 推挤（慢拖 3px/步）：亚格位移累积 ⇒ 画面真的变了',
+    !!pushSlow && pushSlow.before !== pushSlow.after, pushSlow);
   await setTurbOn(true);
+
+  /* ★11 经度环绕（第一百四十轮）：最左一列点一笔，最右**同一高度**也变陆地。
+     原理：横向取模 —— 原型 x=0 与 x=1023 是同一根经线，笔刷在接缝处应该接着画。
+     ⚠️ 先隐藏湍流层：湍流会把糊开的海陆场重新判成海，接缝那点小笔迹会被它吃掉（同 ★7/★8）。 */
+  await setTurbOn(false);
+  await ev(`(function () {
+    document.querySelector('[data-mode="brush"]').click();
+    document.querySelector('[data-kind="land"]').click();
+    const t = document.querySelector('[data-tool="land"]'); if (t) t.click();
+    return true;
+  })()`);
+  /* 先把缩放/平移复位（★3/★4 把它推到 261% 了，那样整张图画布铺满，找不到"接缝"） */
+  await click('#ed-zoom-fit');
+  await sleep(300);
+  await setBrush(14);
+  const seam = await ev(`(function () {
+    const c = document.getElementById('ed-canvas');
+    const g = c.getContext('2d');
+    const w = c.width, h = c.height;
+    const before = g.getImageData(0, 0, w, h).data;
+    /* 图片在画布上的真实边界：画布外是透明的（ctx.clearRect 之后只画了那张图） */
+    let minX = 1e9, maxX = -1, minY = 1e9, maxY = -1;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (before[(y * w + x) * 4 + 3] > 0) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+    }
+    const r = c.getBoundingClientRect();
+    const midY = Math.round((minY + maxY) / 2);
+    const mk = (t) => new PointerEvent(t, { clientX: r.left + minX + 2, clientY: r.top + midY, bubbles: true, pointerId: 41, pointerType: 'mouse', button: 0, buttons: 1 });
+    c.dispatchEvent(mk('pointerdown'));
+    c.dispatchEvent(mk('pointerup'));
+    const after = g.getImageData(0, 0, w, h).data;
+    const at = (x, y) => { const o = ((y * w + x) | 0) * 4; return [after[o], after[o + 1], after[o + 2], after[o + 3]]; };
+    return {
+      bounds: { minX, maxX, minY, maxY, midY },
+      leftEdge: at(minX + 2, midY),
+      rightEdge: at(maxX - 2, midY),
+      control: at(maxX - 2, midY - 80),
+    };
+  })()`);
+  check('★11 经度环绕：左边点一笔，右边同一高度也变陆地（接缝接得上）',
+    seam.bounds.maxX - seam.bounds.minX > 100
+    && (seam.leftEdge[1] > seam.leftEdge[0] + 8)
+    && (seam.rightEdge[1] > seam.rightEdge[0] + 8 && seam.rightEdge[1] > seam.rightEdge[2] + 20),
+    seam);
 
   /* ★9 按这幅原型生成 */
   await ev(`(function () { const b = document.getElementById('ed-go'); if (b) b.click(); return true; })()`);
   const genT = await waitFor(`!document.querySelector('.lk-ed')`, 90000, 400);
-  const map6 = diskMap();
+  /* 落盘是异步的（生成完 → 写盘 → 再画星球）。以前这里读得太早，proto 还是 null 就判了 FAIL；
+     现在轮询到盘上真有 proto 为止。 */
+  let map6 = diskMap();
+  for (let i = 0; i < 150 && !map6?.terrain?.proto; i++) {
+    await sleep(400);
+    map6 = diskMap();
+  }
   const proto6 = map6?.terrain?.proto ?? null;
   const canvas6 = await waitFor(`!!document.getElementById('map-terrain-canvas')`, 60000, 400);
   const tm6 = map6?.terrain ?? {};
