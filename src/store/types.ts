@@ -234,17 +234,35 @@ export interface MapTerrainSpec {
 
 /** 手绘原型（见 `MapTerrainSpec.proto`）。结构与 `src/mapgen/proto.ts` 的 `ProtoStored`
  *  **完全同形**（数据层不反向 import 渲染层，靠结构类型兼容）。
- *  层语义：land 0/1/2；zone 0 无 / 1 高山 / 2 丘陵 / 3 高原 / 4 盆地 / 5 湖泊内海；
- *  climate 0 无 / 1 沙地 / 2 湿地；noise 有符号 −8..8；edge 0..8。空层省略。 */
+ *  ⭐ 第一百三十七轮：**图层列表** —— 五类层（land/zone/climate/noise/turb）都可以有多张，
+ *  数组顺序 = 显示顺序（第一个在最上）；合成规则见 `src/mapgen/proto.ts` 文件头。
+ *  老数据里的 `land/zone/climate/noise/edge` 仍能读（自动展开成五层）。 */
 export interface MapProto {
   w: number;
   h: number;
   v?: number;
-  land: string;
+  layers?: MapProtoLayer[];
+  /* ── v1 兼容（只读）── */
+  land?: string;
   zone?: string;
   climate?: string;
   noise?: string;
   edge?: string;
+}
+
+/** 原型里的一层（`bits` = RLE+base64 的值网格；参数只对 turb 有意义）。 */
+export interface MapProtoLayer {
+  id: string;
+  kind: 'land' | 'zone' | 'climate' | 'noise' | 'turb';
+  name: string;
+  on?: boolean;
+  bits: string;
+  scale?: number;
+  amp?: number;
+  octaves?: number;
+  seed?: number;
+  blend?: 'add' | 'grow' | 'erode';
+  diffusion?: number;
 }
 
 /** 手绘海陆剪影（见 `MapTerrainSpec.mask`）。

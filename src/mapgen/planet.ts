@@ -32,9 +32,10 @@ import type { MapgenSpecInput, TerrainStats } from './index';
 import { climateHex, sampleRampHex, styleMaterial, styleSeabed, terrainStyleDef } from './styles';
 /* ⭐ 第一百三十五轮：手绘原型（多图层）—— 纯数据模块，不拉 DOM，能跟本文件一起离线打包。 */
 import {
-  CLIMATE_DRY, CLIMATE_WET, EDGE_BLUR_CELLS, EDGE_MAX, EDGE_TURB_AMP, LAND_SET, NOISE_MAX, SEA_SET,
+  CLIMATE_DRY, CLIMATE_WET, EDGE_MAX, LAND_SET, NOISE_MAX, SEA_SET,
   ZONE_BASIN, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PLATEAU,
-  buildEdgeTurbulence, decodeProtoInput, dilateField, type LegacyMaskStored, type ProtoInput,
+  buildEdgeTurbulence, compositeNoise, compositeU8, decodeProtoInput, dilateField, turbLayers,
+  type LegacyMaskStored, type ProtoInput, type TurbBlend,
 } from './proto';
 
 /* ── 小工具 ─────────────────────────────────────────────────────────────────── */
@@ -464,33 +465,38 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
   const mounts = placeMassifs(mulberry32(seedInt(String(seed) + '|山体')), cores, sp.ridges);
   yield { phase: '撒陆核与山体', done: 0, total: 1 };
 
-  /* ⭐ 第一百零八轮（手绘海陆剪影）→ 第一百三十五轮（多图层原型）：
+  /* ⭐ 第一百零八轮（手绘海陆剪影）→ 第一百三十五轮（多图层原型）→ 第一百三十七轮（**图层列表**）：
      原型**优先于**噪声 —— 画过的地方直接钉死海陆（见下面 `forced[]` 的用法），
      没画的地方照旧由大陆场决定 ⇒「只在东半球画一块大陆」这种用法照样成立。
 
-     原型有 **五层**（`src/mapgen/proto.ts`）：
-       land   —— 海陆（0 未画 / 1 陆 / 2 海，靠双线性 + shore 噪声定边界，不是硬阈值方块）
-       zone   —— 地形分区（高山 / 丘陵 / 高原 / 盆地 / 湖泊内海）⇒ 改**海拔形状**
-       climate—— 气候底子（沙地 / 湿地）⇒ 只改湿度（上色/植被）
-       noise  —— 区域噪声（有符号 −8..8）⇒ 乘在起伏上：正 = 更碎、负 = 更平
-       edge   —— 海岸复杂化（0..8）⇒ 放大海岸线的抖动幅度
-     六张"效果场"先在同一分辨率上铺好、模糊一圈（盒式），再双线性取样到输出网格
+     同类层可以有多张（`src/mapgen/proto.ts`）：
+       land / zone / climate —— 从下往上合成（上层非 0 的格子覆盖下层）
+       noise                 —— 求和（夹 −8..8）
+       turb                  —— **每层独立参数**（尺度 / 幅度 / 细节 / 种子 / 混合 / 扩散），
+                                生成时逐层叠加扰动（见下面的 `turbPreps`）
+     效果场先在同一分辨率上铺好、模糊一圈（盒式），再双线性取样到输出网格
      —— 否则手画的边界在成图上是一格一格的台阶。 */
-  const proto = decodeProtoInput(protoIn);
-  const mw0 = proto ? proto.w : 0;
-  const mh0 = proto ? proto.h : 0;
-  const maskLand = proto ? new Float32Array(mw0 * mh0) : null;
-  const maskSea = proto ? new Float32Array(mw0 * mh0) : null;
-  const zRaise = proto ? new Float32Array(mw0 * mh0) : null;   /* 基面抬升 */
-  const zRidge = proto ? new Float32Array(mw0 * mh0) : null;   /* 山脊放大 */
-  const zFlat = proto ? new Float32Array(mw0 * mh0) : null;    /* 起伏压平 */
-  const climF = proto ? new Float32Array(mw0 * mh0) : null;    /* −1 干 / +1 湿 */
-  const noiseF = proto ? new Float32Array(mw0 * mh0) : null;   /* −1..1 有符号噪声 */
-  const edgeF = proto ? new Float32Array(mw0 * mh0) : null;    /* 0..1 海岸复杂化 */
-  if (proto && maskLand && maskSea && zRaise && zRidge && zFlat && climF && noiseF && edgeF) {
-    for (let i = 0; i < proto.land.length; i++) {
-      const zn = proto.zone[i];
-      const lv = proto.land[i];
+  const doc = decodeProtoInput(protoIn);
+  const mw0 = doc ? doc.w : 0;
+  const mh0 = doc ? doc.h : 0;
+  const protoN = mw0 * mh0;
+  const landGrid = doc ? compositeU8(doc, 'land') : null;
+  const zoneGrid = doc ? compositeU8(doc, 'zone') : null;
+  const climateGrid = doc ? compositeU8(doc, 'climate') : null;
+  const noiseGrid = doc ? compositeNoise(doc) : null;
+  const turbList = doc ? turbLayers(doc) : [];
+  const maskLand = doc ? new Float32Array(protoN) : null;
+  const maskSea = doc ? new Float32Array(protoN) : null;
+  const zRaise = doc ? new Float32Array(protoN) : null;   /* 基面抬升 */
+  const zRidge = doc ? new Float32Array(protoN) : null;   /* 山脊放大 */
+  const zFlat = doc ? new Float32Array(protoN) : null;    /* 起伏压平 */
+  const climF = doc ? new Float32Array(protoN) : null;    /* −1 干 / +1 湿 */
+  const noiseF = doc ? new Float32Array(protoN) : null;   /* −1..1 有符号噪声 */
+  if (doc && landGrid && zoneGrid && climateGrid && noiseGrid
+    && maskLand && maskSea && zRaise && zRidge && zFlat && climF && noiseF) {
+    for (let i = 0; i < protoN; i++) {
+      const zn = zoneGrid[i];
+      const lv = landGrid[i];
       /* 湖泊/内海笔刷 = 直接钉成水（比海陆层更具体 ⇒ 它说了算）。
          它不会变成"海"：深度按离岸距离算（离陆地越近越浅）⇒ 内陆那片是浅水湖。 */
       if (zn === ZONE_LAKE) maskSea[i] = 1;
@@ -500,40 +506,58 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
       else if (zn === ZONE_HILL) { zRidge[i] = 0.38; zRaise[i] = 0.07; }
       else if (zn === ZONE_PLATEAU) { zRaise[i] = 0.26; zFlat[i] = 1; }
       else if (zn === ZONE_BASIN) { zRaise[i] = -0.32; zFlat[i] = 0.5; }
-      const cl = proto.climate[i];
+      const cl = climateGrid[i];
       if (cl === CLIMATE_DRY) climF[i] = -1;
       else if (cl === CLIMATE_WET) climF[i] = 1;
-      noiseF[i] = proto.noise[i] / NOISE_MAX;
-      edgeF[i] = proto.edge[i] / EDGE_MAX;
+      noiseF[i] = noiseGrid[i] / NOISE_MAX;
     }
     /* 模糊半径按原型宽度缩放（1024 → 3 格，底图上约 4.5px）：够把直边化成坡，
-       又不会把"一条山脉"糊成一片。⚠️ 边缘层单独放宽到 8 格：边缘笔刷改的是**海岸**，
-       位移幅度要沿笔迹平滑起落，否则会在笔迹边界上留一道"断崖"（第一百三十六轮实测）。 */
+       又不会把"一条山脉"糊成一片。 */
     const r = Math.max(1, Math.round(mw0 / 340));
     for (const f of [zRaise, zRidge, zFlat, climF, noiseF]) boxBlur(f, mw0, mh0, r);
-    /* 边缘强度：**先膨胀 ~10 格**（笔迹离海岸几格也能把扰动送到海岸，凿出的海湾才会连通），
-       再模糊 ~6 格（强度沿笔迹平滑起落，不留断崖）。 */
-    edgeF.set(dilateField(edgeF, mw0, mh0, Math.max(6, Math.round(mw0 / 100))));
-    boxBlur(edgeF, mw0, mh0, Math.max(2, Math.round(mw0 / 170)));
   }
-  /* ⭐ 第一百三十六轮：边缘复杂化 = **湍流阈值置换**（不是逐点加噪，也不是直接域扭曲——
+  /* ⭐ 第一百三十六 / 一百三十七轮：湍流层 = **湍流阈值置换**（不是逐点加噪，也不是直接域扭曲——
      手画掩膜太锐利，域扭曲挪不动边界，详见 `proto.ts` 头注释）。
-     做法：把海陆场糊开 EDGE_BLUR_CELLS 格 ⇒ 梯度变缓；再用多尺度相干湍流扰动阈值。
-     没有边缘笔迹时这两张糊开的场**不做**（省掉两次盒式模糊）。 */
-  let edgeTurb: Float32Array | null = null;
+     做法：把海陆场糊开 `TURB_LAND_BLUR` 格 ⇒ 梯度变缓；再用每层自己的相干湍流扰动阈值，逐层叠加。
+     没有湍流笔迹时这些场**不做**（省掉模糊与噪声计算）。 */
+  const TURB_LAND_BLUR = 20;
   let landBlur: Float32Array | null = null;
   let seaBlur: Float32Array | null = null;
-  if (proto && maskLand && maskSea) {
-    let anyEdge = false;
-    for (let i = 0; i < proto.edge.length; i++) if (proto.edge[i]) { anyEdge = true; break; }
-    if (anyEdge) {
-      edgeTurb = buildEdgeTurbulence(mw0, mh0, seedInt(String(seed) + '|边缘'));
-      landBlur = new Float32Array(mw0 * mh0);
-      seaBlur = new Float32Array(mw0 * mh0);
+  const turbPreps: { field: Float32Array; strength: Float32Array; amp: number; blend: TurbBlend }[] = [];
+  if (doc && maskLand && maskSea) {
+    let anyTurb = false;
+    for (const l of turbList) {
+      const d = l.data;
+      for (let i = 0; i < d.length; i++) if (d[i]) { anyTurb = true; break; }
+      if (anyTurb) break;
+    }
+    if (anyTurb) {
+      landBlur = new Float32Array(protoN);
+      seaBlur = new Float32Array(protoN);
       landBlur.set(maskLand);
       seaBlur.set(maskSea);
-      boxBlur(landBlur, mw0, mh0, EDGE_BLUR_CELLS);
-      boxBlur(seaBlur, mw0, mh0, EDGE_BLUR_CELLS);
+      boxBlur(landBlur, mw0, mh0, TURB_LAND_BLUR);
+      boxBlur(seaBlur, mw0, mh0, TURB_LAND_BLUR);
+      for (const l of turbList) {
+        const strength = new Float32Array(protoN);
+        for (let i = 0; i < protoN; i++) strength[i] = (l.data[i] as number) / EDGE_MAX;
+        /* 强度：**先按本层扩散半径膨胀**（笔迹离海岸几格也能把扰动送到海岸，海湾才会连通），
+           再模糊 ~0.6×（沿笔迹平滑起落，不留断崖）。 */
+        const diff = Math.max(0, Math.round(l.diffusion));
+        if (diff > 0) {
+          strength.set(dilateField(strength, mw0, mh0, diff));
+          boxBlur(strength, mw0, mh0, Math.max(1, Math.round(diff * 0.6)));
+        }
+        turbPreps.push({
+          field: buildEdgeTurbulence(mw0, mh0, seedInt(String(seed) + '|湍流' + (l.seed | 0)), {
+            scale: l.scale,
+            octaves: l.octaves,
+          }),
+          strength,
+          amp: l.amp,
+          blend: l.blend,
+        });
+      }
     }
   }
   /* 剪影边缘要自然，不能一格一格地楼梯（第一版最近邻就是这样，和海岸细节的成果打架）：
@@ -541,13 +565,13 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
      · 再叠一层已有的 shore 多尺度噪声做抖动 ⇒ 边缘像自然海岸而不是手绘色块；
      · 阈值 0.5 定海陆：一边过半就是它，两边都不过半 = 没画（交给生成器）。
      预先把列/行 → 原型格 + 权重算好（两万多次除法不该放在逐像素路径上）。 */
-  const maskX0 = proto ? new Int32Array(w) : null;
-  const maskX1 = proto ? new Int32Array(w) : null;
-  const maskXF = proto ? new Float32Array(w) : null;
-  const maskY0 = proto ? new Int32Array(h) : null;
-  const maskY1 = proto ? new Int32Array(h) : null;
-  const maskYF = proto ? new Float32Array(h) : null;
-  if (proto && maskX0 && maskX1 && maskXF && maskY0 && maskY1 && maskYF) {
+  const maskX0 = doc ? new Int32Array(w) : null;
+  const maskX1 = doc ? new Int32Array(w) : null;
+  const maskXF = doc ? new Float32Array(w) : null;
+  const maskY0 = doc ? new Int32Array(h) : null;
+  const maskY1 = doc ? new Int32Array(h) : null;
+  const maskYF = doc ? new Float32Array(h) : null;
+  if (doc && maskX0 && maskX1 && maskXF && maskY0 && maskY1 && maskYF) {
     const axis = (count: number, cells: number, i0: Int32Array, i1: Int32Array, fr: Float32Array) => {
       for (let k = 0; k < count; k++) {
         const f = (k + 0.5) * cells / count - 0.5;
@@ -570,9 +594,9 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
       + (arr[a1 + x0] * (1 - fx) + arr[a1 + x1] * fx) * fy;
   };
   /** 0 = 没画（自由）、1 = 钉成陆地、2 = 钉成海洋 */
-  const forced = proto ? new Uint8Array(n) : null;
+  const forced = doc ? new Uint8Array(n) : null;
   /** 每格的气候权重（−1 干 / +1 湿）—— 湿度那一趟要用，顺手在同一趟里存下来 */
-  const climateAt = proto ? new Float32Array(n) : null;
+  const climateAt = doc ? new Float32Array(n) : null;
 
   const mtnAmp = 0.5 + sp.ridges * 0.16;          /* ridges 1..8 → 0.66 .. 1.78 */
   const ridgeFreq = 2.0 + sp.ridges * 0.18;
@@ -649,30 +673,37 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
 
       const kk = i * w + j;
       raw[kk] = c;
-      /* ⭐ 原型取样（第一百三十五轮）：六个效果场共用一组双线性权重。
-         没画原型时这六个量都是 0，下面那几行就退化成原来的公式。 */
-      let zr = 0, zg = 0, zf = 0, clw = 0, nz = 0, eg = 0;
-      if (forced && maskLand && maskSea && zRaise && zRidge && zFlat && climF && noiseF && edgeF
+      /* ⭐ 原型取样：效果场共用一组双线性权重。没画原型时这些量都是 0，下面的公式退化回原样。 */
+      let zr = 0, zg = 0, zf = 0, clw = 0, nz = 0;
+      if (forced && maskLand && maskSea && zRaise && zRidge && zFlat && climF && noiseF
         && maskX0 && maskX1 && maskXF && maskY0 && maskY1 && maskYF) {
         const x0 = maskX0[j], x1 = maskX1[j], y0 = maskY0[i], y1 = maskY1[i];
         const fx = maskXF[j], fy = maskYF[i];
         const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
         const a0 = y0 * mw0, a1 = y1 * mw0;
-        eg = bilin(edgeF, a0, a1, x0, x1, w00, w10, w01, w11);
-        /* ⭐ 第一百三十六轮：边缘复杂化 = **湍流阈值置换**。
-           旧做法把 `shore` 噪声逐格加到海陆判定上（每格独立摇硬币 ⇒ 白毛）；
-           现在改用"糊开的海陆场 + 多尺度相干湍流扰动阈值"——等值线沿着湍流场走，
-           边界被推移十几格 ⇒ 峡湾/半岛/泻湖。强度 0 时完全不碰（保持原来的自然海岸）。 */
+        /* ⭐ 第一百三十六/三十七轮：湍流层 = **糊开的海陆场 + 每层自己的相干湍流扰动阈值**。
+           旧做法把 `shore` 噪声逐格加到判定上（每格独立摇硬币 ⇒ 白毛）；现在等值线沿着湍流场走，
+           边界被推移十几格 ⇒ 峡湾/半岛/泻湖。没有湍流笔迹时完全不碰（保持原来的自然海岸）。 */
         const wig = shore * 0.6;
         let lf = bilin(maskLand, a0, a1, x0, x1, w00, w10, w01, w11);
         let sf = bilin(maskSea, a0, a1, x0, x1, w00, w10, w01, w11);
-        if (eg > 0.004 && edgeTurb && landBlur && seaBlur) {
+        if (turbPreps.length && landBlur && seaBlur) {
           lf = bilin(landBlur, a0, a1, x0, x1, w00, w10, w01, w11);
           sf = bilin(seaBlur, a0, a1, x0, x1, w00, w10, w01, w11);
-          /* ⭐ 只作用在**海岸带**：`4·lf·sf` 在 lf=sf=0.5（海岸线）取 1、内陆/深海里取 0。
-             否则在内陆刷一笔会凭空造出湖，而不是改海岸的形状（第一百三十六轮实测）。 */
+          /* 只作用在**海岸带**：`4·lf·sf` 在 lf=sf=0.5（海岸线）取 1、内陆/深海里取 0。
+             否则在内陆刷一笔会凭空造出湖，而不是改海岸的形状。 */
           const coastal = 4 * lf * sf;
-          const tb = bilin(edgeTurb, a0, a1, x0, x1, w00, w10, w01, w11) * eg * EDGE_TURB_AMP * coastal;
+          let tb = 0;
+          for (let q = 0; q < turbPreps.length; q++) {
+            const p = turbPreps[q];
+            const s = bilin(p.strength, a0, a1, x0, x1, w00, w10, w01, w11);
+            if (s <= 0.004) continue;
+            const t0 = bilin(p.field, a0, a1, x0, x1, w00, w10, w01, w11) * s * p.amp * coastal;
+            /* 混合方式：add = 双向；grow 只长陆；erode 只侵蚀 */
+            if (p.blend === 'add') tb += t0;
+            else if (p.blend === 'grow') tb += t0 > 0 ? t0 : 0;
+            else tb += t0 < 0 ? t0 : 0;
+          }
           forced[kk] = (lf + tb + wig > 0.5) ? 1 : ((sf - tb - wig > 0.5) ? 2 : 0);
         } else {
           forced[kk] = (lf + wig > 0.5) ? 1 : ((sf - wig > 0.5) ? 2 : 0);

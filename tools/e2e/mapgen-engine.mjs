@@ -651,17 +651,19 @@ function planetMetrics(f) {
      ★32 **区域噪声有符号**（加噪 ⇒ 起伏变大、抹平 ⇒ 变小）、**湖泊/内海**真的成水、
          **海岸复杂化**把岸线格数放大 3 倍以上。 */
 const PROTO_W = Pr.PROTO_W, PROTO_H = Pr.PROTO_H, PROTO_N = PROTO_W * PROTO_H;
-const mkLayers = () => ({
-  w: PROTO_W, h: PROTO_H,
-  land: new Uint8Array(PROTO_N).fill(2),      /* 整幅海，再在上面画大陆 */
-  zone: new Uint8Array(PROTO_N),
-  climate: new Uint8Array(PROTO_N),
-  noise: new Int8Array(PROTO_N),
-  edge: new Uint8Array(PROTO_N),
-});
-const BASE = mkLayers();
-for (let y = 150; y < 360; y++) for (let x = 260; x < 780; x++) BASE.land[y * PROTO_W + x] = 1;
-const withBase = () => { const l = mkLayers(); l.land.set(BASE.land); return l; };
+const layerOf = (d, kind) => d.layers.find((l) => l.kind === kind);
+const paintRect = (data, x0, x1, y0, y1, v) => {
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) data[y * PROTO_W + x] = v;
+};
+/* 基底：整幅海（land=2）+ 一块大陆（land=1） */
+const baseDoc = () => {
+  const d = Pr.emptyDoc();
+  layerOf(d, 'land').data.fill(2);
+  paintRect(layerOf(d, 'land').data, 260, 780, 150, 360, 1);
+  return d;
+};
+const enc = (d) => Pr.encodeProto(d);
+const buildField = (d) => P.buildPlanetField('lk-proto', 'continent', {}, 256, enc(d));
 const RECT = [300, 450, 180, 330];              /* 原型坐标 x0,x1,y0,y1（量效应用的那块） */
 const rectStats = (f, [x0, x1, y0, y1]) => {
   const ax = Math.round(x0 / PROTO_W * f.w), bx = Math.round(x1 / PROTO_W * f.w);
@@ -691,46 +693,69 @@ const coastCells = (f) => {
   }
   return { coast, specks, land };
 };
+const diffFrac = (a, b) => {
+  let diff = 0, land = 0;
+  for (let k = 0; k < a.land.length; k++) { if (a.land[k]) land++; if (a.land[k] !== b.land[k]) diff++; }
+  return diff / Math.max(1, land);
+};
+
+/* ★30 图层列表的编解码：多张同类层、每层参数、往返逐格一致、体积、老 v1 仍能读 */
 {
-  /* ① 逐格往返（**故意用最不利的数据**：每格都在变 ⇒ RLE 几乎没得压，体积不用管）；
-     ② 体积用**真实画法**量（整幅海 + 一块大陆 + 几块分区/噪声/边缘）。 */
-  const l = mkLayers();
-  for (let i = 0; i < PROTO_N; i++) {
-    l.land[i] = i % 3 === 0 ? 0 : (i % 3 === 1 ? 1 : 2);
-    l.zone[i] = i % 7;                         /* 0..6 里 6 是脏值 ⇒ 解码应落回 0 */
-    l.climate[i] = i % 3;
-    l.noise[i] = (i % 17) - 8;                 /* −8..8 */
-    l.edge[i] = i % 9;
-  }
-  const stored = Pr.encodeProto(l, {});
+  const d = Pr.emptyDoc();
+  d.layers.forEach((l, idx) => {
+    for (let i = 0; i < PROTO_N; i++) {
+      if (l.kind === 'land') l.data[i] = i % 3 === 0 ? 0 : (i % 3 === 1 ? 1 : 2);
+      else if (l.kind === 'zone') l.data[i] = i % 8;          /* 7 = 脏值，解码应夹回 5 */
+      else if (l.kind === 'climate') l.data[i] = i % 3;
+      else if (l.kind === 'noise') l.data[i] = (i % 17) - 8;
+      else l.data[i] = i % 9;
+    }
+    l.seed = idx * 3;
+  });
+  /* 再加一张同类层（验证"叠加多层"落盘） */
+  const extra = Pr.newLayer('turb', '湍流 2');
+  paintRect(extra.data, 300, 500, 150, 360, 6);
+  extra.scale = 2.4; extra.amp = 0.95; extra.octaves = 4; extra.seed = 11;
+  extra.blend = 'erode'; extra.diffusion = 18;
+  d.layers.unshift(extra);
+  const stored = enc(d);
   const back = Pr.decodeProto(stored, null);
-  let same = !!back;
-  for (let i = 0; same && i < PROTO_N; i++) {
-    same = back.land[i] === l.land[i] && back.climate[i] === l.climate[i]
-      && back.noise[i] === l.noise[i] && back.edge[i] === l.edge[i]
-      && back.zone[i] === (i % 7 === 6 ? 0 : l.zone[i]);
+  const kindsBack = back.layers.map((l) => l.kind);
+  let same = back.layers.length === d.layers.length;
+  for (let li = 0; same && li < d.layers.length; li++) {
+    const a = d.layers[li], b = back.layers[li];
+    same = a.kind === b.kind && a.id === b.id && (a.kind !== 'turb' || a.seed === b.seed);
+    for (let i = 0; same && i < PROTO_N; i++) {
+      const [lo, hi] = Pr.valueRange(a.kind);
+      const want = Math.min(hi, Math.max(lo, a.data[i]));
+      if (b.data[i] !== want) same = false;
+    }
   }
-  const empty = Pr.encodeProto(Pr.emptyLayers(), {});
-  const blank = Pr.decodeProtoInput(null);
-  /* 真实画法：海 + 一块大陆 + 一块高山/高原 + 一条噪声带 + 一小块海岸复杂化 */
-  const real = withBase();
-  for (let y = RECT[2]; y < RECT[3]; y++) for (let x = RECT[0]; x < RECT[1]; x++) real.zone[y * PROTO_W + x] = Pr.ZONE_MOUNTAIN;
-  for (let y = 200; y < 260; y++) for (let x = 500; x < 640; x++) real.zone[y * PROTO_W + x] = Pr.ZONE_PLATEAU;
-  for (let y = 250; y < 300; y++) for (let x = 300; x < 620; x++) real.noise[y * PROTO_W + x] = 6;
-  for (let y = 150; y < 360; y++) { real.edge[y * PROTO_W + 260] = 8; real.edge[y * PROTO_W + 779] = 8; }
-  const realJson = JSON.stringify(Pr.encodeProto(real, { blankSea: true }));
-  check('★30 原型五层 RLE 往返逐格一致、空层省略、真实画法体积 < 20KB',
-    same && !empty.zone && !empty.climate && !empty.noise && !empty.edge && blank === null
-    && realJson.length < 20000,
-    { worstBytes: JSON.stringify(stored).length, realBytes: realJson.length,
-      worstKeys: Object.keys(stored).join(','), emptyKeys: Object.keys(empty).join(',') });
+  const t2 = back.layers.find((l) => l.name === '湍流 2');
+  const paramsOk = !!t2 && t2.scale === 2.4 && t2.amp === 0.95 && t2.octaves === 4
+    && t2.seed === 11 && t2.blend === 'erode' && t2.diffusion === 18;
+  /* 老 v1（单层平铺字段）仍能读成 5 层 */
+  const legacyV1 = Pr.decodeProto({ w: PROTO_W, h: PROTO_H, land: Pr.encodeRle(new Uint8Array(PROTO_N).fill(2), PROTO_N) }, null);
+  const v1Kinds = legacyV1 ? legacyV1.layers.map((l) => l.kind).join(',') : '';
+  const real = baseDoc();
+  paintRect(layerOf(real, 'zone').data, 300, 450, 180, 330, Pr.ZONE_MOUNTAIN);
+  paintRect(layerOf(real, 'noise').data, 300, 620, 250, 300, 6);
+  paintRect(layerOf(real, 'turb').data, 260, 780, 150, 170, 8);
+  const realJson = JSON.stringify(enc(real));
+  check('★30 图层列表编解码：多张同类层 + 每层参数往返一致、老 v1 能读、体积 < 30KB',
+    same && paramsOk && kindsBack.filter((k) => k === 'turb').length === 2
+    && v1Kinds === 'land,zone,climate,noise,turb' && realJson.length < 30000,
+    { same, paramsOk, t2: t2 && { s: t2.scale, a: t2.amp, o: t2.octaves, seed: t2.seed, b: t2.blend, d: t2.diffusion }, layers: back.layers.length, turbLayers: kindsBack.filter((k) => k === 'turb').length,
+      v1Kinds, realBytes: realJson.length, worstBytes: JSON.stringify(stored).length });
 }
+
+/* ★31 地形分区进高度场（图层列表版本） */
 {
-  const f0 = P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(BASE, { blankSea: true }));
+  const f0 = buildField(baseDoc());
   const zoneOf = (code) => {
-    const l = withBase();
-    for (let y = RECT[2]; y < RECT[3]; y++) for (let x = RECT[0]; x < RECT[1]; x++) l.zone[y * PROTO_W + x] = code;
-    return P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(l, { blankSea: true }));
+    const d = baseDoc();
+    paintRect(layerOf(d, 'zone').data, RECT[0], RECT[1], RECT[2], RECT[3], code);
+    return buildField(d);
   };
   const b = rectStats(f0, RECT);
   const mount = rectStats(zoneOf(Pr.ZONE_MOUNTAIN), RECT);
@@ -741,43 +766,62 @@ const coastCells = (f) => {
     { base: +b.mean.toFixed(3), mountain: +mount.mean.toFixed(3), plateau: +plateau.mean.toFixed(3),
       basin: +basin.mean.toFixed(3), sd: [+mount.sd.toFixed(3), +plateau.sd.toFixed(3)] });
 }
+
+/* ★32 噪声求和 + 湖泊成水 + 湍流置换的形状/碎点判据 */
 {
-  const f0 = P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(BASE, { blankSea: true }));
+  const f0 = buildField(baseDoc());
   const noiseOf = (v) => {
-    const l = withBase();
-    for (let y = RECT[2]; y < RECT[3]; y++) for (let x = RECT[0]; x < RECT[1]; x++) l.noise[y * PROTO_W + x] = v;
-    return rectStats(P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(l, { blankSea: true })), RECT);
+    const d = baseDoc();
+    paintRect(layerOf(d, 'noise').data, RECT[0], RECT[1], RECT[2], RECT[3], v);
+    return rectStats(buildField(d), RECT);
   };
   const b = rectStats(f0, RECT);
   const up = noiseOf(8), down = noiseOf(-8);
-  /* 湖泊：在陆地中间画一块 100×70 的湖 */
-  const lake = withBase();
-  for (let y = 220; y < 290; y++) for (let x = 460; x < 560; x++) lake.zone[y * PROTO_W + x] = Pr.ZONE_LAKE;
-  const fl = P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(lake, { blankSea: true }));
+  const lake = baseDoc();
+  paintRect(layerOf(lake, 'zone').data, 460, 560, 220, 290, Pr.ZONE_LAKE);
+  const fl = buildField(lake);
   let water = 0, cells = 0;
   const ax = Math.round(460 / PROTO_W * fl.w), bx = Math.round(560 / PROTO_W * fl.w);
   const ay = Math.round(220 / PROTO_H * fl.h), by = Math.round(290 / PROTO_H * fl.h);
   for (let y = ay; y < by; y++) for (let x = ax; x < bx; x++) { cells++; if (!fl.land[y * fl.w + x]) water++; }
   const lakeFrac = water / Math.max(1, cells);
-  /* 海岸复杂化：同种子/同陆地，只把「边缘」涂满整个陆块边缘
-     · **形状真的变了**（逐格比对 edge0 ↔ edge8：变了多少格 / 陆地格）；
-     · 岸线长度大涨；
-     · 但**孤立碎点**（8 邻域没有陆的陆格）极少 —— 逐点随机抖动会把这两项一起拉高，
-       相干湍流置换只拉高前两项（这是「湍流」与「白毛」的判据）。 */
-  const baseField = P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(withBase(), { blankSea: true }));
-  const e8 = withBase();
-  for (let y = 150; y < 360; y++) for (let x = 260; x < 780; x++) e8.edge[y * PROTO_W + x] = 8;
-  const f8 = P.buildPlanetField('lk-proto', 'continent', {}, 256, Pr.encodeProto(e8, { blankSea: true }));
-  let diff = 0;
-  for (let k = 0; k < baseField.land.length; k++) if (baseField.land[k] !== f8.land[k]) diff++;
-  const c0 = coastCells(baseField), c8 = coastCells(f8);
-  const changedFrac = diff / Math.max(1, c0.land);
+  const withTurb = baseDoc();
+  paintRect(layerOf(withTurb, 'turb').data, 260, 780, 150, 200, 8);
+  const f8 = buildField(withTurb);
+  const changedFrac = diffFrac(f0, f8);
+  const c0 = coastCells(f0), c8 = coastCells(f8);
   const speckRatio = c8.specks / Math.max(1, c8.land);
-  check('★32 噪声有符号 + 湖泊/内海成水 + 海岸复杂化（形状真变、岸线大涨、几乎无孤立碎点）',
+  check('★32 噪声有符号 + 湖泊/内海成水 + 湍流置换（形状真变、岸线大涨、几乎无孤立碎点）',
     up.sd > b.sd * 1.03 && down.sd < b.sd * 0.97 && lakeFrac > 0.95
     && changedFrac > 0.03 && c8.coast > c0.coast * 1.2 && speckRatio < 0.01,
     { sd: [+b.sd.toFixed(3), +up.sd.toFixed(3), +down.sd.toFixed(3)], lakeFrac: +lakeFrac.toFixed(3),
       changedFrac: +changedFrac.toFixed(3), coast: [c0.coast, c8.coast], specks: [c0.specks, c8.specks], speckRatio: +speckRatio.toFixed(4) });
+}
+
+/* ★33 多层湍流 + 每层参数真的改变形状 */
+{
+  const mkTurb = (params, second) => {
+    const d = baseDoc();
+    const t = layerOf(d, 'turb');
+    paintRect(t.data, 260, 780, 150, 220, 8);
+    Object.assign(t, params);
+    if (second) {
+      const t2 = Pr.newLayer('turb', '湍流 2');
+      paintRect(t2.data, 260, 780, 150, 260, 8);
+      Object.assign(t2, second);
+      d.layers.unshift(t2);
+    }
+    return buildField(d);
+  };
+  const fA = mkTurb({ scale: 1, amp: 0.6, octaves: 3, seed: 0, blend: 'add', diffusion: 10 });
+  const fB = mkTurb({ scale: 2.2, amp: 0.6, octaves: 3, seed: 0, blend: 'add', diffusion: 10 });
+  const fC = mkTurb({ scale: 1, amp: 1.1, octaves: 1, seed: 0, blend: 'add', diffusion: 10 });
+  const fTwo = mkTurb({ scale: 1, amp: 0.6, octaves: 3, seed: 0, blend: 'add', diffusion: 10 },
+    { scale: 2.2, amp: 0.8, octaves: 4, seed: 7, blend: 'grow', diffusion: 16 });
+  const dAB = diffFrac(fA, fB), dAC = diffFrac(fA, fC), dAT = diffFrac(fA, fTwo), dBT = diffFrac(fB, fTwo);
+  check('★33 多层湍流：尺度/幅度/细节改形状、两层叠加 ≠ 任何单层',
+    dAB > 0.02 && dAC > 0.02 && dAT > 0.02 && dBT > 0.02,
+    { scaleDiff: +dAB.toFixed(3), ampOctaveDiff: +dAC.toFixed(3), twoVsA: +dAT.toFixed(3), twoVsB: +dBT.toFixed(3) });
 }
 
 const pass = results.filter(Boolean).length;
