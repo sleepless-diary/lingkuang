@@ -668,32 +668,9 @@ async function main() {
     !!tfNoFill && !tfNoFill.error && tfNoFill.moved === true && tfNoFill.topAfter === 0, tfNoFill);
   await click('#ed-undo');
   await sleep(250);
-  /* ★14 沿岸带：勾上「沿岸带」后，效果由"离海岸多远"实时算 ——
-     把海陆整体搬走 200 格再烘焙，湍流效果仍然贴着**新**海岸（闸门跟着几何一起搬）。 */
-  await setTurbOn(false);
-  const bandSetup = await ev(`(function () {
-    /* 选湍流层 → 勾「沿岸带」→ 沿一条大范围刷闸门（哪些海岸要） */
-    const rows = [...document.querySelectorAll('#ed-layers [data-kind="turb"]')];
-    if (!rows.length) return { error: 'no turb layer' };
-    rows[0].click();
-    const chk = document.querySelector('#ed-props [data-prop="band"]');
-    if (!chk) return { error: 'no band toggle' };
-    chk.checked = true;
-    chk.dispatchEvent(new Event('change', { bubbles: true }));
-    document.querySelector('[data-mode="brush"]').click();
-    const bs = document.getElementById('ed-brush'); bs.value = '120'; bs.dispatchEvent(new Event('input', { bubbles: true }));
-    const c = document.getElementById('ed-canvas');
-    const r = c.getBoundingClientRect();
-    const mk = (ty, fx, fy) => new PointerEvent(ty, { clientX: r.left + r.width * fx, clientY: r.top + r.height * fy, bubbles: true, pointerId: 61, pointerType: 'mouse', button: 0, buttons: 1 });
-    c.dispatchEvent(mk('pointerdown', 0.3, 0.5));
-    c.dispatchEvent(mk('pointermove', 0.45, 0.5));
-    c.dispatchEvent(mk('pointermove', 0.6, 0.5));
-    c.dispatchEvent(mk('pointerup', 0.6, 0.5));
-    return {
-      hasWidth: !!document.querySelector('#ed-props [data-prop="bandWidth"]'),
-      hasFalloff: !!document.querySelector('#ed-props [data-prop="bandFalloff"]'),
-    };
-  })()`);
+  /* ★14 自动识别海岸（第一百四十一轮终版）：点一条边缘 ⇒ 立刻选中那一条；
+     再点取消；搬走 200 格仍跟着；手绘 / 自动识别二选一。 */
+  const NOTE_SEL = `[...document.querySelectorAll('#ed-props .lk-ed__subnote')].map((n) => n.textContent).join(' | ')`;
   const COUNT_LAND = `(function () {
     const c = document.getElementById('ed-canvas');
     const g = c.getContext('2d');
@@ -702,12 +679,66 @@ async function main() {
     for (let i = 0; i < d.length; i += 4) if (d[i + 1] > d[i] + 8 && d[i + 1] > d[i + 2] + 20 && d[i + 1] > 90) n++;
     return n;
   })()`;
-  await setTurbOn(true);
-  const bandOn1 = await ev(COUNT_LAND);
-  await setTurbOn(false);
-  const bandOff1 = await ev(COUNT_LAND);
-  await setTurbOn(true);
-  /* 搬海陆 +200 格并烘焙 */
+  /** 选中第 i 条湍流层并设可见性（顺带把它变成当前层） */
+  const pickTurb = async (i, visible) => {
+    await ev(`document.querySelectorAll('#ed-layers [data-kind="turb"]')[${i}].click(); true`);
+    const on = await ev(`!!(document.querySelector('#ed-props [data-prop="on"]') || {}).checked`);
+    if (visible !== undefined && on !== visible) {
+      await ev(`document.querySelector('#ed-props [data-prop="on"]').click(); true`);
+    }
+  };
+  /** 点最靠上的那条海岸线 */
+  const clickTopCoast = () => ev(`(function () {
+    const c = document.getElementById('ed-canvas');
+    const r = c.getBoundingClientRect();
+    const g = c.getContext('2d');
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    let px = -1, py = 1e9;
+    for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+      const o = (y * c.width + x) * 4;
+      if (d[o + 1] > d[o] + 8 && d[o + 1] > d[o + 2] + 20 && d[o + 1] > 90) { if (y < py) { py = y; px = x; } }
+    }
+    if (px < 0) return { error: 'no land' };
+    const mk = (t, x, y) => new PointerEvent(t, { clientX: r.left + x, clientY: r.top + y, bubbles: true, pointerId: 63, pointerType: 'mouse', button: 0, buttons: 1 });
+    c.dispatchEvent(mk('pointerdown', px, py - 1));
+    c.dispatchEvent(mk('pointerup', px, py - 1));
+    return { note: ${NOTE_SEL}, at: { px, py } };
+  })()`);
+
+  await setTurbOn(false);          /* 其它湍流层先关掉，只测第 0 条 */
+  await pickTurb(0, false);
+  const bandSetup = await ev(`(function () {
+    document.querySelector('[data-mode="brush"]').click();
+    const sel = document.querySelector('#ed-props [data-prop="band"]');
+    if (!sel) return { error: 'no mode select' };
+    sel.value = '1';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return {
+      hasWidth: !!document.querySelector('#ed-props [data-prop="bandWidth"]'),
+      hasFalloff: !!document.querySelector('#ed-props [data-prop="bandFalloff"]'),
+      note: ${NOTE_SEL},
+    };
+  })()`);
+  const bandClick = await clickTopCoast();
+
+  /* 开/关这条沿岸带层，量"效果"的像素差 */
+  const measureBand = async () => {
+    await pickTurb(0, true);
+    await sleep(200);
+    const on = await ev(COUNT_LAND);
+    await pickTurb(0, false);
+    await sleep(200);
+    const off = await ev(COUNT_LAND);
+    return { on, off, d: Math.abs(on - off) };
+  };
+  const m1 = await measureBand();
+
+  /* 再点一下同一条海岸 ⇒ 取消 */
+  const bandDeselect = await clickTopCoast();
+  const m2 = await measureBand();
+
+  /* 再选一次，然后把海陆搬走 200 格并烘焙 ⇒ 效果要跟到新海岸 */
+  const bandReselect = await clickTopCoast();
   const bandMoved = await ev(`(async function () {
     document.querySelector('[data-kind="land"]').click();
     document.querySelector('[data-mode="transform"]').click();
@@ -728,17 +759,30 @@ async function main() {
     await new Promise((res) => requestAnimationFrame(res));
     return { baked: true };
   })()`);
-  const bandOn2 = await ev(COUNT_LAND);
-  await setTurbOn(false);
-  const bandOff2 = await ev(COUNT_LAND);
-  await setTurbOn(true);
-  const d1 = Math.abs(bandOn1 - bandOff1);
-  const d2 = Math.abs(bandOn2 - bandOff2);
-  check('★14 沿岸带：勾上后效果随海岸走（搬走 200 格再烘焙，湍流仍然改变海岸像素数）',
+  const m3 = await measureBand();
+
+  /* 二选一：切回「手绘强度」⇒ 自动识别的参数/选择整块消失（并把闸门清空） */
+  await pickTurb(0, true);
+  const exclusivity = await ev(`(function () {
+    const sel = document.querySelector('#ed-props [data-prop="band"]');
+    if (!sel) return { error: 'no select' };
+    sel.value = '0';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return {
+      widthGone: !document.querySelector('#ed-props [data-prop="bandWidth"]'),
+      noteGone: !(${NOTE_SEL}).includes('已选'),
+    };
+  })()`);
+  check('★14 自动识别海岸：点一条边缘立刻生效、可取消、搬走 200 格仍跟着；手绘/自动二选一',
     !!bandSetup && !bandSetup.error && bandSetup.hasWidth && bandSetup.hasFalloff
-    && !!bandMoved && !bandMoved.error
-    && d1 > 300 && d2 > 300,
-    { bandSetup, bandMoved, bandOn1, bandOff1, bandOn2, bandOff2, d1, d2 });
+    && String(bandSetup.note).includes('已选 0 条')
+    && String(bandClick?.note || '').includes('已选 1 条')
+    && m1.d > 300
+    && String(bandDeselect?.note || '').includes('已选 0 条') && m2.d < m1.d * 0.4
+    && String(bandReselect?.note || '').includes('已选 1 条')
+    && !!bandMoved && !bandMoved.error && m3.d > 300
+    && !!exclusivity && exclusivity.widthGone === true && exclusivity.noteGone === true,
+    { bandSetup, bandClick, bandDeselect, bandReselect, bandMoved, exclusivity, m1, m2, m3 });
 
   /* 把湍流层重新显示回来（★9 生成时要有两层的效果） */
   await setTurbOn(true);

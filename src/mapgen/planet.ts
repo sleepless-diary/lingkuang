@@ -34,7 +34,7 @@ import { climateHex, sampleRampHex, styleMaterial, styleSeabed, terrainStyleDef 
 import {
   CLIMATE_DRY, CLIMATE_WET, EDGE_MAX, LAND_SET, NOISE_MAX, SEA_SET,
   ZONE_BASIN, ZONE_CODE, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PLAIN, ZONE_PLATEAU, ZONE_STRENGTH, ZONE_STRENGTH_MAX,
-  buildEdgeTurbulence, bandField, coastDistanceField, compositeNoise, compositeU8, decodeProtoInput, dilateField, turbLayers,
+  buildEdgeTurbulence, bandField, compositeNoise, compositeU8, decodeProtoInput, dilateField, turbLayers,
   type LegacyMaskStored, type ProtoInput, type TurbBlend,
 } from './proto';
 
@@ -537,32 +537,8 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
       for (let i = 0; i < d.length; i++) if (d[i]) { anyTurb = true; break; }
       if (anyTurb) break;
     }
-    /* 沿岸带模式要的是"到海岸的格距"：海岸 = 陆地格四邻里挨着海（或反过来），横向环绕 */
-    let coastDist: Float32Array | null = null;
-    const getCoastDist = () => {
-      if (coastDist) return coastDist;
-      const coast = new Uint8Array(protoN);
-      for (let y = 0; y < mh0; y++) {
-        for (let x = 0; x < mw0; x++) {
-          const i = y * mw0 + x;
-          const land = maskLand[i] > 0.5;
-          const sea = maskSea[i] > 0.5;
-          if (!land && !sea) continue;
-          const xl = y * mw0 + ((x - 1 + mw0) % mw0);
-          const xr = y * mw0 + ((x + 1) % mw0);
-          const up = y > 0 ? i - mw0 : -1;
-          const dn = y < mh0 - 1 ? i + mw0 : -1;
-          const nbs = [xl, xr, up, dn];
-          for (const j of nbs) {
-            if (j < 0) continue;
-            if (land && maskSea[j] > 0.5) { coast[i] = 1; break; }
-            if (sea && maskLand[j] > 0.5) { coast[i] = 1; break; }
-          }
-        }
-      }
-      coastDist = coastDistanceField(coast, mw0, mh0, 96);
-      return coastDist;
-    };
+    /* 沿岸带模式不再需要整体海岸距离场：闸门里存的就是"被选中的那几条海岸线"，
+       `bandField()` 自己按这些格子做 BFS 长出带。 */
     if (anyTurb) {
       landBlur = new Float32Array(protoN);
       seaBlur = new Float32Array(protoN);
@@ -574,7 +550,7 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
         let strength: Float32Array;
         if (l.band) {
           /* 沿岸带：强度 = f(离岸格距) × 闸门（闸门就是"哪几条海岸"），与笔迹网格彻底解耦 */
-          strength = bandField(getCoastDist(), l.data, l.bandWidth, l.bandFalloff);
+          strength = bandField(l.data as Uint8Array, mw0, mh0, l.bandWidth, l.bandFalloff);
         } else {
           strength = new Float32Array(protoN);
           for (let i = 0; i < protoN; i++) strength[i] = (l.data[i] as number) / EDGE_MAX;

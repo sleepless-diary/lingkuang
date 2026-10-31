@@ -401,29 +401,109 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     return false;
   };
 
-  /* ⭐ 第一百四十一轮：沿岸带要"到海岸的格距"。
-     海岸 = 陆地格的四邻里有不是陆地的（湖泊算水面），**横向环绕**。跟着海陆/地形变化失效。 */
+  /* ⭐ 第一百四十一轮（自动识别）：海岸**连通分量** —— 点一条海岸线就选中它那一整条。
+     海岸 = 陆地格的四邻里有不是陆地的（湖泊算水面），**横向环绕**；分量用 8 邻域 BFS 分标签。 */
   let coastDistCache: Float32Array | null = null;
   let coastDistRev = -1;
-  const getCoastDist = (): Float32Array => {
-    if (coastDistCache && coastDistRev === landRev) return coastDistCache;
+  let coastMaskCache: Uint8Array | null = null;
+  let coastLabelCache: Int32Array | null = null;
+  let coastCompCount = 0;
+  let coastRev = -1;
+  const isLandCell = (i: number) => landComp[i] === 1 || ZONE_CODE(zoneComp[i]) === ZONE_LAKE;
+  /** 海岸掩膜 + 连通分量标签（跟 landRev 失效）。 */
+  const getCoastComponents = () => {
+    if (coastMaskCache && coastLabelCache && coastRev === landRev) {
+      return { mask: coastMaskCache, labels: coastLabelCache, count: coastCompCount };
+    }
     const n = PROTO_W * PROTO_H;
     const coast = new Uint8Array(n);
-    const isLand = (i: number) => landComp[i] === 1 || ZONE_CODE(zoneComp[i]) === ZONE_LAKE;
     for (let y = 0; y < PROTO_H; y++) {
       for (let x = 0; x < PROTO_W; x++) {
         const i = y * PROTO_W + x;
-        if (!isLand(i)) continue;
+        if (!isLandCell(i)) continue;
         const xl = y * PROTO_W + ((x - 1 + PROTO_W) % PROTO_W);
         const xr = y * PROTO_W + ((x + 1) % PROTO_W);
-        if (!isLand(xl) || !isLand(xr)
-          || (y > 0 && !isLand(i - PROTO_W))
-          || (y < PROTO_H - 1 && !isLand(i + PROTO_W))) coast[i] = 1;
+        if (!isLandCell(xl) || !isLandCell(xr)
+          || (y > 0 && !isLandCell(i - PROTO_W))
+          || (y < PROTO_H - 1 && !isLandCell(i + PROTO_W))) coast[i] = 1;
       }
     }
-    coastDistCache = coastDistanceField(coast, PROTO_W, PROTO_H, 96);
+    const labels = new Int32Array(n).fill(-1);
+    let count = 0;
+    const queue = new Int32Array(n);
+    for (let start = 0; start < n; start++) {
+      if (!coast[start] || labels[start] >= 0) continue;
+      let head = 0, tail = 0;
+      queue[tail++] = start;
+      labels[start] = count;
+      while (head < tail) {
+        const i = queue[head++];
+        const cx = i % PROTO_W, cy = (i / PROTO_W) | 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const ny = cy + dy;
+          if (ny < 0 || ny >= PROTO_H) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = (cx + dx + PROTO_W) % PROTO_W;
+            const j = ny * PROTO_W + nx;
+            if (!coast[j] || labels[j] >= 0) continue;
+            labels[j] = count;
+            queue[tail++] = j;
+          }
+        }
+      }
+      count++;
+    }
+    coastMaskCache = coast;
+    coastLabelCache = labels;
+    coastCompCount = count;
+    coastRev = landRev;
+    return { mask: coast, labels, count };
+  };
+  /** 只算"到海岸的距离"（旧的整张海岸距离场；沿岸带着色仍可用）。 */
+  const getCoastDist = (): Float32Array => {
+    if (coastDistCache && coastDistRev === landRev) return coastDistCache;
+    coastDistCache = coastDistanceField(getCoastComponents().mask, PROTO_W, PROTO_H, 96);
     coastDistRev = landRev;
     return coastDistCache;
+  };
+  /**
+   * ⭐ 点一条海岸线 ⇒ 选中 / 取消**那一整条边缘**（写进本层 `data` 的那些海岸格）。
+   * 返回 null = 附近没有能识别的海岸线。
+   */
+  const toggleCoastAt = (cx: number, cy: number, layer: DecodedLayer): { comp: number; on: boolean; near: number } | null => {
+    const { mask, labels } = getCoastComponents();
+    let best = -1, bestD = 1e9;
+    for (let r = 6; r <= 96 && best < 0; r *= 2) {
+      for (let dy = -r; dy <= r; dy++) {
+        const y = cy + dy;
+        if (y < 0 || y >= PROTO_H) continue;
+        for (let dx = -r; dx <= r; dx++) {
+          const x = ((cx + dx) % PROTO_W + PROTO_W) % PROTO_W;
+          const i = y * PROTO_W + x;
+          if (!mask[i]) continue;
+          const d = dx * dx + dy * dy;
+          if (d < bestD) { bestD = d; best = i; }
+        }
+      }
+    }
+    if (best < 0) return null;
+    const comp = labels[best];
+    if (comp < 0) return null;
+    const data = layer.data as Uint8Array;
+    let total = 0, on = 0;
+    for (let i = 0; i < data.length; i++) if (labels[i] === comp) { total++; if (data[i]) on++; }
+    const select = on < total;
+    for (let i = 0; i < data.length; i++) if (labels[i] === comp) data[i] = select ? 1 : 0;
+    return { comp, on: select, near: Math.sqrt(bestD) };
+  };
+  /** 这一层选中了几条边缘（闸门里出现了几种分量标签）。 */
+  const selectedCoastCount = (layer: DecodedLayer): number => {
+    const { labels } = getCoastComponents();
+    const data = layer.data as Uint8Array;
+    const seen = new Set<number>();
+    for (let i = 0; i < data.length; i++) if (data[i] && labels[i] >= 0) seen.add(labels[i]);
+    return seen.size;
   };
 
   /** 重建预览海陆：合成海陆 + 每层湍流（糊开的海陆场 + 相干湍流扰动阈值），与生成器同一算法。 */
@@ -458,7 +538,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       if (l.band) {
         /* ⭐ 沿岸带：强度完全由**当前**海岸线算出来，和笔迹网格解耦 ——
            所以形状怎么变（变换/液化/重画），效果都自动贴着海岸走。 */
-        s = bandField(getCoastDist(), l.data, l.bandWidth, l.bandFalloff);
+        s = bandField(l.data as Uint8Array, PROTO_W, PROTO_H, l.bandWidth, l.bandFalloff);
       } else {
         s = new Float32Array(n);
         for (let i = 0; i < n; i++) s[i] = (l.data[i] as number) / EDGE_MAX;
@@ -1199,6 +1279,24 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       return;
     }
     pushUndoData(l);
+    /* ⭐ 沿岸带 = 自动识别：点一下海岸线，选中/取消**那一整条边缘**（不再手绘闸门） */
+    if (mode === 'brush' && l.kind === 'turb' && l.band) {
+      const p = cellAt(e.clientX, e.clientY);
+      const hit = toggleCoastAt(p.x, p.y, l);
+      if (!hit) {
+        noteEl.textContent = '这附近没有海岸线：对着海岸线点一下（会自动认出整条边缘）';
+        undoStack.pop();
+        return;
+      }
+      touchLayer('turb');
+      renderProps();
+      paintBuf();
+      paint();
+      noteEl.textContent = hit.on
+        ? `已选中这条海岸（共 ${selectedCoastCount(l)} 条）—— 沿岸带会自动跟着它走`
+        : `已取消这条海岸（还剩 ${selectedCoastCount(l)} 条）`;
+      return;
+    }
     if (mode === 'liquify') {
       /* 逐帧连续：这里只负责"落笔 + 起循环"，之后的每一步都在 liquifyFrame 里。
          用**亚格坐标**（cellAtF）落笔，慢拖也能攒出位移。 */
@@ -1415,12 +1513,16 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       <div class="lk-ed__prop"><label>可见</label>
         <input type="checkbox" data-prop="on" ${l.on ? 'checked' : ''}></div>
       ${turb ? `
-        <div class="lk-ed__prop" title="沿岸带：强度按「离海岸多远」实时算，形状怎么变都自动贴岸；刷子只决定作用在哪几条海岸">
-          <label>沿岸带</label>
-          <input type="checkbox" data-prop="band" ${l.band ? 'checked' : ''}></div>
+        <div class="lk-ed__prop" title="手绘强度 = 自己刷强弱；自动识别海岸 = 点海岸线选中那一条，强度按离岸距离实时算（两者二选一）">
+          <label>模式</label>
+          <select data-prop="band" class="lk-ed__sel">
+            <option value="0"${l.band ? '' : ' selected'}>手绘强度</option>
+            <option value="1"${l.band ? ' selected' : ''}>自动识别海岸</option>
+          </select></div>
         ${l.band ? `
           ${range('bandWidth', '带宽', 2, 60, 1, String(l.bandWidth), '离海岸多远还有效（格）')}
           ${range('bandFalloff', '陡度', 0, 1, 0.05, String(l.bandFalloff), '越接近 1，边缘越陡（贴岸硬边）；0 = 一路平缓')}
+          <div class="lk-ed__subnote">已选 ${selectedCoastCount(l)} 条海岸 · 对着海岸线点一下就选中/取消**那一条**</div>
         ` : ''}
         ${range('scale', '尺度', 0.5, 3, 0.1, String(l.scale), '湍流波长倍数：小 = 细碎峡湾，大 = 大海湾/半岛')}
         ${range('amp', '幅度', 0.2, 1.2, 0.05, String(l.amp), '这一层最多能把海岸推多远（与笔迹强度相乘）')}
@@ -1488,7 +1590,9 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     layerNameEl.textContent = l ? l.name : '—';
     layerHintEl.textContent = mode === 'transform' ? '变换只会改当前这一层的网格（最近邻重采样）'
       : mode === 'liquify' ? '液化只在当前层上推/缩，松手前不会破坏别的层'
-        : (PALETTES[kind].find((b) => b.id === toolId)?.hint ?? '');
+        : (l?.kind === 'turb' && l.band)
+          ? '自动识别：对着海岸线点一下，选中/取消那一条边缘（强度按离岸距离实时算，形状怎么变都贴岸）'
+          : (PALETTES[kind].find((b) => b.id === toolId)?.hint ?? '');
     /* ── 属性栏（第一百四十轮单开一行）：按当前工具换内容 ───────────────── */
     toolsNameEl.textContent = mode === 'brush' ? '画笔' : mode === 'liquify' ? '液化' : '变换';
     const liqMode = mode === 'liquify';
@@ -1630,7 +1734,18 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     switch (key) {
       case 'name': l.name = (t as HTMLInputElement).value || KIND_LABEL[l.kind]; renderLayers(); syncUi(); break;
       case 'on': l.on = (t as HTMLInputElement).checked; renderLayers(); break;
-      case 'band': l.band = (t as HTMLInputElement).checked; renderProps(); break;
+      case 'band': {
+        const on = (t as HTMLSelectElement).value === '1';
+        if (on !== l.band) {
+          /* 两种模式的数据含义不同（强度笔迹 vs 海岸闸门）⇒ 切换时清空，别让旧数据被误读 */
+          pushUndoData(l);
+          (l.data as unknown as Uint8Array).fill(0);
+          l.band = on;
+          touchLayer(l.kind);
+          renderProps();
+        }
+        break;
+      }
       case 'bandWidth': l.bandWidth = Math.round(Number((t as HTMLInputElement).value)); if (valEl) valEl.textContent = String(l.bandWidth); break;
       case 'bandFalloff': l.bandFalloff = Number((t as HTMLInputElement).value); if (valEl) valEl.textContent = String(l.bandFalloff); break;
       case 'scale': l.scale = Number((t as HTMLInputElement).value); if (valEl) valEl.textContent = String(l.scale); break;
@@ -1816,6 +1931,9 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     mode, hasBase: tfBase !== null, hasDrag: tfDrag !== null,
     tfBox: tfBox ? { ...tfBox } : null, tfBBox: tfBBox ? { ...tfBBox } : null, tf: { ...tf },
     bakeOnRelease, strokeBusy, spaceDown, panning,
+    activeId, activeKind: activeKind(),
+    band: active()?.band ?? null,
+    gateCells: (() => { const l = active(); if (!l) return 0; let c = 0; const d = l.data; for (let i = 0; i < d.length; i++) if (d[i]) c++; return c; })(),
   });
   (window as any).__lkHit = (clientX: number, clientY: number) => hitTransform(clientX, clientY);
   (window as any).__lkView = () => ({ panX, panY, cellPx: cellPx(), vw, vh });

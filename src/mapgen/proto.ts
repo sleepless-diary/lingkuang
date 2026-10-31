@@ -459,14 +459,19 @@ export function bandStrengthAt(distance: number, width: number, falloff: number)
   return Math.pow(1 - t, 1 + Math.max(0, Math.min(1, falloff)) * 3);
 }
 
-/** 整张沿岸带强度场（`gate` 非 0 的格子才算 —— 闸门就是"哪几条海岸"）。 */
-export function bandField(dist: Float32Array, gate: ArrayLike<number> | null, width: number, falloff: number): Float32Array {
-  const n = dist.length;
+/**
+ * 沿岸带强度场（第一百四十一轮「自动识别」）：
+ * @param selectedCoast 长度 w*h：**被选中的那几条海岸线**上的格子置 1（其余 0）
+ * @returns 每格 0..1：离被选中的海岸越近越强，`width` 之外为 0
+ *
+ * 注意语义：`selectedCoast` 只标海岸线本身，带是从它按距离长出来的 ——
+ * 这样"选一条边缘"就是一个原子操作（把那条线的格子置 1），而不是去刷一大片区域。
+ */
+export function bandField(selectedCoast: Uint8Array, w: number, h: number, width: number, falloff: number): Float32Array {
+  const n = w * h;
+  const dist = coastDistanceField(selectedCoast, w, h, Math.max(2, Math.ceil(width) + 1));
   const out = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    if (gate && !gate[i]) continue;
-    out[i] = bandStrengthAt(dist[i], width, falloff);
-  }
+  for (let i = 0; i < n; i++) out[i] = selectedCoast[i] ? 1 : bandStrengthAt(dist[i], width, falloff);
   return out;
 }
 
