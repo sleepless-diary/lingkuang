@@ -609,6 +609,42 @@ async function main() {
     && (seam.rightEdge[1] > seam.rightEdge[0] + 8 && seam.rightEdge[1] > seam.rightEdge[2] + 20),
     seam);
 
+  /* ★11b 纵向球面（跨极点，口径 A）：把画笔挪到画布**上边界之外**点一下，
+     落点应该在「对面经线（x + W/2）+ 上下镜像」的位置 —— 就像沿大圆穿过北极。
+     判据：目标格变陆地，而同一列（不加相位）那格没变。 */
+  const polar = await ev(`(function () {
+    const c = document.getElementById('ed-canvas');
+    const g = c.getContext('2d');
+    const w = c.width, h = c.height;
+    const d = g.getImageData(0, 0, w, h).data;
+    let minX = 1e9, maxX = -1, minY = 1e9;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (d[(y * w + x) * 4 + 3] > 0) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; }
+    }
+    const cp = (maxX - minX + 1) / 1024;
+    const W = 1024, H = 512;
+    const X0 = 300, OFF = 20;                   /* 从 x=300 那列、**整个笔刷都在上边外**（笔刷半径 13 < 20） */
+    const r = c.getBoundingClientRect();
+    const at = (cx, cy) => ({ clientX: r.left + minX + (cx + 0.5) * cp, clientY: r.top + minY + (cy + 0.5) * cp });
+    const mk = (t, p) => new PointerEvent(t, { clientX: p.clientX, clientY: p.clientY, bubbles: true, pointerId: 43, pointerType: 'mouse', button: 0, buttons: 1 });
+    const above = at(X0, -OFF);
+    c.dispatchEvent(mk('pointerdown', above));
+    c.dispatchEvent(mk('pointerup', above));
+    const after = g.getImageData(0, 0, w, h).data;
+    const px = (cx, cy) => {
+      const p = at(cx, cy);
+      const sx = Math.round(p.clientX - r.left), sy = Math.round(p.clientY - r.top);
+      const o = (sy * w + sx) * 4;
+      return [after[o], after[o + 1], after[o + 2]];
+    };
+    const isLand = (v) => v[1] > v[0] + 8 && v[1] > v[2] + 20 && v[1] > 90;
+    const mirrored = px((X0 + W / 2) % W, OFF);   /* 对面经线 + 镜像 ⇒ 这里应该被画到 */
+    const sameCol = px(X0, OFF);                  /* 不加相位 ⇒ 这里不该变 */
+    return { cp: +cp.toFixed(3), X0, OFF, mirrored, sameCol, okMirror: isLand(mirrored), okSameCol: isLand(sameCol) };
+  })()`);
+  check('★11b 纵向球面：上边界外一笔 ⇒ 落到对面经线 + 镜像（x+512, y 取反）',
+    !!polar && polar.okMirror === true && polar.okSameCol === false, polar);
+
   /* ★9 按这幅原型生成 */
   await ev(`(function () { const b = document.getElementById('ed-go'); if (b) b.click(); return true; })()`);
   const genT = await waitFor(`!document.querySelector('.lk-ed')`, 90000, 400);

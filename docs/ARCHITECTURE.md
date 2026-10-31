@@ -2976,19 +2976,31 @@ else if (zn === ZONE_PLAIN)    { zFlat[i] = zs; }        // 只压平
 - `pointerup` 才 `computeBBox(l)` 重算一次（下一次拖动用新的），并把 `tf` 归零；
 - e2e 钩子 `window.__lkTfBox()`（只读）让 ★7c 能断言"框中心一步都没动"。
 
-### 四、星球映射：左右贯通、上下折返
+### 四、星球映射：左右贯通、跨极点（对面经线 + 镜像）
+
+用户原话：「纵向超边界我的想法是像素从底下镜像反向上升，然后相位加半个屏幕……总之就是把球面绘制的
+操作在平面绘制上也能生效」。追问后拍板口径 **A（球面正确）**：这张 1024×512 是**等距圆柱投影**，
+越过北极不是"折回来"，而是沿大圆穿过极点 ⇒ 在**对面那条经线**上、高度镜像、方向相反地继续。
 
 ```ts
-const wrapXf = (x) => ((x % PROTO_W) + PROTO_W) % PROTO_W;         // 经度：取模
-const foldYf = (y) => { const p = PROTO_H * 2; let m = ((y % p) + p) % p;
-                        return m < PROTO_H ? m : p - 1 - m; };      // 纬度：折返（镜像）
-const sampleWrap = (src, x, y) => src[foldYf(Math.round(y)) * PROTO_W + wrapXf(Math.round(x))];
+const wrapXf = (x) => ((x % PROTO_W) + PROTO_W) % PROTO_W;          // 经度：取模
+const sphereMap = (x, y) => {
+  const t = y / PROTO_H;                     // 0 = 北极，1 = 南极，2 = 又回到北极
+  const k = Math.floor(t);
+  const frac = t - k;
+  const cross = (((k % 2) + 2) % 2) === 1;   // 穿越极点的次数为奇数 ⇒ 换对面经线
+  return { x: wrapXf(Math.round(x + (cross ? PROTO_W / 2 : 0))),
+           y: Math.round((cross ? 1 - frac : frac) * PROTO_H) };  // 再 clamp 到 0..H-1
+};
 ```
 
-- 落笔 `stamp()`：`x` 越过左右边界时按取模落到另一侧 ⇒ 接缝处一笔画过去不断头；`y` 越界照旧丢弃
-  （画到极外没有意义）。
-- 液化 / 变换的采样都走 `sampleWrap()`：内容被推出右边界会从左边回来，推出北极会镜像回来。
-- 注意顺序：**先取整、再环绕**（`wrapXf(Math.round(x))`）—— 反了会在负坐标处越界到 `W`/`H`。
+- 由北极向上越界（`y<0`）⇒ `y' = −y`、`x' = x + W/2`；越南极同理 `y' = 2H − y`。
+  三角波 + 奇偶相位可以一次表达**连跨多个极点**的情况。
+- 落笔 `stamp()`、液化与变换的采样全部走 `sphereMap()`：画笔移出上边界，笔画会出现在
+  另一半图的顶边并**向下**继续（方向相反），接缝两侧一致。
+- 注意顺序：**先取整、再环绕**（`wrapXf(Math.round(...))`）—— 反了会在负坐标处越界到 `W`/`H`。
+- 守卫：`map-draw.cjs` ★11（横向接缝）、★11b（画笔在**上边界之外**点一下，落点必须在
+  `x + 512`、`y` 取反 的位置；同列那格必须还是空的）。
 
 ### 五、顺手的一处性能修
 

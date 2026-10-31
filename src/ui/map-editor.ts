@@ -745,25 +745,38 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     paint();
   };
 
-  /* ── 星球映射（第一百四十轮）────────────────────────────────────────────
-     经度贯通、纬度不贯通：
-       · 横向（x）**取模**：画到最右边会接着从最左边出来，采样也一样，接缝处没有"断头"；
-       · 纵向（y）**折返**：越过北极/南极的坐标映射到对侧同一列（镜像），不绕回来。
+  /* ── 星球映射（第一百四十轮，⭐ 口径经用户确认：A「球面正确」）──────────────
+     这张图是**等距圆柱投影**展开的一整颗星球，所以：
+       · 横向（x，经度）**取模**：画到最右边接着从最左边出来，接缝处没有"断头"；
+       · 纵向（y，纬度）**跨极点**：越过北极不是"折回来"，而是在**对面那条经线**上、
+         高度镜像、方向相反地继续 —— 就像沿大圆真的穿过了极点：
+           y<0  ⇒  y' = −y,  x' = x + W/2（对面经线 = 相位 +半个屏幕）
+           y>H  ⇒  y' = 2H − y,  x' = x + W/2
+         连跨多个极点时每次穿越都换一条对面经线，所以用三角波 + 奇偶相位统一表达。
      浮点优先：位移场里存的是小数，`Math.round` 只在最后取格时做（以前在半格处就被舍成 0，
      所以"慢速推挤"看起来像没反应）。 */
   const wrapXf = (x: number): number => {
     const m = x % PROTO_W;
     return m < 0 ? m + PROTO_W : m;
   };
-  const foldYf = (y: number): number => {
-    const p = PROTO_H * 2;
-    let m = y % p;
-    if (m < 0) m += p;
-    return m < PROTO_H ? m : p - 1 - m;
+  /** 把任意 (x, y) 映射回 0..W-1 / 0..H-1：x 取模；y 越极点＝镜像 + 相位 W/2。 */
+  const sphereMap = (x: number, y: number): { x: number; y: number } => {
+    const t = y / PROTO_H;              /* 0 = 北极，1 = 南极，2 = 又回到北极 */
+    const k = Math.floor(t);
+    const frac = t - k;
+    const cross = (((k % 2) + 2) % 2) === 1;   /* 穿过极点的次数是奇数 ⇒ 换对面经线 */
+    const yy = (cross ? 1 - frac : frac) * PROTO_H;
+    const xx = x + (cross ? PROTO_W / 2 : 0);
+    return {
+      x: wrapXf(Math.round(xx)),
+      y: Math.min(PROTO_H - 1, Math.max(0, Math.round(yy))),
+    };
   };
-  /** 从 `src` 取一格（先取整再环绕/折返；反过来会在负坐标处越界到 W 或 H）。 */
-  const sampleWrap = (src: Uint8Array, x: number, y: number): number =>
-    src[foldYf(Math.round(y)) * PROTO_W + wrapXf(Math.round(x))];
+  /** 从 `src` 取一格（走球面映射；先取整再环绕，反过来会在负坐标处越界到 W 或 H）。 */
+  const sampleWrap = (src: Uint8Array, x: number, y: number): number => {
+    const p = sphereMap(x, y);
+    return src[p.y * PROTO_W + p.x];
+  };
 
   const stamp = (cx: number, cy: number) => {
     const l = active();
@@ -772,12 +785,12 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     const arr = l.data;
     const r = Math.max(0, brushCells - 1);
     for (let y = cy - r; y <= cy + r; y++) {
-      if (y < 0 || y >= PROTO_H) continue;
       for (let x = cx - r; x <= cx + r; x++) {
         const dx = x - cx, dy = y - cy;
         if (r > 0 && dx * dx + dy * dy > r * r + r * 0.6) continue;
-        /* 横向环绕：这一笔越过右边界的那半圈，落到左边的同一行 */
-        arr[y * PROTO_W + wrapXf(x)] = val;
+        /* 球面映射：横向取模（越过左右边界接着画）、纵向跨极点（对面经线 + 镜像） */
+        const p = sphereMap(x, y);
+        arr[p.y * PROTO_W + p.x] = val;
       }
     }
   };
