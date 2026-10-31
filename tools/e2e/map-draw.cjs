@@ -471,6 +471,57 @@ async function main() {
     !!pivot && !pivot.error && pivot.drift <= 0.5 && pivot.contentMoved === true, pivot);
   await click('#ed-undo');
   await sleep(250);
+
+  /* ★7d 变换是「一一对应」的：连续旋转 3 次，陆地像素数不许涨、也不许崩。
+     老 bug：极点用镜像（相位 π）采样 ⇒ 同一格内容映射到两个落点 ⇒ 每转一次多复制一份，
+     6% 的陆地几次之后变成 17% 的满地碎片（用户 2026-10-31 报的"变换几次就全消失/散架"）。 */
+  const tfArea = await ev(`(async function () {
+    const c = document.getElementById('ed-canvas');
+    const r = c.getBoundingClientRect();
+    const g = c.getContext('2d');
+    const count = () => {
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i + 1] > d[i] + 8 && d[i + 1] > d[i + 2] + 20 && d[i + 1] > 90) n++;
+      return n;
+    };
+    const boxOf = () => window.__lkTfBox();
+    const cellPxOf = () => {
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      let minX = 1e9, maxX = -1;
+      for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+        if (d[(y * c.width + x) * 4 + 3] > 0) { if (x < minX) minX = x; if (x > maxX) maxX = x; }
+      }
+      return { minX, cp: (maxX - minX + 1) / 1024 };
+    };
+    document.querySelector('[data-mode="transform"]').click();
+    await new Promise((res) => requestAnimationFrame(res));
+    const before = count();
+    for (let round = 0; round < 3; round++) {
+      const box = boxOf();
+      if (!box) return { before, error: 'no tfBox' };
+      const { minX, cp } = cellPxOf();
+      const sx = (v) => minX + v * cp;
+      const mx = (box.x0 + box.x1) / 2;
+      const cx = sx(mx), cy = sx((box.y0 + box.y1) / 2);
+      const p0 = { x: cx, y: sx(box.y0 - 30 / cp) };
+      const R = Math.hypot(p0.x - cx, p0.y - cy);
+      const mk = (t, x, y) => new PointerEvent(t, { clientX: r.left + x, clientY: r.top + y, bubbles: true, pointerId: 53, pointerType: 'mouse', button: 0, buttons: 1 });
+      c.dispatchEvent(mk('pointerdown', p0.x, p0.y));
+      for (let i = 1; i <= 6; i++) {
+        const a = -Math.PI / 2 + (i * 30) * Math.PI / 180;
+        c.dispatchEvent(mk('pointermove', cx + Math.cos(a) * R, cy + Math.sin(a) * R));
+      }
+      c.dispatchEvent(mk('pointerup', p0.x, p0.y));
+      await new Promise((res) => requestAnimationFrame(res));
+    }
+    const after = count();
+    return { before, after, ratio: +(after / Math.max(1, before)).toFixed(3) };
+  })()`);
+  check('★7d 连续旋转 3 次：陆地像素数不复制、不崩（0.8 ≤ 比例 ≤ 1.25）',
+    !!tfArea && !tfArea.error && tfArea.ratio >= 0.8 && tfArea.ratio <= 1.25, tfArea);
+  await click('#ed-undo');
+  await sleep(250);
   /* 把湍流层重新显示回来（★9 生成时要有两层的效果） */
   await setTurbOn(true);
 

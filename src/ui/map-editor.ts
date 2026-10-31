@@ -777,6 +777,16 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     const p = sphereMap(x, y);
     return src[p.y * PROTO_W + p.x];
   };
+  /** 变换专用：**两个方向都取模**（环面），不镜像、不加相位。
+   *  为什么和球面映射分开：变换是一次"刚性搬动"，采样必须是**一一对应**的 ——
+   *  镜像（极点的 π 相位）会把同一格内容映射到两个落点，于是每变换一次就多复制一份，
+   *  几次之后就满地碎片、面积越变越大（用户 2026-10-31 报的"变换几次就全消失/散架"）。
+   *  取模是循环移位：面积严格不变，也不会复制。 */
+  const sampleMod = (src: Uint8Array, x: number, y: number): number => {
+    const xx = ((Math.round(x) % PROTO_W) + PROTO_W) % PROTO_W;
+    const yy = ((Math.round(y) % PROTO_H) + PROTO_H) % PROTO_H;
+    return src[yy * PROTO_W + xx];
+  };
 
   const stamp = (cx: number, cy: number) => {
     const l = active();
@@ -856,7 +866,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         const sy = cy + (px * sin + py * cos) * inv - 0.5;
         /* 经度环绕（横向取模）、纬度折返（上下镜像）：整张图左右接得上，上下到头就折回来。
            纵向"折回来"会撞到自己：折返层里取模后的行，再取一次正数即可（只会落到同一列）。 */
-        dst[row + x] = sampleWrap(src, sx, sy);
+        dst[row + x] = sampleMod(src, sx, sy);
       }
     }
     touchLayer(l.kind);
