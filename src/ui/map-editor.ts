@@ -610,7 +610,9 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       const l = active();
       let c = 0;
       if (l) for (let i = 0; i < n; i++) if (l.data[i]) c++;
-      extra = ` · 湍流笔迹 ${pct(c)}%（尺度 ${l?.scale ?? 1}× · 幅度 ${l?.amp ?? 0.6}）`;
+      extra = l?.band
+        ? ` · 沿岸带：闸门 ${pct(c)}%（带宽 ${l.bandWidth} · 陡度 ${l.bandFalloff.toFixed(2)}）`
+        : ` · 湍流笔迹 ${pct(c)}%（尺度 ${l?.scale ?? 1}× · 幅度 ${l?.amp ?? 0.6}）`;
     }
     const turbs = turbLayers(doc).filter((l) => l.on).length;
     statText = `陆地 ${pct(land)}% · 海洋 ${pct(sea)}% · 留白 ${100 - pct(land) - pct(sea)}%${extra}`
