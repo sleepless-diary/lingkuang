@@ -254,7 +254,11 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       <span class="lk-ed__subnote" id="ed-tools-hint"></span>
       <span class="lk-ed__spacer"></span>
       <span class="lk-ed__group" id="ed-tf-actions">
-        <button class="lk-ed__btn" id="ed-tf-reset" title="把这一层的变换归零，包围盒重新贴合内容">重置变换</button>
+        <button class="lk-ed__btn is-primary" id="ed-tf-bake" title="把这几次变换写进图层（定稿；之后仍可用撤销退回）">烘焙</button>
+        <button class="lk-ed__btn" id="ed-tf-reset" title="丢掉这一段还没烘焙的变换，回到累积之前的样子">取消变换</button>
+        <label class="lk-ed__check" id="ed-bake-release-box" title="勾上：每次松手就立刻烘焙（老行为）；不勾：先攒着，按「烘焙」才定稿">
+          <input type="checkbox" id="ed-bake-release"> 松手烘焙
+        </label>
       </span>
     </div>
     <div class="lk-ed__sub">
@@ -312,6 +316,9 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   const viscBox = q<HTMLElement>('#ed-visc-box');
   const liqKindsEl = q<HTMLElement>('#ed-liq-kinds');
   const tfActionsEl = q<HTMLElement>('#ed-tf-actions');
+  const bakeBtn = q<HTMLButtonElement>('#ed-tf-bake');
+  const cancelBtn = q<HTMLButtonElement>('#ed-tf-reset');
+  const bakeReleaseEl = q<HTMLInputElement>('#ed-bake-release');
   const toolsNameEl = q<HTMLElement>('#ed-tools-name');
   const toolsHintEl = q<HTMLElement>('#ed-tools-hint');
   const brushesEl = q<HTMLElement>('#ed-brushes');
@@ -728,6 +735,17 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     t.set(data as unknown as Uint8Array);
     checkpoint();
   };
+  /** 撤销 / 换层时清掉未烘焙状态：数据以当前 data 为准，不要再从旧基线重采样。
+      （函数声明会提升 —— `undo()` 写在变换那一段之前也能调。） */
+  function clearTransformPending() {
+    tfBase = null;
+    tfBaseBox = null;
+    tf = { ...TF_IDENTITY };
+    tfDrag = null;
+    tfBBox = active() ? computeBBox(active()!) : null;
+    tfBox = tfBBox ? boxFor(tfBBox, tf) : null;
+  }
+
   const undo = () => {
     const prev = undoStack.pop();
     if (!prev) return;
@@ -737,6 +755,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     } else {
       restoreData(prev.id, prev.data);
     }
+    clearTransformPending();
     checkpoint();
     renderLayers();
     renderProps();
@@ -812,14 +831,21 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     }
   };
 
-  /* ── 变换：移动 / 缩放 / 旋转 ─────────────────────────────────────────────
-     ⭐ 第一百四十轮：**按下即冻结**。以前每次 pointermove 都 `syncTfBox()`（拿当前数据重算包围盒），
-     于是拖动过程中框和轴心自己也在动 —— 缩放/旋转会越拖越偏，还能把自己拽回来（用户报的"奇怪的 bug"）。
-     现在 `tfDrag.box0` 保存落笔那一刻的包围盒，整个拖动过程都用它当轴心，**松手才重算**。 */
+  /* ── 变换：移动 / 缩放 / 旋转（第一百四十轮起：轴心按下即冻结 + **非破坏累积**）────
+     ⭐ 轴心冻结：`tfDrag.box0` 保存按下那一刻的包围盒，整个拖动过程用它当轴心，
+       松手才按新数据重算（老实现每帧重算 ⇒ 框和轴心自己跑，缩放/旋转越拖越偏）。
+     ⭐ 非破坏：`tfBase` = 这一段变换的**基线快照**，`tf` = 已经累积的变换。每次拖动都是
+       「基线 → 当前 tf」重新采样，所以反复拖不会一次次糊掉（老实现每松手就把结果烘焙进数据，
+       多拖几次就是 N 次最近邻重采样）。要不要立刻烘焙由属性栏的「松手烘焙」决定。 */
   type Tf = { dx: number; dy: number; scale: number; rot: number };
   type BBox = { cx: number; cy: number; x0: number; y0: number; x1: number; y1: number };
-  let tf: Tf = { dx: 0, dy: 0, scale: 1, rot: 0 };
-  let tfSnapshot: Uint8Array | Int8Array | null = null;
+  const TF_IDENTITY: Tf = { dx: 0, dy: 0, scale: 1, rot: 0 };
+  let tf: Tf = { ...TF_IDENTITY };
+  /** 未烘焙变换的基线（null = 当前没有待烘焙的变换） */
+  let tfBase: Uint8Array | Int8Array | null = null;
+  let tfBaseBox: BBox | null = null;
+  /** 属性栏「松手烘焙」：勾上 = 老行为（每次松手就写进数据） */
+  let bakeOnRelease = false;
   let tfDrag: { kind: 'move' | 'scale' | 'rot'; sx: number; sy: number; base: Tf; dist0: number; ang0: number; box0: BBox } | null = null;
   let tfBBox: BBox | null = null;
 
@@ -847,35 +873,67 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     else tfBBox = active() ? computeBBox(active()!) : null;
     tfBox = tfBBox ? boxFor(tfBBox, tf) : null;
   };
-  /** 把快照按 tf 重采样进图层（最近邻；绕 **冻结的** bbox 中心旋转/缩放；横向环绕）。 */
-  const applyTransform = (bbox?: BBox | null) => {
+  /** 把**基线快照**按 tf 重采样进图层（最近邻；绕冻结的 bbox 中心；双轴取模 ⇒ 面积守恒）。 */
+  const applyTransform = (src: Uint8Array, box: BBox, t: Tf) => {
     const l = active();
-    const box = bbox ?? tfBBox;
-    if (!l || !tfSnapshot || !box) return;
-    const src = tfSnapshot as unknown as Uint8Array;
+    if (!l) return;
     const dst = l.data as unknown as Uint8Array;
     const { cx, cy } = box;
-    const cos = Math.cos(-tf.rot), sin = Math.sin(-tf.rot);
-    const inv = 1 / Math.max(0.05, tf.scale);
+    const cos = Math.cos(-t.rot), sin = Math.sin(-t.rot);
+    const inv = 1 / Math.max(0.05, t.scale);
     for (let y = 0; y < PROTO_H; y++) {
       const row = y * PROTO_W;
-      const py = y + 0.5 - cy - tf.dy;
+      const py = y + 0.5 - cy - t.dy;
       for (let x = 0; x < PROTO_W; x++) {
-        const px = x + 0.5 - cx - tf.dx;
+        const px = x + 0.5 - cx - t.dx;
         const sx = cx + (px * cos - py * sin) * inv - 0.5;
         const sy = cy + (px * sin + py * cos) * inv - 0.5;
-        /* 经度环绕（横向取模）、纬度折返（上下镜像）：整张图左右接得上，上下到头就折回来。
-           纵向"折回来"会撞到自己：折返层里取模后的行，再取一次正数即可（只会落到同一列）。 */
         dst[row + x] = sampleMod(src, sx, sy);
       }
     }
     touchLayer(l.kind);
   };
-  const resetTf = () => {
-    tf = { dx: 0, dy: 0, scale: 1, rot: 0 };
-    tfSnapshot = null;
+  /** 有未烘焙的变换吗（属性栏据此亮/暗按钮）。 */
+  const tfPending = () => tfBase !== null;
+  /** 烘焙：把现在看到的写实（数据里已经是预览了，这里只是丢掉基线、把包围盒按新数据重算）。 */
+  const bakeTransform = () => {
+    const l = active();
+    tfBase = null;
+    tfBaseBox = null;
+    tf = { ...TF_IDENTITY };
     tfDrag = null;
-    syncTfBox();
+    tfBBox = l ? computeBBox(l) : null;
+    tfBox = tfBBox ? boxFor(tfBBox, tf) : null;
+    syncUi();
+  };
+  /** 取消：把基线快照写回去（这一段变换全丢），再按数据重算包围盒。 */
+  const cancelTransform = () => {
+    const l = active();
+    if (l && tfBase) {
+      const dst = l.data as unknown as Uint8Array;
+      dst.set(tfBase as unknown as Uint8Array);
+      touchLayer(l.kind);
+    }
+    tfBase = null;
+    tfBaseBox = null;
+    tf = { ...TF_IDENTITY };
+    tfDrag = null;
+    tfBBox = l ? computeBBox(l) : null;
+    tfBox = tfBBox ? boxFor(tfBBox, tf) : null;
+    syncUi();
+  };
+  /** 换层 / 换模式 / 关面板：先把待烘焙的变形落实，别把状态带给下一层 */
+  const settleTransform = () => {
+    if (tfBase) bakeTransform();
+  };
+  const resetTf = () => {
+    /* 兼容老调用点（换模式、换层）：先落实现有变形，再把轴心归位 */
+    settleTransform();
+    tf = { ...TF_IDENTITY };
+    tfDrag = null;
+    tfBBox = active() ? computeBBox(active()!) : null;
+    tfBox = tfBBox ? boxFor(tfBBox, tf) : null;
+    syncUi();
   };
 
   /* ── 液化：推挤 / 收缩 / 膨胀（第一百四十轮：逐帧连续）───────────────────────
@@ -1020,12 +1078,17 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       const l = active();
       if (!l) return;
       pushUndoData(l);
-      tfSnapshot = l.data instanceof Int8Array ? new Int8Array(l.data) : new Uint8Array(l.data);
+      /* 非破坏：第一次拖之前抓一份基线快照（之后的每次拖动都从它重采样，不累积糊） */
+      if (!tfBase) {
+        tfBase = l.data instanceof Int8Array ? new Int8Array(l.data) : new Uint8Array(l.data);
+        tfBaseBox = tfBBox ? { ...tfBBox } : null;
+        tf = { ...TF_IDENTITY };
+      }
       const r = canvas.getBoundingClientRect();
       const k = r.width ? vw / r.width : 1;
       const sx = (e.clientX - r.left) * k, sy = (e.clientY - r.top) * k;
       /* 轴心 = 按下这一刻的包围盒（整个拖动过程都用它，见上面的注释） */
-      const box0: BBox = { ...tfBBox };
+      const box0: BBox = { ...(tfBaseBox ?? tfBBox) };
       const bcx = screenX(box0.cx + tf.dx), bcy = screenY(box0.cy + tf.dy);
       strokeBusy = true;
       tfDrag = {
@@ -1103,7 +1166,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       /* ⭐ 只重画「冻结轴心 + 当前 tf」的框；**不再**从数据重算包围盒（否则框和轴心会自己跑） */
       tfBBox = tfDrag.box0;
       tfBox = boxFor(tfDrag.box0, tf);
-      applyTransform(tfDrag.box0);
+      if (tfBase) applyTransform(tfBase as unknown as Uint8Array, tfDrag.box0, tf);
       paintBuf();
       paint();
       return;
@@ -1127,16 +1190,22 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
 
   const endStroke = (e: PointerEvent) => {
     if (mode === 'transform' && tfDrag) {
-      /* 收尾：用冻结轴心把最后一帧落实，**这时才**按新数据重算包围盒（下一次拖动用新的） */
-      const l = active();
-      applyTransform(tfDrag.box0);
-      const box0 = tfDrag.box0;
-      void box0;
-      tf = { dx: 0, dy: 0, scale: 1, rot: 0 };
+      /* 收尾：用冻结轴心把最后一帧写进去。**松手要不要烘焙**由属性栏的「松手烘焙」决定：
+         不勾（默认）= 保留基线，下一次拖动继续从基线重采样（反复调不掉画质）；
+         勾上 = 立刻丢掉基线，等于老行为（每次松手就定稿）。 */
+      if (tfBase) applyTransform(tfBase as unknown as Uint8Array, tfDrag.box0, tf);
       tfDrag = null;
-      tfSnapshot = null;
-      tfBBox = l ? computeBBox(l) : null;
-      tfBox = tfBBox ? boxFor(tfBBox, tf) : null;
+      if (bakeOnRelease) {
+        bakeTransform();
+      } else if (tfBaseBox) {
+        /* 还没定稿：包围盒仍按「基线 + 累积变换」显示，下一次拖动的轴心保持不变 */
+        tfBBox = tfBaseBox;
+        tfBox = boxFor(tfBaseBox, tf);
+      } else {
+        tfBBox = active() ? computeBBox(active()!) : null;
+        tfBox = tfBBox ? boxFor(tfBBox, tf) : null;
+      }
+      syncUi();
     }
     if (mode === 'liquify') liquifyEnd();
     if (strokeBusy) {
@@ -1337,10 +1406,15 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     liqKindsEl.style.display = liqMode ? 'inline-flex' : 'none';
     tfActionsEl.style.display = tfMode ? 'inline-flex' : 'none';
     toolsHintEl.textContent = tfMode
-      ? '轴心在按下时就冻结了：拖动中框跟着手势变，不会自己跑。'
+      ? (tfPending()
+        ? '有未烘焙的变换：按「烘焙」定稿，或「取消变换」退回原样（勾「松手烘焙」＝每次松手就定稿）'
+        : '拖动框内移动 · 拖四角缩放 · 拖顶部圆点旋转；不勾「松手烘焙」时改动先攒着，按「烘焙」才定稿')
       : liqMode
         ? '按住不动也在缩/胀；粘性越高越稠（只有笔心带得动，整体也慢）。'
         : '';
+    bakeBtn.disabled = !(tfMode && tfPending());
+    cancelBtn.disabled = !(tfMode && tfPending());
+    bakeReleaseEl.checked = bakeOnRelease;
     brushEl.value = String(brushCells);
     brushNEl.textContent = String(brushCells);
     strEl.value = String(strength);
@@ -1390,7 +1464,22 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     if (t.closest('#ed-zoom-out')) { setZoom(zoom / 1.5); return; }
     if (t.closest('#ed-zoom-fit')) { zoom = 1; clampPan(); paint(); return; }
     if (t.closest('#ed-undo')) { undo(); return; }
-    if (t.closest('#ed-tf-reset')) { resetTf(); paintBuf(); paint(); noteEl.textContent = '变换已归零（包围盒重新贴合内容）'; return; }
+    if (t.closest('#ed-tf-bake')) {
+      if (!tfPending()) { noteEl.textContent = '现在没有待烘焙的变换'; return; }
+      bakeTransform();
+      paintBuf();
+      paint();
+      noteEl.textContent = '变换已烘焙进图层（撤销可退回）';
+      return;
+    }
+    if (t.closest('#ed-tf-reset')) {
+      if (!tfPending()) return;
+      cancelTransform();
+      paintBuf();
+      paint();
+      noteEl.textContent = '这一段变换已取消（回到累积之前）';
+      return;
+    }
     if (t.closest('#ed-export')) { exportPng(); return; }
     if (t.closest('#ed-add')) { addLayer(); return; }
     if (t.closest('#ed-go')) { void applyPatch(); return; }
@@ -1479,6 +1568,17 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     previewDirty = true;
     paintBuf();
     paint();
+  });
+  bakeReleaseEl.addEventListener('change', () => {
+    bakeOnRelease = bakeReleaseEl.checked;
+    /* 打开「松手烘焙」时，把已经攒着的这次立刻定稿（不然它会一直悬着，和选项含义不符） */
+    if (bakeOnRelease && tfPending()) {
+      bakeTransform();
+      paintBuf();
+      paint();
+      noteEl.textContent = '已按「松手烘焙」把当前这次变换定稿';
+    }
+    syncUi();
   });
 
   fileEl.addEventListener('change', () => {
@@ -1598,7 +1698,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     if (e.code === 'Space' || e.key === ' ') { spaceDown = true; setCursorGrab(true); e.preventDefault(); return; }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); undo(); return; }
     if (e.key === 'b' || e.key === 'B') { mode = 'brush'; resetTf(); tfBox = null; syncUi(); paint(); return; }
-    if (e.key === 't' || e.key === 'T') { mode = 'transform'; syncTfBox(); syncUi(); paint(); return; }
+    if (e.key === 't' || e.key === 'T') { mode = 'transform'; resetTf(); syncUi(); paint(); return; }
     if (e.key === 'l' || e.key === 'L') { mode = 'liquify'; tfBox = null; syncUi(); paint(); return; }
     if (e.key === '[') { brushEl.value = String(Math.max(BRUSH_MIN, brushCells - 1)); brushEl.dispatchEvent(new Event('input')); }
     if (e.key === ']') { brushEl.value = String(Math.min(BRUSH_MAX, brushCells + 1)); brushEl.dispatchEvent(new Event('input')); }
@@ -1612,8 +1712,15 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   (el as HTMLElement & { _ro?: ResizeObserver | null })._ro = ro;
 
   /* e2e 钩子（tools/e2e/map-draw.cjs 的 ★7c 用）：变换框在拖动过程中必须是**冻结**的。
-     只读、不改状态；没有它就断言不到「轴心有没有跑」。 */
+     只读、不改状态；没有它就断言不到「轴心有没有跑」。第二个钩子是烘焙/拖动状态的诊断口。 */
   (window as any).__lkTfBox = () => (tfBox ? { ...tfBox } : null);
+  (window as any).__lkTfDebug = () => ({
+    mode, hasBase: tfBase !== null, hasDrag: tfDrag !== null,
+    tfBox: tfBox ? { ...tfBox } : null, tfBBox: tfBBox ? { ...tfBBox } : null, tf: { ...tf },
+    bakeOnRelease, strokeBusy, spaceDown, panning,
+  });
+  (window as any).__lkHit = (clientX: number, clientY: number) => hitTransform(clientX, clientY);
+  (window as any).__lkView = () => ({ panX, panY, cellPx: cellPx(), vw, vh });
 
   renderLayers();
   renderProps();

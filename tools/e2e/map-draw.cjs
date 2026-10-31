@@ -379,7 +379,10 @@ async function main() {
 
   /* ★7 变换：拖动框内 ⇒ 陆地包围盒平移；撤销回去
      ⚠️ 先临时隐藏所有湍流层：湍流会把「显示出来的陆地」推走，绿色包围盒就不再等于
-     海陆层自己的数据包围盒（变换框是按数据算的，点会落在框外）。 */
+     海陆层自己的数据包围盒（变换框是按数据算的，点会落在框外）。
+     ⚠️ 先把缩放复位：★3 把画面放大到 261%，那时画布只显示一部分，像素计数会随内容移出视口变化。 */
+  await click('#ed-zoom-fit');
+  await sleep(250);
   await setTurbOn(false);
   const tf = await ev(`(function () {
     document.querySelector('[data-kind="land"]').click();
@@ -486,47 +489,166 @@ async function main() {
       return n;
     };
     const boxOf = () => window.__lkTfBox();
-    const cellPxOf = () => {
-      const d = g.getImageData(0, 0, c.width, c.height).data;
-      let minX = 1e9, maxX = -1;
-      for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
-        if (d[(y * c.width + x) * 4 + 3] > 0) { if (x < minX) minX = x; if (x > maxX) maxX = x; }
-      }
-      return { minX, cp: (maxX - minX + 1) / 1024 };
-    };
+    /* 坐标一律用编辑器自己的视图（pan / cellPx）换算 —— 别拿画布像素猜，
+       缩放不是 100% 时猜出来的 cp 全错，拖了等于没拖（★7e 一开始就被这个坑骗过）。 */
+    const view = () => window.__lkView();
+    const toX = (v) => view().panX + v * view().cellPx;
+    const toY = (v) => view().panY + v * view().cellPx;
     document.querySelector('[data-mode="transform"]').click();
     await new Promise((res) => requestAnimationFrame(res));
     const before = count();
+    const boxStart = boxOf();
+    const mk = (t, x, y) => new PointerEvent(t, { clientX: r.left + x, clientY: r.top + y, bubbles: true, pointerId: 53, pointerType: 'mouse', button: 0, buttons: 1 });
     for (let round = 0; round < 3; round++) {
       const box = boxOf();
-      if (!box) return { before, error: 'no tfBox' };
-      const { minX, cp } = cellPxOf();
-      const sx = (v) => minX + v * cp;
+      if (!box) return { before, error: 'no tfBox', round };
       const mx = (box.x0 + box.x1) / 2;
-      const cx = sx(mx), cy = sx((box.y0 + box.y1) / 2);
-      const p0 = { x: cx, y: sx(box.y0 - 30 / cp) };
-      const R = Math.hypot(p0.x - cx, p0.y - cy);
-      const mk = (t, x, y) => new PointerEvent(t, { clientX: r.left + x, clientY: r.top + y, bubbles: true, pointerId: 53, pointerType: 'mouse', button: 0, buttons: 1 });
-      c.dispatchEvent(mk('pointerdown', p0.x, p0.y));
+      const cx = toX(mx), cy = toY((box.y0 + box.y1) / 2);
+      const px0 = cx, py0 = toY(box.y0) - 30;
+      const R = Math.hypot(px0 - cx, py0 - cy);
+      c.dispatchEvent(mk('pointerdown', px0, py0));
       for (let i = 1; i <= 6; i++) {
         const a = -Math.PI / 2 + (i * 30) * Math.PI / 180;
         c.dispatchEvent(mk('pointermove', cx + Math.cos(a) * R, cy + Math.sin(a) * R));
       }
-      c.dispatchEvent(mk('pointerup', p0.x, p0.y));
+      c.dispatchEvent(mk('pointerup', px0, py0));
       await new Promise((res) => requestAnimationFrame(res));
     }
     const after = count();
-    return { before, after, ratio: +(after / Math.max(1, before)).toFixed(3) };
+    const boxEnd = boxOf();
+    /* 旋转不改轴对齐框的尺寸/中心，所以用「有没有待烘焙变换」判断真的转过了 */
+    const moved = window.__lkTfDebug().hasBase === true;
+    return { before, after, moved, boxEnd, ratio: +(after / Math.max(1, before)).toFixed(3) };
   })()`);
-  check('★7d 连续旋转 3 次：陆地像素数不复制、不崩（0.8 ≤ 比例 ≤ 1.25）',
-    !!tfArea && !tfArea.error && tfArea.ratio >= 0.8 && tfArea.ratio <= 1.25, tfArea);
+  check('★7d 连续旋转 3 次：真的转了、陆地像素数不复制不崩（0.8 ≤ 比例 ≤ 1.25）',
+    !!tfArea && !tfArea.error && tfArea.moved === true
+    && tfArea.ratio >= 0.8 && tfArea.ratio <= 1.25, tfArea);
+  await click('#ed-undo');
+  await sleep(250);
+
+  /* ★7e 变换默认「松手不烘焙」：拖完只是预览（按钮亮着），按「烘焙」才定稿；面积全程不变。
+     老行为是每次松手就写死进数据（反复拖 = 反复最近邻重采样，越拖越糊）。 */
+  const bakeUi = await ev(`(async function () {
+    document.querySelector('[data-mode="transform"]').click();
+    await new Promise((res) => requestAnimationFrame(res));
+    const c = document.getElementById('ed-canvas');
+    const r = c.getBoundingClientRect();
+    const g = c.getContext('2d');
+    const count = () => {
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i + 1] > d[i] + 8 && d[i + 1] > d[i + 2] + 20 && d[i + 1] > 90) n++;
+      return n;
+    };
+    const bake = document.getElementById('ed-tf-bake');
+    const cancel = document.getElementById('ed-tf-reset');
+    const before = count();
+    const box = window.__lkTfBox();
+    const diag = {
+      box, landPixels: before,
+      modeOn: [...document.querySelectorAll('.lk-ed [data-mode].is-on')].map((b) => b.dataset.mode).join(','),
+    };
+    if (!box) return { before, error: 'no tfBox', diag };
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    let minX = 1e9, maxX = -1;
+    for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+      if (d[(y * c.width + x) * 4 + 3] > 0) { if (x < minX) minX = x; if (x > maxX) maxX = x; }
+    }
+    const view = window.__lkView();
+    const toX = (v) => view.panX + v * view.cellPx;
+    const toY = (v) => view.panY + v * view.cellPx;
+    /* 抓「旋转手柄」（框顶部那个圆点）：中心拖动在薄条上容易点空，手柄更稳 */
+    const mx = (box.x0 + box.x1) / 2;
+    const cxS = toX(mx), cyS = toY((box.y0 + box.y1) / 2);
+    const px0 = cxS, py0 = toY(box.y0) - 30;
+    const R = Math.hypot(px0 - cxS, py0 - cyS);
+    const mk = (t, x, y) => new PointerEvent(t, { clientX: r.left + x, clientY: r.top + y, bubbles: true, pointerId: 55, pointerType: 'mouse', button: 0, buttons: 1 });
+    c.dispatchEvent(mk('pointerdown', px0, py0));
+    const afterDown = window.__lkTfDebug();
+    for (let i = 1; i <= 6; i++) {
+      const a = -Math.PI / 2 + (i * 6) * Math.PI / 180;
+      c.dispatchEvent(mk('pointermove', cxS + Math.cos(a) * R, cyS + Math.sin(a) * R));
+    }
+    c.dispatchEvent(mk('pointerup', cxS, cyS - R));
+    diag.afterDown = afterDown;
+    diag.pressAt = { px0, py0, R, cxS, cyS, view };
+    await new Promise((res) => requestAnimationFrame(res));
+    const afterDrag = count();
+    const pendingAfterDrag = { bakeDisabled: bake.disabled, cancelDisabled: cancel.disabled };
+    bake.click();
+    await new Promise((res) => requestAnimationFrame(res));
+    const afterBake = count();
+    return {
+      before, afterDrag, afterBake, pendingAfterDrag, diag,
+      afterBakeState: { bakeDisabled: bake.disabled, cancelDisabled: cancel.disabled },
+      ratio_drag: +(afterDrag / Math.max(1, before)).toFixed(3),
+      ratio_bake: +(afterBake / Math.max(1, before)).toFixed(3),
+    };
+  })()`);
+  check('★7e 默认「松手不烘焙」：拖完仍在待烘焙态（按钮亮），点「烘焙」才定稿、面积不变',
+    !!bakeUi && !bakeUi.error && bakeUi.pendingAfterDrag?.bakeDisabled === false
+    && bakeUi.afterBakeState?.bakeDisabled === true
+    && bakeUi.ratio_drag >= 0.8 && bakeUi.ratio_drag <= 1.25
+    && bakeUi.ratio_bake >= 0.8 && bakeUi.ratio_bake <= 1.25, bakeUi);
+
+  /* ★7f 勾上「松手烘焙」⇒ 松手就是定稿（等于老行为），松手后没有待烘焙内容 */
+  const bakeOnRelease = await ev(`(async function () {
+    const chk = document.getElementById('ed-bake-release');
+    chk.checked = true;
+    chk.dispatchEvent(new Event('change', { bubbles: true }));
+    const c = document.getElementById('ed-canvas');
+    const r = c.getBoundingClientRect();
+    const g = c.getContext('2d');
+    const box = window.__lkTfBox();
+    if (!box) return { error: 'no tfBox' };
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    let minX = 1e9, minY = 1e9, maxX = -1;
+    for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+      if (d[(y * c.width + x) * 4 + 3] > 0) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; }
+    }
+    const cp = (maxX - minX + 1) / 1024;
+    const view = window.__lkView();
+    const sx = view.panX + ((box.x0 + box.x1) / 2) * view.cellPx;
+    const sy = view.panY + ((box.y0 + box.y1) / 2) * view.cellPx;
+    const mk = (t, x, y) => new PointerEvent(t, { clientX: r.left + x, clientY: r.top + y, bubbles: true, pointerId: 56, pointerType: 'mouse', button: 0, buttons: 1 });
+    c.dispatchEvent(mk('pointerdown', sx, sy));
+    const started = window.__lkTfDebug().hasDrag;
+    for (let i = 1; i <= 4; i++) c.dispatchEvent(mk('pointermove', sx + i * 8, sy));
+    c.dispatchEvent(mk('pointerup', sx + 32, sy));
+    await new Promise((res) => requestAnimationFrame(res));
+    const baked = document.getElementById('ed-tf-bake').disabled;
+    chk.checked = false;
+    chk.dispatchEvent(new Event('change', { bubbles: true }));
+    return { started, bakeDisabledAfterRelease: baked };
+  })()`);
+  check('★7f 勾「松手烘焙」⇒ 一松手就定稿（无待烘焙内容）',
+    !!bakeOnRelease && !bakeOnRelease.error && bakeOnRelease.bakeDisabledAfterRelease === true, bakeOnRelease);
   await click('#ed-undo');
   await sleep(250);
   /* 把湍流层重新显示回来（★9 生成时要有两层的效果） */
   await setTurbOn(true);
 
-  /* ★8 液化：膨胀 / 推挤（第一百四十轮：**逐帧连续**，所以这里必须真的跨帧按住） */
+  /* ★8 液化：膨胀 / 推挤（第一百四十轮：**逐帧连续**，所以这里必须真的跨帧按住）
+     ⚠️ 前面几轮把陆地搬/转过，形状已经不适合"从北岸撑开"了 —— 先落实现有变换、重画一块干净的陆地，
+     否则这一段测的不是液化，而是"上一段留下的形状恰不恰好"。 */
   await setTurbOn(false);
+  await ev(`(function () {
+    const bake = document.getElementById('ed-tf-bake');
+    if (bake && !bake.disabled) bake.click();
+    document.getElementById('ed-zoom-fit').click();
+    document.querySelector('[data-mode="brush"]').click();
+    document.querySelector('[data-kind="land"]').click();
+    const t = document.querySelector('[data-tool="land"]'); if (t) t.click();
+    const bs = document.getElementById('ed-brush'); bs.value = '60'; bs.dispatchEvent(new Event('input', { bubbles: true }));
+    const c = document.getElementById('ed-canvas');
+    const r = c.getBoundingClientRect();
+    const mk = (ty, fx, fy) => new PointerEvent(ty, { clientX: r.left + r.width * fx, clientY: r.top + r.height * fy, bubbles: true, pointerId: 45, pointerType: 'mouse', button: 0, buttons: 1 });
+    c.dispatchEvent(mk('pointerdown', 0.35, 0.45));
+    for (let i = 1; i <= 5; i++) c.dispatchEvent(mk('pointermove', 0.35 + i * 0.03, 0.45 + (i % 2) * 0.02));
+    c.dispatchEvent(mk('pointerup', 0.5, 0.45));
+    return true;
+  })()`);
+  await sleep(300);
   await ev(`(function () {
     document.querySelector('[data-kind="land"]').click();
     document.querySelector('[data-mode="liquify"]').click();
