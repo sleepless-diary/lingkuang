@@ -33,7 +33,7 @@ import {
   CLIMATE_DRY, CLIMATE_WET, EDGE_MAX, KIND_LABEL, NOISE_MAX, PROTO_H, PROTO_W, PROTO_KINDS,
   ZONE_BASIN, ZONE_CODE, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PACK, ZONE_PLAIN, ZONE_PLATEAU,
   ZONE_STRENGTH, ZONE_STRENGTH_MAX,
-  buildEdgeTurbulence, bandField, bandStrengthAt, coastDistanceField, compositeNoise, compositeU8, decodeProtoInput, dilateField, emptyDoc,
+  buildEdgeTurbulence, bandField, compositeNoise, compositeU8, decodeProtoInput, dilateField, emptyDoc,
   encodeProto, newLayer, turbLayers,
   type DecodedLayer, type ProtoDoc, type ProtoLayerKind, type TurbBlend,
 } from '../mapgen/proto';
@@ -349,14 +349,13 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   const activeKind = (): ProtoLayerKind => active()?.kind ?? 'land';
   const checkpoint = () => {
     landRev++;
-    coastDistCache = null;
     for (const k of PROTO_KINDS) compDirtyKinds.add(k);
     previewDirty = true;
   };
   /** 只改了某一层：只有海陆层会让"糊开的海陆场"失效，别的层不必重算它（卡顿的主要来源）。 */
   const touchLayer = (kind: ProtoLayerKind) => {
     if (kind === 'land') landRev++;
-    if (kind === 'land' || kind === 'zone') coastDistCache = null;
+
     compDirtyKinds.add(kind);
     previewDirty = true;
   };
@@ -403,8 +402,6 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
 
   /* ⭐ 第一百四十一轮（自动识别）：海岸**连通分量** —— 点一条海岸线就选中它那一整条。
      海岸 = 陆地格的四邻里有不是陆地的（湖泊算水面），**横向环绕**；分量用 8 邻域 BFS 分标签。 */
-  let coastDistCache: Float32Array | null = null;
-  let coastDistRev = -1;
   let coastMaskCache: Uint8Array | null = null;
   let coastLabelCache: Int32Array | null = null;
   let coastCompCount = 0;
@@ -459,13 +456,6 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     coastCompCount = count;
     coastRev = landRev;
     return { mask: coast, labels, count };
-  };
-  /** 只算"到海岸的距离"（旧的整张海岸距离场；沿岸带着色仍可用）。 */
-  const getCoastDist = (): Float32Array => {
-    if (coastDistCache && coastDistRev === landRev) return coastDistCache;
-    coastDistCache = coastDistanceField(getCoastComponents().mask, PROTO_W, PROTO_H, 96);
-    coastDistRev = landRev;
-    return coastDistCache;
   };
   /**
    * ⭐ 点一条海岸线 ⇒ 选中 / 取消**那一整条边缘**（写进本层 `data` 的那些海岸格）。
@@ -604,9 +594,11 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     const d = img.data;
     const n = PROTO_W * PROTO_H;
     const kind = activeKind();
-    /* 沿岸带着色要用距离场：只在"当前层是 band 模式的湍流"时算一次 */
+    /* 沿岸带着色要用"到**已选中**海岸的距离场"（不是整张海岸），否则会把没选的海岸也画亮 */
     const turbLayer = kind === 'turb' ? active() : undefined;
-    const turbCd = turbLayer?.band ? getCoastDist() : null;
+    const turbCd = turbLayer?.band
+      ? bandField(turbLayer.data as Uint8Array, PROTO_W, PROTO_H, turbLayer.bandWidth, turbLayer.bandFalloff)
+      : null;
     for (let i = 0; i < n; i++) {
       const lv = previewLand[i];
       let r = C_UNSET[0], g = C_UNSET[1], b = C_UNSET[2];
@@ -641,7 +633,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         const l = active();
         /* 沿岸带模式：直接画出"到海岸的衰减带"（闸门 = 哪些海岸要），画什么就看到什么 */
         let ev = 0;
-        if (l?.band) ev = bandStrengthAt(turbCd ? turbCd[i] : 99, l.bandWidth, l.bandFalloff) * EDGE_MAX;
+        if (l?.band) ev = (turbCd ? turbCd[i] : 0) * EDGE_MAX;
         else ev = l ? (l.data[i] as number) : 0;
         if (ev > 0.04) {
           const t = Math.min(1, ev / EDGE_MAX) * 0.8;
