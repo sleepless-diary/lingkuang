@@ -106,6 +106,8 @@ async function main() {
     return {
       open: true,
       layers: [...el.querySelectorAll('[data-kind]')].map((b) => b.dataset.kind).join(','),
+      groups: [...el.querySelectorAll('.lk-ed__grouphead')].map((g) => (g.textContent || '').replace(/\\d+/g, '').trim()).join(','),
+      draggable: [...el.querySelectorAll('[data-kind]')].every((r) => r.getAttribute('draggable') === 'true'),
       tools: [...el.querySelectorAll('[data-tool]')].map((b) => b.dataset.tool).join(','),
       slider: !!s && s.type === 'range' && s.min === '1' && s.max === '40' && s.value === '8',
       zoomBtns: !!document.getElementById('ed-zoom-in') && !!document.getElementById('ed-zoom-out') && !!document.getElementById('ed-zoom-fit'),
@@ -117,8 +119,9 @@ async function main() {
     };
   })()`);
   await shot();
-  check('★1 面板：5 行图层、海陆层陆地/海洋、笔刷 1~40、缩放三键、双画布、图层面板',
+  check('★1 面板：生成层/效果层两组、5 行图层、海陆层陆地/海洋、笔刷 1~40、双画布',
     panel.open === true && panel.layers === 'land,zone,climate,noise,turb'
+    && panel.groups === '生成层,效果层' && panel.draggable === true
     && panel.tools === 'land,sea' && panel.slider === true && panel.zoomBtns === true
     && panel.canvases === true && panel.cursorPE === 'none' && panel.side === true
     && panel.zoom === '100%' && panel.fills === true, panel);
@@ -284,6 +287,38 @@ async function main() {
     bb0.n > 100 && (bb1.minY < bb0.minY - 1 || bb1.maxY > bb0.maxY + 1 || Math.abs(bb1.n - bb0.n) > bb0.n * 0.01),
     { before: bb0, after: bb1 });
 
+  /* ★5f 换类别换回该类别自己的笔刷（zone 用过「擦除」后切到湍流，不能还是擦除） */
+  await pickKind('zone'); await pickTool('erase');
+  await pickKind('turb');
+  const toolAfterSwitch = await ev(`(function () {
+    const b = document.querySelector('.lk-ed [data-tool].is-on');
+    return b ? b.dataset.tool : null;
+  })()`);
+  check('★5f 切类别会换回该类自己的笔刷（不会把 zone 的"擦除"带到湍流层）',
+    toolAfterSwitch === 'turb', { tool: toolAfterSwitch });
+
+  /* ★5g 刷完再算：笔画期间不重建预览，松手才重建一次 */
+  const defer = await ev(`(function () {
+    document.querySelector('[data-kind="turb"]').click();
+    document.querySelector('[data-tool="turb"]').click();
+    const bs = document.getElementById('ed-brush'); bs.value = '12'; bs.dispatchEvent(new Event('input', { bubbles: true }));
+    const st = document.getElementById('ed-strength'); st.value = '8'; st.dispatchEvent(new Event('input', { bubbles: true }));
+    window.__lkPrevBuilds = 0;
+    const c = document.getElementById('ed-canvas');
+    const r = c.getBoundingClientRect();
+    const mk = (t, x, y) => new PointerEvent(t, { clientX: x, clientY: y, bubbles: true, pointerId: 51, pointerType: 'mouse', button: 0, buttons: 1 });
+    const y = r.top + r.height * 0.52;
+    const a = { x: r.left + r.width * 0.30, y }, b = { x: r.left + r.width * 0.70, y };
+    c.dispatchEvent(mk('pointerdown', a.x, a.y));
+    for (let i = 1; i <= 10; i++) c.dispatchEvent(mk('pointermove', a.x + (b.x - a.x) * i / 10, a.y));
+    const during = window.__lkPrevBuilds || 0;
+    c.dispatchEvent(mk('pointerup', b.x, b.y));
+    const after = window.__lkPrevBuilds || 0;
+    return { during, after };
+  })()`);
+  check('★5g 刷完再算：笔画中不重建预览（0 次），松手才重建（≥1 次）',
+    defer.during === 0 && defer.after >= 1, defer);
+
   /* ★6 新建一层（湍流）：图层数 +1、属性面板出现 6 个湍流参数 */
   const addLayer = await ev(`(function () {
     const sel = document.getElementById('ed-add-kind');
@@ -303,6 +338,26 @@ async function main() {
     addLayer.layers === 6
     && ['scale', 'amp', 'octaves', 'seed', 'blend', 'diffusion'].every((k) => propsNow.includes(k)),
     { layers: addLayer.layers, props: propsNow });
+
+  /* ★6b 拖动排序（不再有 ↑↓ 按钮）：把「地形」拖到「海陆」上面 */
+  const dragRes = await ev(`(function () {
+    const rows = [...document.querySelectorAll('#ed-layers [data-kind]')];
+    const land = rows.find((r) => r.dataset.kind === 'land');
+    const zone = rows.find((r) => r.dataset.kind === 'zone');
+    const dt = new DataTransfer();
+    const fire = (el, type) => el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+    fire(zone, 'dragstart');
+    fire(land, 'dragover');
+    fire(land, 'drop');
+    fire(zone, 'dragend');
+    return {
+      order: [...document.querySelectorAll('#ed-layers [data-kind]')].map((r) => r.dataset.kind).join(','),
+      upDownButtons: document.querySelectorAll('#ed-props [data-act="up"], #ed-props [data-act="down"]').length,
+    };
+  })()`);
+  check('★6b 拖动排序：把地形拖到海陆之上（顺序真的换），且没有 ↑↓ 按钮',
+    dragRes.order.split(',').slice(0, 2).join(',') === 'zone,land' && dragRes.upDownButtons === 0,
+    dragRes);
 
   /* ★7 变换：拖动框内 ⇒ 陆地包围盒平移；撤销回去
      ⚠️ 先临时隐藏所有湍流层：湍流会把「显示出来的陆地」推走，绿色包围盒就不再等于

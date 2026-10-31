@@ -1989,6 +1989,15 @@ body.lk-map-editing { overflow: hidden; }
   font-size: var(--text-2xs); color: var(--fg-inverse); cursor: pointer;
 }
 .lk-ed__layer:hover { border-color: rgba(232, 231, 223, .28); }
+.lk-ed__layer[draggable="true"] { cursor: grab; }
+.lk-ed__layer.is-dragging { opacity: .35; }
+.lk-ed__layer.is-drop { border-top: 2px solid var(--accent); }
+.lk-ed__grouphead {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 4px 2px; font-size: 10px; letter-spacing: .08em;
+  color: rgba(232, 231, 223, .55); text-transform: none;
+}
+.lk-ed__grouphead span { font-family: var(--font-mono); opacity: .7; }
 .lk-ed__layer.is-on { border-color: var(--accent); background: rgba(143, 226, 143, .08); }
 .lk-ed__layer.is-off { opacity: .45; }
 .lk-ed__eye {

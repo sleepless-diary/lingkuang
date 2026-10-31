@@ -105,6 +105,10 @@ let doc: ProtoDoc = emptyDoc();
 let activeId = '';
 let mode: Mode = 'brush';
 let toolId = 'land';
+/** 每个类别各自记住上次用的笔刷 —— 否则「笔刷 id 撞名」（比如 zone 的 erase 与 turb 的 erase）
+ *  会让切到湍流层后仍然在"擦除"，看起来像"还在画海陆"（第一百三十八轮用户报的就是这个）。 */
+const toolByKind: Partial<Record<ProtoLayerKind, string>> = {};
+let lastKind: ProtoLayerKind | null = null;
 let brushCells = 8;
 let strength = 5;
 let liquifyKind: LiquifyKind = 'push';
@@ -228,7 +232,12 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         <div class="lk-ed__layers" id="ed-layers"></div>
         <div class="lk-ed__addrow">
           <select id="ed-add-kind" class="lk-ed__sel">
-            ${PROTO_KINDS.map((k) => `<option value="${k}">${KIND_LABEL[k]}</option>`).join('')}
+            <optgroup label="生成层">
+              ${PROTO_KINDS.filter((k) => k !== 'turb').map((k) => `<option value="${k}">${KIND_LABEL[k]}</option>`).join('')}
+            </optgroup>
+            <optgroup label="效果层">
+              <option value="turb">${KIND_LABEL.turb}</option>
+            </optgroup>
           </select>
           <button class="lk-ed__btn" id="ed-add" title="新建一张该类型的图层（放在最上面）">＋ 新建层</button>
         </div>
@@ -288,6 +297,12 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   const active = (): DecodedLayer | undefined => doc.layers.find((l) => l.id === activeId);
   const activeKind = (): ProtoLayerKind => active()?.kind ?? 'land';
   const checkpoint = () => { landRev++; compDirty = true; previewDirty = true; };
+  /** 只改了某一层：只有海陆层会让"糊开的海陆场"失效，别的层不必重算它（卡顿的主要来源）。 */
+  const touchLayer = (kind: ProtoLayerKind) => {
+    if (kind === 'land') landRev++;
+    compDirty = true;
+    previewDirty = true;
+  };
 
   const recomputeComps = () => {
     landComp = compositeU8(doc, 'land');
@@ -332,6 +347,8 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   /** 重建预览海陆：合成海陆 + 每层湍流（糊开的海陆场 + 相干湍流扰动阈值），与生成器同一算法。 */
   const buildPreview = () => {
     previewDirty = false;
+    /* 只给 e2e 数次数：验证「刷完再算」（笔画期间不重建预览） */
+    (window as any).__lkPrevBuilds = ((window as any).__lkPrevBuilds || 0) + 1;
     const n = PROTO_W * PROTO_H;
     const blankSea = (el.querySelector('#ed-blank-sea') as HTMLInputElement | null)?.checked ?? true;
     const turbs = turbLayers(doc).filter(hasData);
@@ -406,11 +423,16 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   function paintBuf() {
     if (!bctx || !img) return;
     if (compDirty) recomputeComps();
-    const drawingLand = drawing && activeKind() === 'land';
-    if (drawingLand) {
-      /* 画海陆时不重算湍流预览（太贵），松手时再补 —— 画的过程中看到的就是笔下的形状 */
+    /* ⭐ 第一百三十八轮：**刷完再算**。
+       笔画/变换/液化进行中（`strokeBusy`）一律不重算湍流预览（多层膨胀+模糊+噪声是"卡"的根源）：
+       · 正在改海陆层 → 直接显示裸海陆（笔下的形状跟手）；
+       · 正在改别的层 → 沿用上一帧的陆地预览（它没变），只实时叠当前层的笔迹。
+       松手时再统一重建一次。 */
+    if (!strokeBusy) {
+      if (previewDirty) buildPreview();
+    } else if (activeKind() === 'land') {
       for (let i = 0; i < PROTO_W * PROTO_H; i++) previewLand[i] = zoneComp[i] === ZONE_LAKE ? 2 : landComp[i];
-    } else if (previewDirty) buildPreview();
+    }
     const d = img.data;
     const n = PROTO_W * PROTO_H;
     const kind = activeKind();
@@ -722,7 +744,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         dst[row + x] = sx >= 0 && sx < PROTO_W && sy >= 0 && sy < PROTO_H ? src[sy * PROTO_W + sx] : 0;
       }
     }
-    checkpoint();
+    touchLayer(l.kind);
   };
   const resetTf = () => {
     tf = { dx: 0, dy: 0, scale: 1, rot: 0 };
@@ -761,11 +783,13 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       }
     }
     liqLast = { x, y };
-    checkpoint();
+    touchLayer(l.kind);
   };
 
   /* ── 交互状态 ─────────────────────────────────────────────────────────── */
   let drawing = false;
+  /** 笔画 / 变换 / 液化进行中：这段里**不重算湍流预览**（松手再算，见 `paintBuf()`） */
+  let strokeBusy = false;
   let panning = false;
   let last: { x: number; y: number } | null = null;
   let panStart = { x: 0, y: 0, px: 0, py: 0 };
@@ -813,6 +837,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       const bcx = screenX(tfBBox.cx + tf.dx), bcy = screenY(tfBBox.cy + tf.dy);
       const corner = screenX(tfBox ? tfBox.x1 : tfBBox.cx);
       void corner;
+      strokeBusy = true;
       tfDrag = {
         kind: hit,
         sx, sy,
@@ -832,14 +857,16 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       liqSnapshot = l.data instanceof Int8Array ? new Int8Array(l.data) : new Uint8Array(l.data);
       liqLast = p;
       drawing = true;
+      strokeBusy = true;
       try { canvas.setPointerCapture?.(e.pointerId); } catch { /* 合成事件 */ }
       e.preventDefault();
       return;
     }
     drawing = true;
+    strokeBusy = true;
     last = p;
     stamp(p.x, p.y);
-    checkpoint();
+    touchLayer(l.kind);
     paintBuf();
     paint();
     try { canvas.setPointerCapture?.(e.pointerId); } catch { /* 合成事件 */ }
@@ -892,7 +919,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       const p = cellAt(e.clientX, e.clientY);
       line(last, p);
       last = p;
-      checkpoint();
+      touchLayer(activeKind());
       paintBuf();
       paint();
     }
@@ -905,11 +932,10 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       tfDrag = null;
       tfSnapshot = null;
       syncTfBox();
-      paintBuf();
-      paint();
     }
-    if (drawing && activeKind() === 'land') {
-      /* 松手才补湍流预览（画的过程中跳过了，见 paintBuf） */
+    if (strokeBusy) {
+      /* 松手才补湍流预览（笔画期间跳过了，见 paintBuf） */
+      strokeBusy = false;
       previewDirty = true;
       paintBuf();
       paint();
@@ -949,15 +975,65 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   };
 
   /* ── 图层面板 ─────────────────────────────────────────────────────────── */
-  function renderLayers() {
-    layersEl.innerHTML = doc.layers.map((l) => `
-      <div class="lk-ed__layer${l.id === activeId ? ' is-on' : ''}${l.on ? '' : ' is-off'}" data-id="${l.id}" data-kind="${l.kind}">
+  /* 第一百三十八轮：图层分两类展示 —— 生成层（海陆/地形/气候/噪声）与效果层（湍流）。
+     "生成层"决定生成出来的世界长什么样；"效果层"只改海岸的破碎程度。 */
+  const fxKind = (k: ProtoLayerKind) => k === 'turb';
+  const rowHtml = (l: DecodedLayer) => `
+      <div class="lk-ed__layer${l.id === activeId ? ' is-on' : ''}${l.on ? '' : ' is-off'}"
+        data-id="${l.id}" data-kind="${l.kind}" draggable="true" title="拖动可排序">
         <button class="lk-ed__eye" data-eye="${l.id}" title="${l.on ? '隐藏' : '显示'}">${l.on ? '◉' : '○'}</button>
         <span class="lk-ed__chip" style="background:${C_KIND[l.kind]}"></span>
         <span class="lk-ed__lname">${escapeHtml(l.name)}</span>
         <span class="lk-ed__lkind">${KIND_LABEL[l.kind]}</span>
-      </div>`).join('');
+      </div>`;
+  function renderLayers() {
+    const gen = doc.layers.filter((l) => !fxKind(l.kind));
+    const fx = doc.layers.filter((l) => fxKind(l.kind));
+    layersEl.innerHTML = `
+      <div class="lk-ed__grouphead">生成层<span>${gen.length}</span></div>
+      ${gen.map(rowHtml).join('')}
+      <div class="lk-ed__grouphead">效果层<span>${fx.length}</span></div>
+      ${fx.map(rowHtml).join('')}`;
   }
+
+  /* 拖动排序（只在同一类里换：生成层之间 / 效果层之间） */
+  let dragId: string | null = null;
+  const clearDropMarks = () => layersEl.querySelectorAll('.is-drop,.is-dragging')
+    .forEach((e) => e.classList.remove('is-drop', 'is-dragging'));
+  layersEl.addEventListener('dragstart', (e) => {
+    const row = (e.target as HTMLElement).closest('[data-id]') as HTMLElement | null;
+    if (!row?.dataset.id) return;
+    dragId = row.dataset.id;
+    row.classList.add('is-dragging');
+    try { (e as DragEvent).dataTransfer?.setData('text/plain', dragId); } catch { /* 老浏览器 */ }
+    e.stopPropagation();
+  });
+  layersEl.addEventListener('dragover', (e) => {
+    if (!dragId) return;
+    e.preventDefault();
+    const row = (e.target as HTMLElement).closest('[data-id]') as HTMLElement | null;
+    layersEl.querySelectorAll('.is-drop').forEach((n) => n.classList.remove('is-drop'));
+    if (row?.dataset.id && row.dataset.id !== dragId) row.classList.add('is-drop');
+  });
+  layersEl.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const row = (e.target as HTMLElement).closest('[data-id]') as HTMLElement | null;
+    if (!dragId || !row?.dataset.id || row.dataset.id === dragId) { clearDropMarks(); return; }
+    const from = doc.layers.find((l) => l.id === dragId);
+    const to = doc.layers.find((l) => l.id === row.dataset.id);
+    if (from && to && fxKind(from.kind) === fxKind(to.kind)) {
+      pushUndoDoc();
+      doc.layers.splice(doc.layers.indexOf(from), 1);
+      doc.layers.splice(doc.layers.indexOf(to), 0, from);
+      checkpoint();
+      renderLayers();
+      paintBuf();
+      paint();
+    }
+    dragId = null;
+    clearDropMarks();
+  });
+  layersEl.addEventListener('dragend', () => { dragId = null; clearDropMarks(); });
 
   const escapeHtml = (s: string) => String(s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
@@ -992,11 +1068,10 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
           </select></div>`
       : `<div class="lk-ed__subnote">${KIND_HINT[l.kind]}</div>`}
       <div class="lk-ed__proprow">
-        <button class="lk-ed__btn" data-act="up" title="上移一层">↑</button>
-        <button class="lk-ed__btn" data-act="down" title="下移一层">↓</button>
         <button class="lk-ed__btn" data-act="clear" title="清空这一层">清空本层</button>
         <button class="lk-ed__btn" data-act="del" title="删除这一层">删除本层</button>
-      </div>`;
+      </div>
+      <div class="lk-ed__subnote">拖动图层行可排序（同类层之间）</div>`;
   }
 
   const KIND_HINT: Record<ProtoLayerKind, string> = {
@@ -1010,6 +1085,13 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   /* ── 顶栏 / 子栏同步 ───────────────────────────────────────────────────── */
   function syncUi() {
     const kind = activeKind();
+    /* 换类别时**换回该类别自己上次用的笔刷**；否则 erase 这类 id 撞名会把"画笔"变成"橡皮"，
+       表现为"切到湍流层后刷了没反应 / 还是在画海陆"（第一百三十八轮修）。 */
+    if (kind !== lastKind) {
+      if (lastKind) toolByKind[lastKind] = toolId;
+      toolId = toolByKind[kind] ?? PALETTES[kind][0].id;
+      lastKind = kind;
+    }
     el.querySelectorAll('[data-mode]').forEach((b) => {
       (b as HTMLElement).classList.toggle('is-on', (b as HTMLElement).dataset.mode === mode);
     });
@@ -1106,19 +1188,10 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   const layerAction = (act: string) => {
     const l = active();
     if (!l) return;
-    if (act === 'up' || act === 'down') {
-      const i = doc.layers.indexOf(l);
-      const j = act === 'up' ? i - 1 : i + 1;
-      if (j < 0 || j >= doc.layers.length) return;
-      pushUndoDoc();
-      doc.layers.splice(i, 1);
-      doc.layers.splice(j, 0, l);
-      checkpoint();
-      renderLayers();
-    } else if (act === 'clear') {
+    if (act === 'clear') {
       pushUndoData(l);
       (l.data as unknown as Uint8Array).fill(0);
-      checkpoint();
+      touchLayer(l.kind);
       paintBuf();
       paint();
     } else if (act === 'del') {
