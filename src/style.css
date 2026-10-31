@@ -2007,6 +2007,10 @@ body.lk-map-editing { overflow: hidden; }
 .lk-ed__chip { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 9px; }
 .lk-ed__lname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lk-ed__lkind { font-size: 10px; opacity: .55; }
+.lk-ed__ltag {
+  font-size: 9px; line-height: 1; padding: 1px 4px; border-radius: 3px;
+  border: 1px solid rgba(232, 231, 223, .3); opacity: .7;
+}
 .lk-ed__addrow { display: flex; gap: 4px; align-items: center; }
 .lk-ed__props { display: flex; flex-direction: column; gap: 3px; border-top: 1px solid rgba(232, 231, 223, .14); padding-top: 6px; overflow: auto; }
 .lk-ed__prop { display: flex; align-items: center; gap: 6px; font-size: var(--text-2xs); }

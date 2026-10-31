@@ -31,13 +31,28 @@ export const LAND_NONE = 0;
 export const LAND_SET = 1;
 export const SEA_SET = 2;
 
-/** 地形分区层 —— 画在哪，海拔就按哪一档塑形 */
+/** 地形分区层 —— 画在哪，海拔就按哪一档塑形。
+ *  ⭐ 第一百三十九轮：每格还带一个**强度 0~8**（用户：「每个地形笔刷能自行决定效果强度」）。
+ *  存储时一个字节打包：低 3 位 = 类型码，高 4 位 = 强度。用 `ZONE_PACK / ZONE_CODE / ZONE_STRENGTH` 读写。 */
 export const ZONE_NONE = 0;
 export const ZONE_MOUNTAIN = 1;
 export const ZONE_HILL = 2;
 export const ZONE_PLATEAU = 3;
 export const ZONE_BASIN = 4;
 export const ZONE_LAKE = 5;
+/** 平原 / 低起伏：只压起伏、不改基面（接替"噪声层抹平"的用途） */
+export const ZONE_PLAIN = 6;
+export const ZONE_STRENGTH_MAX = 8;
+
+/** 类型码（低 3 位） */
+export const ZONE_CODE = (v: number): number => v & 7;
+/** 强度 0..8（高 4 位） */
+export const ZONE_STRENGTH = (v: number): number => (v >> 3) & 15;
+/** 打包：类型 + 强度（强度 0 视为"没画"由调用方处理；强度实际写 1..8） */
+export const ZONE_PACK = (code: number, strength: number): number =>
+  (code & 7) | ((Math.max(0, Math.min(15, Math.round(strength))) & 15) << 3);
+/** 老的"纯类型"值（1..6，没打包）→ 满强度；0 保持"没画" */
+export const ZONE_NORMALIZE = (v: number): number => (v > 0 && v <= 7 ? ZONE_PACK(v, ZONE_STRENGTH_MAX) : v);
 
 /** 气候底子层 —— 只改湿度（⇒ 上色与植被），不改高度 */
 export const CLIMATE_NONE = 0;
@@ -217,15 +232,19 @@ export function newLayer(kind: ProtoLayerKind, name?: string, w = PROTO_W, h = P
 }
 
 /** 空原型：五类层各一张（空网格）——画板一打开就有列表。 */
+/** 新原型默认建这几层（⭐ 第一百三十九轮起**不再新建噪声层**：强度已并进地形笔刷；
+ *  老的噪声层仍能读、仍参与生成，只是 UI 里只读）。 */
+export const DEFAULT_KINDS: ProtoLayerKind[] = ['land', 'zone', 'climate', 'turb'];
+
 export function emptyDoc(w = PROTO_W, h = PROTO_H): ProtoDoc {
-  return { w, h, layers: PROTO_KINDS.map((k) => newLayer(k, KIND_LABEL[k], w, h)) };
+  return { w, h, layers: DEFAULT_KINDS.map((k) => newLayer(k, KIND_LABEL[k], w, h)) };
 }
 
 /** 层的值域（解码时夹紧 / 画板写入时参考）。 */
 export function valueRange(kind: ProtoLayerKind): [number, number] {
   switch (kind) {
     case 'land': return [0, 2];
-    case 'zone': return [0, 5];
+    case 'zone': return [0, ZONE_PACK(7, 15)];
     case 'climate': return [0, 2];
     case 'noise': return [-NOISE_MAX, NOISE_MAX];
     default: return [0, EDGE_MAX];
@@ -240,7 +259,11 @@ function decodeLayer(raw: ProtoLayer, w: number, h: number): DecodedLayer | null
   const data = emptyData(raw.kind, n);
   if (vals) {
     const [lo, hi] = valueRange(raw.kind);
-    for (let i = 0; i < n; i++) data[i] = clamp(vals[i], lo, hi);
+    for (let i = 0; i < n; i++) {
+      const v = clamp(vals[i], lo, hi);
+      /* 地形层：老数据是"纯类型码 1..6"（没强度）⇒ 迁移成满强度 */
+      data[i] = raw.kind === 'zone' ? ZONE_NORMALIZE(v) : v;
+    }
   }
   return {
     id: raw.id || nextId(),
@@ -282,7 +305,10 @@ export function decodeProto(
       const vals = decodeRle(bits, w * h, kind === 'noise' ? NOISE_MAX : 0);
       if (vals) {
         const [lo, hi] = valueRange(kind);
-        for (let i = 0; i < vals.length; i++) l.data[i] = clamp(vals[i], lo, hi);
+        for (let i = 0; i < vals.length; i++) {
+          const v = clamp(vals[i], lo, hi);
+          l.data[i] = kind === 'zone' ? ZONE_NORMALIZE(v) : v;
+        }
       }
       doc.layers.push(l);
     };

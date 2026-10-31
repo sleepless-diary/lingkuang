@@ -705,7 +705,8 @@ const diffFrac = (a, b) => {
   d.layers.forEach((l, idx) => {
     for (let i = 0; i < PROTO_N; i++) {
       if (l.kind === 'land') l.data[i] = i % 3 === 0 ? 0 : (i % 3 === 1 ? 1 : 2);
-      else if (l.kind === 'zone') l.data[i] = i % 8;          /* 7 = 脏值，解码应夹回 5 */
+      /* 地形层：类型 + 强度打包（强度 1..8 ⇒ 值都 > 7，不会被"老数据规范化"改写） */
+      else if (l.kind === 'zone') l.data[i] = i % 8 === 0 ? 0 : Pr.ZONE_PACK(1 + (i % 6), 1 + (i % 8));
       else if (l.kind === 'climate') l.data[i] = i % 3;
       else if (l.kind === 'noise') l.data[i] = (i % 17) - 8;
       else l.data[i] = i % 9;
@@ -738,8 +739,10 @@ const diffFrac = (a, b) => {
   const legacyV1 = Pr.decodeProto({ w: PROTO_W, h: PROTO_H, land: Pr.encodeRle(new Uint8Array(PROTO_N).fill(2), PROTO_N) }, null);
   const v1Kinds = legacyV1 ? legacyV1.layers.map((l) => l.kind).join(',') : '';
   const real = baseDoc();
-  paintRect(layerOf(real, 'zone').data, 300, 450, 180, 330, Pr.ZONE_MOUNTAIN);
-  paintRect(layerOf(real, 'noise').data, 300, 620, 250, 300, 6);
+  paintRect(layerOf(real, 'zone').data, 300, 450, 180, 330, Pr.ZONE_PACK(Pr.ZONE_MOUNTAIN, 8));
+  const realNoise = Pr.newLayer('noise', '旧噪声');
+  paintRect(realNoise.data, 300, 620, 250, 300, 6);
+  real.layers.push(realNoise);
   paintRect(layerOf(real, 'turb').data, 260, 780, 150, 170, 8);
   const realJson = JSON.stringify(enc(real));
   check('★30 图层列表编解码：多张同类层 + 每层参数往返一致、老 v1 能读、体积 < 30KB',
@@ -752,9 +755,9 @@ const diffFrac = (a, b) => {
 /* ★31 地形分区进高度场（图层列表版本） */
 {
   const f0 = buildField(baseDoc());
-  const zoneOf = (code) => {
+  const zoneOf = (code, strength = 8) => {
     const d = baseDoc();
-    paintRect(layerOf(d, 'zone').data, RECT[0], RECT[1], RECT[2], RECT[3], code);
+    paintRect(layerOf(d, 'zone').data, RECT[0], RECT[1], RECT[2], RECT[3], Pr.ZONE_PACK(code, strength));
     return buildField(d);
   };
   const b = rectStats(f0, RECT);
@@ -772,13 +775,15 @@ const diffFrac = (a, b) => {
   const f0 = buildField(baseDoc());
   const noiseOf = (v) => {
     const d = baseDoc();
-    paintRect(layerOf(d, 'noise').data, RECT[0], RECT[1], RECT[2], RECT[3], v);
+    const nl = Pr.newLayer('noise', '旧噪声');
+    paintRect(nl.data, RECT[0], RECT[1], RECT[2], RECT[3], v);
+    d.layers.push(nl);
     return rectStats(buildField(d), RECT);
   };
   const b = rectStats(f0, RECT);
   const up = noiseOf(8), down = noiseOf(-8);
   const lake = baseDoc();
-  paintRect(layerOf(lake, 'zone').data, 460, 560, 220, 290, Pr.ZONE_LAKE);
+  paintRect(layerOf(lake, 'zone').data, 460, 560, 220, 290, Pr.ZONE_PACK(Pr.ZONE_LAKE, 8));
   const fl = buildField(lake);
   let water = 0, cells = 0;
   const ax = Math.round(460 / PROTO_W * fl.w), bx = Math.round(560 / PROTO_W * fl.w);
@@ -822,6 +827,26 @@ const diffFrac = (a, b) => {
   check('★33 多层湍流：尺度/幅度/细节改形状、两层叠加 ≠ 任何单层',
     dAB > 0.02 && dAC > 0.02 && dAT > 0.02 && dBT > 0.02,
     { scaleDiff: +dAB.toFixed(3), ampOctaveDiff: +dAC.toFixed(3), twoVsA: +dAT.toFixed(3), twoVsB: +dBT.toFixed(3) });
+}
+
+/* ★34 地形笔刷的逐格强度 + 平原：强度 3 的高山应低于强度 8；平原只压起伏、不抬基面 */
+{
+  const zoneRect = (code, s) => {
+    const d = baseDoc();
+    paintRect(layerOf(d, 'zone').data, RECT[0], RECT[1], RECT[2], RECT[3], Pr.ZONE_PACK(code, s));
+    return buildField(d);
+  };
+  const b = rectStats(buildField(baseDoc()), RECT);
+  const m8 = rectStats(zoneRect(Pr.ZONE_MOUNTAIN, 8), RECT);
+  const m3 = rectStats(zoneRect(Pr.ZONE_MOUNTAIN, 3), RECT);
+  const plain8 = rectStats(zoneRect(Pr.ZONE_PLAIN, 8), RECT);
+  check('★34 地形强度：高山强度 3 < 强度 8；平原只压起伏、不抬基面',
+    m3.mean < m8.mean - 0.03 && m3.mean > b.mean + 0.005
+    && plain8.sd < b.sd * 0.9 && Math.abs(plain8.mean - b.mean) < 0.08,
+    { base: { mean: +b.mean.toFixed(3), sd: +b.sd.toFixed(3) },
+      m3: { mean: +m3.mean.toFixed(3), sd: +m3.sd.toFixed(3) },
+      m8: { mean: +m8.mean.toFixed(3), sd: +m8.sd.toFixed(3) },
+      plain8: { mean: +plain8.mean.toFixed(3), sd: +plain8.sd.toFixed(3) } });
 }
 
 const pass = results.filter(Boolean).length;

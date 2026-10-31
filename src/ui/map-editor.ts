@@ -21,7 +21,8 @@ import { currentWorld } from '../store/store';
 import type { MapMask, MapProto } from '../store/types';
 import {
   CLIMATE_DRY, CLIMATE_WET, EDGE_MAX, KIND_LABEL, NOISE_MAX, PROTO_H, PROTO_W, PROTO_KINDS,
-  ZONE_BASIN, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PLATEAU,
+  ZONE_BASIN, ZONE_CODE, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PACK, ZONE_PLAIN, ZONE_PLATEAU,
+  ZONE_STRENGTH, ZONE_STRENGTH_MAX,
   buildEdgeTurbulence, compositeNoise, compositeU8, decodeProtoInput, dilateField, emptyDoc,
   encodeProto, newLayer, turbLayers,
   type DecodedLayer, type ProtoDoc, type ProtoLayerKind, type TurbBlend,
@@ -50,10 +51,11 @@ const PALETTES: Record<ProtoLayerKind, Brush[]> = {
     { id: 'sea', label: '海洋', hint: '涂成海洋 —— 也就是把这一块从陆地擦掉', value: 2 },
   ],
   zone: [
-    { id: 'mountain', label: '高山', hint: '山脉 / 高峰：山脊放大 + 基面抬高 ⇒ 画过的地方是最高的一带', value: ZONE_MOUNTAIN },
-    { id: 'hill', label: '丘陵', hint: '中等起伏：山脊略放大、基面微微抬高', value: ZONE_HILL },
-    { id: 'plateau', label: '高原', hint: '抬高的平顶：基面抬高 + 起伏压平', value: ZONE_PLATEAU },
-    { id: 'basin', label: '盆地', hint: '低地：基面压低、起伏再压一半', value: ZONE_BASIN },
+    { id: 'mountain', label: '高山', hint: '山脉 / 高峰：山脊放大 + 基面抬高（强度 = 山有多高多崎岖）', value: ZONE_MOUNTAIN },
+    { id: 'hill', label: '丘陵', hint: '中等起伏：山脊略放大、基面微微抬高（强度 = 起伏大小）', value: ZONE_HILL },
+    { id: 'plateau', label: '高原', hint: '抬高的平顶：基面抬高 + 起伏压平（强度 = 抬多高）', value: ZONE_PLATEAU },
+    { id: 'basin', label: '盆地', hint: '低地：基面压低、起伏再压一半（强度 = 压多低）', value: ZONE_BASIN },
+    { id: 'plain', label: '平原', hint: '只压起伏、不改基面（接替老噪声层的「抹平」）', value: ZONE_PLAIN },
     { id: 'lake', label: '湖泊/内海', hint: '直接钉成水面（离岸越近越浅，不会变成深海）', value: ZONE_LAKE },
     { id: 'erase', label: '擦除', hint: '把这一层擦回"没画"（别的层不动）', value: 0 },
   ],
@@ -82,6 +84,7 @@ const C_ZONE: Record<number, RGB> = {
   [ZONE_HILL]: [143, 122, 78],
   [ZONE_PLATEAU]: [169, 143, 92],
   [ZONE_BASIN]: [122, 138, 102],
+  [ZONE_PLAIN]: [146, 156, 126],
   [ZONE_LAKE]: [63, 127, 166],
 };
 const C_CLIMATE: Record<number, RGB> = {
@@ -233,7 +236,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         <div class="lk-ed__addrow">
           <select id="ed-add-kind" class="lk-ed__sel">
             <optgroup label="生成层">
-              ${PROTO_KINDS.filter((k) => k !== 'turb').map((k) => `<option value="${k}">${KIND_LABEL[k]}</option>`).join('')}
+              ${PROTO_KINDS.filter((k) => k !== 'turb' && k !== 'noise').map((k) => `<option value="${k}">${KIND_LABEL[k]}</option>`).join('')}
             </optgroup>
             <optgroup label="效果层">
               <option value="turb">${KIND_LABEL.turb}</option>
@@ -353,7 +356,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     const blankSea = (el.querySelector('#ed-blank-sea') as HTMLInputElement | null)?.checked ?? true;
     const turbs = turbLayers(doc).filter(hasData);
     if (!turbs.length) {
-      for (let i = 0; i < n; i++) previewLand[i] = zoneComp[i] === ZONE_LAKE ? 2 : landComp[i];
+      for (let i = 0; i < n; i++) previewLand[i] = ZONE_CODE(zoneComp[i]) === ZONE_LAKE ? 2 : landComp[i];
       return;
     }
     if (landBlurRev !== landRev || !landBlur || !seaBlur) {
@@ -361,7 +364,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       const sf = new Float32Array(n);
       for (let i = 0; i < n; i++) {
         const v = landComp[i];
-        if (zoneComp[i] === ZONE_LAKE) { sf[i] = 1; continue; }
+        if (ZONE_CODE(zoneComp[i]) === ZONE_LAKE) { sf[i] = 1; continue; }
         if (v === 1) lf[i] = 1;
         else if (v === 2 || (blankSea && v === 0)) sf[i] = 1;
       }
@@ -393,7 +396,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     }
     const lb = landBlur, sb = seaBlur;
     for (let i = 0; i < n; i++) {
-      if (zoneComp[i] === ZONE_LAKE) { previewLand[i] = 2; continue; }
+      if (ZONE_CODE(zoneComp[i]) === ZONE_LAKE) { previewLand[i] = 2; continue; }
       let lf = lb[i], sf = sb[i];
       const coastal = 4 * lf * sf;
       if (coastal > 0.001) {
@@ -431,7 +434,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     if (!strokeBusy) {
       if (previewDirty) buildPreview();
     } else if (activeKind() === 'land') {
-      for (let i = 0; i < PROTO_W * PROTO_H; i++) previewLand[i] = zoneComp[i] === ZONE_LAKE ? 2 : landComp[i];
+      for (let i = 0; i < PROTO_W * PROTO_H; i++) previewLand[i] = ZONE_CODE(zoneComp[i]) === ZONE_LAKE ? 2 : landComp[i];
     }
     const d = img.data;
     const n = PROTO_W * PROTO_H;
@@ -441,12 +444,14 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
       let r = C_UNSET[0], g = C_UNSET[1], b = C_UNSET[2];
       if (lv === 1) { r = C_LAND[0]; g = C_LAND[1]; b = C_LAND[2]; }
       else if (lv === 2) { r = C_SEA[0]; g = C_SEA[1]; b = C_SEA[2]; }
-      /* 地形 / 气候常显（当前层最实，其余半透明） */
+      /* 地形 / 气候常显（当前层最实，其余半透明）。
+         ⭐ 地形强度用**饱和度/明度**表现：强度 1 只有三成着色（淡），8 才是满色。 */
       const z = zoneComp[i];
       if (z) {
-        const c = C_ZONE[z];
+        const c = C_ZONE[ZONE_CODE(z)];
         if (c) {
-          const t = kind === 'zone' ? 0.92 : 0.55;
+          const s = ZONE_STRENGTH(z) / ZONE_STRENGTH_MAX;
+          const t = (kind === 'zone' ? 0.92 : 0.55) * (0.3 + 0.7 * s);
           r = r * (1 - t) + c[0] * t; g = g * (1 - t) + c[1] * t; b = b * (1 - t) + c[2] * t;
         }
       }
@@ -484,14 +489,24 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     /* 当前层的明细（用户看"这一层画了多少"），和顶栏一处显示，别让状态行只剩总数 */
     let extra = '';
     if (kind === 'zone') {
-      const names: [number, string][] = [[ZONE_MOUNTAIN, '高山'], [ZONE_HILL, '丘陵'], [ZONE_PLATEAU, '高原'], [ZONE_BASIN, '盆地'], [ZONE_LAKE, '湖泊']];
+      const names: [number, string][] = [[ZONE_MOUNTAIN, '高山'], [ZONE_HILL, '丘陵'], [ZONE_PLATEAU, '高原'], [ZONE_BASIN, '盆地'], [ZONE_PLAIN, '平原'], [ZONE_LAKE, '湖泊']];
       const parts: string[] = [];
+      let sSum = 0, sCnt = 0;
       for (const [codeV, name] of names) {
         let c = 0;
-        for (let i = 0; i < n; i++) if (zoneComp[i] === codeV) c++;
+        for (let i = 0; i < n; i++) {
+          const zv = zoneComp[i];
+          if (!zv || ZONE_CODE(zv) !== codeV) continue;
+          c++;
+          sSum += ZONE_STRENGTH(zv);
+          sCnt++;
+        }
         if (c) parts.push(`${name} ${pct(c)}%`);
       }
-      extra = parts.length ? ' · 地形：' + parts.join(' · ') : ' · 地形：还没画';
+      const avg = sCnt ? (sSum / sCnt).toFixed(1) : '0';
+      extra = parts.length
+        ? ` · 地形：${parts.join(' · ')}（强度均 ${avg}）`
+        : ' · 地形：还没画';
     } else if (kind === 'climate') {
       let dry = 0, wet = 0;
       for (let i = 0; i < n; i++) { if (climateComp[i] === CLIMATE_DRY) dry++; else if (climateComp[i] === CLIMATE_WET) wet++; }
@@ -634,9 +649,12 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   };
 
   const currentValue = (): number => {
-    const b = PALETTES[activeKind()].find((x) => x.id === toolId) ?? PALETTES[activeKind()][0];
-    if (activeKind() === 'noise') return b.value === 0 ? 0 : (b.value > 0 ? strength : -strength);
-    if (activeKind() === 'turb') return b.value === 0 ? 0 : strength;
+    const kind = activeKind();
+    const b = PALETTES[kind].find((x) => x.id === toolId) ?? PALETTES[kind][0];
+    /* 地形：类型码 + 顶栏强度滑块（0..8）打包进同一格 */
+    if (kind === 'zone') return b.value === 0 ? 0 : ZONE_PACK(b.value, strength);
+    if (kind === 'noise') return b.value === 0 ? 0 : (b.value > 0 ? strength : -strength);
+    if (kind === 'turb') return b.value === 0 ? 0 : strength;
     return b.value;
   };
 
@@ -852,6 +870,11 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     /* 画笔 / 液化 */
     const l = active();
     if (!l) return;
+    /* 旧噪声层只读（第一百三十九轮：强度已并进地形笔刷；老数据仍参与生成） */
+    if (mode === 'brush' && l.kind === 'noise') {
+      noteEl.textContent = '旧噪声层是只读的：新版本请用「地形」层的强度笔刷（高山/平原…+ 强度滑块）';
+      return;
+    }
     pushUndoData(l);
     if (mode === 'liquify') {
       liqSnapshot = l.data instanceof Int8Array ? new Int8Array(l.data) : new Uint8Array(l.data);
@@ -985,6 +1008,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
         <span class="lk-ed__chip" style="background:${C_KIND[l.kind]}"></span>
         <span class="lk-ed__lname">${escapeHtml(l.name)}</span>
         <span class="lk-ed__lkind">${KIND_LABEL[l.kind]}</span>
+        ${l.kind === 'noise' ? '<span class="lk-ed__ltag">旧</span>' : ''}
       </div>`;
   function renderLayers() {
     const gen = doc.layers.filter((l) => !fxKind(l.kind));
@@ -1078,7 +1102,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     land: '海陆：从下往上合成，上层画过的格子覆盖下层（没画 = 透明）。',
     zone: '地形：高山 / 丘陵 / 高原 / 盆地 / 湖泊内海 —— 只改海拔形状。',
     climate: '气候：沙地 / 湿地 —— 只改湿度（植被上色与河网），不改海拔。',
-    noise: '噪声：加噪 / 抹平（有符号）—— 多张噪声层按**求和**叠加。',
+    noise: '旧噪声层（只读）：老地图仍会按它生成；新版本请改用「地形」层的强度笔刷。',
     turb: '湍流：沿岸刷；这一层用上面的参数把海岸推开。多张湍流层会叠加。',
   };
 
@@ -1098,9 +1122,14 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     /* 画笔 / 液化调色板 */
     let toolButtons = '';
     if (mode === 'brush') {
-      const pal = PALETTES[kind];
-      if (!pal.some((b) => b.id === toolId)) toolId = pal[0].id;
-      toolButtons = pal.map((b) => `<button class="lk-ed__tool${b.id === toolId ? ' is-on' : ''}" data-tool="${b.id}" title="${b.hint}">${b.label}</button>`).join('');
+      if (kind === 'noise') {
+        /* 旧噪声层只读：不给画笔（数据仍参与生成） */
+        toolButtons = '<span class="lk-ed__subnote">旧噪声层：只读 —— 新版本请用「地形」层的强度笔刷（高山/平原… + 强度滑块）</span>';
+      } else {
+        const pal = PALETTES[kind];
+        if (!pal.some((b) => b.id === toolId)) toolId = pal[0].id;
+        toolButtons = pal.map((b) => `<button class="lk-ed__tool${b.id === toolId ? ' is-on' : ''}" data-tool="${b.id}" title="${b.hint}">${b.label}</button>`).join('');
+      }
     } else if (mode === 'liquify') {
       toolButtons = ([['push', '推挤'], ['pinch', '收缩'], ['bulge', '膨胀']] as [LiquifyKind, string][])
         .map(([id, name]) => `<button class="lk-ed__tool${id === liquifyKind ? ' is-on' : ''}" data-liq="${id}" title="液化：${name}">${name}</button>`).join('');
@@ -1113,7 +1142,8 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     layerHintEl.textContent = mode === 'transform' ? '变换只会改当前这一层的网格（最近邻重采样）'
       : mode === 'liquify' ? '液化只在当前层上推/缩，松手前不会破坏别的层'
         : (PALETTES[kind].find((b) => b.id === toolId)?.hint ?? '');
-    const strOn = kind === 'noise' || kind === 'turb' || mode === 'liquify';
+    /* 强度滑块：地形（逐格强度）、湍流、液化都用它 */
+    const strOn = kind === 'zone' || kind === 'turb' || mode === 'liquify';
     strBox.style.display = strOn ? 'flex' : 'none';
     brushEl.value = String(brushCells);
     brushNEl.textContent = String(brushCells);
@@ -1296,10 +1326,18 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
           if (v === 1) { r = C_LAND[0]; g = C_LAND[1]; b = C_LAND[2]; }
           else if (v === 2) { r = C_SEA[0]; g = C_SEA[1]; b = C_SEA[2]; }
         } else if (v) {
-          const c = l.kind === 'zone' ? C_ZONE[v]
-            : l.kind === 'climate' ? C_CLIMATE[v]
+          if (l.kind === 'zone') {
+            /* 地形：类型色 × 强度（淡 → 浓），与画布上的读法一致 */
+            const c = C_ZONE[ZONE_CODE(v)];
+            if (c) {
+              const t = ZONE_STRENGTH(v) / ZONE_STRENGTH_MAX;
+              r = 201 * (1 - t) + c[0] * t; g = 198 * (1 - t) + c[1] * t; b = 189 * (1 - t) + c[2] * t;
+            }
+          } else {
+            const c = l.kind === 'climate' ? C_CLIMATE[v]
               : l.kind === 'noise' ? (v > 0 ? C_NOISE_UP : C_NOISE_DOWN) : C_TURB;
-          if (c) { r = c[0]; g = c[1]; b = c[2]; }
+            if (c) { r = c[0]; g = c[1]; b = c[2]; }
+          }
         }
         const o = i << 2;
         d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;

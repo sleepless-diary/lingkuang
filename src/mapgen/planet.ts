@@ -33,7 +33,7 @@ import { climateHex, sampleRampHex, styleMaterial, styleSeabed, terrainStyleDef 
 /* ⭐ 第一百三十五轮：手绘原型（多图层）—— 纯数据模块，不拉 DOM，能跟本文件一起离线打包。 */
 import {
   CLIMATE_DRY, CLIMATE_WET, EDGE_MAX, LAND_SET, NOISE_MAX, SEA_SET,
-  ZONE_BASIN, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PLATEAU,
+  ZONE_BASIN, ZONE_CODE, ZONE_HILL, ZONE_LAKE, ZONE_MOUNTAIN, ZONE_PLAIN, ZONE_PLATEAU, ZONE_STRENGTH, ZONE_STRENGTH_MAX,
   buildEdgeTurbulence, compositeNoise, compositeU8, decodeProtoInput, dilateField, turbLayers,
   type LegacyMaskStored, type ProtoInput, type TurbBlend,
 } from './proto';
@@ -495,17 +495,23 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
   if (doc && landGrid && zoneGrid && climateGrid && noiseGrid
     && maskLand && maskSea && zRaise && zRidge && zFlat && climF && noiseF) {
     for (let i = 0; i < protoN; i++) {
-      const zn = zoneGrid[i];
+      /* ⭐ 第一百三十九轮：地形格 = 类型码 + **逐格强度**（0..8，§proto.ts 的打包格式）。
+         强度乘在"这一档的塑形量"上：高山强度 2 ≈ 缓山、强度 8 ≈ 高峰；
+         平原只压起伏不改基面（接替老噪声层的"抹平"用途）。 */
+      const zv = zoneGrid[i];
+      const zn = ZONE_CODE(zv);
+      const zs = ZONE_STRENGTH(zv) / ZONE_STRENGTH_MAX;
       const lv = landGrid[i];
       /* 湖泊/内海笔刷 = 直接钉成水（比海陆层更具体 ⇒ 它说了算）。
          它不会变成"海"：深度按离岸距离算（离陆地越近越浅）⇒ 内陆那片是浅水湖。 */
-      if (zn === ZONE_LAKE) maskSea[i] = 1;
+      if (zn === ZONE_LAKE && zs > 0.02) maskSea[i] = 1;
       else if (lv === LAND_SET) maskLand[i] = 1;
       else if (lv === SEA_SET) maskSea[i] = 1;
-      if (zn === ZONE_MOUNTAIN) { zRidge[i] = 1; zRaise[i] = 0.34; }
-      else if (zn === ZONE_HILL) { zRidge[i] = 0.38; zRaise[i] = 0.07; }
-      else if (zn === ZONE_PLATEAU) { zRaise[i] = 0.26; zFlat[i] = 1; }
-      else if (zn === ZONE_BASIN) { zRaise[i] = -0.32; zFlat[i] = 0.5; }
+      if (zn === ZONE_MOUNTAIN) { zRidge[i] = zs; zRaise[i] = 0.34 * zs; }
+      else if (zn === ZONE_HILL) { zRidge[i] = 0.38 * zs; zRaise[i] = 0.07 * zs; }
+      else if (zn === ZONE_PLATEAU) { zRaise[i] = 0.26 * zs; zFlat[i] = zs; }
+      else if (zn === ZONE_BASIN) { zRaise[i] = -0.32 * zs; zFlat[i] = 0.5 * zs; }
+      else if (zn === ZONE_PLAIN) { zFlat[i] = zs; }
       const cl = climateGrid[i];
       if (cl === CLIMATE_DRY) climF[i] = -1;
       else if (cl === CLIMATE_WET) climF[i] = 1;

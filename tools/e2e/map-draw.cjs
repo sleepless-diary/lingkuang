@@ -3,16 +3,19 @@
  *
  *  这套件钉的是**能被量出来的那几件事**：
  *    ★0 前置：地图栏「地形 · 原型…」在、区域精细化已删、等高线四档、旧画笔条已删；
- *    ★1 面板骨架：5 行图层（land/zone/climate/noise/turb）、海陆层 陆地/海洋、笔刷 1~40、缩放三键、双画布；
+ *    ★1 面板骨架：生成层/效果层两组、4 行默认图层（land/zone/climate/turb；噪声已并入地形强度）、
+ *        新建层下拉无 noise、draggable、海陆层 陆地/海洋、笔刷 1~40、缩放三键、双画布；
  *    ★2 画一笔：陆地% 上升；
  *    ★3 滚轮缩放；★4 中键平移；★5 滑块改笔刷 + 圆环半径；
- *    ★5b 点图层行：地形层有自己的笔刷；湍流层有强度滑块；
- *    ★5c 地形层画高山、噪声层画加噪：状态行各自报数；
+ *    ★5b 点图层行：地形层有 7 支笔刷 + 强度滑块；湍流层也有强度；
+ *    ★5c 地形逐格强度：强度 2 画山 ⇒ 状态行「强度均 2.0」；
+ *    ★5h 同一层里强度 2 与 8 两片并存 ⇒ 平均值落在中间；
  *    ★5d 地形/气候常显：切回海陆层仍看得到高山（像素 r ≥ g）；
  *    ★5e 湍流层画下即时生效：陆地包围盒当场被推开；
- *    ★6 新建层：＋新建「湍流」⇒ 图层 6 行、属性面板出现 6 个湍流参数；
+ *    ★5f 切类别换回该类笔刷（erase 撞名回归）；★5g 刷完再算（笔画中 0 次重建、松手 1 次）；
+ *    ★6 新建层：＋新建「湍流」⇒ 图层 5 行、属性面板出现 6 个湍流参数；★6b 拖动排序；
  *    ★7 变换：拖动框内 ⇒ 陆地包围盒平移，撤销能回去；
- *    ★8 液化：推挤一笔 ⇒ 画面签名变；
+ *    ★8 液化：膨胀一笔 ⇒ 轮廓被撑开；
  *    ★9 按原型生成：proto.layers ≥ 6（两张湍流 + 留白海层）、form=planet、画布挂上；
  *    ★10 高清大图 2304×1152 + 保存；★11 拖过之后 × 能关；★12 命中缓存；★13 无异常。
  *
@@ -106,6 +109,7 @@ async function main() {
     return {
       open: true,
       layers: [...el.querySelectorAll('[data-kind]')].map((b) => b.dataset.kind).join(','),
+      addKinds: [...el.querySelectorAll('#ed-add-kind option')].map((o) => o.value).join(','),
       groups: [...el.querySelectorAll('.lk-ed__grouphead')].map((g) => (g.textContent || '').replace(/\\d+/g, '').trim()).join(','),
       draggable: [...el.querySelectorAll('[data-kind]')].every((r) => r.getAttribute('draggable') === 'true'),
       tools: [...el.querySelectorAll('[data-tool]')].map((b) => b.dataset.tool).join(','),
@@ -119,8 +123,9 @@ async function main() {
     };
   })()`);
   await shot();
-  check('★1 面板：生成层/效果层两组、5 行图层、海陆层陆地/海洋、笔刷 1~40、双画布',
-    panel.open === true && panel.layers === 'land,zone,climate,noise,turb'
+  check('★1 面板：生成层/效果层两组、4 行图层（噪声已并进地形）、海陆层陆地/海洋、笔刷 1~40',
+    panel.open === true && panel.layers === 'land,zone,climate,turb'
+    && panel.addKinds === 'land,zone,climate,turb'
     && panel.groups === '生成层,效果层' && panel.draggable === true
     && panel.tools === 'land,sea' && panel.slider === true && panel.zoomBtns === true
     && panel.canvases === true && panel.cursorPE === 'none' && panel.side === true
@@ -233,7 +238,7 @@ async function main() {
   check('★5 滑块改笔刷：数值变、光标环跟着变大',
     ring.value === '18' && ring.label === '18' && ring.big > ring.small * 2 && ring.small > 0, ring);
 
-  /* ★5b 点图层行：换层只换调色板；湍流层才有强度滑块 */
+  /* ★5b 点图层行：换层只换调色板；地形/湍流都有强度滑块 */
   const layerUi = await ev(`(function () {
     const el = document.querySelector('.lk-ed');
     const tools = () => [...el.querySelectorAll('[data-tool]')].map((b) => b.dataset.tool).join(',');
@@ -246,22 +251,29 @@ async function main() {
     el.querySelector('[data-kind="land"]').click();
     return { land, zone, turb };
   })()`);
-  check('★5b 图层行切换：地形层有自己的笔刷；湍流层有强度滑块',
+  check('★5b 图层行切换：地形层有 6 种地形笔刷 + 强度滑块；湍流层也有强度',
     layerUi.land.tools === 'land,sea' && layerUi.land.strength === 'none'
-    && layerUi.zone.tools === 'mountain,hill,plateau,basin,lake,erase'
+    && layerUi.zone.tools === 'mountain,hill,plateau,basin,plain,lake,erase'
+    && layerUi.zone.strength !== 'none'
     && layerUi.turb.tools === 'turb,erase' && layerUi.turb.strength !== 'none', layerUi);
 
-  /* ★5c 地形层画高山、噪声层画加噪 */
+  /* ★5c 地形强度：强度 2 画高山 ⇒ 状态行报「强度均 2.0」 */
   await pickKind('zone'); await pickTool('mountain');
+  await ev(`(function () { const s = document.getElementById('ed-strength'); s.value = '2'; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
   await ev(DRAW(0.30, 0.42, 0.52, 0.42));
   const zoneStat = await ev(`(document.getElementById('ed-stat') || {}).textContent || ''`);
-  await pickKind('noise'); await pickTool('noise-up');
+  const avg2 = Number((zoneStat.match(/强度均 ([\d.]+)/) || [])[1] || 0);
+  check('★5c 地形逐格强度：强度 2 画出来的高山，状态行报平均强度 ≈ 2',
+    /高山 \d+%/.test(zoneStat) && /当前「地形/.test(zoneStat) && avg2 > 1.5 && avg2 < 2.5,
+    { zoneStat, avg2 });
+
+  /* ★5h 改成强度 8 再画一片 ⇒ 平均强度被拉高（但不是 8，两片混合） */
   await ev(`(function () { const s = document.getElementById('ed-strength'); s.value = '8'; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
-  await ev(DRAW(0.30, 0.60, 0.58, 0.60));
-  const noiseStat = await ev(`(document.getElementById('ed-stat') || {}).textContent || ''`);
-  check('★5c 地形层画高山、噪声层画加噪：图层状态行各自报数',
-    /高山 \d+%/.test(zoneStat) && /当前「地形/.test(zoneStat)
-    && /当前「噪声/.test(noiseStat), { zoneStat, noiseStat });
+  await ev(DRAW(0.30, 0.30, 0.52, 0.30));
+  const zoneStat2 = await ev(`(document.getElementById('ed-stat') || {}).textContent || ''`);
+  const avg8 = Number((zoneStat2.match(/强度均 ([\d.]+)/) || [])[1] || 0);
+  check('★5h 强度可混用：同一张地形层里 2 和 8 两片并存，平均值落在两者之间',
+    avg8 > avg2 + 0.8 && avg8 < 8, { avg2, avg8, zoneStat2 });
 
   /* ★5d 地形常显：切回海陆层，高山像素还在（r ≥ g） */
   const alwaysOn = await ev(`(function () {
@@ -334,8 +346,8 @@ async function main() {
   })()`);
   await sleep(300);
   const propsNow = await ev(`[...document.querySelectorAll('#ed-props [data-prop]')].map((e) => e.dataset.prop)`);
-  check('★6 新建「湍流」层：图层 6 行、自动选中、属性面板有尺度/幅度/细节/种子/混合/扩散',
-    addLayer.layers === 6
+  check('★6 新建「湍流」层：图层 5 行（4 默认 + 1 新建）、自动选中、属性面板有尺度/幅度/细节/种子/混合/扩散',
+    addLayer.layers === 5
     && ['scale', 'amp', 'octaves', 'seed', 'blend', 'diffusion'].every((k) => propsNow.includes(k)),
     { layers: addLayer.layers, props: propsNow });
 
