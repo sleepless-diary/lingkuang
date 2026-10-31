@@ -354,15 +354,25 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   };
   /** 只改了某一层：只有海陆层会让"糊开的海陆场"失效，别的层不必重算它（卡顿的主要来源）。 */
   const touchLayer = (kind: ProtoLayerKind) => {
-    if (kind === 'land') landRev++;
-
+    if (kind === 'land') {
+      landRev++;
+      /* 海陆变了 ⇒ 地形的「只在陆地上生效」掩膜也要重算 */
+      compDirtyKinds.add('zone');
+    }
     compDirtyKinds.add(kind);
     previewDirty = true;
   };
 
   const recomputeComps = () => {
     if (compDirtyKinds.has('land')) landComp = compositeU8(doc, 'land');
-    if (compDirtyKinds.has('zone')) zoneComp = compositeU8(doc, 'zone');
+    if (compDirtyKinds.has('zone')) {
+      zoneComp = compositeU8(doc, 'zone');
+      /* ⭐ 地形只在陆地上生效（与生成器同一口径；湖泊/内海例外：它本来就在水面上） */
+      for (let i = 0; i < zoneComp.length; i++) {
+        const z = zoneComp[i];
+        if (z && landComp[i] !== 1 && ZONE_CODE(z) !== ZONE_LAKE) zoneComp[i] = 0;
+      }
+    }
     if (compDirtyKinds.has('climate')) climateComp = compositeU8(doc, 'climate');
     if (compDirtyKinds.has('noise')) noiseComp = compositeNoise(doc);
     compDirtyKinds.clear();
@@ -933,13 +943,17 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     const val = currentValue();
     const arr = l.data;
     const r = Math.max(0, brushCells - 1);
+    /* ⭐ 第一百四十二轮：地形只画在陆地上（湖泊/内海例外；擦除任何时候都允许） */
+    const zoneLimit = l.kind === 'zone' && val !== 0 && ZONE_CODE(val) !== ZONE_LAKE;
     for (let y = cy - r; y <= cy + r; y++) {
       for (let x = cx - r; x <= cx + r; x++) {
         const dx = x - cx, dy = y - cy;
         if (r > 0 && dx * dx + dy * dy > r * r + r * 0.6) continue;
         /* 球面映射：横向取模（越过左右边界接着画）、纵向跨极点（对面经线 + 镜像） */
         const p = sphereMap(x, y);
-        arr[p.y * PROTO_W + p.x] = val;
+        const i = p.y * PROTO_W + p.x;
+        if (zoneLimit && landComp[i] !== 1) { zoneSkipped++; continue; }
+        arr[i] = val;
       }
     }
   };
@@ -1186,6 +1200,8 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
   };
   /* ── 交互状态 ─────────────────────────────────────────────────────────── */
   let drawing = false;
+  /** 这一笔里有多少格地形落在海上被跳过（用来提示"只能画在陆地上"） */
+  let zoneSkipped = 0;
   /** 笔画 / 变换 / 液化进行中：这段里**不重算湍流预览**（松手再算，见 `paintBuf()`） */
   let strokeBusy = false;
   let panning = false;
@@ -1303,6 +1319,7 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     drawing = true;
     strokeBusy = true;
     last = p;
+    zoneSkipped = 0;
     stamp(p.x, p.y);
     touchLayer(l.kind);
     paintBuf();
@@ -1395,6 +1412,10 @@ export function openMapEditor(store: Store, opts?: { proto?: MapProto; mask?: Ma
     drawing = false;
     panning = false;
     last = null;
+    if (zoneSkipped > 0) {
+      noteEl.textContent = `地形只画在陆地上 —— 这一笔有 ${zoneSkipped} 格落在海上，已跳过（湖泊/内海笔刷例外）`;
+      zoneSkipped = 0;
+    }
     setCursorGrab(false);
     try { canvas.releasePointerCapture?.(e.pointerId); } catch { /* 已释放 */ }
   };

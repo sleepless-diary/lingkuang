@@ -507,11 +507,15 @@ export function* planetFieldGen(seed: string, style: string, spec?: MapgenSpecIn
       if (zn === ZONE_LAKE && zs > 0.02) maskSea[i] = 1;
       else if (lv === LAND_SET) maskLand[i] = 1;
       else if (lv === SEA_SET) maskSea[i] = 1;
-      if (zn === ZONE_MOUNTAIN) { zRidge[i] = zs; zRaise[i] = 0.34 * zs; }
-      else if (zn === ZONE_HILL) { zRidge[i] = 0.38 * zs; zRaise[i] = 0.07 * zs; }
-      else if (zn === ZONE_PLATEAU) { zRaise[i] = 0.26 * zs; zFlat[i] = zs; }
-      else if (zn === ZONE_BASIN) { zRaise[i] = -0.32 * zs; zFlat[i] = 0.5 * zs; }
-      else if (zn === ZONE_PLAIN) { zFlat[i] = zs; }
+      /* ⭐ 第一百四十二轮：**地形只在陆地上生效**（湖泊/内海例外：它本来就要把水面钉出来）。
+         海上刷的地形一律忽略 —— 否则抬的是海底，还会顺着双线性采样渗到岸边。 */
+      if (zn === ZONE_LAKE || maskLand[i] > 0.5) {
+        if (zn === ZONE_MOUNTAIN) { zRidge[i] = zs; zRaise[i] = 0.34 * zs; }
+        else if (zn === ZONE_HILL) { zRidge[i] = 0.38 * zs; zRaise[i] = 0.07 * zs; }
+        else if (zn === ZONE_PLATEAU) { zRaise[i] = 0.26 * zs; zFlat[i] = zs; }
+        else if (zn === ZONE_BASIN) { zRaise[i] = -0.32 * zs; zFlat[i] = 0.5 * zs; }
+        else if (zn === ZONE_PLAIN) { zFlat[i] = zs; }
+      }
       const cl = climateGrid[i];
       if (cl === CLIMATE_DRY) climF[i] = -1;
       else if (cl === CLIMATE_WET) climF[i] = 1;

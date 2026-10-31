@@ -263,7 +263,14 @@ async function main() {
     && layerUi.zone.strength !== 'none'
     && layerUi.turb.tools === 'turb,erase' && layerUi.turb.strength !== 'none', layerUi);
 
-  /* ★5c 地形强度：强度 2 画高山 ⇒ 状态行报「强度均 2.0」 */
+  /* ★5c 地形强度：强度 2 画高山 ⇒ 状态行报「强度均 2.0」
+     ⚠️ 第一百四十二轮起**地形只能画在陆地上**：先把这片刷成陆地，否则会被正确地跳掉。 */
+  await pickKind('land'); await pickTool('land');
+  await setBrush(40);
+  await ev(DRAW(0.28, 0.30, 0.54, 0.30));
+  await ev(DRAW(0.28, 0.36, 0.54, 0.36));
+  await ev(DRAW(0.28, 0.42, 0.54, 0.42));
+  await setBrush(18);
   await pickKind('zone'); await pickTool('mountain');
   await ev(`(function () { const s = document.getElementById('ed-strength'); s.value = '2'; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
   await ev(DRAW(0.30, 0.42, 0.52, 0.42));
@@ -287,11 +294,41 @@ async function main() {
     const c = document.getElementById('ed-canvas');
     const r = c.getBoundingClientRect();
     const g = c.getContext('2d');
-    const px = g.getImageData(Math.round(r.width * 0.40), Math.round(r.height * 0.42), 1, 1).data;
+    /* 取一个**强度 8** 的高山格（★5h 那条在 y≈0.30）：强度 2 那片太淡，绿色仍然占主导 */
+    const px = g.getImageData(Math.round(r.width * 0.40), Math.round(r.height * 0.31), 1, 1).data;
     return { r: px[0], g: px[1], b: px[2] };
   })()`);
   check('★5d 地形常显：在海陆层上看得到地形层画的高山（r ≥ g）',
     alwaysOn.r >= alwaysOn.g - 2 && alwaysOn.r > 60, alwaysOn);
+
+  /* ★15 地形只在陆地上生效（第一百四十二轮）：海上刷高山 → 跳过并提示；湖泊/内海仍可画在水上 */
+  const zoneLand = await ev(`(function () {
+    const c = document.getElementById('ed-canvas');
+    const r = c.getBoundingClientRect();
+    const g = c.getContext('2d');
+    const px = (fx, fy) => { const d = g.getImageData(Math.round(r.width * fx), Math.round(r.height * fy), 1, 1).data; return [d[0], d[1], d[2]]; };
+    document.querySelector('[data-kind="zone"]').click();
+    const mt = document.querySelector('[data-tool="mountain"]'); if (mt) mt.click();
+    const s = document.getElementById('ed-strength'); s.value = '8'; s.dispatchEvent(new Event('input', { bubbles: true }));
+    const bs = document.getElementById('ed-brush'); bs.value = '30'; bs.dispatchEvent(new Event('input', { bubbles: true }));
+    const before = px(0.5, 0.85);
+    const mk = (ty, fx, fy) => new PointerEvent(ty, { clientX: r.left + r.width * fx, clientY: r.top + r.height * fy, bubbles: true, pointerId: 81, pointerType: 'mouse', button: 0, buttons: 1 });
+    c.dispatchEvent(mk('pointerdown', 0.5, 0.85));
+    c.dispatchEvent(mk('pointerup', 0.5, 0.85));
+    const note = (document.getElementById('ed-note') || {}).textContent || '';
+    const after = px(0.5, 0.85);
+    /* 湖泊笔刷：同一个点（海面）应该能画 */
+    const lk = document.querySelector('[data-tool="lake"]'); if (lk) lk.click();
+    c.dispatchEvent(mk('pointerdown', 0.5, 0.85));
+    c.dispatchEvent(mk('pointerup', 0.5, 0.85));
+    const lake = px(0.5, 0.85);
+    return { before, after, lake, note };
+  })()`);
+  check('★15 地形只在陆地上：海上刷高山被跳过并提示；湖泊仍能画在水上',
+    !!zoneLand
+    && Math.abs(zoneLand.after[1] - zoneLand.before[1]) <= 2 && Math.abs(zoneLand.after[2] - zoneLand.before[2]) <= 2
+    && String(zoneLand.note).includes('已跳过')
+    && Math.abs(zoneLand.lake[2] - zoneLand.before[2]) > 8, zoneLand);
 
   /* ★5e 湍流层画下即时生效：陆地包围盒当场被推开 */
   const bb0 = await ev(BBOX);
